@@ -9,6 +9,7 @@
 
 #include "openpete_bugrec_subtick.h"
 #include "openpete_discontinuity.h"
+#include "openpete_eager_ladder.h"
 #include "openpete_fiber.h"
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
@@ -55,9 +56,11 @@
  * produced, so the shape of the degradation is chosen up front: a divisor
  * ladder (every 2nd slot, every 3rd ...) keeps the cadence uniform on a
  * fixed refresh. The trigger is a division, not a threshold on a curve.
- * Hysteresis is asymmetric -- drop a level the moment a span is cut short,
- * climb only after several consecutive spans with clear headroom -- because
- * a rate that oscillates is worse than a steady lower one.
+ * Hysteresis is asymmetric -- a span that cannot afford the standing level
+ * plans its own span lower at once, the standing level drops when such
+ * spans recur, and it climbs only after several consecutive spans that
+ * afford a higher rate -- because a rate that oscillates is worse than a
+ * steady lower one, and one costly span is not a lower capacity.
  *
  * The lag. The spine shows span [N-1, N] from the moment tick N lands, at
  * alpha = (t - stamp_N) / period, so alpha reaches 1 when tick N+1 is DUE --
@@ -83,12 +86,11 @@ static struct {
     int       active;                 /* the present thread owns the display */
     int       n, i;                   /* planned targets, next to produce */
     op_time_t target[EAGER_MAX_TARGETS];
-    int       level;                  /* divisor: produce every level-th slot */
+    op_eager_ladder_t ladder;         /* the standing divisor and its run counts */
+    int       level;                  /* divisor of the span being produced: every level-th slot */
     int       pinned;                 /* OPENPETE_EAGER_LEVEL */
     int       afford_pin;             /* OPENPETE_EAGER_AFFORD: force the budget's verdict (A/B) */
     int       policy;                 /* 0 divisor, 1 greedy */
-    int       headroom_runs;
-    int       hold_level;             /* the highest level a span of the current headroom run needs */
     op_time_t cost_ema, cost_dev; int cost_n;   /* per-scene production cost */
     op_time_t vbl_ema;                /* cost of a non-drawing VBL on this thread */
     op_time_t tick_ema, tick_dev;     /* execution time of a drawing VBL (the tick) */
@@ -104,10 +106,11 @@ static struct {
     op_time_t last_target;            /* the previous span's final display instant */
     int       world_live;             /* canonical presents are flowing (see the inline gate) */
     unsigned  spans, produced, skipped_late, cut, refused, level_up, level_down;
+    unsigned  span_held;              /* spans planned above the standing level for an isolated shortfall */
     unsigned  produced_inter;         /* of `produced`, the sub-tick re-extracts */
     int       span_cut;               /* this span ended with targets unproduced */
     unsigned  canon_frame;            /* openpete_frame at the last canonical, 0 after a discontinuity */
-} s_eager = { .level = 1 };
+} s_eager = { .ladder = { .level = 1, .since_short = EAGER_HEADROOM_RUNS }, .level = 1 };
 
 /* Documented at the declaration in eager.h. */
 int eager_active(void) { return s_eager.active; }
@@ -153,7 +156,7 @@ static void eager_init(void)
     s_eager.policy = (p && !strcmp(p, "greedy")) ? 1 : 0;
     const char *l = getenv("OPENPETE_EAGER_LEVEL");
     s_eager.pinned = (l && *l) ? atoi(l) : 0;
-    if (s_eager.pinned > 0) s_eager.level = s_eager.pinned;
+    if (s_eager.pinned > 0) s_eager.level = s_eager.ladder.level = s_eager.pinned;
     const char *f = getenv("OPENPETE_EAGER_AFFORD");
     s_eager.afford_pin = (f && *f) ? atoi(f) : 0;
     const char *g = getenv("OPENPETE_EAGER_LAG_US");
@@ -334,8 +337,9 @@ static void eager_span_slots(op_time_t now, op_time_t first, op_time_t span_end,
 
 /** @brief Write eager_plan's OPENPETE_EAGER_DBG lines for the span just planned.
  *
- * OPENPETE_EAGER_DBG=1 writes the plan line on a cut span, a level change, or
- * a tick that started half a tick or more past its deadline (late=).
+ * OPENPETE_EAGER_DBG=1 writes the plan line on a cut span, a change of the
+ * span's level, a span planned above the standing level (std=), or a tick
+ * that started half a tick or more past its deadline (late=).
  * 2 or more also writes one span line per plan: the offsets from now of the
  * render-grid slot passed in (in), the span's first display instant, its end
  * after the lag extension and the previous span's last target, the lag, the
@@ -360,10 +364,11 @@ static void eager_plan_dbg(op_time_t now, op_time_t first_in, op_time_t end_in, 
     static int dbg = -1;
     if (dbg < 0) { const char *e = getenv("OPENPETE_EAGER_DBG"); dbg = (e && *e) ? atoi(e) : 0; }
     if (dbg <= 0) return;
-    if (s_eager.span_cut || s_eager.level != s_eager.dbg_level || s_eager.tick_late > 0) {
-        fprintf(stderr, "[eager f=%u] plan: slots=%d budget=%.2fms tail=%.3fms afford=%d level=%d cut=%d lag=%.2fms vbl=%.2fms late=%.2fms\n",
+    if (s_eager.span_cut || s_eager.level != s_eager.dbg_level || s_eager.level != s_eager.ladder.level ||
+        s_eager.tick_late > 0) {
+        fprintf(stderr, "[eager f=%u] plan: slots=%d budget=%.2fms tail=%.3fms afford=%d level=%d std=%d cut=%d lag=%.2fms vbl=%.2fms late=%.2fms\n",
                 openpete_frame, sp->ns, (double)budget / 1e6, (double)eager_tail_cost() / 1e6, afford,
-                s_eager.level, s_eager.span_cut, (double)s_eager.lag / 1e6, (double)s_eager.vbl_ema / 1e6,
+                s_eager.level, s_eager.ladder.level, s_eager.span_cut, (double)s_eager.lag / 1e6, (double)s_eager.vbl_ema / 1e6,
                 (double)s_eager.tick_late / 1e6);
         s_eager.dbg_level = s_eager.level;
     }
@@ -397,8 +402,8 @@ static void eager_plan_dbg(op_time_t now, op_time_t first_in, op_time_t end_in, 
  * would read one load as the machine affording one scene, raising the
  * level to the slot count. The tick's own execution stays in the
  * budget, so a run of long ticks still prices the spans it shortens. Past
- * warmup the scenes are priced on their sum, N times the mean cost plus a
- * spread allowance of eight deviations (two sigma of a sum of sixteen);
+ * warmup the scenes are priced on their sum, N times the mean cost plus two
+ * deviations of the sum, 2 * sqrt(N) deviations (op_eager_ladder_afford);
  * before it, on the per-scene tail, or one per slot before any cost exists.
  * OPENPETE_EAGER_AFFORD overrides the result, which is at least 1.
  * @param now The plan instant.
@@ -413,19 +418,19 @@ static int eager_afford(op_time_t now, op_time_t prod_end, int ns, op_time_t *bu
      * question between scenes (the produce guard) and the wrong one here:
      * pricing all N at once at p99.7 charges every scene the worst scene's
      * cost, ~2x the true sum, since independent costs average out. The sum's
-     * own spread grows as sqrt(N), so bound it that way -- with
-     * N <= EAGER_MAX_TARGETS the sqrt term is a constant. Being wrong is also
-     * cheap in one direction only: the produce guard still stops at the
-     * deadline, and a cut span is observed and answered by the ladder. */
+     * own spread grows as sqrt(N), so it is bounded at the N being priced: a
+     * constant sized for sixteen scenes reserves four deviations more than
+     * two scenes spread, which at a scene cost near half the budget prices
+     * one scene where two fit. Being wrong is also cheap in one direction
+     * only: the produce guard still stops at the deadline, and a cut span is
+     * observed and answered by the ladder. */
     const op_time_t tail = eager_tail_cost();
     op_time_t budget = prod_end - (now - s_eager.tick_late) - s_eager.vbl_ema - EAGER_BUDGET_SAFETY_NS;
     if (budget < 0) budget = 0;
     *budget_out = budget;
     int afford;
     if (s_eager.cost_n >= EAGER_COST_WARMUP && s_eager.cost_ema > 0) {
-        const op_time_t spread = 8 * s_eager.cost_dev;      /* 2 sigma at N = 16 */
-        const op_time_t room = budget > spread ? budget - spread : 0;
-        afford = (int)(room / s_eager.cost_ema);
+        afford = op_eager_ladder_afford(budget, s_eager.cost_ema, s_eager.cost_dev);
     } else {
         afford = tail > 0 ? (int)(budget / tail) : ns;
     }
@@ -433,39 +438,27 @@ static int eager_afford(op_time_t now, op_time_t prod_end, int ns, op_time_t *bu
     return afford < 1 ? 1 : afford;
 }
 
-/** @brief Move the decimation level for a span of ns slots of which afford scenes fit.
+/** @brief Move the standing decimation level for a span of ns slots of which afford scenes fit, and set the span's level.
  *
- * Fast down, slow up, since an overrun is the harmful direction and a level
- * that flickers judders the rate. The level rises at once to ceil(ns /
- * afford), and by at least one when the previous span was cut short,
- * unless that span was planned after a stalled tick start (span_late): its
- * cut is the stall's, which the produce guard absorbed at the deadline, not
- * a verdict on what the steady span affords. It falls only after
- * EAGER_HEADROOM_RUNS consecutive spans each of which a lower level covers
- * with a quarter margin (afford * 4 >= ceil(ns / level) * 5), and then in one
- * move to the highest level any span of that run needed: the run measured
- * that level, so stepping down one level per run would only spread the same
- * verdict over several runs at a rate the run has already shown too low.
+ * op_eager_ladder_step decides: a span that needs more than the standing
+ * level, or follows a cut span, plans at the level it needs; the standing
+ * level rises only when such a shortfall recurs within EAGER_HEADROOM_RUNS
+ * spans, and falls after EAGER_HEADROOM_RUNS consecutive clean spans, in one
+ * move, to the highest level any of them needed. A cut span planned after a
+ * stalled tick start (span_late) is not a shortfall: the produce guard
+ * absorbed the stall at the deadline, which says nothing about what the
+ * steady span affords. Counts standing rises in level_down, falls in
+ * level_up, and spans planned above the standing level in span_held.
  * @param ns The span's slot count.
  * @param afford The scenes the budget affords, at least 1. */
 static void eager_ladder_step(int ns, int afford)
 {
-    int need = (ns + afford - 1) / afford;      /* ceil(ns / afford) */
-    if (need < 1) need = 1;
-    if (s_eager.span_cut && !s_eager.span_late && need <= s_eager.level) need = s_eager.level + 1;
-    if (need > s_eager.level) {
-        s_eager.level = need; s_eager.level_down++;
-        s_eager.headroom_runs = 0; s_eager.hold_level = 0;
-        return;
-    }
-    const int m = afford * 4 / 5;                /* scenes afforded with a quarter margin */
-    const int cover = m >= 1 ? (ns + m - 1) / m : s_eager.level;
-    if (cover >= s_eager.level) { s_eager.headroom_runs = 0; s_eager.hold_level = 0; return; }
-    if (cover > s_eager.hold_level) s_eager.hold_level = cover;
-    if (++s_eager.headroom_runs < EAGER_HEADROOM_RUNS) return;
-    s_eager.level = s_eager.hold_level > 1 ? s_eager.hold_level : 1;
-    s_eager.level_up++;
-    s_eager.headroom_runs = 0; s_eager.hold_level = 0;
+    const int before = s_eager.ladder.level;
+    const int cut = s_eager.span_cut && !s_eager.span_late;
+    s_eager.level = op_eager_ladder_step(&s_eager.ladder, ns, afford, cut, EAGER_HEADROOM_RUNS);
+    if (s_eager.ladder.level > before) s_eager.level_down++;
+    else if (s_eager.ladder.level < before) s_eager.level_up++;
+    if (s_eager.level > s_eager.ladder.level) s_eager.span_held++;
 }
 
 /** @brief Move the animation lag toward the tick's execution tail, unless OPENPETE_EAGER_LAG_US pins it.
@@ -828,6 +821,7 @@ int eager_idle(int world_live, int may_produce, op_time_t deadline, op_time_t pe
  * divisor level and its moves (shown as n/a under the greedy policy, where
  * the level does not decide the plan); scene cost mean and deviation; the
  * lag and the tick execution-time mean and deviation; the policy; the spans
+ * planned above the standing level for an isolated shortfall; the spans
  * whose render-grid slot was pulled back to within a period of now. Silent
  * when no span ran. */
 static void eager_report(void)
@@ -838,12 +832,12 @@ static void eager_report(void)
     OPL_INFO_F("eager", "%u span(s): %u scene(s) produced, %u skipped (instant passed), "
                "%u refused (ring full), %u cut short; level now %s%d (%u down, %u up); "
                "scene cost %.3f ms ema, %.3f ms dev; lag %.3f ms (tick %.3f ms ema, %.3f dev); policy %s; "
-               "%u first slot(s) pulled back",
+               "%u span(s) above the level; %u first slot(s) pulled back",
                s_eager.spans, s_eager.produced, s_eager.skipped_late, s_eager.refused,
-               s_eager.cut, s_eager.policy ? "n/a " : "", s_eager.level, s_eager.level_down, s_eager.level_up,
+               s_eager.cut, s_eager.policy ? "n/a " : "", s_eager.ladder.level, s_eager.level_down, s_eager.level_up,
                (double)s_eager.cost_ema / 1e6, (double)s_eager.cost_dev / 1e6,
                (double)s_eager.lag / 1e6, (double)s_eager.tick_ema / 1e6, (double)s_eager.tick_dev / 1e6,
-               s_eager.policy ? "greedy" : "divisor", s_eager.trimmed);
+               s_eager.policy ? "greedy" : "divisor", s_eager.span_held, s_eager.trimmed);
 }
 
 /** @brief Drop the eager scene plan on a guest discontinuity (savestate load, rewind, level load).

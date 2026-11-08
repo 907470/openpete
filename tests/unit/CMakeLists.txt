@@ -44,6 +44,18 @@ target_include_directories(portal_cover_slot_test PRIVATE
 set_target_properties(portal_cover_slot_test PROPERTIES C_STANDARD 99)
 add_test(NAME portal_cover_slot_test COMMAND portal_cover_slot_test)
 
+# eager_ladder_test - header-only. The eager producer's sum pricing and
+# decimation ladder on synthetic spans and on recorded plan lines, with the
+# previous pricing and ladder as the negative control.
+add_executable(eager_ladder_test eager_ladder_test.c)
+target_include_directories(eager_ladder_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include)
+if(NOT WIN32)
+    target_link_libraries(eager_ladder_test PRIVATE m)
+endif()
+set_target_properties(eager_ladder_test PROPERTIES C_STANDARD 99)
+add_test(NAME eager_ladder_test COMMAND eager_ladder_test)
+
 # moby_snap_rule_test - header-only. The sunk-pickup snap's side term and
 # depth rule on synthetic floors and walls: a double-sided floor keeps the
 # upper side from beneath, so the tip hides and the body is not pulled.

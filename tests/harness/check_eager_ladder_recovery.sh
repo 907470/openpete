@@ -21,14 +21,14 @@
 #
 # Instrument: OPENPETE_EAGER_DBG=1 plan lines,
 #   [eager f=<vbl>] plan: slots=<n> budget=<ms>ms tail=<ms>ms afford=<n>
-#                   level=<n> cut=<0|1> lag=<ms>ms vbl=<ms>ms [late=<ms>ms]
-# written on a cut span, a level change, or (where the build prints late=) a
-# tick that started late. A stall plan is one with budget=0.00ms (the
+#                   level=<n> [std=<n>] cut=<0|1> lag=<ms>ms vbl=<ms>ms [late=<ms>ms]
+# written on a cut span, a change of the span's level, a span planned above
+# the standing level std, or (where the build prints late=) a tick that
+# started late; level is the level the span planned at. A stall plan is one with budget=0.00ms (the
 # collapse) or late= at least half a tick. For each stall plan at VBL s the
 # base level is the level in force before s; recovery is the first later
 # plan line whose level is at most the base or at most the level its own
-# afford covers with the planner's quarter margin (ceil(slots / floor(afford
-# * 4 / 5))); recovery spans = (that VBL - s) / 2, 0 when no line within 8
+# afford covers (ceil(slots / afford)); recovery spans = (that VBL - s) / 2, 0 when no line within 8
 # VBLs of s raises the level above the base. Lines are written on every
 # level change, so the level between two lines is the earlier line's.
 #
@@ -133,7 +133,7 @@ read -r stalls worst rate eager <<<"$(awk -v warm="$WARMUP" '
         if (f >= first + warm && (bu == 0 || late >= 16.7)) { ns++; ST[ns] = n }
         last = f
     }
-    function cover(k,   m) { m = int(A[k] * 4 / 5); return m >= 1 ? int((S[k] + m - 1) / m) : L[k] }
+    function cover(k) { return A[k] >= 1 ? int((S[k] + A[k] - 1) / A[k]) : L[k] }
     END {
         worst = 0
         for (j = 1; j <= ns; j++) {
