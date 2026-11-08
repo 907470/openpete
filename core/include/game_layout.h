@@ -931,6 +931,17 @@ typedef struct game_layout {
          * its game.state values. cls 0: no class draws by key. */
         game_moby_cls_state_t key_order;
 
+        /* The terrain-order class: a class the game draws under terrain that
+         * lies behind it in true depth, while the moby's state byte (the
+         * array's `state_off`) holds a value whose bit is set in
+         * `terrain_order_mstates`. Its opaque faces lose every pixel where the
+         * terrain key sorts into their own ordering-table slot or a nearer
+         * one, the table's paint order for a moby spliced into a bucket
+         * ahead of the terrain linked there (moby_class_terrain_order in
+         * games/common/renderer/moby.c). cls 0: no class. */
+        game_moby_cls_state_t terrain_order;
+        uint32_t              terrain_order_mstates;
+
         /* True-depth classes: the first `true_depth_n` entries name classes,
          * each under its game.state values, whose faces contest by their
          * true depth, without the authored m_DepthOffset and the world

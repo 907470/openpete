@@ -196,6 +196,11 @@ void main()
             discard;
         }
     }
+    /* A terrain-order moby fragment yields to terrain keyed into its slot
+     * or nearer (op_terrain_order_loses). */
+    if (op_terrain_order_loses(op_key_from_stored(texelFetch(u_hpkey, ivec2(gl_FragCoord.xy), 0).r),
+                               koff, vRank.x, SLOT_CONTEST))
+        discard;
     /* A terrain fragment (unranked, not an actor or glow-fan face) keyed
      * behind a key-order moby's key yields to it (op_key_order_yields). */
     int ko = (!ranked && vRank.x > -0.5)

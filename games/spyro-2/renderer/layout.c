@@ -554,6 +554,16 @@ const game_layout_t spyro2_game_layout = {
         .true_depth   = { { 0x0u, 1u << 0 } },
         .true_depth_n = 1,
 
+        /* Class 0x19F: Idol Springs' fish. A flamed fish thrown at the idol
+         * takes m_DepthOffset -6 and state 5 (level_12 moby_update
+         * 0x80081230, 0x80081294), then state 6 once swallowed (0x800816B8).
+         * The idol's lips are terrain at the swallowed fish's depth; the
+         * offset moves the fish's key six buckets back, so the lips key into
+         * its buckets or nearer and the table paints the closing jaw over
+         * the parts of the fish that stand in front of them. */
+        .terrain_order         = { 0x19Fu, 0u },
+        .terrain_order_mstates = (1u << 5) | (1u << 6),
+
         /* Class 170 (0xAA): the air bubble around Sparx under water (and the
          * Aquaria Towers ring bubbles), a 9-vertex additive disc the game
          * turns to face the camera and draws after Sparx (world bucket 17

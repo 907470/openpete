@@ -1395,6 +1395,29 @@ static void bw_key_order_record(const scene_tri_t* sc, int n) {
     O->ter_rank = ter_rank < 0 ? O->n : ter_rank;
 }
 
+/* The mobys the terrain-order entry selected in the scene being built
+ * (openpete_native_scene_note_torder), for the OPENPETE_TORDER_CENSUS
+ * instrument; at most TORDER_NOTE_MAX. */
+#define TORDER_NOTE_MAX 16
+static uint32_t s_torder_mid[TORDER_NOTE_MAX];
+static int s_torder_n;
+/** @brief Report whether OPENPETE_TORDER_CENSUS is set (read once).
+ * @return 1 when the census runs. */
+static int torder_census_on(void) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_TORDER_CENSUS"); s_on = e && *e && *e != '0'; }
+    return s_on;
+}
+/* 1 once torder_census has printed for the scene being built. */
+static int s_torder_done;
+/** @brief Empty the terrain-order moby list and re-arm the census as a scene begins. */
+static void torder_note_clear(void) { s_torder_n = 0; s_torder_done = 0; }
+void openpete_native_scene_note_torder(uint32_t mid) {
+    if (!torder_census_on() || s_torder_n >= TORDER_NOTE_MAX) return;
+    for (int k = 0; k < s_torder_n; k++) if (s_torder_mid[k] == mid) return;
+    s_torder_mid[s_torder_n++] = mid;
+}
+
 /* 1 while the scene being accumulated is a sub-tick / lag re-extract's
  * rebuild (openpete_native_scene_begin), 0 while it is the game render's
  * own accumulation (openpete_native_scene_begin_frame). The two emit the
@@ -1410,7 +1433,7 @@ void openpete_native_scene_begin(void) {
      * overwrite either with its own (already reordered) scene. */
     if (!s_scene_replay) { bw_key_order_record(s_scene, s_scene_n); scene_game_retain(); }
     s_scene_clear_held = 0;
-    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); openpete_mods_material_frame_reset(0); /* per-present interned slots; the tick's refine outcomes replay */
+    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; torder_note_clear(); memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); openpete_mods_material_frame_reset(0); /* per-present interned slots; the tick's refine outcomes replay */
     /* Stamp the rebuild with the VBL it is built on, the stamp the terrain
      * builder tags its build with outside an eager scene
      * (openpete_native_scene_build_stamp). The present's retained-terrain
@@ -1718,7 +1741,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         s_cur_prim = 0;
         s_cur_fb_cell = 0;
         s_scene_clear_held = 0;
-        s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); s_scene_frame = frame; s_scene_key = openpete_feed_key_now();
+        s_scene_n = 0; torder_note_clear(); memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); s_scene_frame = frame; s_scene_key = openpete_feed_key_now();
         s_scene_fade_prim = 0;
         s_scene_replay = 0;
         /* Per-instance material slots are per-feed-cycle: reset here (the
@@ -2888,7 +2911,7 @@ void openpete_native_scene_commit_fade(void) {
          * it too, and drop the degenerate geometry (reset Spyro + bg) so only the
          * held freeze shows, exactly as on a settled freeze frame. */
         s_scene_freeze = new_freeze;
-        s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_cur_ter_after = 0;
+        s_scene_n = 0; torder_note_clear(); memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_cur_ter_after = 0;
     }
     if (load_census_on() && s_cover_live.cnt[0] > 0 && !ter_fed) {
         int blend = 0;
@@ -10144,6 +10167,81 @@ static void key_run_write(const scene_tri_t* t, const keytex_span_t* sp,
     pack_key_vert(t, c->prop_class, sp != NULL, out);
 }
 
+/** @brief Report whether two screen triangles overlap with positive area (separating-axis test on their six edges).
+ * @param a First triangle.
+ * @param b Second triangle.
+ * @return 1 when no edge axis separates them. */
+static int torder_tris_overlap(const scene_tri_t* a, const scene_tri_t* b) {
+    const scene_tri_t* T[2] = { a, b };
+    for (int s = 0; s < 2; s++)
+        for (int e = 0; e < 3; e++) {
+            const openpete_scene_vert* p = &T[s]->v[e];
+            const openpete_scene_vert* q = &T[s]->v[(e + 1) % 3];
+            const float nx = q->sy - p->sy, ny = p->sx - q->sx;
+            float lo[2] = { 1e30f, 1e30f }, hi[2] = { -1e30f, -1e30f };
+            for (int u = 0; u < 2; u++)
+                for (int k = 0; k < 3; k++) {
+                    const float d = nx * T[u]->v[k].sx + ny * T[u]->v[k].sy;
+                    if (d < lo[u]) lo[u] = d;
+                    if (d > hi[u]) hi[u] = d;
+                }
+            if (hi[0] <= lo[1] || hi[1] <= lo[0]) return 0;
+        }
+    return 1;
+}
+
+/** @brief Report whether a terrain scene triangle is one the game paints over a moby face keyed at slot fslot that it lies behind.
+ *
+ * The terrain face is opaque, keyed (koff above 0.25), not an actor face,
+ * keyed into fslot or a nearer slot, overlaps f on screen and lies wholly
+ * behind it (its nearest vertex farther than f's farthest).
+ * @param t The terrain candidate.
+ * @param f The moby face.
+ * @param fslot f's ordering-table slot.
+ * @return 1 for such a face. */
+static int torder_terrain_paints_over(const scene_tri_t* t, const scene_tri_t* f, float fslot) {
+    if ((t->category != OPENPETE_SCENE_WORLD && t->category != OPENPETE_SCENE_WORLD_FILL) ||
+        t->blend != 0 || !(t->koff > 0.25f) || t->rank < -0.5f) return 0;
+    if (floorf((t->koff - 0.5f) / (float)OPENPETE_OT_SLOT_WORLD) > fslot) return 0;
+    const float fz = fmaxf(f->v[0].pvz, fmaxf(f->v[1].pvz, f->v[2].pvz));
+    const float tz = fminf(t->v[0].z, fminf(t->v[1].z, t->v[2].z));
+    return tz > fz && torder_tris_overlap(t, f);
+}
+
+/** @brief OPENPETE_TORDER_CENSUS: count, once per scene, the terrain-order mobys' opaque keyed faces that terrain the game paints after them lies under.
+ *
+ * Prints one [torder-census] line: the noted mobys, their opaque keyed
+ * ACTOR faces, those carrying the terrain-order rank sentinel (engaged),
+ * the faces over which some terrain face lies behind in true depth and is
+ * keyed into the face's slot or nearer (covered: the game paints that
+ * terrain over the face), and the covered faces without the sentinel
+ * (violations: true depth draws them over that terrain). A model-level
+ * count over whole triangles, an instrument.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count. */
+static void torder_census(const scene_tri_t* scene, int scene_n) {
+    if (!torder_census_on() || s_torder_done) return;
+    s_torder_done = 1;
+    int faces = 0, engaged = 0, covered = 0, viol = 0;
+    for (int i = 0; i < scene_n; i++) {
+        const scene_tri_t* f = &scene[i];
+        if (f->category != OPENPETE_SCENE_ACTOR || f->blend != 0 || !(f->koff > 0.25f)) continue;
+        int listed = 0;
+        for (int k = 0; k < s_torder_n; k++) listed |= s_torder_mid[k] == f->mid;
+        if (!listed) continue;
+        faces++;
+        const int flag = fabsf(f->rank - OPENPETE_SCENE_RANK_TORDER) < 0.0625f;
+        engaged += flag;
+        const float fslot = floorf((f->koff - 0.5f) / (float)OPENPETE_OT_SLOT_WORLD);
+        int cov = 0;
+        for (int j = 0; j < scene_n && !cov; j++) cov = torder_terrain_paints_over(&scene[j], f, fslot);
+        covered += cov;
+        viol += cov && !flag;
+    }
+    fprintf(stderr, "[torder-census frame=%u] mobys=%d faces=%d engaged=%d covered=%d violations=%d\n",
+            openpete_frame, s_torder_n, faces, engaged, covered, viol);
+}
+
 /** @brief Pack one key batch's vertices: untextured keyed faces first, then textured ones in per-material runs.
  *
  * Admission is by class: 0 opaque keyed WORLD faces, 1 opaque keyed props,
@@ -10170,6 +10268,7 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
                                   int full_extent, int prop_class, rhi_vertex* out,
                                   int* out_untex, keytex_span_t* spans, int* nspans)
 {
+    if (prop_class == 0) torder_census(scene, scene_n);
     key_box_t aura[KEY_AURA_BOX_MAX];
     key_run_ctx_t c = { prop_class, aura,
                         prop_class == 2 ? scene_aura_boxes(scene, scene_n, aura) : 0 };

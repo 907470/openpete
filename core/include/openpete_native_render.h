@@ -1454,6 +1454,11 @@ typedef struct {
  * yields back. */
 #define OPENPETE_SCENE_RANK_ACTOR (-1.0f)
 #define OPENPETE_SCENE_RANK_PROP  (-1.25f)
+/* -0.875 = an opaque actor face of the terrain-order class
+ * (game_layout.moby.terrain_order): an actor at every threshold, and it
+ * also loses to a terrain key in its own slot or a nearer one
+ * (psx_key_contest.glsl op_terrain_order_loses). */
+#define OPENPETE_SCENE_RANK_TORDER (-0.875f)
 #define OPENPETE_SCENE_RANK_AURA  (-2.0f)
 
 /* World view-Z per ordering-table slot: the games insert a face at its view-Z
@@ -2255,6 +2260,14 @@ static inline uint32_t openpete_tag_kind(uint32_t tag) {
  * select the tag family counted in the per-family census.
  * @param tag An OPENPETE_TAG_* value, or 0. */
 void openpete_native_scene_set_tag(uint32_t tag);
+/** @brief Name a moby whose faces this scene draws under the terrain-order rule, for the OPENPETE_TORDER_CENSUS instrument.
+ *
+ * Called by the moby feeder for every moby the terrain-order entry selects
+ * (game_layout.moby.terrain_order), whether or not the rule is applied, so
+ * the census measures the same faces on both legs of an A/B. The list is
+ * cleared when a scene begins. Inert unless OPENPETE_TORDER_CENSUS is set.
+ * @param mid The moby identity (openpete_scene_tri.mid). */
+void openpete_native_scene_note_torder(uint32_t mid);
 /** @brief Copy the accepted-triangle count per tag family of the scene being accumulated.
  *
  * The family is tag bits 31:28; index 0 is untagged. The counts reset with

@@ -1014,4 +1014,30 @@ int op_key_order_yields(float akey_stored, vec4 owner, float tkoff, bool slot_co
     return front ? m : 0;
 }
 
+/* ---- terrain order against a moby class --------------------------------
+ *
+ * The reverse of the key order above: a moby class the game draws under
+ * terrain that lies behind it in true depth (Spyro 2's swallowed fish
+ * against the idol's closed jaw) carries the rank sentinel
+ * OPENPETE_SCENE_RANK_TORDER (-0.875) on its opaque faces. Each moby's
+ * prims are spliced into their buckets ahead of the terrain linked there,
+ * so the table paints a terrain face keyed into the moby face's own slot
+ * or a nearer one after it. Such a fragment loses its pixel to that
+ * terrain key: on one ordering table (slot_contest) by bucket, else when
+ * the terrain key is at or below its own. tkey = the decoded terrain key
+ * at the pixel; koff = the fragment's key channel (absolute key + 0.5,
+ * <= 0.25 unkeyed: never loses). */
+bool op_rank_is_torder(float rank)
+{
+    return abs(rank + 0.875) < 0.0625;
+}
+
+bool op_terrain_order_loses(float tkey, float koff, float rank, bool slot_contest)
+{
+    if (!op_rank_is_torder(rank) || koff <= 0.25) return false;
+    float k = koff - 0.5;
+    return slot_contest ? op_key_slot_nearer(tkey, floor(k / OP_KEY_SLOT) + 1.0)
+                        : tkey <= k;
+}
+
 #endif /* OPENPETE_PSX_KEY_CONTEST_GLSL */

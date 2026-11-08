@@ -9622,6 +9622,51 @@ static int moby_class_draws_by_key(uint16_t cls, uint32_t stbit) {
            moby_cls_state_match(&game_layout.moby.key_order, cls, stbit);
 }
 
+/** @brief Report whether a moby draws under the terrain the game paints after it (the terrain-order entry).
+ *
+ * The moby's class and game.state match game_layout.moby.terrain_order and
+ * its state byte (game_layout.moby.state_off) is a value whose bit is set in
+ * terrain_order_mstates (Spyro 2's fish while thrown at the idol and
+ * swallowed). Its opaque keyed faces then carry OPENPETE_SCENE_RANK_TORDER
+ * and lose each pixel to a terrain key in their own ordering-table slot or
+ * a nearer one (psx_key_contest.glsl op_terrain_order_loses).
+ * @param cpu Guest CPU state, read for the state byte.
+ * @param mob The moby record address.
+ * @param cls Its m_Class.
+ * @param stbit moby_walk_state_bit for this walk.
+ * @return 1 for a selected moby, 0 otherwise or when the game names none. */
+static int moby_class_terrain_order(CPUState* cpu, uint32_t mob, uint16_t cls, uint32_t stbit) {
+    if (game_layout.moby.terrain_order.cls == 0u || !mob ||
+        !moby_cls_state_match(&game_layout.moby.terrain_order, cls, stbit)) return 0;
+    const uint32_t st = cpu->read_byte(mob + game_layout.moby.state_off) & 0xFFu;
+    return st < 32u && (game_layout.moby.terrain_order_mstates >> st & 1u) != 0u;
+}
+
+/** @brief Report whether the terrain-order rule is applied (OPENPETE_MOBY_TERRAIN_ORDER=0 disables it, the A/B leg; read once).
+ * @return 1 when the selected mobys' faces carry the terrain-order sentinel. */
+static int moby_terrain_order_on(void) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_TERRAIN_ORDER"); s_on = !(e && *e == '0'); }
+    return s_on;
+}
+
+/** @brief Report whether a walk face carries the terrain-order sentinel, and name its moby to the census.
+ *
+ * An opaque keyed face (koff set) of a moby moby_class_terrain_order
+ * selects is noted for OPENPETE_TORDER_CENSUS on both legs of the
+ * OPENPETE_MOBY_TERRAIN_ORDER A/B, and carries the sentinel while the rule
+ * is on.
+ * @param cpu Guest CPU state.
+ * @param i Walk triangle index.
+ * @param t The scene triangle, key fields stamped.
+ * @param stbit moby_walk_state_bit for this walk.
+ * @return 1 when the face takes OPENPETE_SCENE_RANK_TORDER. */
+static int moby_face_terrain_order(CPUState* cpu, int i, const openpete_scene_tri* t, uint32_t stbit) {
+    if (!(t->koff > 0.25f) || !moby_class_terrain_order(cpu, s_wtri_moby[i], s_wtri_cls[i], stbit)) return 0;
+    openpete_native_scene_note_torder(t->mid);
+    return moby_terrain_order_on();
+}
+
 /** @brief Return the rank sentinel an unranked opaque actor face carries into the key contest.
  *
  * The contest reads the sentinel as the class whose arms to run: an actor
@@ -9993,6 +10038,42 @@ static void moby_tri_heavy_fog(openpete_scene_tri* t, const ntri_t* w, int cat, 
                                      tex_fade ? MOBY_HFOG_WORD_B : 0u);
 }
 
+/** @brief Stamp a walk face's ordering against other surfaces: its ordering-table key and its rank channel.
+ *
+ * The key is moby_face_stamp_key's. The rank channel carries one of: the
+ * terrain-order sentinel, for an opaque keyed face of a moby the
+ * terrain-order entry selects (moby_face_terrain_order), whose faces then
+ * order against each other by true depth; the face's paint rank and its
+ * moby's ordinal, while it intersects another face of its moby
+ * (moby_face_rank); or, on an opaque ACTOR face, the actor or prop
+ * marker. Mangled faces (near fixup or coordinate saturation) are never
+ * ranked, as they are never keyed: their raster is not the true
+ * projection, so a rank stamped across one would discard content far
+ * outside the real silhouette. The actor marker reads as unranked to every
+ * rank consumer: the key contest's prop-embed rule fires on terrain
+ * fragments only, so a statue standing on its disc never yields the pixel
+ * to it (psx_scene_key.frag), and a prop face's marker also skips the
+ * contest's terrain-key arm, since terrain that yields to the prop is not
+ * yielded to in turn.
+ * @param cpu Guest CPU state, read for the terrain-order state byte.
+ * @param i Walk triangle index.
+ * @param cat The face's scene category.
+ * @param stbit moby_walk_state_bit for this walk.
+ * @param rord The walk's ranked-moby ordinals.
+ * @param t The scene triangle, blend and vertices set; key and rank fields are written. */
+static void moby_face_order(CPUState* cpu, int i, int cat, uint32_t stbit,
+                            moby_rank_ordinals_t* rord, openpete_scene_tri* t) {
+    moby_face_stamp_key(i, cat, stbit, t);
+    if (moby_face_terrain_order(cpu, i, t, stbit)) { t->rank = OPENPETE_SCENE_RANK_TORDER; return; }
+    const int rank = moby_face_rank(i);
+    if (rank > 0) {
+        const int oi = moby_rank_ordinal(rord, s_wtri_moby[i]);
+        if (rord->base + oi < 255) { t->rank = (float)rank; t->mordinal = rord->base + oi + 1; }
+    } else if (cat == OPENPETE_SCENE_ACTOR && t->blend == 0) {
+        t->rank = moby_actor_rank_marker(t->prop);
+    }
+}
+
 /** @brief Append the walk's moby triangles to the native scene, panel 0.
  *
  * Does nothing unless the moby render path is selected. Appends to the scene
@@ -10087,26 +10168,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * moby flooded a whole wall away). A genuinely-near moby needs no
          * key anyway - it is the viewer-side surface and TRUE depth
          * already wins its own pixels. */
-        moby_face_stamp_key(i, cat, stbit, &t);
-        /* Rank: the face's paint position while it intersects another face
-         * of its moby (moby_face_rank). Mangled faces (near fixup / coordinate
-         * saturation) are never ranked, like they are never keyed: their
-         * raster is not the true projection, so a rank stamped across one
-         * would discard content far outside the real silhouette. */
-        int rank = moby_face_rank(i);
-        if (rank > 0) {
-            const int oi = moby_rank_ordinal(&rord, s_wtri_moby[i]);
-            if (rord.base + oi < 255) { t.rank = (float)rank; t.mordinal = rord.base + oi + 1; }
-        } else if (cat == OPENPETE_SCENE_ACTOR && t.blend == 0) {
-            /* Actor-fragment marker (still "unranked" to every rank
-             * consumer): the key contest's prop-embed rule fires on
-             * TERRAIN fragments only, so a statue standing on its disc
-             * never yields the pixel to it (psx_scene_key.frag). A prop
-             * face carries the prop marker, which also skips the contest's
-             * terrain-key arm: terrain that yields to the prop is not
-             * yielded to in turn, which would leave the pixel to neither. */
-            t.rank = moby_actor_rank_marker(t.prop);
-        }
+        moby_face_order(cpu, i, cat, stbit, &rord, &t);
         /* Per-instance material slot, resolved from the moby's identity
          * at emit time (moby_matslot_memo). */
         const uint16_t matslot = moby_matslot_memo(&mat, s_wtri_cls[i], s_wtri_moby[i]);

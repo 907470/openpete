@@ -130,6 +130,11 @@ void main()
             op_rank_is_prop(vRank.x),
             MOBY_TRUESCOPE, SLOT_CONTEST))
         discard;
+    /* A terrain-order moby fragment yields to terrain keyed into its slot
+     * or nearer (op_terrain_order_loses). */
+    if (op_terrain_order_loses(op_key_from_stored(texelFetch(u_hpkey, ivec2(gl_FragCoord.xy), 0).r),
+                               koff, vRank.x, SLOT_CONTEST))
+        discard;
     vec2 vUV = vUVq / vQ;
     vec4 vColor = vColorq / vQ;
     vec2 t = vec2((vUV.x - pc.u0) / pc.uw, (vUV.y - pc.v0) / pc.vh);
