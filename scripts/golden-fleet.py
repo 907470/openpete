@@ -3345,7 +3345,11 @@ class Coordinator:
             att.backlog.append(rec)
 
     def pull_stream(self, att):
-        """Pull up to STREAM_K queued divergent and extra tiles and identity pairs in one rsync and render their heat diffs."""
+        """Pull up to STREAM_K queued divergent and extra tiles and identity pairs in one rsync and render their heat diffs.
+
+        A failed pull re-queues its records.
+        @return True when the rsync succeeded.
+        """
         take, att.backlog = att.backlog[:STREAM_K], att.backlog[STREAM_K:]
         names = []
         for rec in take:
@@ -3356,13 +3360,20 @@ class Coordinator:
         rc, err = rsync_pull(att.hs.host, f"{att.unit_dir}/cand", dest, names=sorted(set(names)))
         if rc != 0:
             print(f"[fleet] {att.job.name}: stream pull of {len(take)} item(s) failed: {err}")
-            return
+            att.backlog = take + att.backlog
+            return False
         for rec in take:
             try:
                 note = self.stream_heat(att.job, rec, dest)
             except Exception as e:  # a render failure is logged and affects no result
                 note = f"heat diff failed: {type(e).__name__}: {e}"
             print(f"[fleet] {att.job.name}: stream pulled {rec['tile']}: {note}")
+        return True
+
+    def drain_stream(self, att):
+        """Pull every queued record of a finished attempt, STREAM_K per rsync, so the stream directory holds every moved tile; stop at the first failed pull."""
+        while att.backlog and self.pull_stream(att):
+            pass
 
     def load_diffmod(self):
         """Import the tree's presentation-corpus-diff.py (heat diffs) once."""
@@ -3515,6 +3526,9 @@ class Coordinator:
                     and not self.partial(job):
                 self.record_time(job)
         if self.stream:
+            att = job.atts.get(job.result.get("attempt"))
+            if att is not None:
+                self.drain_stream(att)
             self.check_stream(job, os.path.join(self.pull_target(job.game, job.tier),
                                                 "verdict-report.txt"))
 

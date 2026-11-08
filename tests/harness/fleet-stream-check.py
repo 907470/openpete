@@ -384,6 +384,27 @@ def case_extra(tmp):
           f"rc {job.result['rc']}; mismatch: {mm or 'none'}")
 
 
+def case_drain(tmp):
+    """A refused unit (no run candidate kept) with more moved tiles than STREAM_K in its last poll still gets every one into the stream directory."""
+    many = [f"zz-new__canon__{i}-vk.png" for i in range(gf.STREAM_K + 8)]
+    co = FakeCo(tmp, "drain")
+    co.plan(UNIT, full_unit(div=[], same=[], extra=many, ident=[], exceed=[]))
+    def refused(job, hs):
+        """Pull the report only and refuse, as the census refusal does, so no run candidate is kept."""
+        gf.rsync_pull(hs.host, f"{job.result['unit_dir']}/cand", co.pull_target(GAME, TIER),
+                      names=["verdict-report.txt"])
+        return ["census compared=0: the filtered unit compared nothing"]
+    co.pull_unit = refused
+    job = gf.Job("unit", GAME, TIER)
+    co.go([job])
+    dest = co.stream_dir(job)
+    kept = [t for t in many if os.path.isfile(os.path.join(dest, t))]
+    r = job.result
+    check("drain", r["rc"] == 1 and not r.get("stream_mismatch") and len(kept) == len(many),
+          f"rc {r['rc']} (compared 0), kept {len(kept)} of {len(many)}, "
+          f"mismatch: {r.get('stream_mismatch') or 'none'}")
+
+
 def case_exempt(tmp):
     """An attempt without END and a SKIP unit are exempt from the unit-end check."""
     co = FakeCo(tmp, "exempt")
@@ -1182,7 +1203,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix="fleet-stream-check.")
     gf.ledger_path = lambda: os.path.join(tmp, "ledger.tsv")
     try:
-        for case in (case_framing, case_pool, case_stream_off, case_equality, case_extra, case_exempt,
+        for case in (case_framing, case_pool, case_stream_off, case_equality, case_extra, case_drain, case_exempt,
                      case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_transport, case_clean,
                      case_expect, case_canary_verdict, case_run_candidate, case_move, case_move_cli,
                      case_keep_and_resume_inputs, case_keep_exhausted, case_ledger, case_repeat):
