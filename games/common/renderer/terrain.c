@@ -3659,7 +3659,7 @@ typedef struct tsface {
                                                     * mesh (tsc_lp_standin); the faces the extended-LOD
                                                     * uncov-only ride-along draws.
                                                     * uncov, uncovX and ride describe the vertex banks
-                                                    * of tscache_t.tagGen; they are current only on a
+                                                    * of tscache_t.tagVertGen; they are current only on a
                                                     * sector the ride gate (or an active fardbg trace)
                                                     * reached this build (tsc_tags_current). Elsewhere,
                                                     * on an animated sector, they and the bake's
@@ -3784,8 +3784,14 @@ typedef struct {
      * the decoded verts (content hash, not the unconditional per-tick
      * re-decode). */
     uint32_t decodeGen, texGen, vertGen, vertHash;
-    uint32_t tagGen;             /* the vertGen the LP coverage tags (uncov, uncovX,
+    uint32_t tagVertGen;         /* the vertGen the LP coverage tags (uncov, uncovX,
                                   * ride and their counts) were computed at */
+    uint32_t tagGen;             /* steps when a re-tag changes any LP face's uncov,
+                                  * uncovX or ride byte: the bake's tag currency */
+    struct tsc_retag* rt;        /* incremental re-tag state (tsc_tags_current), or NULL */
+    double rtD, rtDhp;           /* monotone displacement sums over canonical rolls
+                                  * (tsc_rt_roll): largest LP plus largest HP vertex
+                                  * move, and the HP move alone */
     const struct canim* canim;   /* this sector's env-anim colour slot ... */
     uint32_t canimPres;          /* ... valid while this equals s_vanim_pres
                                   * (stamped per build by tsc_col_anim_refresh) */
@@ -4521,19 +4527,95 @@ static double tsc_face_box_d2(const tsvert_t* V, const tsface_t* H, const double
     return d2;
 }
 
-/** @brief Returns the squared distance from a point to a set of HP meshes, stopping early inside a bound.
+/** @brief Returns the squared distance from a point to one HP face's walk triangles.
+ *
+ * The walk emits (i0, i1, i2), and for a quad also (i1, i2, i3).
+ * @param V The face's vertex bank; the face's indices must lie inside it.
+ * @param H The face.
+ * @param p The point.
+ * @return The smaller squared distance of the face's triangles. */
+static double tsc_hp_face_d2(const tsvert_t* V, const tsface_t* H, const double p[3]) {
+    double q[4][3];
+    tsc_face_corners(V, H, q);
+    const double d = tsc_tri_d2(p, (const double (*)[3])q);
+    return H->quad ? fmin(d, tsc_tri_d2(p, (const double (*)[3])(q + 1))) : d;
+}
+
+/** @brief Tests whether an HP face's four indices lie inside its mesh's vertex bank.
+ * @param H The face.
+ * @param nV The bank's vertex count.
+ * @return 1 when every index is in the bank. */
+static int tsc_hp_face_ok(const tsface_t* H, int nV) {
+    return H->i0 < nV && H->i1 < nV && H->i2 < nV && H->i3 < nV;
+}
+
+/** @brief Returns the squared distance from a point to the HP face a scan seed names.
+ * @param M The meshes.
+ * @param nm The mesh count.
+ * @param p The point.
+ * @param seed (mesh << 16 | face) + 1, or 0 for none.
+ * @return The distance, INFINITY for no seed or one naming no valid face. */
+static double tsc_hp_seed_d2(const tsmesh_t* M, int nm, const double p[3], uint32_t seed) {
+    if (!seed) return INFINITY;
+    const int m = (int)((seed - 1u) >> 16), f = (int)((seed - 1u) & 0xFFFFu);
+    if (m >= nm || f >= M[m].nF || !tsc_hp_face_ok(&M[m].F[f], M[m].nV)) return INFINITY;
+    return tsc_hp_face_d2(M[m].V, &M[m].F[f], p);
+}
+
+/** @brief Scans HP meshes for a triangle within a bound of a point, trying a seed face first.
  *
  * Each face whose indices lie inside its mesh's vertex bank contributes the
- * triangles the walk emits: (i0, i1, i2), and for a quad also (i1, i2, i3).
- * A face whose corner box (tsc_face_box_d2) lies farther than stop2, with a
- * margin of 1 squared unit, cannot bring the result to stop2 and is
- * skipped. The margin covers tsc_tri_d2's rounding: its corner products
- * and normal are exact integers in double, and the plane and edge
- * distances it derives from them carry an absolute error near 3 ulp of
- * the coordinate span (|p - v0| under 2^18), below 1e-9 units, so a
- * squared distance at stop2 = 64^2 moves by under 1e-6; a face the
- * margin skips scores above stop2 whatever its shape. The meshes are scanned in order and the scan
- * returns as soon as one triangle lies within stop2.
+ * triangles the walk emits (tsc_hp_face_d2). A face whose corner box
+ * (tsc_face_box_d2) lies farther than stop2, with a margin of 1 squared
+ * unit, cannot bring the result to stop2 and is skipped. The margin covers
+ * tsc_tri_d2's rounding: its corner products and normal are exact integers
+ * in double, and the plane and edge distances it derives from them carry
+ * an absolute error near 3 ulp of the coordinate span (|p - v0| under
+ * 2^18), below 1e-9 units, so a squared distance at stop2 = 64^2 moves by
+ * under 1e-6; a face the margin skips scores above stop2 whatever its
+ * shape. The meshes are scanned in order; an unseeded scan returns as soon
+ * as one triangle lies within stop2. A seed naming a face within stop2
+ * returns that face's distance without the scan, so the verdict (within
+ * stop2 or not) equals the unseeded scan's. A seeded scan that misses
+ * scans every face and stores the nearest one within stop2 as the seed:
+ * the distance it returns is then the smallest, the bound the incremental
+ * re-tag keeps as its slack (tsc_lp_face_gap).
+ * @param M The meshes.
+ * @param nm The mesh count.
+ * @param p The point, in the sector's decoded vertex frame.
+ * @param stop2 The squared distance at which the scan stops.
+ * @param seed NULL, or the face that last lay within stop2 of this sample,
+ *        as (mesh << 16 | face) + 1, 0 for none; updated by a scan.
+ * @param lb2 NULL, or receives a lower bound on the squared distance to
+ *        every face: the smallest triangle or skipped-box distance, which
+ *        for a result above stop2 covers the whole mesh set.
+ * @return The smallest squared distance found when it is at or below
+ *         stop2, else a value above stop2 (INFINITY when every face was
+ *         skipped). */
+static double tsc_hp_scan(const tsmesh_t* M, int nm, const double p[3], double stop2,
+                          uint32_t* seed, double* lb2) {
+    const double sd = seed ? tsc_hp_seed_d2(M, nm, p, *seed) : INFINITY;
+    if (sd <= stop2) { if (lb2) *lb2 = sd; return sd; }
+    double best = INFINITY, rej = INFINITY;
+    const double reject2 = stop2 + 1.0;
+    for (int m = 0; m < nm; m++) {
+        for (int f = 0; f < M[m].nF && (seed || best > stop2); f++) {
+            const tsface_t* H = &M[m].F[f];
+            if (!tsc_hp_face_ok(H, M[m].nV)) continue;
+            const double box = tsc_face_box_d2(M[m].V, H, p);
+            if (box > reject2) { rej = fmin(rej, box); continue; }
+            const double d = tsc_hp_face_d2(M[m].V, H, p);
+            if (seed && d < best && d <= stop2 && f <= 0xFFFF) *seed = ((uint32_t)m << 16 | (uint32_t)f) + 1u;
+            best = fmin(best, d);
+        }
+    }
+    if (lb2) *lb2 = fmin(best, rej);
+    return best;
+}
+
+/** @brief Returns the squared distance from a point to a set of HP meshes, stopping early inside a bound.
+ *
+ * The unseeded tsc_hp_scan.
  * @param M The meshes.
  * @param nm The mesh count.
  * @param p The point, in the sector's decoded vertex frame.
@@ -4542,21 +4624,7 @@ static double tsc_face_box_d2(const tsvert_t* V, const tsface_t* H, const double
  *         stop2, else a value above stop2 (INFINITY when every face was
  *         skipped). */
 static double tsc_hp_d2(const tsmesh_t* M, int nm, const double p[3], double stop2) {
-    double best = INFINITY;
-    const double reject2 = stop2 + 1.0;
-    for (int m = 0; m < nm; m++) {
-        for (int f = 0; f < M[m].nF && best > stop2; f++) {
-            const tsface_t* H = &M[m].F[f];
-            const int nV = M[m].nV;
-            if (H->i0 >= nV || H->i1 >= nV || H->i2 >= nV || H->i3 >= nV) continue;
-            if (tsc_face_box_d2(M[m].V, H, p) > reject2) continue;
-            double q[4][3];
-            tsc_face_corners(M[m].V, H, q);
-            best = fmin(best, tsc_tri_d2(p, (const double (*)[3])q));
-            if (H->quad) best = fmin(best, tsc_tri_d2(p, (const double (*)[3])(q + 1)));
-        }
-    }
-    return best;
+    return tsc_hp_scan(M, nm, p, stop2, NULL, NULL);
 }
 
 /** @brief Writes a face's coverage sample points: its corners, the midpoints of its edges and its centre.
@@ -4587,20 +4655,29 @@ static int tsc_face_samples(const tsvert_t* V, const tsface_t* F, double smp[9][
  *
  * The samples are tsc_face_samples'. A sample within tol of the meshes
  * counts as covered and contributes a value below tol; the scan returns at
- * the first sample farther than tol.
+ * the first sample farther than tol. Each sample's scan is tsc_hp_scan
+ * with its own seed.
  * @param lpV The LP vertex bank.
  * @param F The LP face; its indices must lie inside the LP vertex bank.
  * @param M The meshes.
  * @param nm The mesh count.
  * @param tol The coverage tolerance in decoded vertex units.
+ * @param seed NULL, or 9 seed slots, one per sample.
+ * @param slack NULL, or receives the verdict's distance margin: tol minus
+ *        the largest covered sample distance for a covered face, the lower
+ *        bound on the first uncovered sample's distance minus tol for an
+ *        uncovered face.
  * @return The largest sample distance found, above tol for an uncovered face. */
 static double tsc_lp_face_gap(const tsvert_t* lpV, const tsface_t* F,
-                              const tsmesh_t* M, int nm, double tol) {
+                              const tsmesh_t* M, int nm, double tol,
+                              uint32_t* seed, double* slack) {
     double smp[9][3];
     const int ns = tsc_face_samples(lpV, F, smp);
-    double worst = 0.0, tol2 = tol * tol;
+    double worst = 0.0, lb2 = INFINITY;
+    const double tol2 = tol * tol;
     for (int i = 0; i < ns && worst <= tol2; i++)
-        worst = fmax(worst, tsc_hp_d2(M, nm, smp[i], tol2));
+        worst = fmax(worst, tsc_hp_scan(M, nm, smp[i], tol2, seed ? &seed[i] : NULL, &lb2));
+    if (slack) *slack = worst <= tol2 ? tol - sqrt(worst) : sqrt(lb2) - tol;
     return sqrt(worst);
 }
 
@@ -4627,10 +4704,29 @@ typedef struct tsimp {
 
 static void tsimp_meshes(const tscache_t* C, tsmesh_t M[2], int* nm);
 static int scene_hp_near(const double p[3], double tol2);
+static uint64_t scene_hp_sig(void);
+
+/** @brief Returns the coverage tolerance the LP coverage tags test at.
+ *
+ * TSC_LPCOV_TOL, unless OPENPETE_TERRAIN_RETAG_TOL names a value in
+ * (0, TSC_LPCOV_TOL]: an instrument setting under which the moving banks
+ * of a scene cross the tolerance often enough for the incremental re-tag's
+ * verify mode (tsc_retag_verify_sector) to see tags change. scene_hp_near
+ * accepts any squared distance up to TSC_LPCOV_TOL squared.
+ * @return The tolerance in decoded vertex units. */
+static double tsc_cov_tol(void) {
+    static double tol = -1.0;
+    if (tol < 0.0) {
+        const char* e = getenv("OPENPETE_TERRAIN_RETAG_TOL");
+        const double v = e ? atof(e) : 0.0;
+        tol = (v > 0.0 && v <= TSC_LPCOV_TOL) ? v : TSC_LPCOV_TOL;
+    }
+    return tol;
+}
 
 /** @brief Tests whether an uncovX LP face is a stand-in for the scene's HP surface.
  *
- * A stand-in's every corner lies within TSC_LPCOV_TOL of an HP triangle: of
+ * A stand-in's every corner lies within tsc_cov_tol of an HP triangle: of
  * the sector's own and borrowed meshes, or, in world space, of any scene
  * sector the scene HP set holds (scene_hp_refresh). Such a face spans HP
  * vertices and simplifies the HP surface between them, deviating from it
@@ -4644,45 +4740,159 @@ static int scene_hp_near(const double p[3], double tol2);
  * @param F The face; its indices lie inside V.
  * @param M The sector's own and borrowed HP meshes (tsimp_meshes).
  * @param nm Their count.
+ * @param seed NULL, or 4 seed slots, one per corner (tsc_hp_scan).
+ * @param slack NULL, or receives the verdict's distance margin: -INFINITY
+ *        when a corner read scene_hp_near, whose grid gives no distance,
+ *        else the tolerance minus the largest corner distance; INFINITY
+ *        for a sector with no HP faces, which reads no distance.
  * @return 1 for a stand-in, else 0. */
 static int tsc_lp_standin(const tscache_t* C, const tsvert_t* V, const tsface_t* F,
-                          const tsmesh_t* M, int nm) {
+                          const tsmesh_t* M, int nm, uint32_t* seed, double* slack) {
+    if (slack) *slack = INFINITY;
     if (!C->hpF || C->nHpF <= 0) return 0;
-    const double tol2 = TSC_LPCOV_TOL * TSC_LPCOV_TOL;
-    double q[4][3];
+    const double tol = tsc_cov_tol(), tol2 = tol * tol;
+    double q[4][3], worst = 0.0;
+    int scene = 0, standin = 1;
     tsc_face_corners(V, F, q);
-    for (int c = 0; c < (F->quad ? 4 : 3); c++) {
-        if (tsc_hp_d2(M, nm, q[c], tol2) <= tol2) continue;
+    for (int c = 0; c < (F->quad ? 4 : 3) && standin; c++) {
+        const double d = tsc_hp_scan(M, nm, q[c], tol2, seed ? &seed[c] : NULL, NULL);
+        if (d <= tol2) { worst = fmax(worst, d); continue; }
         const double w[3] = { q[c][0] + C->originX, q[c][1] + C->originY, q[c][2] + C->originZ };
-        if (!scene_hp_near(w, tol2)) return 0;
+        scene = 1;
+        standin = scene_hp_near(w, tol2);
     }
-    return 1;
+    if (slack) *slack = scene ? -INFINITY : tol - sqrt(worst);
+    return standin;
 }
 
-/** @brief Tags a sector's borrowed LP faces (C->imp) the way tsc_tag_uncovered tags its own.
- *
- * A borrowed LP face is uncov when a sample point lies farther than
- * TSC_LPCOV_TOL from the sector's own HP mesh (every face when it has
- * none), and uncovX when one lies that far from the own and borrowed HP
- * meshes; ride marks an uncovX face that is no stand-in (tsc_lp_standin).
- * nUncovX and nRide count them, so the uncov-only ride-along reaches a
- * sector whose only uncovered LP faces are borrowed.
- * @param C The cached sector.
- * @param M The HP meshes tsimp_meshes listed.
- * @param nm Their count.
- * @param ownHP Nonzero when the sector has HP faces of its own. */
-static void tsc_tag_uncovered_borrowed(tscache_t* C, const tsmesh_t* M, int nm, int ownHP) {
-    tsimp_t* I = C->imp;
-    for (int f = 0; I && I->lpF && f < I->nLpF; f++) {
-        tsface_t* F = &I->lpF[f];
-        F->uncov = (uint8_t)(!ownHP || tsc_lp_face_gap(I->lpV, F, M, 1, TSC_LPCOV_TOL) > TSC_LPCOV_TOL);
-        F->uncovX = (nm > 1 && F->uncov)
-                  ? (uint8_t)(tsc_lp_face_gap(I->lpV, F, M, nm, TSC_LPCOV_TOL) > TSC_LPCOV_TOL)
-                  : F->uncov;
-        F->ride = (uint8_t)(F->uncovX && !tsc_lp_standin(C, I->lpV, F, M, nm));
-        C->nUncovX += F->uncovX;
-        C->nRide += F->ride;
+/* Seed slots per LP face for the coverage scans (tsc_hp_scan): 9 samples
+ * against the own HP mesh, 9 against the own and borrowed meshes, 4 corners
+ * for the stand-in test. */
+#define TSC_RT_SEEDS 22
+
+/* Incremental re-tag census (tsc_tags_current): faces re-tested and skipped,
+ * faces whose re-test changed their tags, and under
+ * OPENPETE_TERRAIN_RETAG_VERIFY the faces whose tags differ from a full
+ * re-tag of the same banks. */
+enum { TSC_RTC_RETEST, TSC_RTC_SKIP, TSC_RTC_FLIP, TSC_RTC_MISMATCH, TSC_RTC_N };
+static uint64_t s_rtc[TSC_RTC_N];
+static int s_retag_verify = -1;  /* OPENPETE_TERRAIN_RETAG_VERIFY */
+
+/* A poly-anim sector's re-tag state (tsc_tags_current), own LP faces first,
+ * then the borrowed ones (tsimp_t.lpF). A face's tags hold while the
+ * displacement since its last test stays below its slack: the smallest
+ * distance margin of the verdicts its tags read (tsc_face_tag). An own
+ * face's displacement is tscache_t.rtD minus its stamp; a borrowed face's
+ * samples are static, so its displacement is rtDhp minus its stamp. */
+typedef struct tsc_retag {
+    int nOwn, nImp;              /* the face counts the arrays cover */
+    uint32_t* seed;              /* TSC_RT_SEEDS per face */
+    double* stamp;               /* rtD (own) or rtDhp (borrowed) at the face's last
+                                  * test; -INFINITY forces a re-test */
+    double* slack;               /* the face's verdict margin in decoded units */
+    uint64_t sceneSig;           /* the scene HP set's signature at the last pass */
+} tsc_retag_t;
+
+/** @brief Frees a sector's re-tag state.
+ * @param rt The state, or NULL. */
+static void tsc_rt_free(tsc_retag_t* rt) {
+    if (!rt) return;
+    free(rt->seed); free(rt->stamp); free(rt->slack);
+    free(rt);
+}
+
+/** @brief Makes every face of a sector's re-tag state re-test at the next pass.
+ * @param C The sector; a sector without state needs none, its first pass tests every face. */
+static void tsc_rt_force(tscache_t* C) {
+    tsc_retag_t* rt = C->rt;
+    for (int i = 0; rt && i < rt->nOwn + rt->nImp; i++) rt->stamp[i] = -INFINITY;
+}
+
+/** @brief Returns the largest Euclidean move of any vertex between two banks.
+ * @param p The previous bank.
+ * @param c The current bank.
+ * @param n The vertex count.
+ * @return The move in decoded units, 0 for an empty bank. */
+static double tsc_bank_move(const tsvert_t* p, const tsvert_t* c, int n) {
+    double m2 = 0.0;
+    for (int k = 0; k < n; k++) {
+        const double dx = (double)c[k].x - p[k].x, dy = (double)c[k].y - p[k].y, dz = (double)c[k].z - p[k].z;
+        m2 = fmax(m2, dx * dx + dy * dy + dz * dz);
     }
+    return sqrt(m2);
+}
+
+/** @brief Computes one LP face's coverage tags, writes them and reports whether any byte changed.
+ *
+ * uncov: a sample lies farther than tsc_cov_tol from the own HP mesh
+ * (every face of a sector without one); uncovX: the same against the own
+ * and borrowed meshes, equal to uncov without borrowed ones; ride: uncovX
+ * and no stand-in (tsc_lp_standin). The slack is the smallest margin of
+ * the verdicts the tags read (tsc_lp_face_gap, tsc_lp_standin): no
+ * sample, corner or HP vertex move summing below it changes a verdict.
+ * @param C The sector.
+ * @param V The face's LP vertex bank, in the sector's frame.
+ * @param F The face; its indices lie inside V.
+ * @param M The sector's HP meshes (tsimp_meshes).
+ * @param nm Their count.
+ * @param ownHP Nonzero when the sector has HP faces of its own.
+ * @param seed NULL, or TSC_RT_SEEDS seed slots.
+ * @param slack NULL, or receives the slack in decoded units (INFINITY when
+ *        the tags read no distance, -INFINITY when they read scene_hp_near).
+ * @return 1 when uncov, uncovX or ride changed, else 0. */
+static int tsc_face_tag(const tscache_t* C, const tsvert_t* V, tsface_t* F,
+                        const tsmesh_t* M, int nm, int ownHP, uint32_t* seed, double* slack) {
+    const double tol = tsc_cov_tol();
+    double s0 = INFINITY, s1 = INFINITY, s2 = INFINITY;
+    const uint8_t uncov = (uint8_t)(!ownHP || tsc_lp_face_gap(V, F, M, 1, tol, seed, &s0) > tol);
+    const uint8_t uncovX = (nm > 1 && uncov)
+                         ? (uint8_t)(tsc_lp_face_gap(V, F, M, nm, tol, seed ? seed + 9 : NULL, &s1) > tol)
+                         : uncov;
+    const uint8_t ride = (uint8_t)(uncovX && !tsc_lp_standin(C, V, F, M, nm, seed ? seed + 18 : NULL, &s2));
+    if (slack) *slack = fmin(s0, fmin(s1, s2));
+    const int flip = F->uncov != uncov || F->uncovX != uncovX || F->ride != ride;
+    F->uncov = uncov; F->uncovX = uncovX; F->ride = ride;
+    return flip;
+}
+
+/* OPENPETE_TERRAIN_RETAG_NEGCTL: the verify mode's negative control. The
+ * first re-test per incremental pass that changes a face's tags is undone
+ * (tags, stamp and slack kept as before the re-test), as if skipped. */
+static int s_rt_negctl = -1;
+static int s_rt_negctl_left;
+
+/** @brief Re-tests one LP face when its displacement since its last test reaches its slack, else counts a skip.
+ *
+ * The face re-tests when displacement + 1e-6 >= slack; the 1e-6 covers the
+ * rounding of the distances the slack came from (tsc_hp_scan). Without
+ * state every face tests.
+ * @param C The sector.
+ * @param rt NULL, or the sector's re-tag state.
+ * @param i The face's index over own, then borrowed faces.
+ * @param V The face's LP vertex bank.
+ * @param F The face.
+ * @param M The sector's HP meshes.
+ * @param nm Their count.
+ * @param ownHP Nonzero when the sector has HP faces of its own.
+ * @param D The face's displacement sum now (rtD for an own face, rtDhp for a borrowed one).
+ * @return 1 when the face's tags changed, else 0. */
+static int tsc_rt_face(const tscache_t* C, tsc_retag_t* rt, int i, const tsvert_t* V, tsface_t* F,
+                       const tsmesh_t* M, int nm, int ownHP, double D) {
+    if (!rt) return tsc_face_tag(C, V, F, M, nm, ownHP, NULL, NULL);
+    if (D - rt->stamp[i] + 1e-6 < rt->slack[i]) { s_rtc[TSC_RTC_SKIP]++; return 0; }
+    s_rtc[TSC_RTC_RETEST]++;
+    const uint8_t was[3] = { F->uncov, F->uncovX, F->ride };
+    const double wasStamp = rt->stamp[i], wasSlack = rt->slack[i];
+    const int flip = tsc_face_tag(C, V, F, M, nm, ownHP, rt->seed + (size_t)i * TSC_RT_SEEDS, &rt->slack[i]);
+    rt->stamp[i] = D;
+    if (flip && s_rt_negctl > 0 && s_rt_negctl_left) {
+        s_rt_negctl_left = 0;
+        F->uncov = was[0]; F->uncovX = was[1]; F->ride = was[2];
+        rt->stamp[i] = wasStamp; rt->slack[i] = wasSlack;
+        return 0;
+    }
+    s_rtc[TSC_RTC_FLIP] += (uint64_t)flip;
+    return flip;
 }
 
 /** @brief Tags the LP faces a distance-binning game's sector draws apart from its HP mesh.
@@ -4690,41 +4900,53 @@ static void tsc_tag_uncovered_borrowed(tscache_t* C, const tsmesh_t* M, int nm, 
  * Runs only where the draw bins the two lists by distance
  * (game_layout.terrain.hp_far): there a sector's LP mesh can carry
  * geometry its HP mesh lacks (a strip of ground HP under LP spires), which
- * the guest draws whenever the sector bins LP. An LP face is uncov when a
- * sample point (tsc_lp_face_gap) lies farther than TSC_LPCOV_TOL from every
- * HP triangle of the same sector, and uncovX when one lies that far from
- * the HP triangles and the sector's borrowed HP faces (C->imp); without
- * borrowed faces uncovX equals uncov. Every LP face of a sector with no HP
- * faces is uncov. An uncovX face that is no stand-in for the scene's HP
- * surface (tsc_lp_standin) is tagged ride. A face with an out-of-bank index
- * stays untagged. nUncov, nUncovX and nRide count the tagged faces; tagGen
- * takes vertGen. tsc_tags_current re-runs this for a poly-anim sector whose
+ * the guest draws whenever the sector bins LP. Each own LP face and each
+ * borrowed LP face (C->imp, whose samples are measured in the sector's
+ * frame) takes tsc_face_tag's uncov, uncovX and ride; every LP face of a
+ * sector with no HP faces is uncov. A face with an out-of-bank index, and
+ * every face of another game, stays untagged. With re-tag state, a face
+ * re-tests only when its displacement reached its slack (tsc_rt_face).
+ * nUncov counts the own uncov faces, nUncovX and nRide the tagged own and
+ * borrowed faces. tagVertGen takes vertGen; tagGen steps when any face's
+ * tags changed. tsc_tags_current re-runs this for a poly-anim sector whose
  * vertices moved since.
- * @param C The cached sector; its LP faces, nUncov, nUncovX, nRide and tagGen are updated. */
-static void tsc_tag_uncovered(tscache_t* C) {
-    C->tagGen = C->vertGen;
+ * @param C The cached sector; its LP faces, counts, tagVertGen and tagGen are updated.
+ * @param rt NULL for a full pass, or the sector's re-tag state. */
+static void tsc_tag_pass(tscache_t* C, tsc_retag_t* rt) {
+    C->tagVertGen = C->vertGen;
     C->nUncov = C->nUncovX = C->nRide = 0;
     if (!C->lpF || !C->lpV) return;
-    for (int f = 0; f < C->nLpF; f++) C->lpF[f].uncov = C->lpF[f].uncovX = C->lpF[f].ride = 0;
-    if (!game_layout.terrain.hp_far) return;
+    const int on = game_layout.terrain.hp_far != 0;
     const int ownHP = C->hpF && C->hpV && C->nHpF > 0;
     tsmesh_t M[2];
-    int nm = 0;
+    int nm = 0, flip = 0;
     tsimp_meshes(C, M, &nm);
     for (int f = 0; f < C->nLpF; f++) {
         tsface_t* F = &C->lpF[f];
-        if (F->i0 >= C->nLpV || F->i1 >= C->nLpV || F->i2 >= C->nLpV || F->i3 >= C->nLpV)
+        if (!on || !tsc_hp_face_ok(F, C->nLpV)) {
+            flip |= F->uncov | F->uncovX | F->ride;
+            F->uncov = F->uncovX = F->ride = 0;
             continue;
-        F->uncov = (uint8_t)(!ownHP || tsc_lp_face_gap(C->lpV, F, M, 1, TSC_LPCOV_TOL) > TSC_LPCOV_TOL);
-        F->uncovX = (nm > 1 && F->uncov)
-                  ? (uint8_t)(tsc_lp_face_gap(C->lpV, F, M, nm, TSC_LPCOV_TOL) > TSC_LPCOV_TOL)
-                  : F->uncov;
-        F->ride = (uint8_t)(F->uncovX && !tsc_lp_standin(C, C->lpV, F, M, nm));
+        }
+        flip |= tsc_rt_face(C, rt, f, C->lpV, F, M, nm, ownHP, C->rtD);
         C->nUncov += F->uncov;
         C->nUncovX += F->uncovX;
         C->nRide += F->ride;
     }
-    tsc_tag_uncovered_borrowed(C, M, nm, ownHP);
+    tsimp_t* I = C->imp;
+    for (int f = 0; on && I && I->lpF && f < I->nLpF; f++) {
+        tsface_t* F = &I->lpF[f];
+        flip |= tsc_rt_face(C, rt, C->nLpF + f, I->lpV, F, M, nm, ownHP, C->rtDhp);
+        C->nUncovX += F->uncovX;
+        C->nRide += F->ride;
+    }
+    C->tagGen += (uint32_t)(flip != 0);
+}
+
+/** @brief Tags a sector's LP coverage from scratch (tsc_tag_pass without state).
+ * @param C The cached sector. */
+static void tsc_tag_uncovered(tscache_t* C) {
+    tsc_tag_pass(C, NULL);
 }
 
 /* LP coverage re-tag census: tsc_tag_uncovered runs since the last terrain
@@ -4762,21 +4984,38 @@ static void tsc_retag_digest(const tscache_t* C) {
 
 /** @brief Emits and clears the build's re-tag counts and read digest.
  *
- * Each reason's count goes to the profile as a COUNT record (ter.retag.*)
- * while the profiler runs; OPENPETE_TERRAIN_RETAG_CENSUS also prints one
- * [retag] line carrying the feed key, the sub-tick flag, the counts, the
- * ride-gate read count and the digest of the tags those reads saw.
+ * Each reason's count, and the incremental re-tag's re-tested, skipped,
+ * changed and (under OPENPETE_TERRAIN_RETAG_VERIFY) mismatched face counts, go to
+ * the profile as COUNT records (ter.retag.*) while the profiler runs. The
+ * verify mode prints a [retag-verify] line for a build that re-tagged;
+ * OPENPETE_TERRAIN_RETAG_CENSUS prints one [retag] line carrying the feed
+ * key, the sub-tick flag, the counts, the ride-gate read count and the
+ * digest of the tags those reads saw.
  * @param sub Nonzero for a sub-tick build. */
 static void tsc_retag_census_flush(int sub) {
     static const char* const names[TSC_RETAG_N] = {
         "ter.retag.decode", "ter.retag.ride", "ter.retag.trace" };
     static int ids[TSC_RETAG_N] = { -1, -1, -1 };
+    static const char* const rnames[TSC_RTC_N] = {
+        "ter.retag.retest", "ter.retag.skip", "ter.retag.flip", "ter.retag.mismatch" };
+    static int rids[TSC_RTC_N] = { -1, -1, -1, -1 };
     if (op_prof_on()) {
         for (int r = 0; r < TSC_RETAG_N; r++) {
             if (ids[r] < 0) ids[r] = op_prof_intern(names[r]);
             op_prof_count(ids[r], s_retag_n[r]);
         }
+        for (int r = 0; r < TSC_RTC_N; r++) {
+            if (rids[r] < 0) rids[r] = op_prof_intern(rnames[r]);
+            op_prof_count(rids[r], s_rtc[r]);
+        }
     }
+    ENV_FLAG_LATCH(s_retag_verify, "OPENPETE_TERRAIN_RETAG_VERIFY");
+    if (s_retag_verify && (s_rtc[TSC_RTC_RETEST] || s_rtc[TSC_RTC_SKIP]))
+        fprintf(stderr, "[retag-verify] key=%u sub=%d retest=%llu skip=%llu flip=%llu mismatch=%llu\n",
+                openpete_feed_key_now(), sub, (unsigned long long)s_rtc[TSC_RTC_RETEST],
+                (unsigned long long)s_rtc[TSC_RTC_SKIP], (unsigned long long)s_rtc[TSC_RTC_FLIP],
+                (unsigned long long)s_rtc[TSC_RTC_MISMATCH]);
+    memset(s_rtc, 0, sizeof(s_rtc));
     ENV_FLAG_LATCH(s_retag_cen, "OPENPETE_TERRAIN_RETAG_CENSUS");
     if (s_retag_cen)
         fprintf(stderr, "[retag] key=%u sub=%d decode=%u ride=%u trace=%u reads=%u digest=%016llx\n",
@@ -4801,23 +5040,94 @@ static void ter_prof_close(void) {
     if (op_prof_on()) op_prof_end();
 }
 
+/** @brief Returns a sector's own LP face i, or borrowed LP face i - nLpF past the own ones.
+ * @param C The sector.
+ * @param i The face's index over the own faces, then the borrowed ones.
+ * @return The face. */
+static tsface_t* tsc_tag_face(const tscache_t* C, int i) {
+    return i < C->nLpF ? &C->lpF[i] : &C->imp->lpF[i - C->nLpF];
+}
+
+/** @brief Counts the faces whose incremental tags differ from a full re-tag, keeping the incremental tags.
+ *
+ * Runs tsc_tag_pass unseeded over the same banks, compares each own and
+ * borrowed LP face's uncov, uncovX and ride bytes and the three counts with
+ * the incremental result, adds the differing faces to the mismatch census,
+ * then restores the incremental tags, counts and generations: the
+ * incremental state stays authoritative across ticks.
+ * @param C The sector, just re-tagged incrementally. */
+static void tsc_retag_verify_sector(tscache_t* C) {
+    const int nOwn = C->lpF ? C->nLpF : 0;
+    const int n = nOwn + ((C->imp && C->imp->lpF) ? C->imp->nLpF : 0);
+    uint8_t* keep = (uint8_t*)malloc((size_t)n * 3u + 1u);
+    if (!keep) return;
+    for (int i = 0; i < n; i++) {
+        const tsface_t* F = tsc_tag_face(C, i);
+        keep[3 * i] = F->uncov; keep[3 * i + 1] = F->uncovX; keep[3 * i + 2] = F->ride;
+    }
+    const int cnt[3] = { C->nUncov, C->nUncovX, C->nRide };
+    const uint32_t tg = C->tagGen, tvg = C->tagVertGen;
+    tsc_tag_pass(C, NULL);
+    uint64_t bad = (uint64_t)(cnt[0] != C->nUncov || cnt[1] != C->nUncovX || cnt[2] != C->nRide);
+    for (int i = 0; i < n; i++) {
+        tsface_t* F = tsc_tag_face(C, i);
+        bad += F->uncov != keep[3 * i] || F->uncovX != keep[3 * i + 1] || F->ride != keep[3 * i + 2];
+        F->uncov = keep[3 * i]; F->uncovX = keep[3 * i + 1]; F->ride = keep[3 * i + 2];
+    }
+    C->nUncov = cnt[0]; C->nUncovX = cnt[1]; C->nRide = cnt[2];
+    C->tagGen = tg; C->tagVertGen = tvg;
+    s_rtc[TSC_RTC_MISMATCH] += bad;
+    free(keep);
+}
+
+/** @brief Returns a sector's re-tag state, allocating it on first use.
+ *
+ * The seeds start empty (0) and every face is forced to test. A failed
+ * allocation returns NULL, and the re-tag then runs the full pass.
+ * @param C The sector.
+ * @return The state, or NULL. */
+static tsc_retag_t* tsc_rt_get(tscache_t* C) {
+    if (C->rt) return C->rt;
+    const int nImp = (C->imp && C->imp->lpF) ? C->imp->nLpF : 0;
+    tsc_retag_t* rt = (tsc_retag_t*)calloc(1, sizeof(*rt));
+    if (!rt) return NULL;
+    rt->nOwn = C->lpF ? C->nLpF : 0;
+    rt->nImp = nImp;
+    const size_t n = (size_t)(rt->nOwn + nImp);
+    rt->seed = (uint32_t*)calloc(n * TSC_RT_SEEDS + 1u, sizeof(uint32_t));
+    rt->stamp = (double*)malloc((n + 1u) * sizeof(double));
+    rt->slack = (double*)calloc(n + 1u, sizeof(double));
+    if (!rt->seed || !rt->stamp || !rt->slack) { tsc_rt_free(rt); return NULL; }
+    rt->sceneSig = scene_hp_sig();
+    C->rt = rt;
+    tsc_rt_force(C);
+    return rt;
+}
+
 /** @brief Brings a sector's LP coverage tags up to its current vertex banks before a reader consumes them.
  *
  * tsc_derive tags a sector at decode; tsc_vert_anim_refresh steps vertGen
  * when an animated sector's decoded vertices change and leaves the tags
  * stale. A reader calls this first: a sector whose tags were computed at
- * an older vertGen is re-tagged (tsc_tag_uncovered) and the run counted
- * under the reader's reason. Under original LOD no reader runs, so moving
- * terrain costs no coverage test.
+ * an older vertGen (tagVertGen) is re-tagged (tsc_tag_pass, seeded from
+ * the sector's re-tag state) and the run counted under the reader's
+ * reason. Under original LOD no reader runs, so moving terrain costs no
+ * coverage test.
  * @param C The sector.
  * @param reason The asking site, a TSC_RETAG_* value. */
 static void tsc_tags_current(tscache_t* C, int reason) {
-    if (C->tagGen == C->vertGen) return;
+    if (C->tagVertGen == C->vertGen) return;
     static int rid_ = -1;
     ter_prof_open(&rid_, "ter.retag");
-    tsc_tag_uncovered(C);
+    tsc_retag_t* rt = tsc_rt_get(C);
+    if (rt && rt->sceneSig != scene_hp_sig()) { rt->sceneSig = scene_hp_sig(); tsc_rt_force(C); }
+    ENV_FLAG_LATCH(s_rt_negctl, "OPENPETE_TERRAIN_RETAG_NEGCTL");
+    s_rt_negctl_left = 1;
+    tsc_tag_pass(C, rt);
     ter_prof_close();
     s_retag_n[reason]++;
+    ENV_FLAG_LATCH(s_retag_verify, "OPENPETE_TERRAIN_RETAG_VERIFY");
+    if (s_retag_verify) tsc_retag_verify_sector(C);
 }
 
 /* A sector named by an env poly-anim descriptor animates its packed verts in
@@ -6269,6 +6579,12 @@ static struct {
     uint32_t nBin, capBin;
 } s_scene_hp;
 
+/** @brief Returns the scene HP set's signature, which changes when scene_hp_refresh rebuilds it.
+ * @return The hash of the sector table's address list the set was built from. */
+static uint64_t scene_hp_sig(void) {
+    return s_scene_hp.sig;
+}
+
 /** @brief Packs a grid cell's coordinates into one ordered key.
  * @param cx The cell X.
  * @param cy The cell Y.
@@ -7241,6 +7557,7 @@ static tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         C = reuse ? reuse : tsc_victim(h);
         free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
         free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
+        tsc_rt_free(C->rt);
         tsimp_free(C->imp);
         memset(C, 0, sizeof(*C));
         C->s = s; memcpy(C->sig, g, sizeof(g));
@@ -7303,6 +7620,29 @@ static int tsc_vanim_jump(const tsvert_t* p, const tsvert_t* c, int n) {
     }
     return 0;
 }
+/** @brief Adds one canonical roll's displacement to a sector's re-tag sums.
+ *
+ * rtD gains the largest Euclidean LP vertex move plus the largest HP vertex
+ * move between the previous and the current bank, rtDhp the HP move: a
+ * coverage sample is a convex combination of LP corners, and a point's
+ * distance to a triangle moves by at most the largest move of the
+ * triangle's corners, so one roll moves a sample-to-HP distance by at
+ * most their sum. A missing previous bank (failed allocation) or a
+ * keyframe jump (tsc_vanim_jump) forces every face to re-test.
+ * @param C The sector, rolled and re-decoded.
+ * @param nLp Its LP vertex count, 0 without an LP bank.
+ * @param nHp Its HP vertex count, 0 without an HP bank. */
+static void tsc_rt_roll(tscache_t* C, int nLp, int nHp) {
+    const int lpOk = !nLp || C->lpVprev, hpOk = !nHp || C->hpVprev;
+    if (!lpOk || !hpOk || (nLp && tsc_vanim_jump(C->lpVprev, C->lpV, nLp)) ||
+        (nHp && tsc_vanim_jump(C->hpVprev, C->hpV, nHp)))
+        tsc_rt_force(C);
+    const double mLp = (nLp && lpOk) ? tsc_bank_move(C->lpVprev, C->lpV, nLp) : 0.0;
+    const double mHp = (nHp && hpOk) ? tsc_bank_move(C->hpVprev, C->hpV, nHp) : 0.0;
+    C->rtD += mLp + mHp;
+    C->rtDhp += mHp;
+}
+
 /** @brief Writes the linear interpolation of two vertex banks to a float array.
  *
  * out[3k + axis] = p + (c - p) * a per component; a is not clamped.
@@ -7386,6 +7726,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
                 }
                 tsc_kf_apply(cpu, C);
                 tsc_envm_apply(cpu, C, (int)idx, sectorPtr, sectorCnt);
+                tsc_rt_roll(C, nLp, nHp);
                 {   /* GPU-cache liveness: the re-decode is unconditional per tick,
                      * so hash the decoded verts and bump vertGen only when the
                      * geometry actually moved (else anim-listed sectors would
@@ -20854,6 +21195,7 @@ static void tpv_publish(openpete_tercache_preview_batch* B, int slot, const tsca
 static void tpv_free_entry(tscache_t* C) {
     free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
     free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
+    tsc_rt_free(C->rt);
 }
 
 /** @brief Reports whether a sector is in the level's candidate set (terrain_host_level.vis): always without one.
