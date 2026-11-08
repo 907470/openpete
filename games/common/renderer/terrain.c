@@ -4787,6 +4787,20 @@ static void tsc_retag_census_flush(int sub) {
     s_retag_reads = 0;
 }
 
+/** @brief Opens a named profile scope when profiling is on, interning the name on first use.
+ * @param id The caller's cached name id, negative until the first open.
+ * @param name The scope name. */
+static void ter_prof_open(int* id, const char* name) {
+    if (!op_prof_on()) return;
+    if (*id < 0) *id = op_prof_intern(name);
+    op_prof_begin(*id);
+}
+
+/** @brief Closes the innermost profile scope when profiling is on, pairing ter_prof_open. */
+static void ter_prof_close(void) {
+    if (op_prof_on()) op_prof_end();
+}
+
 /** @brief Brings a sector's LP coverage tags up to its current vertex banks before a reader consumes them.
  *
  * tsc_derive tags a sector at decode; tsc_vert_anim_refresh steps vertGen
@@ -4799,7 +4813,10 @@ static void tsc_retag_census_flush(int sub) {
  * @param reason The asking site, a TSC_RETAG_* value. */
 static void tsc_tags_current(tscache_t* C, int reason) {
     if (C->tagGen == C->vertGen) return;
+    static int rid_ = -1;
+    ter_prof_open(&rid_, "ter.retag");
     tsc_tag_uncovered(C);
+    ter_prof_close();
     s_retag_n[reason]++;
 }
 
@@ -11796,6 +11813,55 @@ static int tgpu_key_cells(const tsface_t* F, int hq_elig, int pin4, int canim_on
            !tface_near_tier2(F->w3) && !tface_fine_ok(F);
 }
 
+/* Bake census, kept only while profiling is on and emitted as profile COUNT
+ * records once per canonical prepass: bakes since the last emit by sector
+ * kind and trigger class (tbk_trigger_bits), and the elements they uploaded
+ * by arena family. A bake counts at its dirty verdict, once under every
+ * trigger it carries. */
+enum {
+    TBK_N, TBK_PA, TBK_VTX, TBK_AVTX, TBK_NVTX, TBK_CN, TBK_CA, TBK_PREV,
+    TBK_T_ROLL, TBK_T_VERT, TBK_T_TEX, TBK_T_TAG, TBK_T_COL, TBK_T_OTHER,
+    TBK_STATIC_TEX, TBK_ROLLVERT_ONLY, TBK_COUNT
+};
+static uint64_t s_tbk[TBK_COUNT];
+static const char* const s_tbk_name[TBK_COUNT] = {
+    "tbake.n", "tbake.polyanim", "tbake.vtx", "tbake.anim_vtx", "tbake.near_vtx",
+    "tbake.cn_recs", "tbake.ca_recs", "tbake.prev_units",
+    "tbake.trig.roll", "tbake.trig.vertgen", "tbake.trig.texgen", "tbake.trig.tag",
+    "tbake.trig.col", "tbake.trig.other", "tbake.static_texgen", "tbake.rollvert_only",
+};
+
+/** @brief Adds one arena's uploaded element count to the bake census under its family.
+ * @param a The arena, an OPTC_ARENA_* index.
+ * @param n The elements (vertices or cell records) uploaded to it. */
+static void tbk_count_arena(int a, uint32_t n) {
+    if (!op_prof_on()) return;
+    int k = OPTC_ARENA_IS_CELL_ANIM(a) ? TBK_CA
+          : OPTC_ARENA_IS_CELL(a)      ? TBK_CN
+          : OPTC_ARENA_IS_NEAR(a)      ? TBK_NVTX
+          : OPTC_ARENA_IS_ANIM(a)      ? TBK_AVTX : TBK_VTX;
+    s_tbk[k] += n;
+}
+
+/** @brief Emits the bake census as profile COUNT records and zeroes it.
+ *
+ * Emits only on a canonical build; a sub-tick build never bakes, so its
+ * census is zero and is not emitted. The record `tbake.key` carries the feed
+ * key (openpete_feed_key_now) of the build, which names the captured VBL
+ * (Spyro 1: yield) the census belongs to.
+ * @param sub 1 on a sub-tick build. */
+static void tbk_emit(int sub) {
+    static int id[TBK_COUNT], key_id, init;
+    if (!init) {
+        for (int c = 0; c < TBK_COUNT; c++) id[c] = op_prof_intern(s_tbk_name[c]);
+        key_id = op_prof_intern("tbake.key");
+        init = 1;
+    }
+    if (!sub) op_prof_count(key_id, openpete_feed_key_now());
+    for (int c = 0; c < TBK_COUNT && !sub; c++) op_prof_count(id[c], s_tbk[c]);
+    memset(s_tbk, 0, sizeof s_tbk);
+}
+
 /** @brief Allocates and uploads one built sector's chunks, recording them in its slot.
  *
  * All or nothing: an arena that is full rolls back the chunks already
@@ -11831,6 +11897,7 @@ static int tgpu_upload_chunks(tgpu_slot_t* S, const tgpu_buf* buf) {
             openpete_tercache_chunk_write_ctx(a, bufi[a], first[a], buf[a].cx, buf[a].n);
         S->first[a] = first[a]; S->count[a] = buf[a].n;
         S->bufi[a] = (uint8_t)bufi[a];
+        tbk_count_arena(a, (uint32_t)buf[a].n);
     }
     return 0;
 }
@@ -12475,6 +12542,7 @@ static int tgpu_prev_upload(tgpu_slot_t* T, tgpu_buf* buf) {
         }
     tgpu_split_rebase(buf, first);
     openpete_tercache_prev_write(first, s_prev_w, s_prev_n);
+    if (op_prof_on()) s_tbk[TBK_PREV] += (uint64_t)s_prev_n;
     T->prevFirst = first;
     T->prevCount = s_prev_n;
     return 0;
@@ -13222,6 +13290,51 @@ static int tgpu_build_or_hold(CPUState* cpu, int slot, const tscache_t* SC, uint
     return 1;
 }
 
+/* Bake trigger classes, one bit per family of tgpu_ensure's dirty terms;
+ * one bake may carry several. */
+enum {
+    TBK_TRIG_ROLL  = 1u << 0,   /* poly-anim roll (animRoll != vrollPres) */
+    TBK_TRIG_VERT  = 1u << 1,   /* geometry content moved (vertGen) */
+    TBK_TRIG_TEX   = 1u << 2,   /* env texture anim changed tile content (texGen) */
+    TBK_TRIG_TAG   = 1u << 3,   /* the LP coverage tags were re-run (tagGen) */
+    TBK_TRIG_COL   = 1u << 4,   /* colour-list membership or colour roll (tgpu_canim_stale) */
+    TBK_TRIG_OTHER = 1u << 5,   /* none of the above: colour hash, migration, variant,
+                                 * decode, pin, fold, selector, env-anim set, marks, retry */
+};
+
+/** @brief Classifies the stale terms of a slot about to re-bake, for the bake census.
+ *
+ * Reads the slot's latched values before the bake overwrites them. A bake
+ * with none of the named terms (made dirty by the colour hash, a migration
+ * or a term outside the named families) is TBK_TRIG_OTHER.
+ * @param T The slot, not yet re-latched.
+ * @param SC The decoded sector.
+ * @return An OR of TBK_TRIG_* bits, never 0. */
+static unsigned tbk_trigger_bits(const tgpu_slot_t* T, const tscache_t* SC) {
+    unsigned m = 0;
+    if (SC->polyanim && T->animRoll != SC->vrollPres) m |= TBK_TRIG_ROLL;
+    if (T->vertGen != SC->vertGen) m |= TBK_TRIG_VERT;
+    if (T->texGen != SC->texGen) m |= TBK_TRIG_TEX;
+    if (T->bakeTagGen != SC->tagGen) m |= TBK_TRIG_TAG;
+    if (tgpu_canim_stale(T, SC)) m |= TBK_TRIG_COL;
+    return m ? m : TBK_TRIG_OTHER;
+}
+
+/** @brief Counts one bake in the bake census by sector kind and trigger class while profiling is on.
+ * @param T The slot about to re-bake, not yet re-latched.
+ * @param SC The decoded sector. */
+static void tbk_note_bake(const tgpu_slot_t* T, const tscache_t* SC) {
+    static const uint8_t col[6] = { TBK_T_ROLL, TBK_T_VERT, TBK_T_TEX, TBK_T_TAG, TBK_T_COL, TBK_T_OTHER };
+    if (!op_prof_on()) return;
+    const int poly = SC->polyanim != 0;
+    const unsigned bits = tbk_trigger_bits(T, SC);
+    s_tbk[TBK_N]++;
+    s_tbk[TBK_PA] += poly != 0;
+    for (int b = 0; b < 6; b++) s_tbk[col[b]] += (bits >> b) & 1u;
+    s_tbk[TBK_STATIC_TEX] += !poly && (bits & TBK_TRIG_TEX);
+    s_tbk[TBK_ROLLVERT_ONLY] += (bits & ~(unsigned)(TBK_TRIG_ROLL | TBK_TRIG_VERT)) == 0;
+}
+
 /** @brief Validates or rebuilds a sector's chunks and decides whether the GPU may draw it this present.
  *
  * A slot without near-variant chunks rebuilds to add them when want_near
@@ -13337,8 +13450,11 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     static int s_tcdbg = -1;
     ENV_FLAG_LATCH(s_tcdbg, "OPENPETE_TC_DBG");
     if (dirty) {
+        tbk_note_bake(T, SC);
         if (s_tcdbg)
-            fprintf(stderr, "[tcf] rebuild slot=%d sec=%u gen=%u->%u stamp=%08x var=%d->%d s=%u->%u vert=%u->%u tex=%u->%u col=%d freed=%u/%u\n",
+            fprintf(stderr, "[tcf] nv=%d/%d nf=%d/%d pa=%d ca=%d roll=%u->%u canimstale=%d tabmode=%d mig=%d rebuild slot=%d sec=%u gen=%u->%u stamp=%08x var=%d->%d s=%u->%u vert=%u->%u tex=%u->%u col=%d freed=%u/%u\n",
+                    SC->nLpV, SC->nHpV, SC->nLpF, SC->nHpF, SC->polyanim, tsc_canim(SC) != NULL, T->animRoll, SC->vrollPres, tgpu_canim_stale(T, SC),
+                    T->bakeTab, mig,
                     slot, (unsigned)SC->s, T->gen, (T->gen + 1u) & 7u, openpete_native_scene_build_stamp(),
                     T->bakeVar, with_var, (unsigned)T->s, (unsigned)SC->s, T->vertGen, SC->vertGen, T->texGen, SC->texGen,
                     T->lastColFrame == openpete_frame, T->first[0], T->count[0]);
@@ -13359,7 +13475,11 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
         T->bakeVar = (uint8_t)(with_var != 0);
         T->bakePinKey = pinKey;
+        static int bid_[2] = { -1, -1 };
+        static const char* const bname_[2] = { "ter.bake.static", "ter.bake.polyanim" };
+        ter_prof_open(&bid_[SC->polyanim != 0], bname_[SC->polyanim != 0]);
         T->unbuildable = tgpu_build_or_hold(cpu, slot, SC, hqTable, sec_index, with_var, mig);
+        ter_prof_close();
         s_tgpu_rebuilds++;
     }
     return tgpu_ensure_finish(T, SC);
@@ -17047,11 +17167,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* Tier-1 sector decode cache: static level data unpacked once. */
         static int s_hidet = -2;
         if (s_hidet == -2) { const char* e = getenv("OPENPETE_TERRAIN_HIDETAIL"); s_hidet = e ? atoi(e) : -1; }
+        static int gid_ = -1;
+        ter_prof_open(&gid_, "ter.tsc_get");
         tscache_t* SC = tsc_get(cpu, s, lqTable, hqTable, texTblMode,
                                 s_hidet >= 0 ? s_hidet : 0,
                                 sectorPtr, sectorCnt);
         tsc_refresh_anim(cpu, SC, lqTable, hqTable, texTblMode,
                          s_hidet >= 0 ? s_hidet : 0);
+        ter_prof_close();   /* ter.tsc_get */
 
         /* Sector occlusion cull - the extended-LOD win. A sector whose entire
          * screen bbox sits BEHIND nearer opaque terrain paints zero pixels: the
@@ -17092,6 +17215,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             s_secv_anim[i] = (uint8_t)(SC->polyanim != 0);
             s_secv_stamp[i] = s_vanim_pres;
         }
+        static int oid_ = -1;
+        ter_prof_open(&oid_, "ter.occl");
         if (s_tocc) {
             tocc_probe_t probe;
             tocc_sector_probe(&probe, i, oc1, oc2, oc3, (double)SC->radius);
@@ -17106,9 +17231,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 s_tocc_culled++;
                 s_tlw_depth += culled == TOCC_DEPTH;
                 s_tlw_frustum += culled == TOCC_FRUSTUM;
+                ter_prof_close();   /* ter.occl */
                 continue;   /* off screen or behind nearer terrain: skip extraction */
             }
         }
+        ter_prof_close();   /* ter.occl */
+        static int vid_ = -1;
+        ter_prof_open(&vid_, "ter.verdicts");
 
         /* Pack-aware LP grade pre-warm: the texture-pack resolve pipeline is
          * not audited for concurrent callers, so the lazy per-sector fit is
@@ -17129,6 +17258,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             }
             s_lpg_acc_n++;
         }
+        ter_prof_close();   /* ter.verdicts */
         /* ---- retained-GPU claim (main thread: chunk builds write RHI
          * buffers, so they stay on the owning thread). An unclaimed
          * sector's chunks are validated or rebuilt here; the walk then
@@ -17218,7 +17348,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * wrapped rasterization poisons the depth prepass. That
                  * guarantee is the near-claim's whole job; no-draw keeps it
                  * by never entering the drawn set. */
+                static int eid_ = -1;
+                ter_prof_open(&eid_, "ter.ensure");
                 int r = tgpu_ensure(cpu, SC, hqTable, (int)i, want_near);
+                ter_prof_close();   /* ter.ensure */
                 if (r == 0) {
                     s_tgpu_own[vi] = want_near ? 3 : 1;
                     if (want_near) s_tgpu_nvsecs++;
@@ -17271,6 +17404,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         }
         if (op_prof_on()) {
             op_prof_end();   /* ter.prepass */
+            tbk_emit(s_vanim_sub);
             static int id_ = -1;
             if (id_ < 0) id_ = op_prof_intern("ter.walk");
             op_prof_begin(id_);
