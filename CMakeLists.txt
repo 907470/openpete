@@ -676,6 +676,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME bugreport_reader_selftest
              COMMAND python3 -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/test_bugreport.py)
 
+    # Bug-report replay on the engine: bundles recorded headless on Spyro 2
+    # (one under --skip-to-level, one without) replay IDENTICAL; the launch
+    # flags are dropped from a later anchor (negative control); an
+    # instrument named in OPENPETE_BUGREPORT_REPLAY_ENV runs under the
+    # replay and a gameplay variable there is refused. Exit 64 = no binary
+    # or disc.
+    add_test(NAME bugreport_replay
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_bugreport_replay.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(bugreport_replay PROPERTIES
+        LABELS "disc"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Sfx pack census: --dump-sfx-pack over the Spyro 1 disc through the
     # disc reader; the counters, the WAV set's name digest and the trace
     # rows are pinned to the retail disc. Exit 64 = no binary or disc.

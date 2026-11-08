@@ -145,7 +145,22 @@ path is not in the bundle.
    variables except the harness triggers below, `OPENPETE_HANDOFF_AT`,
    `OPENPETE_FRAME_LIMIT`, `OPENPETE_CONFIG`, `OPENPETE_LOG_FILE` and the
    mouse injection variables; the bundle's `config-files/` become the two
-   config tiers (`--no-config` when it holds none).
+   config tiers (`--no-config` when it holds none). Every other
+   `OPENPETE_*` variable of the developer's environment is unset, except
+   the `OPENPETE_BUGREPORT_REPLAY_*` ones and those
+   `OPENPETE_BUGREPORT_REPLAY_ENV` names (below).
+   The launch scripts, `--skip-to-level`, `--skip-to-area`,
+   `--skip-to-cutscene`, `--player-pose` (and `OPENPETE_PLAYER_POSE` in
+   `env.txt`) and `--cheats`, write guest RAM once at a point of the
+   session they wait for and keep their progress in host state the anchor
+   does not hold. They pass only when the anchor is the session's first
+   (manifest `anchor.seq` 1): it is taken at the first admissible yield
+   after fast boot, before any of them runs, and a guest state load drops
+   every anchor. From a later anchor they are dropped. A manifest without
+   `anchor.seq` is decided by `anchor.frame` 1 (label `launch-inferred`).
+   The `bug-report-replay: launch flags kept|dropped: <reason>: <flags>`
+   line names the decision. `--load-delay` acts on every tick and always
+   passes.
 3. When this exe's SHA-256 equals the manifest's, the bundle's
    `module/<file>` is passed as `--recomp-module` (label `primary-route`):
    the tester's module, compiled for the tester's CPU, is loaded as is.
@@ -190,6 +205,13 @@ IDENTICAL, a `vram differs (not counted)` line on DIVERGED) and does not
 make the verdict DIVERGED. `taint` counts the events since the anchor that
 a replay cannot reproduce.
 
+`tests/harness/check_bugreport_replay.sh` (ctest `bugreport_replay`)
+records two Spyro 2 bundles headless under `OPENPETE_BUGREPORT_AT`, one
+with `--skip-to-level`, and requires IDENTICAL replays of both, DIVERGED
+with the launch flags dropped when the skip bundle's `anchor.seq` is set to
+2, an `OPENPETE_BUGREPORT_REPLAY_ENV` instrument's output under the replay,
+and the refusal of `OPENPETE_PLAYER_POSE` there.
+
 ## Release archive
 
 `scripts/package-dist.sh` (outside a container) and
@@ -220,6 +242,7 @@ that file alone; an artifact with no `EXE-SHA256SUMS` line is not found.
 | `OPENPETE_BUGREPORT_THUMBS=0` | turn the thumbnail ring off (default `1`): 20 thumbnails in a 320x180 box, one per 250 ms of present clock |
 | `OPENPETE_BUGREPORT_SUBTICK=0` | turn the sub-tick present ring off (default `1`); the bundle then holds no `subtick.bin` |
 | `OPENPETE_BUGREPORT_REPLAY_DIR`, `OPENPETE_BUGREPORT_REPLAY_SITE_WAIT`, `OPENPETE_BUGREPORT_REPLAY_WINDOWED` | the replay's scratch directory, park-wait cap (above), and a set value runs the replay in a window instead of headless |
+| `OPENPETE_BUGREPORT_REPLAY_ENV=A,B=V,...` | instrument variables the replay keeps: `NAME` keeps the developer's value, `NAME=VALUE` sets one; set after `env.txt`, each printed as `env kept`. Refused (exit 64): a name outside `OPENPETE_*`, a harness trigger the replay drops, an unset name, and a variable whose consumer writes guest RAM, feeds the pad or the CD timing, or loads mods (`OPENPETE_PLAYER_POSE`, `OPENPETE_FREECAM*`, `OPENPETE_CAMLOCK*`, `OPENPETE_CUSTOM_WARP`, `OPENPETE_SKIP_*`, `OPENPETE_LOAD_DELAY`, `OPENPETE_INPUT_*`, `OPENPETE_SYNTH_PADS`, `OPENPETE_MOUSE*`, `OPENPETE_DEVUI_INJECT_MOUSE`, `OPENPETE_REWIND_*`, `OPENPETE_MODS`, `OPENPETE_MODS_DIR`, `OPENPETE_MOD_CHANNEL_MASK`, `OPENPETE_MOD_HOT_RELOAD`, the `*_POKE` fault injectors, `OPENPETE_MODSAVE_FAULT_*`). A kept variable not on that list is unverified as neutral; the row and press-state compares report it if it is not |
 
 A replay drops `OPENPETE_BUGREPORT_AT`, `OPENPETE_BUGREC_ANCHOR_AT`,
 `OPENPETE_BUGREC_DUMP_AT` and `OPENPETE_BUGREC_DUMP_DIR` from the

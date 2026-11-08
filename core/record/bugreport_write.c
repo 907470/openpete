@@ -840,12 +840,16 @@ int br_disc_sha(const char* path, char out[65])
 
 static const char* const k_needle_names[BRF_N] = {"home", "user", "host"};
 
-/** @brief Write one anchor's counters as a JSON object. */
+/** @brief Write one anchor's counters as a JSON object.
+ *
+ * `seq` is the recorder's capture order (1 = the session's first anchor, 0
+ * for the press capture); the replay passes the tester's launch-script flags
+ * only from seq 1. */
 static void json_anchor(wbuf_t* w, const openpete_bugrec_anchor_t* a)
 {
-    wb_printf(w, "{\"frame\": %u, \"vbl\": %d, \"feed_key\": %u, \"log_idx\": %d, \"consume\": %u, "
+    wb_printf(w, "{\"seq\": %llu, \"frame\": %u, \"vbl\": %d, \"feed_key\": %u, \"log_idx\": %d, \"consume\": %u, "
               "\"consume_write\": %u, \"level\": %d, \"park_ra\": \"0x%08X\", \"park_sp\": \"0x%08X\", "
-              "\"capture_us\": %llu}", a->frame, a->vbl, a->feed_key, a->log_idx, a->consume,
+              "\"capture_us\": %llu}", (unsigned long long)a->seq, a->frame, a->vbl, a->feed_key, a->log_idx, a->consume,
               a->consume_write, a->level, a->site.ra, a->site.sp, (unsigned long long)a->capture_us);
 }
 

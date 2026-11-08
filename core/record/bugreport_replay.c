@@ -296,6 +296,11 @@ static struct {
     char     section_all[400];
     char     vram_note[160];  /* a VRAM difference, reported and not counted */
     unsigned load_site_waits, load_cd_waits;
+    /* The tester's launch scripts (k_launch): passed when the anchor precedes
+     * every one of them, dropped otherwise. */
+    int      launch_keep;
+    char     launch_why[160];
+    char     launch_flags[400];   /* the launch flags of the tester's argv, with values */
 } R;
 
 /** @brief Record a refusal reason (the first one wins) and print it on stderr.
@@ -547,7 +552,6 @@ static const struct { const char* flag; int values; } k_drop[] = {
     {"--no-card1", 0}, {"--no-card2", 0}, {"--mods-dir", 1}, {"--config", 1}, {"--no-config", 0},
     {"--bk2", 1}, {"--bk2-frame-offset", 1}, {"--bk2-stop-on-end", 0}, {"--resume-handoff", 1},
     {"--bug-report-replay", 1}, {"--frame-limit", 1}, {"--max-runtime-seconds", 1},
-    {"--skip-to-level", 1}, {"--skip-to-area", 1}, {"--skip-to-cutscene", 1},
     {"--screenshot-on-frame", 1}, {"--screenshot-on-tick", 1},
     {"--screenshot-intermediate-on-frame", 1}, {"--screenshot-output", 1},
     {"--screenshot-presents-start", 1}, {"--screenshot-presents-count", 1},
@@ -559,10 +563,31 @@ static const struct { const char* flag; int values; } k_drop[] = {
     {"--gameplay-hash-log", 1}, {"--frame-time-log", 1}, {"--pace-log", 1}, {"--profile-out", 1},
     {"--psxtrace-verify", 1}, {"--psxtrace-anchor-pc", 1}, {"--psxtrace-anchor-hit", 1},
     {"--psxtrace-keep-going", 0}, {"--freecam-path", 1}, {"--freecam-pose", 1},
-    {"--player-pose", 1}, {"--halt-at-pc", 1}, {"--halt-cpu-dump-output", 1}, {"--halt-hit", 1},
+    {"--halt-at-pc", 1}, {"--halt-cpu-dump-output", 1}, {"--halt-hit", 1},
     {"--texpack-dir", 1}, {"--sfxpack-dir", 1}, {"--controller-db", 1}, {"--ingest", 1},
     {"--vibration", 1}, {"--headless", 0}, {"--game", 1},
 };
+
+/* Launch scripts of the tester's argv: flags whose host code writes guest
+ * RAM once, at a point of the session it waits for (the title's induction
+ * window, a live level, a feed key), and keeps its progress in host state the
+ * anchor does not hold. Replayed from an anchor that precedes them they run
+ * as they ran for the tester; replayed from a later anchor they would run a
+ * second time, so they are dropped there. Flags that act on every tick
+ * alike (--load-delay) are not launch scripts and always pass. */
+static const struct { const char* flag; int values; } k_launch[] = {
+    {"--skip-to-level", 1}, {"--skip-to-area", 1}, {"--skip-to-cutscene", 1},
+    {"--player-pose", 1}, {"--cheats", 1},
+};
+
+/** @brief Return how many tokens a launch-script flag spans (flag and values), or 0 for another token.
+ * @param a The token. */
+static int rp_launch_span(const char* a)
+{
+    for (size_t i = 0; i < sizeof k_launch / sizeof k_launch[0]; i++)
+        if (!strcmp(a, k_launch[i].flag)) return 1 + k_launch[i].values;
+    return 0;
+}
 
 /** @brief Return how many tokens a dropped flag spans (flag and values), or 0 when the flag is kept.
  * @param a The token.
@@ -589,6 +614,9 @@ static void rp_remap(const char* s, char* out, size_t cap)
 }
 
 /** @brief Append the tester's arguments after argv[0] from the manifest, without the dropped flags and with `~` remapped.
+ *
+ * The launch-script flags (k_launch) are listed in R.launch_flags and
+ * appended only under R.launch_keep.
  * @return 0, or -1 on allocation failure. */
 static int rp_tester_args(rp_argv_t* a)
 {
@@ -598,6 +626,13 @@ static int rp_tester_args(rp_argv_t* a)
         const char* nx = (i + 1 < av->n && av->kid[i + 1].str) ? av->kid[i + 1].str : NULL;
         const int span = rp_drop_span(t, nx);
         if (span) { i += span - 1; continue; }
+        const int ls = rp_launch_span(t);
+        for (int k = 0; k < ls && i + k < av->n; k++) {
+            const size_t u = strlen(R.launch_flags);
+            snprintf(R.launch_flags + u, sizeof R.launch_flags - u, "%s%s", u ? " " : "",
+                     av->kid[i + k].str ? av->kid[i + k].str : "");
+        }
+        if (ls && !R.launch_keep) { i += ls - 1; continue; }
         char m[RP_PATH];
         rp_remap(t, m, sizeof m);
         if (rp_arg(a, m) != 0) return -1;
@@ -740,13 +775,101 @@ static const char* const k_env_drop[] = {
     "OPENPETE_DEVUI_INJECT_MOUSE",
 };
 
-/** @brief Report whether an env.txt variable is set by the replay. */
+/** @brief Report whether a variable is one of k_env_drop's harness triggers. */
+static int rp_env_trigger(const char* name)
+{
+    for (size_t i = 0; i < sizeof k_env_drop / sizeof k_env_drop[0]; i++)
+        if (!strcmp(name, k_env_drop[i])) return 1;
+    return 0;
+}
+
+/** @brief Report whether an env.txt variable is set by the replay.
+ *
+ * OPENPETE_PLAYER_POSE is --player-pose's spelling and follows the launch
+ * scripts' decision. */
 static int rp_env_kept(const char* name)
 {
     if (strncmp(name, "OPENPETE_", 9) != 0 || !strncmp(name, "OPENPETE_BUGREPORT_REPLAY_", 26)) return 0;
-    for (size_t i = 0; i < sizeof k_env_drop / sizeof k_env_drop[0]; i++)
-        if (!strcmp(name, k_env_drop[i])) return 0;
-    return 1;
+    if (!strcmp(name, "OPENPETE_PLAYER_POSE") && !R.launch_keep) return 0;
+    return !rp_env_trigger(name);
+}
+
+/* Variables OPENPETE_BUGREPORT_REPLAY_ENV refuses: their consumers write
+ * guest RAM, feed the pad or the CD timing, or load code that does, so the
+ * replay would no longer reproduce the tester's run. A trailing '*' matches
+ * a prefix. */
+static const struct { const char* name; const char* why; } k_env_gameplay[] = {
+    {"OPENPETE_PLAYER_POSE", "places the player"},
+    {"OPENPETE_FREECAM*", "writes the camera"},
+    {"OPENPETE_CAMLOCK*", "writes the camera"},
+    {"OPENPETE_CUSTOM_WARP", "warps to a level"},
+    {"OPENPETE_SKIP_*", "times a level skip's release"},
+    {"OPENPETE_LOAD_DELAY", "sets the CD load timing"},
+    {"OPENPETE_INPUT_*", "synthesizes pad input"},
+    {"OPENPETE_SYNTH_PADS", "synthesizes pad input"},
+    {"OPENPETE_MOUSE*", "injects mouse input"},
+    {"OPENPETE_DEVUI_INJECT_MOUSE", "injects mouse input"},
+    {"OPENPETE_REWIND_*", "moves the timeline"},
+    {"OPENPETE_MODS", "loads mods"},
+    {"OPENPETE_MODS_DIR", "loads mods"},
+    {"OPENPETE_MOD_CHANNEL_MASK", "changes what mods may write"},
+    {"OPENPETE_MOD_HOT_RELOAD", "reloads mods"},
+    {"OPENPETE_GTE_HASH_POKE", "injects a fault"},
+    {"OPENPETE_PSXTRACE_POKE", "injects a fault"},
+    {"OPENPETE_S3_SCAN_POKE", "injects a fault"},
+    {"OPENPETE_MODSAVE_FAULT_*", "injects a card fault"},
+};
+
+/** @brief Return why a variable is refused as gameplay-affecting, or NULL when it is not on k_env_gameplay.
+ * @param name The variable. */
+static const char* rp_env_gameplay(const char* name)
+{
+    for (size_t i = 0; i < sizeof k_env_gameplay / sizeof k_env_gameplay[0]; i++) {
+        const char* g = k_env_gameplay[i].name;
+        const size_t n = strlen(g);
+        if (g[n - 1] == '*' ? !strncmp(name, g, n - 1) : !strcmp(name, g)) return k_env_gameplay[i].why;
+    }
+    return NULL;
+}
+
+#define RP_ENV_ALLOW 32
+
+/* OPENPETE_BUGREPORT_REPLAY_ENV's entries, read before the environment is cleared. */
+static struct { char name[96]; char value[RP_PATH]; } s_allow[RP_ENV_ALLOW];
+static int s_allow_n;
+
+/** @brief Read OPENPETE_BUGREPORT_REPLAY_ENV: comma-separated `NAME` (the developer's value) or `NAME=VALUE` entries.
+ *
+ * Refuses an entry that is not OPENPETE_*, is the replay's own, is a harness
+ * trigger (k_env_drop), is on k_env_gameplay, or names an unset variable.
+ * @return 0, or -1 (refused). */
+static int rp_env_allow_read(void)
+{
+    const char* e = getenv("OPENPETE_BUGREPORT_REPLAY_ENV");
+    char list[2048];
+    snprintf(list, sizeof list, "%s", e ? e : "");
+    s_allow_n = 0;
+    for (char* tok = strtok(list, ","); tok; tok = strtok(NULL, ",")) {
+        while (*tok == ' ') tok++;
+        if (!*tok) continue;
+        char* eq = strchr(tok, '=');
+        if (eq) *eq = '\0';
+        const char* v = eq ? eq + 1 : getenv(tok);
+        const char* why = rp_env_gameplay(tok);
+        if (strncmp(tok, "OPENPETE_", 9) != 0 || !strncmp(tok, "OPENPETE_BUGREPORT_REPLAY_", 26))
+            why = "is not an OPENPETE_* instrument variable";
+        else if (rp_env_trigger(tok)) why = "is a harness trigger the replay drops";
+        else if (!v) why = "is not set";
+        else if (s_allow_n == RP_ENV_ALLOW) why = "is past the list's 32 entries";
+        if (why) {
+            rp_refuse("OPENPETE_BUGREPORT_REPLAY_ENV: %s %s", tok, why);
+            return -1;
+        }
+        snprintf(s_allow[s_allow_n].name, sizeof s_allow[s_allow_n].name, "%s", tok);
+        snprintf(s_allow[s_allow_n].value, sizeof s_allow[s_allow_n].value, "%s", v);
+        s_allow_n++;
+    }
+    return 0;
 }
 
 /** @brief Set or unset a variable of the C runtime's environment, the one getenv reads.
@@ -790,9 +913,15 @@ static char** rp_env_names(int* n)
     return out;
 }
 
-/** @brief Unset every OPENPETE_* variable of this process except the replay's own, then set env.txt's (remapped) and OPENPETE_VIBRATION=0. */
-static void rp_env_apply(void)
+/** @brief Unset every OPENPETE_* variable of this process except the replay's own, then set env.txt's (remapped), OPENPETE_BUGREPORT_REPLAY_ENV's and OPENPETE_VIBRATION=0.
+ *
+ * An allowed variable is set after env.txt, so the developer's value wins
+ * over the tester's. Each is printed with its class: not on the gameplay
+ * list, so the row and press-state compares are what verify it neutral.
+ * @return 0, or -1 (refused by rp_env_allow_read). */
+static int rp_env_apply(void)
 {
+    if (rp_env_allow_read() != 0) return -1;
     int nn = 0;
     char** names = rp_env_names(&nn);
     for (int i = 0; i < nn; i++) { rp_setenv(names[i], NULL); free(names[i]); }
@@ -806,6 +935,11 @@ static void rp_env_apply(void)
             char* eq = strchr(line, '=');
             if (!eq) continue;
             *eq = '\0';
+            if (!strcmp(line, "OPENPETE_PLAYER_POSE")) {
+                const size_t u = strlen(R.launch_flags);
+                snprintf(R.launch_flags + u, sizeof R.launch_flags - u, "%sOPENPETE_PLAYER_POSE=%s",
+                         u ? " " : "", eq + 1);
+            }
             if (!rp_env_kept(line)) continue;
             char v[RP_PATH];
             rp_remap(eq + 1, v, sizeof v);
@@ -813,10 +947,42 @@ static void rp_env_apply(void)
         }
         free(d);
     }
+    for (int i = 0; i < s_allow_n; i++) {
+        rp_setenv(s_allow[i].name, s_allow[i].value);
+        fprintf(stderr, "bug-report-replay: env kept %s=%s (instrument: not on the gameplay list; the row "
+                "and press-state compares verify it)\n", s_allow[i].name, s_allow[i].value);
+    }
     rp_setenv("OPENPETE_VIBRATION", "0");
+    return 0;
 }
 
 /* ---- prepare ----------------------------------------------------------- */
+
+/** @brief Decide whether the tester's launch scripts replay: only from the session's first anchor.
+ *
+ * The recorder takes its first anchor (seq 1) at the first admissible final
+ * yield after fast boot, before any launch script has written guest RAM:
+ * every level skip waits for the title's induction window, hundreds of VBLs
+ * later, and placements and cheats wait for a live level. A guest state load
+ * drops every anchor, so a later anchor has a higher seq. From any later
+ * anchor a launch script may have run, and its progress is host state the
+ * anchor does not hold. A manifest without the anchor's seq (written before
+ * the field) is decided by the anchor's frame: the first anchor is taken at
+ * frame 1 unless an admission refusal deferred it.
+ * @param an The manifest's anchor object. */
+static void rp_launch_decide(const jv_t* an)
+{
+    const jv_t* seq = j_get(an, "seq");
+    if (seq) {
+        R.launch_keep = j_u(an, "seq") == 1u;
+        snprintf(R.launch_why, sizeof R.launch_why, "the anchor is %s (seq %u)",
+                 R.launch_keep ? "the session's first" : "a later one", j_u(an, "seq"));
+        return;
+    }
+    R.launch_keep = j_u(an, "frame") <= 1u;
+    snprintf(R.launch_why, sizeof R.launch_why, "the manifest has no anchor seq; anchor frame %u %s",
+             j_u(an, "frame"), R.launch_keep ? "is the first anchor's" : "is past the first anchor's");
+}
 
 /** @brief Read the manifest's anchor and press counters, taint counts and game.
  *
@@ -841,6 +1007,7 @@ static int rp_read_manifest(void)
         R.fatal = 1;
     }
     R.anchor_frame = j_u(an, "frame");
+    rp_launch_decide(an);
     R.anchor_consume = j_u(an, "consume");
     R.press_frame = R.fatal ? 0u : j_u(pr, "frame");
     R.press_feed_key = R.fatal ? 0u : j_u(pr, "feed_key");
@@ -915,7 +1082,12 @@ int openpete_bugreport_replay_prepare(int* argc, char*** argv)
         return OPENPETE_BUGREPORT_REPLAY_REFUSED;
     rp_argv_t a = {0};
     if (rp_build_argv(&a, *argc, *argv) != 0) return OPENPETE_BUGREPORT_REPLAY_REFUSED;
-    rp_env_apply();
+    if (rp_env_apply() != 0) return OPENPETE_BUGREPORT_REPLAY_REFUSED;
+    if (R.launch_flags[0]) {
+        fprintf(stderr, "bug-report-replay: launch flags %s: %s: %s\n", R.launch_keep ? "kept" : "dropped",
+                R.launch_why, R.launch_flags);
+        if (strstr(R.launch_why, "no anchor seq")) rp_label("launch-inferred");
+    }
     if (R.fatal)
         fprintf(stderr, "bug-report-replay: %s: %s, anchor frame %u, fatal exit (trigger %s): hash rows "
                 "only, to the last row, scratch %s\n", R.bundle, R.game, R.anchor_frame, R.trigger, R.scratch);
