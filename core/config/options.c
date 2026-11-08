@@ -1957,6 +1957,31 @@ static int config_value_falls_back(int argc, char** argv, int at, int unknown,
     return 1;
 }
 
+/** @brief Skip a flag whose value names a target of the running game while the game-neutral parse runs.
+ *
+ * --skip-to-level, --skip-to-cutscene, --skip-to-area and --cheats resolve
+ * their value through the installed game's tables. The game-neutral parse
+ * runs before any game is installed when no --disc names it (--game alone,
+ * or the launcher's pick), so it consumes the flag and its value unread; the
+ * full parse after identification resolves them.
+ * @param argc Argument count.
+ * @param argv The spliced argument vector.
+ * @param ip In: index of the flag. Out: index of its last token when skipped.
+ * @return 1 when the flag was skipped, else 0. */
+static int neutral_skip_game_flag(int argc, char** argv, int* ip) {
+    static const char* const k_game_flags[] = {
+        "--skip-to-level", "--skip-to-cutscene", "--skip-to-area", "--cheats",
+    };
+    if (!s_parse_neutral) return 0;
+    const char* a = argv[*ip];
+    for (size_t k = 0; k < sizeof k_game_flags / sizeof k_game_flags[0]; k++) {
+        if (strcmp(a, k_game_flags[k]) != 0) continue;
+        if (*ip + 1 < argc && argv[*ip + 1][0] != '-') (*ip)++;
+        return 1;
+    }
+    return 0;
+}
+
 /** @brief Walk the spliced argv left to right, the last write winning.
  *
  * A flag whose value is refused fails the parse, except a flag the config
@@ -1975,6 +2000,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
         openpete_options_t before;
         memcpy(&before, opts, sizeof before);
         const int at = i;
+        if (neutral_skip_game_flag(argc, argv, &i)) continue;
         const int rc = parse_one_flag(opts, argc, argv, &i, notes);
         if (rc == OPENPETE_EXIT_OK) continue;
         if (!config_value_falls_back(argc, argv, at, rc == PARSE_UNKNOWN_ARG, &i))

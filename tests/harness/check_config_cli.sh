@@ -30,6 +30,9 @@
 #                 spelling): exit 3.
 #   fov-zero      fov = 0 parses as the game's projection: exit 0, no clamp
 #                 message; fov = 10 still clamps to 30.
+#   game-flag     --game SLUG with --skip-to-level <the game's first target>
+#                 and no --disc, on either side of --game, exits 0 under
+#                 --keys-report; an unknown name exits 3 naming it.
 #   boot          a headless boot under fov = "abc" and an [env] table setting
 #                 OPENPETE_LOAD_DELAY = "7" reaches --frame-limit (exit 0) and
 #                 logs the load delay 7. Skipped without a disc.
@@ -139,6 +142,21 @@ OPENPETE_MOUSE=bogus leg env_report 3 --no-config --config-report || true
 
 leg run_recomp 3 --no-config --run-recomp 0x80012204 || true
 has run_recomp "unknown arg: --run-recomp"
+
+# A per-game value with --game and no --disc: the game-neutral parse runs
+# before the game is installed and must leave the name to the full parse,
+# whichever side of --game the flag sits on; a bad name is still refused.
+lvl="$("$PG_BIN" --game "$PG_GAME" --headless --no-config --skip-to-level 2>&1 \
+       | awk '/^  [a-z_0-9]+ +\([0-9]+\)$/ {print $1; exit}' || true)"
+if [[ -n "$lvl" ]]; then
+    leg game_level 0 --game "$PG_GAME" --no-config --skip-to-level "$lvl" --keys-report || true
+    lacks game_level "unknown level"
+    leg game_level_after 0 --no-config --skip-to-level "$lvl" --game "$PG_GAME" --keys-report || true
+    leg game_level_bad 3 --game "$PG_GAME" --no-config --skip-to-level nosuch_level --keys-report || true
+    has game_level_bad "unknown level 'nosuch_level'"
+else
+    echo "[config-cli] FAIL: --skip-to-level listed no target for $PG_GAME"; fail=1
+fi
 
 leg fov_zero 0 --config "$OUT/fovzero.toml" --config-report || true
 lacks fov_zero "clamped"
