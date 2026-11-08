@@ -32,6 +32,12 @@ attract-demo@heldfade|3234|100|freeze|3236
 # bubble; the bubble's front lies between Sparx and the camera (the guest
 # reference shows Sparx through the bubble).
 attract-demo@sparx-bubble|3880|1000||3880,3881,3920,4040
+# attract-demo@meshwarp: the attract demo warped from Metropolis, which draws
+# a tracer mesh, to Mystic Marsh at VBL 14600. A stale mesh vertex-list
+# address equals the live moby 8019728c (class 0x27B, an animated banner); a
+# second capture under that key in one tick would hold the moby at its tick
+# pose on sub-tick presents.
+attract-demo@meshwarp|15440|1000||15440,15460,15500,15560|OPENPETE_LEVELWARP_TEST=14600:mystic_marsh PRESENTATION_LEG_TIMEOUT=900
 #
 # autumn-plains-skelos-badlands-portal-entry: a portal entry from the home
 # world, the in-gameplay level change. 1723 is the portal transition, 1823 and
