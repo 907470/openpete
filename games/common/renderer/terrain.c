@@ -10168,13 +10168,13 @@ static int tgpu_animnear_on(void) {
  * name their corners' colour indices, a roll rewrites the table
  * (tgpu_coltab_refresh) without rebaking the chunks, and the near, cell and
  * anim vertex stages lerp the table's words at the colour alpha before
- * deriving the node colours. Default 0: such a sector claims unless
- * OPENPETE_TERRAIN_CANIMNEAR=1; the variable is latched on the first call.
- * @return 1 when OPENPETE_TERRAIN_CANIMNEAR starts with '1'. */
+ * deriving the node colours. Default 1: such a sector claims only under
+ * OPENPETE_TERRAIN_CANIMNEAR=0; the variable is latched on the first call.
+ * @return 0 when OPENPETE_TERRAIN_CANIMNEAR starts with '0', else 1. */
 static int tgpu_canimnear_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_CANIMNEAR");
-                 v = (e && *e == '1'); }
+                 v = !(e && *e == '0'); }
     return v;
 }
 /** @brief Tests whether a sector bakes against a colour table: an env-anim colour sector under OPENPETE_TERRAIN_CANIMNEAR=1.
@@ -10271,8 +10271,8 @@ static uint32_t tj_sector_recs(uint32_t q);
  * A poly-anim sector (vertex list) bakes the full plain cost, its near twins
  * re-bake every roll under OPENPETE_TERRAIN_ANIMNEAR, and it takes one
  * previous-corner record per face. A colour-only sector bakes the flat
- * variant alone (6 per HP face) unless OPENPETE_TERRAIN_CANIMNEAR=1, under
- * which it bakes the HQ variants against a colour-table ring of
+ * variant alone (6 per HP face) under OPENPETE_TERRAIN_CANIMNEAR=0; by
+ * default it bakes the HQ variants against a colour-table ring of
  * OPTC_COLTAB_RING entries of 1 + 2 x (LP + 2 x HP colours) words.
  * @param c The bound being accumulated.
  * @param m The sector's lists: bit 0 vertex, bit 1 colour; 0 adds nothing.
@@ -13675,8 +13675,8 @@ static int tgpu_upload_sector(tgpu_slot_t* T, tgpu_buf* buf) {
  * previous corners in a previous-corner record (tgpu_prev_rec), unless
  * OPENPETE_TERRAIN_ANIMNEAR=0 (default 1); an env-anim colour sector bakes
  * them, its faces naming their corners' colours in the sector's colour
- * table (tgpu_coltab_refresh), when OPENPETE_TERRAIN_CANIMNEAR=1 (default
- * 0). A sector that is both needs both.
+ * table (tgpu_coltab_refresh), unless OPENPETE_TERRAIN_CANIMNEAR=0 (default
+ * 1). A sector that is both needs both.
  * @param want 1 when the caller asks for near-variant chunks.
  * @param SC The decoded sector.
  * @return 1 to bake them, else 0. */
@@ -13687,8 +13687,8 @@ static int tgpu_bake_with_var(int want, const tscache_t* SC) {
 
 /** @brief Returns whether a near-reaching sector takes its near-variant chunks instead of the CPU-walk claim.
  *
- * An env-anim colour sector takes the chunks when
- * OPENPETE_TERRAIN_CANIMNEAR=1 (default 0), a poly-anim sector unless
+ * An env-anim colour sector takes the chunks unless
+ * OPENPETE_TERRAIN_CANIMNEAR=0 (default 1), a poly-anim sector unless
  * OPENPETE_TERRAIN_ANIMNEAR=0 (default 1); every sector claims under
  * OPENPETE_TERRAIN_NEARVAR=0.
  * @param SC The decoded sector.
@@ -18419,7 +18419,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * the GPU. Unless OPENPETE_TERRAIN_ANIMNEAR=0 (default 1) a
                  * poly-anim sector takes it too, its moving faces' previous
                  * corners in previous-corner records the near stage lerps
-                 * from; under OPENPETE_TERRAIN_CANIMNEAR=1 (default 0) an
+                 * from; unless OPENPETE_TERRAIN_CANIMNEAR=0 (default 1) an
                  * env-anim colour sector does, its colours read from its
                  * colour table. */
                 if (tgpu_near_variant_ok(SC)) {
