@@ -8,11 +8,18 @@
 #           induces near VBL 1260 and the level is playable near VBL 1360,
 #           both after the session's first anchor)
 #   plain   no launch flag, press at VBL 900 (the title)
-# and five replays:
+# and seven replays:
 #   skip         the skip bundle as written
 #   skip-late    the skip bundle with its manifest's anchor seq set to 2:
 #                the replay drops the launch flags (negative control)
 #   plain        the plain bundle
+#   mods         the plain bundle with three save-record rows holding no
+#                identity added to press.state's game-extra trailer, the
+#                shape a recording with installed, disabled mods writes
+#                (a headless recording loads no disabled mod); the replay's
+#                empty mod set writes none
+#   mods-held    as mods, one added row holding an identity (negative
+#                control)
 #   env          the skip bundle with OPENPETE_TERRAIN_TSC_AUDIT=1 named in
 #                OPENPETE_BUGREPORT_REPLAY_ENV, rendering one native
 #                screenshot so the terrain audit runs
@@ -24,13 +31,14 @@
 # line.
 #
 # Pass criterion: skip IDENTICAL with the launch flags kept and the skip
-# induced in the replay; skip-late DIVERGED with the launch flags dropped and
+# induced in the replay; mods IDENTICAL; mods-held DIVERGED on
+# game-extra:modsave; skip-late DIVERGED with the launch flags dropped and
 # no induction; plain IDENTICAL with no launch line; env IDENTICAL with an
 # `env kept OPENPETE_TERRAIN_TSC_AUDIT` line and a `[tsc-audit] total` line
 # whose hits are nonzero; env-refused exit 64 naming OPENPETE_PLAYER_POSE.
 #
 # Verdict line:
-#   [bugreport-replay] skip=.. skip-late=.. plain=.. env=.. env-refused=.. verdict=PASS|FAIL
+#   [bugreport-replay] skip=.. skip-late=.. plain=.. mods=.. mods-held=.. env=.. env-refused=.. verdict=PASS|FAIL
 #
 # Usage: tests/harness/check_bugreport_replay.sh [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL, 64 SKIP (binary or disc missing).
@@ -123,6 +131,51 @@ v_plain="$(verdict "$LOG")"
 [[ "$v_plain" == IDENTICAL ]] || fail+=("plain: $v_plain, want IDENTICAL")
 grep -q 'launch flags' "$LOG" && fail+=("plain: a launch line for a bundle without launch flags")
 
+# rows BUNDLE DIR HELD: unpack BUNDLE into DIR and add three save-record rows
+# to press.state's game-extra trailer, the first holding identity HELD.
+rows() {
+    python3 -I - "$@" <<'PY'
+import hashlib, struct, sys, zipfile
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+p = sys.argv[2] + "/press.state"
+d = bytearray(open(p, "rb").read())
+old = hashlib.sha256(d).hexdigest()
+ge, modset, arena = struct.unpack_from("<3I", d, 76)
+start = len(d) - modset - arena - ge
+end = start + ge
+plen, pmag = struct.unpack_from("<2I", d, end - 8)
+if pmag == 0x31504D4D:
+    end -= 8 + plen
+blen, bmag = struct.unpack_from("<2I", d, end - 8)
+assert bmag == 0x314B534D, "no save-record trailer"
+blk = end - 8 - blen
+assert struct.unpack_from("<I", d, blk + blen - 4)[0] == 0, "the recording has mod rows"
+add = b"".join(f"absent-mod-{i}".encode().ljust(64, b"\0")
+               + struct.pack("<I", int(sys.argv[3]) if i == 0 else 0) + bytes(20)
+               for i in range(3))
+struct.pack_into("<I", d, blk + blen - 4, 3)
+d[end - 8:end - 4] = struct.pack("<I", blen + len(add))
+d[blk + blen:blk + blen] = add
+struct.pack_into("<I", d, 76, ge + len(add))
+open(p, "wb").write(d)
+m = sys.argv[2] + "/manifest.json"
+t = open(m).read()
+assert old in t, "manifest names no press.state digest"
+open(m, "w").write(t.replace(old, hashlib.sha256(d).hexdigest()))
+PY
+}
+
+rows "$plain_zip" "$OUT/mods" 0 || fail+=("mods: fixture failed")
+replay mods "$OUT/mods"
+v_mods="$(verdict "$LOG")"
+[[ "$v_mods" == IDENTICAL ]] || fail+=("mods: $v_mods, want IDENTICAL")
+
+rows "$plain_zip" "$OUT/mods-held" 1 || fail+=("mods-held: fixture failed")
+replay mods-held "$OUT/mods-held"
+v_held="$(verdict "$LOG")"
+[[ "$v_held" == DIVERGED ]] || fail+=("mods-held: $v_held, want DIVERGED")
+grep -q 'sections differing: game-extra:modsave' "$LOG" || fail+=("mods-held: no game-extra:modsave difference")
+
 REPLAY_ENV=("OPENPETE_TERRAIN_TSC_AUDIT=1" "OPENPETE_BUGREPORT_REPLAY_ENV=OPENPETE_TERRAIN_TSC_AUDIT")
 replay env "$skip_zip" --renderer vk --screenshot-on-frame 900 --screenshot-native-only \
     --screenshot-output "$OUT/env__{n}.png"
@@ -143,5 +196,5 @@ if (( ${#fail[@]} )); then
     printf 'bugreport-replay: %s\n' "${fail[@]}"
     res=FAIL
 fi
-echo "[bugreport-replay] skip=$v_skip skip-late=$v_late plain=$v_plain env=$v_env env-refused=$v_ref verdict=$res"
+echo "[bugreport-replay] skip=$v_skip skip-late=$v_late plain=$v_plain mods=$v_mods mods-held=$v_held env=$v_env env-refused=$v_ref verdict=$res"
 [[ "$res" == PASS ]]

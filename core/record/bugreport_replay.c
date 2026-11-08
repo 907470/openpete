@@ -17,6 +17,7 @@
 #include "openpete_handoff.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h"
+#include "openpete_modsave.h"
 #include "openpete_paths.h"
 #include "openpete_psx.h"
 #include "openpete_recomp_module.h"
@@ -1362,6 +1363,28 @@ static void rp_section_cmp(const char* name, const uint8_t* a, size_t an, const 
     R.sections_equal = 0;
 }
 
+/** @brief Compare a game-extra section pair as the game's own payload and the normalised save-record trailer.
+ *
+ * The trailer carries one row per installed mod, so its size follows the
+ * build's mod set; rows that hold no identity are dropped before comparing,
+ * and a difference in what remains still counts.
+ * @param a The replay's section.
+ * @param an Its length.
+ * @param b The bundle's section.
+ * @param bn Its length. */
+static void rp_extra_cmp(const uint8_t* a, size_t an, const uint8_t* b, size_t bn)
+{
+    uint8_t *na = NULL, *nb = NULL;
+    uint32_t la = 0, lb = 0;
+    const uint32_t oa = openpete_modsave_block_normalise(a, (uint32_t)an, &na, &la);
+    const uint32_t ob = openpete_modsave_block_normalise(b, (uint32_t)bn, &nb, &lb);
+    rp_section_cmp("game-extra", a, oa, b, ob);
+    if (!na || !nb) rp_section_cmp("game-extra:modsave", NULL, 0, NULL, 1);
+    else rp_section_cmp("game-extra:modsave", na, la, nb, lb);
+    free(na);
+    free(nb);
+}
+
 /** @brief Compare the replay's press-time cards with the bundle's press-card members. */
 static void rp_cards_cmp(const openpete_bugrec_anchor_t* a)
 {
@@ -1404,8 +1427,12 @@ static void rp_end_compare(const CPUState* cpu) OP_REQUIRES(sim)
     openpete_state_section_t sa[16], sb[16];
     const int na = openpete_state_image_sections(a.state, a.state_len, sa, 16);
     const int nb = openpete_state_image_sections(b, bn, sb, 16);
-    for (int i = 1; i < na && i < nb; i++)
-        rp_section_cmp(sa[i].name, a.state + sa[i].off, sa[i].len, b + sb[i].off, sb[i].len);
+    for (int i = 1; i < na && i < nb; i++) {
+        if (!strcmp(sa[i].name, "game-extra"))
+            rp_extra_cmp(a.state + sa[i].off, sa[i].len, b + sb[i].off, sb[i].len);
+        else
+            rp_section_cmp(sa[i].name, a.state + sa[i].off, sa[i].len, b + sb[i].off, sb[i].len);
+    }
     if (na != nb) rp_section_cmp("layout", NULL, (size_t)na, NULL, (size_t)nb);
     rp_cards_cmp(&a);
     free(b);

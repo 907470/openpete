@@ -201,6 +201,21 @@ void openpete_modsave_block_save(void* dst);
  *         when no trailer is present, after resetting the key to unknown. */
 uint32_t openpete_modsave_block_load(const void* src, uint32_t size);
 
+/** @brief Split a game-extra section into the game's own payload and a normalised copy of the save-record trailer.
+ *
+ * The copy holds the block header, the rows whose held identity is not
+ * empty sorted by mod id (the header's row count rewritten to theirs), and
+ * the pending-entry trailer as saved, so two sections from builds with
+ * different installed mods compare equal when no mod holds an identity.
+ * Without a block trailer the copy is the bytes after the payload, verbatim.
+ * Reads only @p src; the module's state is untouched.
+ * @param src The whole section.
+ * @param size Its length.
+ * @param out Receives the malloc'd copy, or NULL on allocation failure; free with free().
+ * @param out_len Receives the copy's length.
+ * @return The length of the game's own payload, as openpete_modsave_block_load returns it. */
+uint32_t openpete_modsave_block_normalise(const void* src, uint32_t size, uint8_t** out, uint32_t* out_len);
+
 /** @brief A savestate with no game-extra section was loaded: key unknown, held identities empty, generation kept. */
 void openpete_modsave_block_absent(void);
 

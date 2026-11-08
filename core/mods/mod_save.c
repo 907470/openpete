@@ -685,49 +685,118 @@ static void rows_restore(const ms_row_t* rows, uint32_t n) {
     }
 }
 
+/** @brief Locate the pending-entry trailer at a section's tail, without reading it into s_pend.
+ * @param p The section.
+ * @param size Its length.
+ * @param len Receives the pending entries' length, 0 when the trailer is absent.
+ * @return The length before the pending trailer, @p size when it is absent. */
+static uint32_t pend_split(const uint8_t* p, uint32_t size, uint32_t* len) {
+    uint32_t magic = 0;
+    *len = 0;
+    if (size < 8u) return size;
+    memcpy(len, p + size - 8, 4);
+    memcpy(&magic, p + size - 4, 4);
+    if (magic != MS_PEND_MAGIC || *len > size - 8u) { *len = 0; return size; }
+    return size - 8u - *len;
+}
+
 /** @brief Strip the pending-entry trailer from a section's tail into s_pend; with none, the entries are dropped.
  * @param p The section.
  * @param size Its length.
  * @return The length before the pending trailer. */
 static uint32_t pend_load(const uint8_t* p, uint32_t size) {
-    uint32_t len = 0, magic = 0;
+    uint32_t len = 0;
+    const uint32_t head = pend_split(p, size, &len);
     s_pend_len = 0;
-    if (size < 8u) return size;
-    memcpy(&len, p + size - 8, 4);
-    memcpy(&magic, p + size - 4, 4);
-    if (magic != MS_PEND_MAGIC || len > size - 8u) return size;
     if (len > s_pend_cap) {
         uint8_t* g = (uint8_t*)realloc(s_pend, len);
-        if (!g) return size - 8u - len;
+        if (!g) return head;
         s_pend = g;
         s_pend_cap = len;
     }
-    if (len) memcpy(s_pend, p + size - 8u - len, len);
+    if (len) memcpy(s_pend, p + head, len);
     s_pend_len = len;
-    return size - 8u - len;
+    return head;
+}
+
+/** @brief Locate the key's block at the tail of a section stripped of its pending trailer.
+ * @param p The section.
+ * @param size Its length without the pending trailer.
+ * @param own Receives the game's own payload length: @p size without a block
+ *        trailer, the bytes before the trailer otherwise.
+ * @return The block (header then rows), or NULL when no trailer is present or
+ *         its version or row count does not match its length. */
+static const uint8_t* block_split(const uint8_t* p, uint32_t size, uint32_t* own) {
+    uint32_t len = 0, magic = 0;
+    *own = size;
+    if (size < 8u) return NULL;
+    memcpy(&len, p + size - 8, 4);
+    memcpy(&magic, p + size - 4, 4);
+    if (magic != MS_BLOCK_MAGIC || len > size - 8u || len < sizeof(ms_block_t)) return NULL;
+    *own = size - 8u - len;
+    const uint8_t* b = p + *own;
+    ms_block_t in;
+    memcpy(&in, b, sizeof in);
+    if (in.version != MS_BLOCK_VER || len != sizeof in + in.n_rows * sizeof(ms_row_t)) return NULL;
+    return b;
 }
 
 uint32_t openpete_modsave_block_load(const void* src, uint32_t size) {
     const uint8_t* p = (const uint8_t*)src;
     size = pend_load(p, size);
-    uint32_t len = 0, magic = 0;
-    if (size >= 8u) { memcpy(&len, p + size - 8, 4); memcpy(&magic, p + size - 4, 4); }
-    if (size < 8u || magic != MS_BLOCK_MAGIC || len > size - 8u || len < sizeof s_blk) {
+    uint32_t own = size;
+    const uint8_t* b = block_split(p, size, &own);
+    if (!b) {
         block_unknown();
-        return size;
+        return own;
     }
-    const uint8_t* b = p + size - 8u - len;
     ms_block_t in;
     memcpy(&in, b, sizeof in);
-    if (in.version != MS_BLOCK_VER || len != sizeof in + in.n_rows * sizeof(ms_row_t)) {
-        block_unknown();
-        return size - 8u - len;
-    }
     const uint32_t keep_rows = s_blk.n_rows;
     s_blk = in;
     s_blk.n_rows = keep_rows;
     rows_restore((const ms_row_t*)(const void*)(b + sizeof in), in.n_rows);
-    return size - 8u - len;
+    return own;
+}
+
+/** @brief qsort order of rows by mod id. */
+static int row_id_cmp(const void* a, const void* b) {
+    return strncmp(((const ms_row_t*)a)->id, ((const ms_row_t*)b)->id, MS_ID_LEN);
+}
+
+uint32_t openpete_modsave_block_normalise(const void* src, uint32_t size, uint8_t** out, uint32_t* out_len) {
+    const uint8_t* p = (const uint8_t*)src;
+    uint32_t pend = 0, own = size;
+    const uint32_t head = pend_split(p, size, &pend);
+    const uint8_t* b = block_split(p, head, &own);
+    const uint32_t tail = size - head;
+    ms_block_t in;
+    memset(&in, 0, sizeof in);
+    if (b) memcpy(&in, b, sizeof in);
+    /* Without a block, the bytes after the payload are kept as they are. */
+    const uint32_t body = b ? (uint32_t)(sizeof in + in.n_rows * sizeof(ms_row_t)) : head - own;
+    *out = (uint8_t*)malloc((size_t)body + tail + 1u);
+    *out_len = 0;
+    if (!*out) return own;
+    if (!b) {
+        memcpy(*out, p + own, (size_t)size - own);
+        *out_len = size - own;
+        return own;
+    }
+    ms_row_t* rows = (ms_row_t*)(void*)(*out + sizeof in);
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < in.n_rows; i++) {
+        ms_row_t r;
+        memcpy(&r, b + sizeof in + i * sizeof r, sizeof r);
+        if (r.held != HELD_NONE) memcpy(&rows[kept++], &r, sizeof r);
+    }
+    if (kept) qsort(rows, kept, sizeof *rows, row_id_cmp);
+    in.n_rows = kept;
+    memcpy(*out, &in, sizeof in);
+    const uint32_t n = (uint32_t)(sizeof in + kept * sizeof(ms_row_t));
+    memcpy(*out + n, p + head, tail);
+    *out_len = n + tail;
+    return own;
 }
 
 void openpete_modsave_block_absent(void) { block_unknown(); }
