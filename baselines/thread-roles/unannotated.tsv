@@ -1801,7 +1801,6 @@ core/renderer/native_terrain_cache.c	-	s_tc_mat_pass	static	-
 core/renderer/native_terrain_cache.c	-	s_tc_mat_passes	static	-	
 core/renderer/native_terrain_cache.c	-	s_tc_mat_stock	static	-	
 core/renderer/native_terrain_cache.c	-	s_tc_snap	static	-	
-core/renderer/native_terrain_cache.c	openpete_tercache_estimate_on	on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_terrain_cache.c	openpete_tercache_faceid	s_on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_terrain_cache.c	openpete_tercache_preview_prepare	gu	local	-	
 core/renderer/native_terrain_cache.c	tc_buf_max	v	local	-	

@@ -52,7 +52,7 @@
 #                  fresh pairs do not, and they land on the system-memory type
 #                  while the old pairs retire.
 #   overflow-margin  fill-128 with OPENPETE_TC_INITIAL_CAP=16384: the init
-#                  allocation (the union row) fits in the margin, the
+#                  allocation (16,384 per arena) fits in the margin, the
 #                  level-edge pairs and the overflow buffers do not and land
 #                  on the system-memory type through the retry, overflow
 #                  buffers install, and afail stops rising (it counts the

@@ -332,7 +332,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # process holds it, so ctest never co-schedules two of them. A second
     # game process invalidates any timing measurement and is refused
     # outright by scripts/fences/bench_guard.py (tests/harness/bench-corpus.py,
-    # tests/harness/baseline-terrain-arena.py, tests/harness/check_pacing.sh), and a
+    # tests/harness/check_pacing.sh), and a
     # run that shares the machine also overruns its TIMEOUT. The
     # presentation-labelled per-feature tests keep their parallelism:
     # they carry no timing threshold and run under `ctest -L presentation`.
@@ -704,58 +704,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Terrain-arena high-water baseline. Two legs, each a 35-level x 2-pose
-    # headless sweep: `regen` re-measures at a capacity no content reaches
-    # and must reproduce baselines/terrain-arena/ exactly, with no censored
-    # row (a high-water mark equal to its capacity) and no sector claimed
-    # back for want of arena room; `stock` repeats the static sweep at the
-    # generated caps, where no level at either pose may claim a sector back;
-    # `overflow` proves the growth path on a level squeezed below its demand.
-    # Its own label: far too long for the per-build ctest run. Exit 64 = no
-    # binary or disc.
-    add_test(NAME terrain_arena_baseline
-             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/baseline-terrain-arena.py check
-             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    set_tests_properties(terrain_arena_baseline PROPERTIES
-        LABELS "slow;terrain-baseline"
-        RESOURCE_LOCK openpete_game
-        TIMEOUT 7200
-        SKIP_RETURN_CODE 64)
-
-    # Cross-level accumulation row: the 40,000-VBL attract demo crosses
-    # several level loads. It measures accumulation - one arena replacement
-    # fulfilled per level load, and, per arena, the first high-water mark
-    # after each edge below that arena's peak in the segment before it -
-    # and reports each arena's exit mark against the union of the visited
-    # levels' baseline rows as a demand figure, not an assertion: the demo
-    # camera traverses a level while the baseline's two poses are static.
-    # Without the level-edge replacement the marks never fall and climb
-    # toward the caps over a session, far past any single level's demand.
-    # The demo rows it measures go to a scratch copy of the baseline, never
-    # into baselines/terrain-arena/ (`demo --write` regenerates those).
-    add_test(NAME terrain_arena_demo
-             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/baseline-terrain-arena.py demo
-             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    set_tests_properties(terrain_arena_demo PROPERTIES
-        LABELS "slow;terrain-baseline"
-        RESOURCE_LOCK openpete_game
-        TIMEOUT 3600
-        SKIP_RETURN_CODE 64)
-
-    # Overflow-buffer row: one level whose arenas cannot hold it, against the
-    # same level at the generated caps. It asserts that a full arena claims
-    # sectors back only until the overflow buffer lands (afail rises, an
-    # overflow is installed, afail then stops rising), that the generated caps
-    # need neither, and that the squeezed run's image is identical to the
-    # stock-cap run's, which is what makes the claim-back invisible.
-    add_test(NAME terrain_arena_overflow
-             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/baseline-terrain-arena.py overflow
-             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    set_tests_properties(terrain_arena_overflow PROPERTIES
-        LABELS "slow;terrain-baseline"
-        RESOURCE_LOCK openpete_game
-        TIMEOUT 1800
-        SKIP_RETURN_CODE 64)
+    # Terrain-cache level edges, one test per game: the attract demo (20,000
+    # VBLs, several level loads on each game) with the cache forced on and
+    # every arena sized from the level's content estimate reads
+    # claims_sum=0 with bakes>0, failed_edges=0, and one fulfilled
+    # replacement per level latch (the level edges plus the session's
+    # first latch). Exit 64 = no binary or disc.
+    foreach(_g spyro-1 spyro-2 spyro-3)
+        add_test(NAME tercache_level_edges_${_g}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tercache_growth.sh
+                         --game ${_g} --leg level-edges --demo-limit 20000
+                         --exe ${_spyro1_bin}
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(tercache_level_edges_${_g} PROPERTIES
+            LABELS "slow;renderer"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 3600
+            SKIP_RETURN_CODE 64)
+    endforeach()
 
     # Cognitive-complexity ratchet, the ctest spelling of the per-build
     # check (core/CMakeLists.txt, openpete_complexity_ratchet). Exit 64 =

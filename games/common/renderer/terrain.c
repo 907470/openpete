@@ -10084,13 +10084,9 @@ static long s_tgpu_keycell_faces;   /* faces baked with FF_KEYCELLS (session) */
  * first walk allocates before any range ages out. So the arenas are asked
  * for fresh buffers instead, which also resets each arena's high-water mark
  * and drops the free-list fragmentation the outgoing level left. The first
- * latch of a session has no outgoing level and init has just made the
- * buffers, so there it clears the slots and sets the level alone, except
- * under OPENPETE_TC_ESTIMATE, where init made only the floor and the first
- * latch posts the replacement too. Under
- * OPENPETE_TERRAIN_GPU_DBG it prints one [ter-gpu] level-edge line, the
- * level id the arena caps are looked up by, which the arena baseline
- * attributes each census line to.
+ * latch of a session posts the replacement too: init made only the floor,
+ * and the replacement sizes each arena from the level's content estimate.
+ * Under OPENPETE_TERRAIN_GPU_DBG it prints one [ter-gpu] level-edge line.
  * @param prev_level The outgoing level id, or -1 on the run's first latch.
  * @param level The incoming level id. */
 static void tgpu_level_edge(int prev_level, int level) {
@@ -10100,15 +10096,13 @@ static void tgpu_level_edge(int prev_level, int level) {
         fprintf(stderr, "[ter-gpu f=%u] level-edge %d -> %d\n",
                 openpete_feed_key_now(), prev_level, level);
     tgpu_free_all_slots();
-    if (prev_level >= 0 || openpete_tercache_estimate_on()) openpete_tercache_request_resize(level);
-    else openpete_tercache_set_level(level);
+    openpete_tercache_request_resize(level);
 }
 
 static void tj_level_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t n, uint32_t lqTable,
                              uint32_t hqTable, int texTblMode, uint64_t sig);
 static uint32_t tj_sector_addv(uint32_t q);
 static uint32_t tj_sector_recs(uint32_t q);
-static void tj_content_classes(openpete_tercache_content* c);
 
 /** @brief Adds one animation-list member sector to the anim, near-churn and store figures of a content bound.
  *
@@ -10163,8 +10157,7 @@ static void tgpu_content_anim(openpete_tercache_content* c, uint8_t m, uint64_t 
  * under OPENPETE_TERRAIN_CANIMNEAR=1 one colour-table ring (OPTC_COLTAB_RING
  * entries of 1 + 2 x (LP + 2 x HP colours) words) per colour-anim sector.
  * The marked-edge split adds its exact per-sector vertices to the plain and
- * anim bounds, its records' units to the store, and its per-class figures
- * (tj_content_classes).
+ * anim bounds and its records' units to the store.
  * @param cpu The guest CPU state.
  * @param sectorPtr The walk's sector table (extended).
  * @param sectorCnt The walk's sector count (extended), at most 1024.
@@ -10202,7 +10195,6 @@ static void tgpu_content(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt, 
         tgpu_content_anim(c, mem, hpf, lpf, lpc, hpc, cellK, tj_sector_addv(q));
         c->sectors++;
     }
-    tj_content_classes(c);
 }
 
 /** @brief Returns the arena and store bytes a slot's chunks, records and colour-table ring hold.
@@ -10237,15 +10229,15 @@ static int tgpu_addr_cmp(const void* a, const void* b) {
  * extended table's sector addresses, xor its address and count. On a level
  * edge (@p edge) the content bound of the table goes to the cache
  * (openpete_tercache_set_content) before tgpu_level_edge posts the
- * replacement, which the cache sizes from it under OPENPETE_TC_ESTIMATE. A
- * signature change under an unchanged level id (a title return or a scene
- * swap reuses the id) posts no replacement: under the estimate every slot
- * whose sector is not in the new table is freed through the deferred
- * release (otherwise its chunks stay until LRU eviction), the bytes such
- * slots still hold are counted (`stale_bytes`), and the new table's bound
- * goes to the cache, which grows an arena whose capacity is below its
- * estimate. The marked-edge table is rebuilt first (tj_level_refresh), so
- * the bound counts the split's added vertices.
+ * replacement, which the cache sizes from it. A signature change under an
+ * unchanged level id (a title return or a scene swap reuses the id) posts
+ * no replacement: every slot whose sector is not in the new table is freed
+ * through the deferred release, except inside a level-edge window
+ * (openpete_tercache_bake_held), where its chunks stay until LRU eviction
+ * and the bytes they hold are counted (`stale_bytes`); the new table's
+ * bound goes to the cache, which grows an arena whose capacity is below
+ * its estimate. The marked-edge table is rebuilt first (tj_level_refresh),
+ * so the bound counts the split's added vertices.
  * @param cpu The guest CPU state.
  * @param sectorPtr The walk's sector table (extended).
  * @param sectorCnt The walk's sector count (extended).
@@ -10279,7 +10271,7 @@ static void tgpu_table_watch(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
     s_sig = sig;
     if (first) return;
     qsort(addr, n, sizeof(uint32_t), tgpu_addr_cmp);
-    const int fr = openpete_tercache_estimate_on() && !openpete_tercache_bake_held();
+    const int fr = !openpete_tercache_bake_held();
     uint64_t stale = 0;
     for (int i = 0; i < TSC_SLOTS; i++) {
         tgpu_slot_t* T = &s_tgpu[i];
@@ -11267,8 +11259,6 @@ typedef struct {
 typedef struct {
     uint32_t sectors, faces, elig, edges, marked, quarter, open, multi, split_faces;
     uint64_t add_flat, recs;
-    uint64_t base_v[4], add_v[4];   /* per draw class (tgpu_arena_of): the plain HP bake's
-                                     * vertices without the split, and those it adds */
     uint32_t weld_lp, weld_pos, weld_verts, weld_secs;   /* LP positions, positions moved, bank
                                      * vertices moved, sectors holding them */
 } tj_stats;
@@ -11414,14 +11404,12 @@ static void tj_mark_set(const tscache_t* SC, const tj_fset* S) {
     s_hq_bank = 0;
 }
 
-/** @brief Returns a face's mark byte from the table and counts the triangles, split records and plain vertices the split adds to its bakes.
+/** @brief Returns a face's mark byte from the table and counts the triangles and split records the split adds to its bakes.
  *
  * The flat variant gains one triangle per edge node; a quad that may draw
  * the 2x2 subdivide gains two per quarter-marked edge, one in each sub-quad
  * along it, each such sub-quad writing a split record beside the flat
- * variant's. The face's draw class (tgpu_arena_of) accumulates its plain
- * vertices without the split (6 or 3 flat, 24 more for the 2x2) and those
- * the split adds.
+ * variant's.
  * @param SC The sector whose frame the set is in.
  * @param S The set.
  * @param F The face.
@@ -11445,9 +11433,6 @@ static uint8_t tj_face_marks(const tscache_t* SC, const tj_fset* S, const tsface
     add += 2u * q4;
     *tris += add;
     *recs += (m != 0) + (q4 ? (q4 == 1 ? 2u : 4u) : 0u);
-    const int a = tgpu_arena_of(&F->mat);
-    s_tj.st.base_v[a] += (F->quad ? 6u : 3u) + (hq2 ? 24u : 0u);
-    s_tj.st.add_v[a] += 3u * add;
     return m;
 }
 
@@ -11882,13 +11867,6 @@ static uint32_t tj_sector_addv(uint32_t q) { return q < 1024u ? s_tj.addv[q] : 0
  * @param q The index.
  * @return The record count, 0 past the 1024 tracked entries. */
 static uint32_t tj_sector_recs(uint32_t q) { return q < 1024u ? s_tj.recs[q] : 0u; }
-
-/** @brief Copies the level's per-class plain vertex figures of the split into a content bound.
- * @param c The bound. */
-static void tj_content_classes(openpete_tercache_content* c) {
-    memcpy(c->split_base_v, s_tj.st.base_v, sizeof c->split_base_v);
-    memcpy(c->split_add_v, s_tj.st.add_v, sizeof c->split_add_v);
-}
 
 /* ---- world-space T-junction census (OPENPETE_TERRAIN_TJSPLIT_CENSUS) ----
  * An instrument over the level's edge table: each distinct edge endpoint

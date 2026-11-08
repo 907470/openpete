@@ -341,34 +341,9 @@ set_source_files_properties(
     ${CMAKE_SOURCE_DIR}/third_party/libco/libco.c
     PROPERTIES COMPILE_DEFINITIONS LIBCO_MP)
 
-# Terrain-arena capacities, generated from the committed high-water baseline
-# so the table cannot drift from the rows it was measured on. Configure-time:
-# the generator rewrites the header only when its content changes, so this
-# costs a reconfigure nothing when the baseline is untouched.
-set(OPENPETE_TERRAIN_CAPS_GEN ${CMAKE_BINARY_DIR}/gen/terrain_arena_caps.gen.h)
-execute_process(
-    COMMAND ${CMAKE_COMMAND} -E env python3
-            ${CMAKE_SOURCE_DIR}/scripts/gen-terrain-arena-caps.py
-            --baselines ${CMAKE_SOURCE_DIR}/baselines/terrain-arena
-            --root ${CMAKE_SOURCE_DIR}
-            --out ${OPENPETE_TERRAIN_CAPS_GEN}
-    RESULT_VARIABLE _caps_rc)
-if(NOT _caps_rc EQUAL 0)
-    message(FATAL_ERROR "gen-terrain-arena-caps.py failed (${_caps_rc})")
-endif()
-file(GLOB OPENPETE_TERRAIN_CAPS_ROWS ${CMAKE_SOURCE_DIR}/baselines/terrain-arena/*/*.tsv)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    ${CMAKE_SOURCE_DIR}/scripts/gen-terrain-arena-caps.py
-    ${CMAKE_SOURCE_DIR}/scripts/lib/game_conf.py
-    ${CMAKE_SOURCE_DIR}/games/spyro-1/features/levelwarp.c
-    ${CMAKE_SOURCE_DIR}/games/spyro-2/skip_to_level.c
-    ${CMAKE_SOURCE_DIR}/games/spyro-3/skip_to_level.c
-    ${OPENPETE_TERRAIN_CAPS_ROWS})
-
 target_include_directories(openpete_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${CMAKE_BINARY_DIR}/gen
         ${CMAKE_CURRENT_SOURCE_DIR}/host
         ${CMAKE_CURRENT_SOURCE_DIR}/include/psxrt
         ${CMAKE_SOURCE_DIR}/third_party/libco

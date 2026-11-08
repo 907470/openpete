@@ -7,8 +7,13 @@
 # the renderer prints at shutdown. A leg whose row reports bakes=0 compared
 # nothing about the cache and is VACUOUS, never PASS.
 #
-# Legs (--leg selects one; the default set is squeeze-bk2, consolidate,
-# store, failed-edge, steady-pose):
+# Legs (--leg selects one; the default set is level-edges, squeeze-bk2,
+# consolidate, store, failed-edge, steady-pose, custom-level):
+#   level-edges   the attract demo (boot to title, --frame-limit
+#                 DEMO_LIMIT) at the content-estimate sizing: claims_sum=0,
+#                 failed_edges=0, and svc_fulfilled equal to the level
+#                 latches (`[tc-est] latch` lines: every level edge plus the
+#                 session's first latch, each of which posts a replacement).
 #   squeeze-demo  the attract demo (boot to title, --frame-limit
 #                 DEMO_LIMIT) with OPENPETE_TC_INITIAL_CAP squeezed below the
 #                 levels' demand, so every arena must grow: claims_sum=0,
@@ -34,7 +39,7 @@
 #   steady-pose   Spyro 2 skelos_badlands at a freecam pose under
 #                 --texture-mapping affine and --lod extended, where the
 #                 poly-anim cell-record arena (CA_OPAQUE) re-bakes every
-#                 build and outgrows its table row about 25-fold, run
+#                 build and outgrows its content estimate, run
 #                 STEADY_LIMIT VBLs (the level loads near VBL 1290 and
 #                 settles within 300 builds): claims_sum=0,
 #                 consolidations=0, exhaust_warnings=0, and at most
@@ -45,11 +50,8 @@
 #                 mod whose WAD is lofty_castle's (level 52) served with
 #                 `replace = true` over the donor toasty (sunny_flight, the
 #                 planned donor, hangs at load), at the freecam topdown pose.
-#                 Reports the row; no verdict (the table sizes the
-#                 primaries, so the donor's row binds).
-#   custom-level-est  the same fixture with OPENPETE_TC_ESTIMATE=1, which
-#                 sizes the arenas from the level's own sector headers:
-#                 claims_sum=0, window_bakes=0, exhaust_warnings=0.
+#                 The arenas are sized from the level's own sector
+#                 headers: claims_sum=0, window_bakes=0, exhaust_warnings=0.
 #
 # --exe PATH drives another binary with the same legs (a build without
 # growth reports claims>0 on the squeeze legs, which is the separation).
@@ -117,7 +119,7 @@ field() {  # tag name
 
 fail=0
 ran=0
-want() { [[ "$LEG" == "$1" || ( -z "$LEG" && " squeeze-bk2 consolidate store failed-edge steady-pose " == *" $1 "* ) ]]; }
+want() { [[ "$LEG" == "$1" || ( -z "$LEG" && " level-edges squeeze-bk2 consolidate store failed-edge steady-pose custom-level " == *" $1 "* ) ]]; }
 # check tag expr...: each expr is name<op>value over the row's fields.
 check() {
     local tag="$1"; shift
@@ -143,6 +145,16 @@ check() {
 
 SQ=(OPENPETE_TC_INITIAL_CAP="$SQUEEZE")
 GROW_PASS=(claims_sum=0 grow\>0 grow_claims\>0 consolidations=0 dropped_spans=0 draws_retired=0)
+
+if want level-edges; then
+    ran=1
+    run_leg level-edges "$DEMO_LIMIT" --
+    latches="$(grep -c '^\[tc-est\] latch level=' "$OUT/level-edges.log")"
+    echo "[tercache-growth] leg=level-edges latches=$latches (level edges + 1)"
+    check level-edges claims_sum=0 failed_edges=0 "svc_fulfilled=$latches"
+    [[ "$latches" -gt 1 ]] ||
+        { echo "[tercache-growth] leg=level-edges VACUOUS (no level edge crossed)"; fail=1; }
+fi
 
 if want squeeze-demo; then
     ran=1
@@ -234,8 +246,7 @@ custom_level() {  # tag envs... -- checks...
     check "$tag" "$@"
 }
 
-want custom-level && custom_level custom-level --
-want custom-level-est && custom_level custom-level-est OPENPETE_TC_ESTIMATE=1 -- \
+want custom-level && custom_level custom-level -- \
     claims_sum=0 window_bakes=0 exhaust_warnings=0
 
 [[ "$ran" == 1 ]] || { echo "tercache-growth: SKIP (no leg ran)"; exit 64; }
