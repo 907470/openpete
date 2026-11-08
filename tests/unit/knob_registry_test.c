@@ -302,6 +302,23 @@ static int legacy_fog_values_read(void) {
     return rc;
 }
 
+/** @brief Check that the settings writer never settles a row that has no setter.
+ *
+ * load_delay has no setter; its getter reports the resolved delay, which
+ * becomes the game's own default after the boot snapshot. Writing it would
+ * pin one game's delay for every game.
+ * @return 0 on pass, nonzero on failure. */
+static int check_no_setter_never_saved(void) {
+    const knob_desc_t *ld = find_row("load_delay", NULL);
+    if (!ld) return fail("load_delay row missing from the registry");
+    if (ld->set_num || ld->set_str)
+        return fail("load_delay gained a setter; revisit the no-setter save rule");
+    const char *ids[] = { "load_delay" };
+    if (knob_registry_settle_ids(ids, 1) != 0)
+        return fail("the settings writer settled a row with no setter");
+    return 0;
+}
+
 int main(void) {
     int rc = 0;
 
@@ -535,6 +552,7 @@ int main(void) {
     rc |= float_rows_refuse_non_finite();
     rc |= device_marks_agree();
     rc |= legacy_fog_values_read();
+    rc |= check_no_setter_never_saved();
 
     printf(rc ? "knob_registry_test: FAILED\n" : "knob_registry_test: ok\n");
     return rc;

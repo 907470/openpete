@@ -925,6 +925,10 @@ static bool row_edited(const knob_desc_t *k)
 {
     if (k->type == KNOB_STRING) return false;   /* strings are read-only v1 */
     if (k->type == KNOB_ACTION) return false;   /* fires; holds no value */
+    /* A row without a setter cannot be edited here; its getter may still
+     * move after the boot snapshot (load_delay resolves to the game's own
+     * default once the disc is identified), which is not an edit. */
+    if (!k->set_num) return false;
     double v = k->get_num ? k->get_num(k) : k->stored_num;
     return v != k->boot_num;
 }

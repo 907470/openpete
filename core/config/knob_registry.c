@@ -3204,6 +3204,10 @@ int knob_registry_settle_ids(const char *const *ids, int n) {
         knob_desc_t *k = NULL;
         for (size_t j = 0; j < count && !k; j++)
             if (ids[i] && !strcmp(ks[j].id, ids[i])) k = &ks[j];
+        /* A row with no setter is not a setting anyone edits in session:
+         * its getter reports a resolved value (load_delay reads the game's
+         * own default once the disc is identified), which is never written. */
+        if (k && !k->set_num && !k->set_str) continue;
         char now[KNOB_STR_MAX];
         const int vs = k ? knob_config_value_str(k, now, sizeof now) : -1;
         if (vs == 1) {   /* the row is unset: its saved key goes */
