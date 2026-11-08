@@ -108,7 +108,7 @@ typedef struct {
     float    sx, sy, vz;     /* the centroid of its projected vertices: screen x, y and view z */
     int32_t  prev_dt_us;     /* the pair's prev and curr roll stamps less present_ns, in us */
     int32_t  curr_dt_us;
-    float    kf_alpha;       /* the keyframe crossfade alpha the decode read */
+    float    kf_alpha;       /* the keyframe colour crossfade alpha the walk read */
 } openpete_bugrec_sub_obj_t;
 
 /** @brief Open a present's record in the ring.

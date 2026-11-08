@@ -2042,6 +2042,11 @@ static int moby_project_record(CPUState* cpu, const moby_record_t* R, int* zsf4,
 #define MAX_PROJ 32768
 static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
 
+/* rec_meta.clr_flags: the present is one tick period or more past the pair's
+ * current stamp (PAST); the pair's distinct interval exceeds one tick period,
+ * so the colour crossfade runs over the capped interval (CAPPED). */
+enum { MOBY_CLR_PAST = 1, MOBY_CLR_CAPPED = 2 };
+
 /* Per-record metadata for the independent face-stream walk: where this
  * record's vertices live in s_proj[] (filled in stream order, so a face's stream
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
@@ -2051,6 +2056,7 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                  uint32_t frameA;
                  uint32_t frameA_p, header_p; float clr_alpha;
                  uint8_t spec_solo;
+                 uint8_t clr_flags; /* MOBY_CLR_* of the colour crossfade's pair */
                  uint32_t model_held; /* nonzero = this record's keyframe is a
                                        * held previous pose, not the one the
                                        * cull record names, so the game's
@@ -2087,8 +2093,9 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                  /* frameA = the record's keyframe (rec+0x08 / f.frameA): the frame
                  * may carry a render-time FACEBLOCK PATCH list (see
                  * moby_faces_for_record) - 0 = no patch lookup.
-                 * frameA_p/header_p/clr_alpha = the PREV drawn keyframe + the pose
-                 * crossfade alpha (sub-tick re-extract only; 0 = canonical/no prev):
+                 * frameA_p/header_p/clr_alpha = the PREV drawn keyframe + the colour
+                 * crossfade alpha, moby_colour_alpha (sub-tick re-extract only;
+                 * 0 = canonical/no prev):
                  * drives the per-face COLOUR crossfade for patch-animated effects,
                  * whose colour indices step per keyframe (see the FCp block in
                  * build_walk_tris_inner). */
@@ -3258,6 +3265,8 @@ typedef struct {
     moby_pose_t held;          /* the pose a hold decodes from (moby_decode_prev) */
     const moby_pose_t* dprev;  /* the decode's previous pose: &prev, &held or NULL */
     double alpha;              /* the pair's alpha */
+    double clr_alpha;          /* the colour crossfade's alpha (moby_colour_alpha) */
+    int clr_flags;             /* MOBY_CLR_* of the pair */
     double dalpha;             /* the decode's alpha */
     int verdict;               /* moby_prev_keyframe's verdict */
     uint32_t model_held;       /* moby_fields_hold_prev's result */
@@ -3335,8 +3344,9 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
         moby_tier_faceblock(cpu, f->header, dzsf4), f->w0,
         f->metal, f->mscol, m, dzsf4,
         atan2f((float)f->TR_raw[2], (float)f->TR_raw[0]), f->frameA,
-        pd.prev.frame_a, pd.prev.header, (float)pd.alpha };
+        pd.prev.frame_a, pd.prev.header, (float)pd.clr_alpha };
     s_recs[s_nrecs].model_held = pd.model_held;
+    s_recs[s_nrecs].clr_flags = (uint8_t)pd.clr_flags;
     memcpy(s_recs[s_nrecs].M, f->M, sizeof s_recs[s_nrecs].M);
     s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f->mscol);
     /* Sole feeder: the walk applies the SPEC face treatment for this moby,
@@ -5799,6 +5809,33 @@ static inline uint32_t moby_clerp(uint32_t a, uint32_t b, float t) {
     return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)bl << 16);
 }
 static long s_clerp_recs;   /* tier-census: records colour-crossfaded this window */
+/* OPENPETE_MOBY_CLERP_CENSUS, since startup: record-presents that colour
+ * crossfade, those whose pair interval exceeds one tick period (capped), and
+ * those still short of the current keyframe's colours (alpha below 1) one
+ * tick period or more past the keyframe step (late). */
+static unsigned long s_clerp_total, s_clerp_capped, s_clerp_late;
+
+/** @brief Print the colour crossfade census at exit. */
+static void moby_clerp_report(void) {
+    fprintf(stderr, "[moby-clerp] crossfades=%lu capped=%lu late=%lu\n",
+            s_clerp_total, s_clerp_capped, s_clerp_late);
+}
+
+/** @brief Count one record-present's colour crossfade under OPENPETE_MOBY_CLERP_CENSUS, read once; registers the exit report.
+ *
+ * @param R The crossfading record. */
+static void moby_clerp_census(const rec_meta* R) {
+    static int s = -1;
+    if (s < 0) {
+        const char* e = getenv("OPENPETE_MOBY_CLERP_CENSUS");
+        s = (e && *e && *e != '0');
+        if (s) atexit(moby_clerp_report);
+    }
+    if (!s) return;
+    s_clerp_total++;
+    s_clerp_capped += (R->clr_flags & MOBY_CLR_CAPPED) != 0;
+    s_clerp_late += ((R->clr_flags & MOBY_CLR_PAST) && R->clr_alpha < 1.0f);
+}
 
 static int build_walk_tris_inner(CPUState* cpu);
 /** @brief Build s_wtri[] from the face-stream walk of the queued records and return the triangle count.
@@ -6675,7 +6712,7 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
         if (!FC) continue;
         faces += FC->nfaces;
         const fcache_t* FCp = moby_clerp_prev_faces(cpu, R, FC);
-        if (FCp) { s_pre_FCp[r] = FCp; s_pre_clra[r] = R->clr_alpha; s_clerp_recs++; }
+        if (FCp) { s_pre_FCp[r] = FCp; s_pre_clra[r] = R->clr_alpha; s_clerp_recs++; moby_clerp_census(R); }
     }
     int nw = openpete_workpool_threads();
     if (nw > MN_MAX_WORKERS) nw = MN_MAX_WORKERS;
@@ -11346,6 +11383,38 @@ static double moby_pair_alpha(const openpete_interp_obj_t* o) {
     return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
 }
 
+/** @brief A pair's phase at this present over its distinct interval capped at one tick period, unclamped.
+ *
+ * The present clock (s_rot_now) past the current stamp over the smaller of
+ * the pair's distinct interval and g_openpete_tick_period_ns. A change the
+ * game makes in one tick then completes one tick period after the current
+ * stamp however long the state sat unchanged before it; a pair whose interval
+ * is one tick or less divides by that interval, as moby_pair_alpha does. The
+ * caller has checked curr_ns > prev_ns.
+ * @param o The interp object.
+ * @return The phase; below 0 before the current stamp, above 1 past the capped interval. */
+static double moby_pair_phase_tick(const openpete_interp_obj_t* o) {
+    double period = (double)(o->curr_ns - o->prev_ns);
+    if (period > (double)g_openpete_tick_period_ns) period = (double)g_openpete_tick_period_ns;
+    return (double)(s_rot_now - o->curr_ns) / period;
+}
+
+/** @brief A pair's keyframe colour crossfade alpha at this present: moby_pair_alpha over the interval capped at one tick.
+ *
+ * A keyframe's colour indices step in the tick the game changes the keyframe,
+ * so the crossfade from the previous keyframe's colours lasts at most one tick
+ * period (moby_pair_phase_tick), while the shape keeps the pair's distinct
+ * interval. A present that holds a camera cut takes moby_pair_alpha's 0 or 1.
+ * The caller has checked curr_ns > prev_ns.
+ * @param o The interp object.
+ * @return The alpha, clamped to [0, 1]. */
+static double moby_colour_alpha(const openpete_interp_obj_t* o) {
+    const int rolled = cut_held_rolled(o);
+    if (rolled >= 0) return rolled ? 0.0 : 1.0;
+    const double t = moby_pair_phase_tick(o);
+    return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+}
+
 /** @brief Whether moby_jump_held may hold a record: OPENPETE_MOBY_JUMP_HOLD, default on, read once.
  *
  * 0 interpolates across a jump, for a same-binary A/B.
@@ -11384,9 +11453,7 @@ static int moby_jump_held(uint32_t moby, const openpete_interp_obj_t* o) {
     const int v = cut_obj_held(moby);
     if (v >= 0) return v;
     if (!s_rot_now || (rolled < 0 && !moby_jump_hold_enabled())) return 0;
-    double period = (double)(o->curr_ns - o->prev_ns);
-    if (period > (double)g_openpete_tick_period_ns) period = (double)g_openpete_tick_period_ns;
-    const double a = (double)(s_rot_now - o->curr_ns) / period;
+    const double a = moby_pair_phase_tick(o);
     return cut_obj_hold(rolled > 0 ? CUT_HELD : CUT_TELEPORT, moby, o, po, a, NULL);
 }
 
@@ -13499,9 +13566,13 @@ static int moby_hold_schedule(const openpete_interp_obj_t* o, int verdict, doubl
  * @param header_curr The current pose's AnimationHeader.
  * @param prev Receives the previous pose.
  * @param alpha Receives the pair's phase.
+ * @param clr_alpha Receives the colour crossfade's phase (moby_colour_alpha),
+ *        written with alpha.
+ * @param clr_flags Receives the pair's MOBY_CLR_* flags, written with alpha.
  * @return MOBY_PREV_SNAP, MOBY_PREV_LERP or MOBY_PREV_HOLD. */
 static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr,
-                              moby_pose_t* prev, double* alpha) {
+                              moby_pose_t* prev, double* alpha, double* clr_alpha,
+                              int* clr_flags) {
     if (!s_rot_now) return 0;                                  /* interp off -> snap */
     /* The prev pose is the decoder's second stream input, so it has to be
      * expressible in the form this game's record uses for a keyframe: a
@@ -13527,6 +13598,9 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
     if (!moby_pose_derive(cpu, model, o->prev + game_layout.moby.anim_state_off, prev)) return 0;
     double t = moby_pair_alpha(o);
     *alpha = t;
+    *clr_alpha = moby_colour_alpha(o);
+    *clr_flags = (moby_hold_expired(o) ? MOBY_CLR_PAST : 0) |
+                 ((o->curr_ns - o->prev_ns > g_openpete_tick_period_ns) ? MOBY_CLR_CAPPED : 0);
     pose_hold_find(moby, prev);
     /* A jump has no pose between its two ticks either: the whole record,
      * shape included, shows tick N-1 until alpha 1. */
@@ -14888,7 +14962,10 @@ static void moby_record_prev_pose(CPUState* cpu, uint32_t moby, moby_fields* f,
                                   moby_prev_decode* pd) {
     memset(&pd->prev, 0, sizeof pd->prev);
     pd->alpha = 0.0;
-    pd->verdict = moby_prev_keyframe(cpu, moby, f->header, &pd->prev, &pd->alpha);
+    pd->clr_alpha = 0.0;
+    pd->clr_flags = 0;
+    pd->verdict = moby_prev_keyframe(cpu, moby, f->header, &pd->prev, &pd->alpha,
+                                     &pd->clr_alpha, &pd->clr_flags);
     pd->model_held = moby_fields_hold_prev(cpu, moby, f, &pd->prev, pd->verdict, pd->alpha);
     /* The held pose is the whole shape, not one end of a lerp: it decodes
      * alone, or from the vertices a canonical pass kept for it, as the
@@ -15699,7 +15776,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             moby_tier_faceblock(cpu, f.header, zsf4),
             f.w0, f.metal, f.mscol, mobys[i], zsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
-            prev->frame_a, prev->header, (float)pd.alpha };
+            prev->frame_a, prev->header, (float)pd.clr_alpha };
+        s_recs[s_nrecs].clr_flags = (uint8_t)pd.clr_flags;
         s_recs[s_nrecs].wbase_p1 = moby_present_wbase(cpu, mobys[i]);
         moby_wbase_trace(cpu, recs[i], mobys[i], s_recs[s_nrecs].wbase_p1);
         s_recs[s_nrecs].model_held = pd.model_held;
