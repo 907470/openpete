@@ -680,11 +680,11 @@ const game_layout_t spyro2_game_layout = {
         .front_bias = -1,                /* no front-entry branch: mobyfunc.s:2050-2053
                                           * clamps the bucket at zero instead */
         /* The depth-offset byte (+0x47, the top byte of the angle word the
-         * moby cull subtracts from its slot) of the moby each glow sits on:
-         * 4 on Sparx, the moby nearest every glow record that sits on one.
-         * The allocator links the record back to nothing (it stores the
-         * shape, size, a random phase and the bias 4), so the value is layout
-         * data. */
+         * moby cull subtracts from its slot) of Sparx, the moby a glow most
+         * often sits on, which the fan's depth adds while the key pass is
+         * off. The record holds no pointer to a moby (the allocator stores
+         * the shape, size, colour, a random phase and the bias 4); the
+         * spawning moby keeps the record's address in its own tag block. */
         .owner_offset = 4,
         .shape_table  = 0x8006430Cu,     /* mobyfunc.s:2010-2014 */
         .cam_yaw_off  = 0x48u,           /* mobyfunc.s:1963, >> 4 at :1967 */

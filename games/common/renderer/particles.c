@@ -1336,6 +1336,58 @@ static void part_wide_census_record(CPUState* cpu, const ngte_view* v, const par
     }
 }
 
+/** @brief The mean of a captured primitive's screen vertices.
+ *
+ * A polygon averages its decoded vertices; a line averages its two endpoints
+ * from the raw words, where a gouraud line carries a colour word before each.
+ * @param p The captured primitive.
+ * @param gx Receives the mean X.
+ * @param gy Receives the mean Y. */
+static void part_item_centroid(const ngte_prim* p, double* gx, double* gy) {
+    double sx = 0, sy = 0;
+    if (p->nv) {
+        for (int k = 0; k < p->nv; k++) { sx += p->x[k]; sy += p->y[k]; }
+        *gx = sx / p->nv; *gy = sy / p->nv;
+        return;
+    }
+    const int words = (p->code & 0x10u) ? 3 : 2;
+    for (int k = 0; k < 2; k++) {
+        const uint32_t xy = p->raw[2 + (uint32_t)k * (uint32_t)(words - 1)];
+        sx += (double)(int16_t)(xy & 0xFFFFu);
+        sy += (double)(int16_t)(xy >> 16);
+    }
+    *gx = sx / 2.0; *gy = sy / 2.0;
+}
+
+static unsigned long s_part_order, s_part_nearest, s_part_depth1;
+
+/** @brief Gives every captured primitive the pool walk left unpaired the depth of the paired primitive whose centroid lies nearest its own.
+ *
+ * A primitive is left unpaired when the pool walk runs out of records before
+ * the captured primitives, as when the walk and the routine disagree on a
+ * stamp-skip verdict. Fixed-layer primitives are not candidates: they stand
+ * at the front bucket by class, not by position. The primitive keeps its
+ * captured vertices and stays unpaired (class -1). With no paired candidate
+ * it keeps the near-guard depth. Counts the paired, the placed and the
+ * near-guard primitives into the run's totals. */
+static void part_place_unreached(void) {
+    for (int i = 0; i < s_item_n; i++) {
+        part_item* it = &s_item[i];
+        if (it->cls >= 0) { s_part_order++; continue; }
+        double gx, gy, best = INFINITY;
+        part_item_centroid(&it->p, &gx, &gy);
+        for (int j = 0; j < s_item_n; j++) {
+            const part_item* o = &s_item[j];
+            if (o->cls < 0 || (uint32_t)o->cls >= game_layout.particles.fixed_layer_class) continue;
+            double ox, oy;
+            part_item_centroid(&o->p, &ox, &oy);
+            const double d = (ox - gx) * (ox - gx) + (oy - gy) * (oy - gy);
+            if (d < best) { best = d; it->depth = o->depth; }
+        }
+        if (best < INFINITY) s_part_nearest++; else s_part_depth1++;
+    }
+}
+
 /** @brief Walks the pool as the routine does: pairs each captured primitive with the record that appended it, and appends the records a widened view or extended LOD reveals.
  *
  * The routine appends in pool order and at most one primitive per record, so
@@ -1382,9 +1434,9 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v, int reveal, int 
         i += part_pair_record(cpu, v, &w.g, rec, cls, i < s_item_n ? &s_item[i] : NULL);
     }
     /* A polybuf that filled mid-pool ends the routine early, so fewer
-     * primitives than stamped records is normal. Any primitive the walk could
-     * not reach keeps the depth 1.0 (the near guard) that part_prim_sink gave
-     * it. */
+     * primitives than stamped records is normal. A primitive the walk could
+     * not reach takes its nearest paired neighbour's depth. */
+    part_place_unreached();
     s_item_n += s_syn_n;
     for (int k = 0; k < s_item_n; k++)
         s_item[k].serial = s_item[k].rec ? particles_slot_serial(s_item[k].rec) : 0u;
@@ -2067,29 +2119,6 @@ static void part_feed_native(void) {
     openpete_native_scene_set_tag(0);
 }
 
-/** @brief The mean of a captured primitive's screen vertices.
- *
- * A polygon averages its decoded vertices; a line averages its two endpoints
- * from the raw words, where a gouraud line carries a colour word before each.
- * @param p The captured primitive.
- * @param gx Receives the mean X.
- * @param gy Receives the mean Y. */
-static void part_item_centroid(const ngte_prim* p, double* gx, double* gy) {
-    double sx = 0, sy = 0;
-    if (p->nv) {
-        for (int k = 0; k < p->nv; k++) { sx += p->x[k]; sy += p->y[k]; }
-        *gx = sx / p->nv; *gy = sy / p->nv;
-        return;
-    }
-    const int words = (p->code & 0x10u) ? 3 : 2;
-    for (int k = 0; k < 2; k++) {
-        const uint32_t xy = p->raw[2 + (uint32_t)k * (uint32_t)(words - 1)];
-        sx += (double)(int16_t)(xy & 0xFFFFu);
-        sy += (double)(int16_t)(xy >> 16);
-    }
-    *gx = sx / 2.0; *gy = sy / 2.0;
-}
-
 /** @brief The screen point a correctly paired primitive's centroid sits at: the record's projected point, or the midpoint of the two-point class's two.
  *
  * The routine offsets a billboard's corners around the record point, and
@@ -2112,8 +2141,10 @@ static void part_item_anchor(const part_item* it, double* ax, double* ay) {
  * rests on: the mean and worst Manhattan distance between the point each
  * paired record anchors (part_item_anchor) and the centroid of the primitive
  * the pairing gave it, followed by the unpaired count, the stamped records
- * the routine appended nothing for, and the fixed-layer primitives with the
- * count of them paired to a record. A correct pairing (and a correct camera
+ * the routine appended nothing for, the fixed-layer primitives with the
+ * count of them paired to a record, and the run's totals of captured
+ * primitives paired, placed at a neighbour's depth (part_place_unreached) and
+ * left at the near guard. A correct pairing (and a correct camera
  * matrix) keeps the distance small and a wrong one scatters it across the
  * screen. A capture whose fed count is zero measured nothing.
  * @param start Guest address of the polybuf interval's start.
@@ -2150,8 +2181,9 @@ static void part_census(uint32_t start, uint32_t end, uint32_t fed_before) {
             fixed_rec += s_item[i].rec != 0u;
         }
     }
-    fprintf(stderr, " unpaired=%d stamp_skipped=%d fixed=%d fixed_rec=%d\n", unpaired,
-            s_stamp_skipped, fixed, fixed_rec);
+    fprintf(stderr, " unpaired=%d stamp_skipped=%d fixed=%d fixed_rec=%d"
+                    " total paired=%lu nearest=%lu depth1=%lu\n", unpaired,
+            s_stamp_skipped, fixed, fixed_rec, s_part_order, s_part_nearest, s_part_depth1);
 }
 
 /** @brief The distance from the record's own projected point to the primitive's furthest vertex, in pixels.

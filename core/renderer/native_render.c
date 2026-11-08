@@ -9826,9 +9826,8 @@ static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n);
  * ordering key rasters only inside them: a player texel displaces the actor
  * key under it in the shared image (psx_key_contest.glsl), and the fan is
  * the only contest that reads it, so outside a fan's reach the stamp would
- * move contests that must not move. A scene with no keyed fan (every game
- * but Spyro 1, and Spyro 1 with no glow on screen) yields no boxes and
- * stamps no player key at all. */
+ * move contests that must not move. A scene with no keyed fan on screen
+ * yields no boxes and stamps no player key at all. */
 #define KEY_AURA_BOX_MAX 64
 typedef struct { float x0, y0, x1, y1; } key_box_t;
 
@@ -9884,6 +9883,87 @@ static int box_hits_any(key_box_t b, const key_box_t* boxes, int n)
         if (b.x0 <= boxes[i].x1 && b.x1 >= boxes[i].x0 &&
             b.y0 <= boxes[i].y1 && b.y1 >= boxes[i].y0) return 1;
     return 0;
+}
+
+/* OPENPETE_GLOW_ORDER_CENSUS=LO-HI: per present in that openpete_frame range,
+ * the actor faces each glow fan's native order disagrees with the ordering
+ * table on (glow_order_census). */
+typedef struct { unsigned long pairs, front, back, fans; } glow_order_t;
+static glow_order_t s_glow_order;
+
+/** @brief Return whether openpete_frame lies in the OPENPETE_GLOW_ORDER_CENSUS range, read once.
+ * @return 1 when in range, else 0. */
+static int glow_order_census_on(void)
+{
+    extern unsigned openpete_frame;
+    static long lo = -2, hi = -1;
+    if (lo == -2) {
+        const char* e = getenv("OPENPETE_GLOW_ORDER_CENSUS");
+        lo = -1;
+        if (e && *e) { char* q; lo = strtol(e, &q, 10); hi = (*q == '-') ? strtol(q + 1, NULL, 10) : lo; }
+    }
+    return lo >= 0 && (long)openpete_frame >= lo && (long)openpete_frame <= hi;
+}
+
+/** @brief Score one fan triangle against one keyed opaque actor face whose screen box overlaps it.
+ *
+ * The table paints the fan over the face when the face's bucket (ot_slot1 - 1)
+ * is the fan's or farther: the fan is appended to its bucket after the
+ * faces the moby draw spliced there. Natively the face covers the fan when
+ * its mean stored depth is nearer than the fan's depth, or when the fan
+ * contests by its key (aura rank) and the slot of the absolute key (koff)
+ * the face rasters into the actor key image is the fan's koff slot or nearer
+ * (op_aura_loses). `front` counts a face the table puts under the fan that
+ * the native order puts over it; `back` the reverse.
+ * @param f The fan triangle, ot_slot1 set.
+ * @param a The actor face, ot_slot1 set.
+ * @param c The census, updated. */
+static void glow_order_pair(const scene_tri_t* f, const scene_tri_t* a, glow_order_t* c)
+{
+    const int fk = f->ot_slot1 - 1, ak = a->ot_slot1 - 1;
+    const int aura = f->rank < OPENPETE_SCENE_RANK_AURA + 0.5f && f->koff > 0.25f;
+    const int own = (int)floor(((double)f->koff - 0.5) / OPENPETE_OT_SLOT_WORLD);
+    const float az = (a->v[0].z + a->v[1].z + a->v[2].z) / 3.0f;
+    const int nk = (int)floor(((double)a->koff - 0.5) / OPENPETE_OT_SLOT_WORLD);
+    const int table_fan_over = ak >= fk;
+    const int native_face_over = az < f->v[0].z || (aura && nk <= own);
+    c->pairs++;
+    if (table_fan_over && native_face_over) c->front++;
+    if (!table_fan_over && !native_face_over) c->back++;
+}
+
+/** @brief Census the glow fans' order against the actor faces they overlap, against the ordering table's.
+ *
+ * A fan triangle is a WORLD triangle tagged as a glow particle with its
+ * bucket in ot_slot1; an actor face is an opaque face with a moby identity,
+ * a key and its bucket in ot_slot1. Every overlapping pair is scored by
+ * glow_order_pair; one line per present in range prints the present's
+ * counts and the running totals.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count. */
+static void glow_order_census(const scene_tri_t* scene, int scene_n)
+{
+    extern unsigned openpete_frame;
+    if (!glow_order_census_on()) return;
+    const uint32_t glow_tag = OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_GLOW, 0, 0);
+    glow_order_t c = { 0, 0, 0, 0 };
+    for (int i = 0; i < scene_n; i++) {
+        const scene_tri_t* f = &scene[i];
+        if (f->tag != glow_tag || f->ot_slot1 <= 0 || f->category != OPENPETE_SCENE_WORLD) continue;
+        c.fans++;
+        const key_box_t fb = tri_box(f);
+        for (int j = 0; j < scene_n; j++) {
+            const scene_tri_t* a = &scene[j];
+            if (!a->mid || a->blend != 0 || a->koff <= 0.25f || a->ot_slot1 <= 0) continue;
+            if (box_hits_any(tri_box(a), &fb, 1)) glow_order_pair(f, a, &c);
+        }
+    }
+    s_glow_order.pairs += c.pairs; s_glow_order.front += c.front;
+    s_glow_order.back += c.back; s_glow_order.fans += c.fans;
+    fprintf(stderr, "[glow-order f=%u] fan_tris=%lu pairs=%lu front=%lu back=%lu"
+                    " total fan_tris=%lu pairs=%lu front=%lu back=%lu\n",
+            openpete_frame, c.fans, c.pairs, c.front, c.back, s_glow_order.fans,
+            s_glow_order.pairs, s_glow_order.front, s_glow_order.back);
 }
 
 /** @brief Return whether a scene face rasters into the key image of a class.
@@ -11233,7 +11313,8 @@ static void native_moby_shell_pass(const scene_tri_t* scene, int scene_n, int fu
  * into the actor key images' colour beside its key. The five images render
  * even from empty batches, so a stale image is never sampled. The moby front
  * shell follows (native_moby_shell_pass); s_shell_live stays 0 when the pass
- * returns early. The OPENPETE_TERRAIN_KEY_*
+ * returns early. The glow order census (glow_order_census) reads the scene
+ * first. The OPENPETE_TERRAIN_KEY_*
  * and OPENPETE_MOBY_RANK_DBG knobs add stderr and file dumps of the packed
  * batches.
  * @param full_extent Nonzero for the full-extent (widescreen) mapping.
@@ -11254,6 +11335,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
     scene_n = compose_reserve(scene_n);
     drain_records_build(scene, scene_n);
+    glow_order_census(scene, scene_n);
     rhi_vertex *kbuf  = (rhi_vertex *)s_cz_key[0].data;
     rhi_vertex *mkbuf = (rhi_vertex *)s_cz_key[1].data;
     rhi_vertex *akbuf = (rhi_vertex *)s_cz_key[2].data;

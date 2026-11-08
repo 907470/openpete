@@ -144,6 +144,7 @@ typedef struct {
     uint8_t  size;       /* its size byte */
     uint8_t  row;        /* its colour-table row */
     double   psx, psy;   /* its own projected screen point, from the unfloored offset */
+    double   gsx, gsy;   /* that point under the GTE's own H (no --fov scale), where the routine drew it */
     double   pvz;        /* that point's half-world view-Z */
     double   own[3];     /* world vector from the record to its owner's origin */
     float    own_rad;    /* the owner's model radius in world units; 0 = no owner */
@@ -587,6 +588,11 @@ static int glint_accept(CPUState* cpu, const ngte_view* v, uint32_t rec,
     out->psx = o.sx;
     out->psy = o.sy;
     out->pvz = o.m3;
+    ngte_view canon;
+    ngte_view_canon(v, &canon);
+    glint_project(&canon, vo, &o);
+    out->gsx = o.sx;
+    out->gsy = o.sy;
     const int flags = (range ? GLINT_RANGE : 0) | (lateral ? GLINT_LATERAL : 0);
     return flags ? flags : 1;
 }
@@ -711,13 +717,89 @@ static void glint_pair_walk(const glint_rec* pred, int predicted) {
     }
 }
 
+static unsigned long s_glint_order, s_glint_nearest, s_glint_depth1;
+
+/** @brief The end of the primitive group starting at a draw-mode packet or a line, and its vertex centroid.
+ *
+ * A star group is its draw-mode packet and the quads that follow it; a cross
+ * group is up to GLINT_LINES_PER_CROSS consecutive lines. The centroid
+ * averages the group's quad or line vertices.
+ * @param i The group's first item.
+ * @param cx Receives the centroid's X.
+ * @param cy Receives its Y.
+ * @return One past the group's last item. */
+static int glint_group_end(int i, double* cx, double* cy) {
+    const int star = s_item[i].p.code == GLINT_DRMODE;
+    int e = i + 1, n = 0;
+    if (!star) e = i;
+    double sx = 0.0, sy = 0.0;
+    while (e < s_item_n && (star ? s_item[e].p.code == GLINT_QUAD
+                                 : (s_item[e].p.code == GLINT_LINE && e - i < GLINT_LINES_PER_CROSS))) {
+        const int nv = s_item[e].p.code == GLINT_QUAD ? 4 : 2;
+        for (int k = 0; k < nv; k++) { sx += s_item[e].p.x[k]; sy += s_item[e].p.y[k]; n++; }
+        e++;
+    }
+    *cx = n ? sx / n : 0.0;
+    *cy = n ? sy / n : 0.0;
+    return e > i ? e : i + 1;
+}
+
+/** @brief The predicted record nearest a screen point, of the given branch when one exists, else of either.
+ * @param pred The predicted records.
+ * @param predicted Their count.
+ * @param cx The point's X, in the routine's screen space.
+ * @param cy Its Y.
+ * @param near_mode The branch to prefer: 1 near star, 0 far cross.
+ * @return The record's index, or -1 when there is none. */
+static int glint_nearest_rec(const glint_rec* pred, int predicted, double cx, double cy, int near_mode) {
+    int best = -1, best_mode = 0;
+    double bd = INFINITY;
+    for (int r = 0; r < predicted; r++) {
+        const int mode = pred[r].near_mode == near_mode;
+        const double d = (pred[r].gsx - cx) * (pred[r].gsx - cx) + (pred[r].gsy - cy) * (pred[r].gsy - cy);
+        if (mode > best_mode || (mode == best_mode && d < bd)) { best = r; bd = d; best_mode = mode; }
+    }
+    return best;
+}
+
+/** @brief Binds each star and cross group of a call whose predicted counts disagree with the captured ones to its nearest predicted record.
+ *
+ * The record is the one whose point under the GTE's own H lies nearest the
+ * group's centroid, of the group's branch when one was predicted
+ * (glint_nearest_rec). A star takes the blend of its draw-mode packet, a
+ * cross is opaque. A group with no predicted record stays unowned at the
+ * near-guard depth. Counts the bound groups and the unowned ones.
+ * @param pred The predicted records in pool order.
+ * @param predicted Their count. */
+static void glint_pair_nearest(const glint_rec* pred, int predicted) {
+    int i = 0;
+    while (i < s_item_n) {
+        const uint8_t code = s_item[i].p.code;
+        if (code != GLINT_DRMODE && code != GLINT_LINE) { i++; continue; }
+        double cx, cy;
+        const int e = glint_group_end(i, &cx, &cy);
+        const int r = glint_nearest_rec(pred, predicted, cx, cy, code == GLINT_DRMODE);
+        if (r < 0) { s_glint_depth1++; i = e; continue; }
+        const int blend = code == GLINT_DRMODE
+            ? ngte_abr_blend((int)((s_item[i].p.raw[1] >> 5) & 3u), NGTE_ABR_QUARTER_AS_ADD) : 0;
+        for (int k = (code == GLINT_DRMODE) ? i + 1 : i, sub = 0; k < e; k++, sub++) {
+            s_item[k].sub = sub;
+            glint_bind(&s_item[k], &pred[r], blend);
+        }
+        s_glint_nearest++;
+        i = e;
+    }
+}
+
 /** @brief Pair the call's captured primitives with the pool records that emitted them.
  *
  * Counts the captured stars and crosses into s_stars and s_crosses, predicts
  * the accepted records into s_pred_near and s_pred_far, and runs
  * glint_pair_walk only when the predicted near and far counts both equal the
  * captured ones, the line count is even and the prediction fits the table;
- * otherwise every primitive is left unowned by glint_unpair_all.
+ * otherwise every primitive is first left unowned by glint_unpair_all and
+ * then bound group by group to its nearest predicted record
+ * (glint_pair_nearest).
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view. */
 static void glint_pair_depths(CPUState* cpu, const ngte_view* v) {
@@ -734,8 +816,10 @@ static void glint_pair_depths(CPUState* cpu, const ngte_view* v) {
     if (predicted > GLINT_MAX_PRIMS || s_pred_near != s_stars ||
         s_pred_far != s_crosses || lines % GLINT_LINES_PER_CROSS != 0) {
         glint_unpair_all();
+        glint_pair_nearest(pred, predicted < GLINT_MAX_PRIMS ? predicted : GLINT_MAX_PRIMS);
         return;
     }
+    s_glint_order += (unsigned long)(s_stars + s_crosses);
     glint_pair_walk(pred, predicted);
 }
 
@@ -1678,7 +1762,9 @@ static void glint_own_census(unsigned key) {
  * records extended LOD appended and culled (glint_reveal), the far
  * records drawn as stars under extended LOD (glint_star_far), the
  * native triangles this feeder emitted from each class, how many primitives
- * were left unpaired, and the pairing's pivot residual; then one line per star
+ * were left unpaired, the pairing's pivot residual, and the run's totals of
+ * groups bound in emission order, bound to their nearest record
+ * (glint_pair_nearest) and left at depth 1; then one line per star
  * centre and per cross first endpoint with its paired depth. The live records
  * the routine culls on its box or far depth print first (glint_cull_census),
  * then the owner census (glint_own_census).
@@ -1710,11 +1796,11 @@ static void glint_census(CPUState* cpu, uint32_t start, uint32_t end,
     glint_pivot_residual(&pmean, &pworst, &pn);
     fprintf(stderr, " stars=%d centre_ok=%d rim_max=%d crosses=%d pred_near=%d pred_far=%d"
                     " wide_admit=%d wide_cull=%d range_admit=%d range_cull=%d hq_far=%d fed_star_tris=%u fed_cross_tris=%u unpaired=%d"
-                    " pivot:n=%d mean=%.2f worst=%.2f\n",
+                    " pivot:n=%d mean=%.2f worst=%.2f total order=%lu nearest=%lu depth1=%lu\n",
             s_stars, stars_ok, rim_max, s_crosses, s_pred_near, s_pred_far,
             s_wide_admit, s_wide_cull, s_range_admit, s_range_cull, s_hq_far,
             s_fed_star_tris - star_before, s_fed_cross_tris - cross_before, unpaired,
-            pn, pmean, pworst);
+            pn, pmean, pworst, s_glint_order, s_glint_nearest, s_glint_depth1);
     /* Each star's centre corner and each cross's first endpoint, with the scene
      * depth the pairing gave it: the two quantities the feed places them by. */
     int line_i = 0;

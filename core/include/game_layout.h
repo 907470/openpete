@@ -1117,10 +1117,11 @@ typedef struct game_layout {
      * bias value whose records the routine links at the fixed front entry
      * instead of their own bucket; negative on a game whose routine has no
      * such branch and clamps to bucket 0 instead. `owner_offset` is the
-     * authored depth offset of the moby a glow sits on, in ordering-table
-     * slots: the record names no owner, so the producer cannot read it, and
-     * the fan's native depth needs it to sort against that moby's faces as
-     * the table does.
+     * authored depth offset, in ordering-table slots, of the moby a glow most
+     * often sits on: the fan's native depth adds it only while the key pass
+     * is off, so the fan sorts against that moby's faces by depth alone; with
+     * the key pass on, the fan contests every moby face by its bucket
+     * (games/common/renderer/glow.c glow_feed_tri).
      *
      * `shape_table` is the routine's table of 64-byte shape entries the
      * shape byte indexes from 1 (sixteen packed direction pairs, then up to

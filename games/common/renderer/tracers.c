@@ -47,12 +47,16 @@
 //     vertex table the routine just wrote, which still holds this call's
 //     vertices: the pairing is then the routine's own arithmetic on its own
 //     values, and the depth is the MAC3 average the routine bucketed by.
-//   * the ribbon leg re-walks the record array and mirrors the routine's per
-//     record rejects (the camera-relative box test, the shared-outcode test and
-//     the near-depth test) to predict how many segments each record emitted.
-//     The prediction is accepted only when the total equals the number of
-//     primitives captured; otherwise every primitive of the call is left
-//     unpaired, keeps its captured corners, and the census reports it.
+//   * the ribbon leg re-walks the record array and re-runs the routine's per
+//     record tests (the camera-relative box test, then each point's RTPS in
+//     the GTE's integer arithmetic for the shared-outcode, far and key tests)
+//     to predict the segments each record emitted. When the total equals the
+//     number of primitives captured they pair in emission order; otherwise
+//     each primitive pairs with the prediction whose two points it lies on,
+//     and one that none explains takes the mean depth of the nearest
+//     prediction's record and keeps its captured corners.
+//   * a mesh primitive past the replay's last paired entry takes the mean
+//     depth of the call's paired ones.
 //
 // Spyro 1's tracer.c is not made a client of this: its beam is re-derived in
 // float from tracer-point gamestate with its own ribbon-width and colour laws,
@@ -286,14 +290,23 @@ static void tr_corner_set(tr_corner* c, const ngte_view* v, uint32_t key, int ag
 
 /* ---- ribbon leg: predict the segments the record walk emitted -------------- */
 
-typedef struct { int32_t oc; int32_t sz3; double m3; tr_corner c; } rib_pt;
+/* One projected ring point: the routine's outcode word and SZ3 from the
+ * integer re-run of its RTPS, its integer screen point, and its float MAC3
+ * and source corner under the tick's view. */
+typedef struct { int32_t oc; int32_t sz3; int isx, isy; double m3; tr_corner c; } rib_pt;
 
 /* One predicted segment: its depth and the two points it joins, the head-side
  * one first. The routine writes corners 0 and 2 about the head-side point and
  * corners 1 and 3 about the next one (:3125-3141). `head`, `wb` and `count`
  * are the record's head point, signed width byte and ring point count, which
  * set every point's half-width. */
-typedef struct { float depth; tr_corner a, b, head; int wb, count; } rib_seg;
+typedef struct {
+    float     depth;
+    tr_corner a, b, head;
+    int       wb, count;
+    int       ax, ay, bx, by;   /* the two points' integer screen positions (SXY2) */
+    float     rec_depth;        /* the mean depth of its record's segments */
+} rib_seg;
 
 /** @brief Computes the ribbon routine's outcode word for a screen position (mobyfunc.s:2488-2508).
  *
@@ -319,15 +332,29 @@ static int32_t rib_outcode(int sx, int sy) {
     return oc;
 }
 
-/** @brief Computes the GTE SZ3 of a MAC3 value with sf = 1.
+/** @brief Re-runs the routine's RTPS of one ring point in the GTE's integer arithmetic and takes its outcode (:2974-3010).
  *
- * @param m3 The MAC3 value.
- * @return MAC3 floored and saturated to 0..65535. */
-static int32_t rib_sz3(double m3) {
-    double z = floor(m3);
-    if (z < 0.0) return 0;
-    if (z > 65535.0) return 65535;
-    return (int32_t)z;
+ * The routine packs VXY0 as (camY - Y) + ((camZ - Z) << 16) with one add, so
+ * a negative low half borrows one from VY0, and loads X - camX as VZ0; it
+ * runs RTPS under the camera rotation with the zero translation, OFX, OFY
+ * and H the GTE holds (H_canon, never the --fov scaled H), and keeps SZ3 and
+ * the outcode of SXY2 (rib_outcode). These are the values the routine's
+ * record, segment and key tests read.
+ * @param v The tick's view: the matrix, the offsets and H_canon.
+ * @param vx X - camX in half world units, the routine's VZ0.
+ * @param vy camY - Y, the routine's VX0.
+ * @param vz camZ - Z, the routine's VY0.
+ * @param pt Receives sz3, oc, isx and isy. */
+static void rib_rtps(const ngte_view* v, int32_t vx, int32_t vy, int32_t vz, rib_pt* pt) {
+    static const int k_tr0[3] = { 0, 0, 0 };
+    const uint32_t vxy = (uint32_t)vy + ((uint32_t)vz << 16);
+    ngte_rtps_out o;
+    ngte_rtps_int(v->cam_M, k_tr0, (int16_t)(vxy & 0xFFFFu), (int16_t)(vxy >> 16),
+                  (int16_t)vx, v->ofx, v->ofy, (int)v->H_canon, &o);
+    pt->sz3 = o.sz3;
+    pt->isx = o.sx;
+    pt->isy = o.sy;
+    pt->oc  = rib_outcode(o.sx, o.sy);
 }
 
 /** @brief Decodes the point a given number of places back from the head of a ribbon record's ring.
@@ -393,9 +420,8 @@ static int rib_project_record(CPUState* cpu, const ngte_view* v, uint32_t rec,
         ngte_proj o;
         ngte_project_gte(v->cam_M, NULL, (double)vy, (double)vz, (double)vx,
                          v->ofx, v->ofy, v, 0, &o);
-        pt[k].m3  = o.m3;
-        pt[k].sz3 = rib_sz3(o.m3);
-        pt[k].oc  = rib_outcode((int)lrint(o.sx), (int)lrint(o.sy));
+        pt[k].m3 = o.m3;
+        rib_rtps(v, vx, vy, vz, &pt[k]);
         and_oc &= pt[k].oc;
         const int32_t w[3] = { hw[0] * 2, hw[1] * 2, hw[2] * 2 };
         tr_corner_set(&pt[k].c, v, rec, k, w);
@@ -405,13 +431,52 @@ static int rib_project_record(CPUState* cpu, const ngte_view* v, uint32_t rec,
     return count;
 }
 
+/** @brief Predicts the segments one live ribbon record emitted, in emission order, and gives them the record's mean depth.
+ *
+ * The points are projected by rib_project_record; a consecutive pair is
+ * dropped when its two outcodes share an edge bit (:2652) or its
+ * ordering-table key is negative (:2692). Each kept segment carries its
+ * view-Z from the pair's mean MAC3, its two source corners head side first
+ * and their integer screen points.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view.
+ * @param rec The record's guest address.
+ * @param out Receives the segments from index n.
+ * @param n The segments predicted so far.
+ * @param cap The capacity of out; segments past it are counted, not written.
+ * @return The count of segments predicted so far, this record's included. */
+static int rib_predict_record(CPUState* cpu, const ngte_view* v, uint32_t rec,
+                              rib_seg* out, int n, int cap) {
+    static rib_pt pt[RIB_POINT_MAX];
+    const int count = rib_project_record(cpu, v, rec, s_cam_half, pt);
+    /* :3079-3080 the width is the signed byte 2 of the packed word. */
+    const int wb = (int)(int8_t)(uint8_t)(cpu->read_word(rec + TR.packed_off) >> 16);
+    const int first = n;
+    double sum = 0.0;
+    for (int k = 0; k + 1 < count; k++) {
+        if ((pt[k].oc & pt[k + 1].oc & 0xF) > 0) continue;        /* :2652 */
+        const int32_t key = ((pt[k].sz3 + pt[k + 1].sz3) >> 7) - 2;
+        if (key < 0) continue;                                    /* :2692 */
+        /* The record's halves are quarter world units and the routine halves
+         * the whole vector, so its MAC3 is half the world value. */
+        const float d = openpete_native_scene_viewz(
+            openpete_worldvz_scaled((float)((pt[k].m3 + pt[k + 1].m3) * 0.5), 2.0f));
+        sum += d;
+        if (n < cap) {
+            out[n] = (rib_seg){ .depth = d, .a = pt[k].c, .b = pt[k + 1].c, .head = pt[0].c,
+                                .wb = wb, .count = count, .ax = pt[k].isx, .ay = pt[k].isy,
+                                .bx = pt[k + 1].isx, .by = pt[k + 1].isy };
+        }
+        n++;
+    }
+    for (int i = first; i < n && i < cap; i++) out[i].rec_depth = (float)(sum / (n - first));
+    return n;
+}
+
 /** @brief Re-walks the ribbon record array and predicts every segment the routine emitted, in emission order.
  *
- * Per live record (counted in s_live) the points are projected by
- * rib_project_record; a consecutive pair is dropped when its two outcodes
- * share an edge bit (:2652) or its ordering-table key is negative (:2692).
- * Each kept segment carries its view-Z from the pair's mean MAC3 and its
- * two source corners, head side first.
+ * Every live record (counted in s_live) goes through rib_predict_record in
+ * slot order, the routine's order.
  * @param cpu The guest CPU state.
  * @param v The tick's view.
  * @param out Receives the segments.
@@ -422,65 +487,100 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, rib_seg* out, int cap)
     s_live = 0; s_boxed = 0;
     /* The camera position the routine reads, shifted right one like its own
      * `srl` so the box test compares the same values. */
-    const int32_t* cam = s_cam_half;
     for (int k = 0; k < 3; k++)
         s_cam_half[k] = (int32_t)(cpu->read_word(game_layout.cam.position + 4u * (uint32_t)k) >> 1);
-    static rib_pt pt[RIB_POINT_MAX];
     for (uint32_t s = 0; s < TR.slots; s++) {
         const uint32_t rec = TR.ring + s * TR.stride;
         if (cpu->read_word(rec + RIB_LIVE) == 0) continue;
         s_live++;
-        const int count = rib_project_record(cpu, v, rec, cam, pt);
-        /* :3079-3080 the width is the signed byte 2 of the packed word. */
-        const int wb = (int)(int8_t)(uint8_t)(cpu->read_word(rec + TR.packed_off) >> 16);
-        for (int k = 0; k + 1 < count; k++) {
-            if ((pt[k].oc & pt[k + 1].oc & 0xF) > 0) continue;        /* :2652 */
-            const int32_t key = ((pt[k].sz3 + pt[k + 1].sz3) >> 7) - 2;
-            if (key < 0) continue;                                    /* :2692 */
-            if (n < cap) {
-                /* The record's halves are quarter world units and the routine
-                 * halves the whole vector, so its MAC3 is half the world value. */
-                const double mz = (pt[k].m3 + pt[k + 1].m3) * 0.5;
-                out[n].depth = openpete_native_scene_viewz(
-                    openpete_worldvz_scaled((float)mz, 2.0f));
-                out[n].a = pt[k].c;
-                out[n].b = pt[k + 1].c;
-                out[n].head = pt[0].c;
-                out[n].wb = wb;
-                out[n].count = count;
-            }
-            n++;
-        }
+        n = rib_predict_record(cpu, v, rec, out, n, cap);
     }
     return n;
+}
+
+/** @brief Binds one captured ribbon primitive to a predicted segment: its depth, the ribbon source and its corners.
+ *
+ * Corners 0 and 2 come from the head-side point and 1 and 3 from the next
+ * (:3125-3141); the record's head point, width byte and point count set
+ * every point's half-width.
+ * @param it The primitive.
+ * @param g The segment. */
+static void rib_bind(tr_item* it, const rib_seg* g) {
+    it->depth = g->depth;
+    it->paired = 1;
+    it->src = TR_SRC_RIBBON;
+    it->c[0] = it->c[2] = g->a;
+    it->c[1] = it->c[3] = g->b;
+    it->head = g->head;
+    it->wb = g->wb;
+    it->count = g->count;
+}
+
+/* The squared screen distance, in PSX pixels summed over a segment's two
+ * ends, inside which a captured primitive is the segment's own: the
+ * routine's corners are its integer points plus and minus the half-width,
+ * so the mid of corners 0 and 2 and of 1 and 3 land on them within a pixel
+ * of the packed-add rounding. */
+#define RIB_PAIR_TOL2 8.0
+
+/** @brief The squared distance between a captured primitive's two corner-pair mids and a segment's two integer points.
+ * @param it The primitive.
+ * @param g The segment.
+ * @return The summed squared distance in PSX pixels. */
+static double rib_seg_dist2(const tr_item* it, const rib_seg* g) {
+    const double ax = 0.5 * ((double)it->p.x[0] + it->p.x[2]), ay = 0.5 * ((double)it->p.y[0] + it->p.y[2]);
+    const double bx = 0.5 * ((double)it->p.x[1] + it->p.x[3]), by = 0.5 * ((double)it->p.y[1] + it->p.y[3]);
+    return (ax - g->ax) * (ax - g->ax) + (ay - g->ay) * (ay - g->ay) +
+           (bx - g->bx) * (bx - g->bx) + (by - g->by) * (by - g->by);
+}
+
+static unsigned long s_rib_order, s_rib_matched, s_rib_meaned, s_rib_depth1;
+
+/** @brief Pairs a call whose predicted count differs from the captured one, primitive by primitive.
+ *
+ * The routine emits each record's segments in ring order and the records in
+ * slot order, so a cursor walks the predictions with the primitives: a
+ * primitive pairs with the first prediction at or past the cursor whose two
+ * points it lies on (RIB_PAIR_TOL2), and the cursor moves past it. A
+ * primitive no prediction explains takes the mean depth of the record whose
+ * prediction lies nearest, and stays unpaired: it keeps its captured corners.
+ * @param pred The predictions.
+ * @param n Their count, at most TR_MAX_PRIMS. */
+static void rib_pair_walk(const rib_seg* pred, int n) {
+    int cur = 0;
+    for (int i = 0; i < s_item_n; i++) {
+        tr_item* it = &s_item[i];
+        int best = -1, hit = -1;
+        double bd = INFINITY;
+        for (int j = 0; j < n; j++) {
+            const double d = rib_seg_dist2(it, &pred[j]);
+            if (j >= cur && hit < 0 && d <= RIB_PAIR_TOL2) hit = j;
+            if (d < bd) { bd = d; best = j; }
+        }
+        if (hit >= 0) { rib_bind(it, &pred[hit]); cur = hit + 1; s_rib_matched++; continue; }
+        if (best >= 0) { it->depth = pred[best].rec_depth; s_rib_meaned++; }
+        else s_rib_depth1++;
+    }
 }
 
 /** @brief Pairs the captured ribbon primitives with the record walk's predicted segments.
  *
  * Runs rib_predict and records its count in s_last_predicted. When the count
- * equals the captured primitive count, each item takes its segment's depth,
- * marks itself paired and takes the ribbon source with its corners 0 and 2
- * from the head-side point and 1 and 3 from the next, and the record's head
- * point, width byte and point count. On a mismatch every
- * item stays unpaired at the near-guard depth.
+ * equals the captured primitive count, the primitives bind in emission order
+ * (rib_bind); otherwise rib_pair_walk pairs them one by one. A call with no
+ * prediction leaves its primitives at the near-guard depth.
  * @param cpu The guest CPU state.
  * @param v The tick's view. */
 static void rib_pair_depths(CPUState* cpu, const ngte_view* v) {
     static rib_seg pred[TR_MAX_PRIMS];
     const int n = rib_predict(cpu, v, pred, TR_MAX_PRIMS);
     s_last_predicted = n;
-    if (n != s_item_n || n > TR_MAX_PRIMS) return;   /* every primitive stays unpaired */
-    for (int i = 0; i < n; i++) {
-        tr_item* it = &s_item[i];
-        it->depth = pred[i].depth;
-        it->paired = 1;
-        it->src = TR_SRC_RIBBON;
-        it->c[0] = it->c[2] = pred[i].a;
-        it->c[1] = it->c[3] = pred[i].b;
-        it->head = pred[i].head;
-        it->wb = pred[i].wb;
-        it->count = pred[i].count;
+    if (n == s_item_n && n <= TR_MAX_PRIMS) {
+        for (int i = 0; i < n; i++) rib_bind(&s_item[i], &pred[i]);
+        s_rib_order += (unsigned long)n;
+        return;
     }
+    rib_pair_walk(pred, n < TR_MAX_PRIMS ? n : TR_MAX_PRIMS);
 }
 
 /* ---- mesh leg: replay the emit test out of the routine's own scratchpad ---- */
@@ -564,6 +664,36 @@ static void msh_set_corners(CPUState* cpu, const ngte_view* v, tr_item* it,
     }
 }
 
+/** @brief Whether every vertex index of a mesh index entry lies inside the scratchpad table.
+ * @param w0 The entry's first word: four 8-bit vertex indices (:3236-3251).
+ * @return 1 when all four 8-byte slots lie inside SPAD_MAX_VERTS, else 0. */
+static int msh_entry_in_table(uint32_t w0) {
+    for (int k = 0; k < 4; k++)
+        if (((w0 >> (8 * k)) & 0xFFu) >= SPAD_MAX_VERTS) return 0;
+    return 1;
+}
+
+static unsigned long s_msh_order, s_msh_meaned, s_msh_depth1;
+
+/** @brief Gives the mesh primitives the replay could not reach the mean depth of those it paired.
+ *
+ * The replay stops at the index list's terminator, or at an entry naming a
+ * slot outside the scratchpad table, before the captured primitives run out
+ * only when it and the routine disagree; such a primitive stays unpaired and
+ * keeps its captured corners. A call that paired none leaves them at the
+ * near-guard depth.
+ * @param paired The count of leading items the replay paired. */
+static void msh_mean_rest(int paired) {
+    s_msh_order += (unsigned long)paired;
+    if (paired >= s_item_n) return;
+    double sum = 0.0;
+    for (int i = 0; i < paired; i++) sum += s_item[i].depth;
+    for (int i = paired; i < s_item_n; i++) {
+        if (paired > 0) { s_item[i].depth = (float)(sum / paired); s_msh_meaned++; }
+        else s_msh_depth1++;
+    }
+}
+
 /** @brief Pairs the captured mesh primitives with the entries the routine emitted, in order.
  *
  * Replays the routine's emit test over the descriptor's index list against
@@ -572,15 +702,16 @@ static void msh_set_corners(CPUState* cpu, const ngte_view* v, tr_item* it,
  * the entry's summed SZ and the descriptor's shift and is marked paired. When
  * the vertex list is a valid KSEG0 RAM address the list is noted and each
  * paired item gets its four vertex corners. The walk ends at the -1
- * terminator or when every item is paired, and returns with the remaining
- * items unpaired on an index outside the scratchpad table or an index list
- * outside KSEG0 RAM.
+ * terminator, at an entry with an index outside the scratchpad table, or
+ * when every item is paired; msh_mean_rest then places the items left. An
+ * index list outside KSEG0 RAM leaves every item unpaired at the near-guard
+ * depth.
  * @param cpu The guest CPU state.
  * @param v The tick's view.
  * @param desc The mesh descriptor's guest address. */
 static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
     const uint32_t ilist = cpu->read_word(desc + MSH_INDICES);
-    if (ilist < 0x80000000u || ilist >= 0x80800000u) return;
+    if (ilist < 0x80000000u || ilist >= 0x80800000u) { s_msh_depth1 += (unsigned long)s_item_n; return; }
     const uint32_t vlist = cpu->read_word(desc + MSH_VERTS);
     const int have_verts = msh_note_desc(cpu, desc);
     const int shift = (int)cpu->read_word(desc + MSH_SHIFT);
@@ -589,7 +720,7 @@ static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
     int i = 0;
     for (uint32_t e = ilist; i < s_item_n; e += 8u) {
         const uint32_t w0 = cpu->read_word(e);
-        if (w0 == 0xFFFFFFFFu) break;
+        if (w0 == 0xFFFFFFFFu || !msh_entry_in_table(w0)) break;
         /* :3236-3251 four 8-bit vertex indices, each scaled to its 8-byte
          * scratchpad slot before the table read. */
         const uint32_t off[4] = {
@@ -600,7 +731,6 @@ static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
         };
         int32_t and_oc = -1, zsum = 0;
         for (int k = 0; k < 4; k++) {
-            if (off[k] >= SPAD_MAX_VERTS * 8u) return;   /* outside the table */
             const int32_t w1 = (int32_t)cpu->read_word(TR.spad + off[k] + 4u);
             and_oc &= w1;
             zsum += w1 >> 16;                            /* :3241 sra 16 */
@@ -615,6 +745,7 @@ static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
         if (have_verts) msh_set_corners(cpu, v, &s_item[i], vlist, off, shift);
         i++;
     }
+    msh_mean_rest(i);
 }
 
 /* ---- feed ---------------------------------------------------------------- */
@@ -799,8 +930,11 @@ static int tr_hold(CPUState* cpu, const ngte_view* v) {
  *
  * The line carries the polybuf interval, the primitives captured by GPU
  * code, the native triangles fed from them, the segments the record walk
- * predicted, the unpaired primitives, the live and boxed record counts and
- * the held set's size. A capture whose fed count is zero measured nothing.
+ * predicted, the unpaired primitives, the live and boxed record counts,
+ * the held set's size, and the run's totals of ribbon primitives bound in
+ * emission order, matched one by one, given their record's mean depth or
+ * left at depth 1, and of mesh primitives paired, given the call's mean depth
+ * or left at depth 1. A capture whose fed count is zero measured nothing.
  * @param leg The producer's name, "ribbon" or "mesh".
  * @param start The polybuf cursor before the call.
  * @param end The polybuf cursor after the call.
@@ -816,8 +950,12 @@ static void tr_census(const char* leg, uint32_t start, uint32_t end, uint32_t fe
     memset(seen, 0, sizeof seen);
     for (int i = 0; i < s_item_n; i++) seen[s_item[i].p.code]++;
     for (int c = 0; c < 256; c++) if (seen[c]) fprintf(stderr, " %02X:%u", c, seen[c]);
-    fprintf(stderr, " fed_tris=%u predicted=%d unpaired=%d live=%d boxed=%d tick=%d\n",
-            s_fed_tris - fed_before, s_last_predicted, unpaired, s_live, s_boxed, s_tick_n);
+    fprintf(stderr, " fed_tris=%u predicted=%d unpaired=%d live=%d boxed=%d tick=%d"
+                    " total rib order=%lu matched=%lu meaned=%lu depth1=%lu"
+                    " msh order=%lu meaned=%lu depth1=%lu\n",
+            s_fed_tris - fed_before, s_last_predicted, unpaired, s_live, s_boxed, s_tick_n,
+            s_rib_order, s_rib_matched, s_rib_meaned, s_rib_depth1,
+            s_msh_order, s_msh_meaned, s_msh_depth1);
 }
 
 /* ---- hooks ---------------------------------------------------------------- */

@@ -35,8 +35,12 @@
 // corners carry the floors of its >> 6 basis scale, its RTPS and its yaw >> 4,
 // which change from tick to tick; the float fan has none of them. What the
 // primitives would not carry either is depth - the PSX orders them by
-// ordering-table bucket - so each fan's depth comes from the key its record
-// links at (glow_record_depth).
+// ordering-table bucket - so each fan carries the key its record links at
+// (glow_record_depth): its stored depth is the front edge of that bucket, which
+// orders it against terrain as the table does, and the key itself contests the
+// actor key image per pixel (the aura contest, psx_key_contest.glsl
+// op_aura_loses), which orders it against every moby face by that face's own
+// bucket, depth offset included.
 //
 // The routine's lateral cull is the 4:3 frame plus a fixed margin. In a wider
 // view a record it dropped on that test alone is drawn too unless its fan has
@@ -96,6 +100,7 @@ extern unsigned openpete_frame;
  * left it), and the camera yaw halfword the routine read. */
 typedef struct {
     float    depth;
+    int      key;        /* the bucket it links at, -1 for the front entry */
     uint32_t addr;
     int32_t  w[3];
     uint32_t packed;
@@ -177,33 +182,51 @@ static void glow_capture_guest(CPUState* cpu, uint32_t start, uint32_t end) {
         if (s_guest[i].code == GLOW_DRMODE) s_groups++;
 }
 
-/** @brief The fan's native depth from the ordering-table key the routine links it at.
+/** @brief Whether the fans contest the actor key image by their bucket, latched on first use.
+ *
+ * On while the key pass runs (openpete_native_key_resolve_on), unless
+ * OPENPETE_GLOW_KEY starts with '0', which restores the depth-only order
+ * (glow_record_depth) for an A/B from one binary.
+ * @return 1 when the fans carry their key, else 0. */
+static int glow_key_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_GLOW_KEY"); v = !(e && *e == '0'); }
+    return v && openpete_native_key_resolve_on();
+}
+
+/** @brief The fan's native depth and its ordering-table key, from the key the routine links it at.
  *
  * The key is (MAC3 >> 7) - bias (Spyro 2 mobyfunc.s:2048-2049, Spyro 3 :2052-2053). A
  * negative key links at bucket 0 (Spyro 2 :2050-2052); on a game with the
  * front-entry branch, a record whose bias byte is front_bias links one entry
  * before bucket 0 instead (Spyro 3 :2054-2059), which is drawn after the whole
- * table and so takes the nearest depth. The key plus the owning moby's depth
- * offset converts to view-Z on the moby feeders' scale, so the fan sorts against
- * that moby's faces as the table sorts them: over every face of its own slot and
- * beyond, under every nearer one. With the allocator's bias of 4 and an owner
- * offset of 4 the two pulls cancel and the fan sits at the front edge of its
- * own view-Z slot. Against a surface whose native depth carries no authored
- * pull (terrain), the table puts the fan bias slots nearer than this depth
- * does. The fan is additive on a pipeline that writes no depth
- * (native_render.c gouraud_add_desc), so this depth decides only which opaque
- * pixels it adds onto; it occludes nothing.
+ * table and so takes the nearest depth and key -1. With the key pass on, the
+ * depth is the front edge of the key's own bucket on the moby feeders' scale
+ * (openpete_worldvz_owner_slot): against terrain, whose native depth carries
+ * no authored pull, that is the table's verdict, bias slots nearer than the
+ * record; against a moby face the key decides per pixel instead (the aura
+ * contest, glow_feed_tri), since a face nearer than the bucket's front edge
+ * links at a nearer bucket unless its depth offset is negative. Without the key pass the depth adds GW.owner_offset,
+ * the depth offset of the moby a glow most often sits on, so the fan sorts
+ * against that moby's faces by depth alone. The fan is additive on a
+ * pipeline that writes no depth (native_render.c gouraud_add_desc), so this
+ * depth decides only which opaque pixels it adds onto; it occludes nothing.
  * @param m3 The record's view-space MAC3.
  * @param bias The record's signed ordering-table bias byte.
+ * @param key Receives the bucket the record links at, -1 for the front entry.
  * @return The scene depth the fan's triangles take. */
-static float glow_record_depth(double m3, int bias) {
-    int key = (int)((uint32_t)(int32_t)m3 >> 7) - bias;
-    if (key < 0) {
-        if (GW.front_bias >= 0 && bias == GW.front_bias)
+static float glow_record_depth(double m3, int bias, int* key) {
+    int k = (int)((uint32_t)(int32_t)m3 >> 7) - bias;
+    if (k < 0) {
+        if (GW.front_bias >= 0 && bias == GW.front_bias) {
+            *key = -1;
             return openpete_native_scene_viewz(openpete_worldvz_full(1.0f));
-        key = 0;
+        }
+        k = 0;
     }
-    return openpete_native_scene_viewz(openpete_worldvz_owner_slot(key + GW.owner_offset));
+    *key = k;
+    const int pull = glow_key_on() ? 0 : GW.owner_offset;
+    return openpete_native_scene_viewz(openpete_worldvz_owner_slot(k + pull));
 }
 
 /* The routine's verdict on one pool record, in the order it tests them. */
@@ -386,7 +409,7 @@ static void glow_fan_build(CPUState* cpu, const ngte_view* v, const glow_src* r,
  * @param f The fan. */
 static void glow_fan_append(const glow_src* r, int yaw, const glow_fan* f) {
     glow_rec rec;
-    rec.depth = glow_record_depth(r->m3, (int)(int8_t)(uint8_t)((r->packed >> 24) & 0xFFu));
+    rec.depth = glow_record_depth(r->m3, (int)(int8_t)(uint8_t)((r->packed >> 24) & 0xFFu), &rec.key);
     rec.addr = r->addr;
     for (int k = 0; k < 3; k++) rec.w[k] = r->w[k];
     rec.packed = r->packed;
@@ -427,6 +450,108 @@ static int glow_cull_log_on(void) {
 static int glow_census_on(void) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     return env_frame_range_active(&s_range, "OPENPETE_GLOW_CENSUS", openpete_frame);
+}
+
+/* ---- owner census ----------------------------------------------------------
+ *
+ * The allocator (Spyro 2 func_8004A87C, Spyro 3 func_8002EC50) stores the
+ * shape, size, colour, a random phase and the bias 4 and returns the record;
+ * the caller keeps the pointer in its own moby's tag block (the word at moby
+ * +0x00): at +0x08 on the Glimmer lamps (level overlay 0x80079BD8
+ * `sw $v0, 0x8($s5)`, $s5 the tag loaded at 0x80079A5C) and at +0x10 on
+ * Sparx; the Spyro 3 call sites store it at up to +0x5C of their base
+ * register. The record holds no pointer back, so the census finds the
+ * owner by that link: the moby whose tag block holds the record's address
+ * at the smallest offset under GLOW_OWNER_SCAN, the block that starts
+ * nearest below the word. A record no block links falls back to the nearest
+ * live moby. The census also names the live moby nearest the record, the
+ * one the fan sits on. Neither enters the feed: the key contest orders the
+ * fan against every moby by that moby's own bucket. */
+
+#define GLOW_OWNER_SCAN 0x60u   /* tag-block bytes searched for a record pointer */
+
+/* One owner lookup: the linking moby (or the nearest one), the link's offset
+ * in its tag block (-1 for a fallback) and the nearest live moby. */
+typedef struct {
+    uint32_t owner;
+    int      link_off;
+    uint32_t sits;
+    double   sits_d2;
+} glow_owner;
+
+static unsigned long s_own_linked, s_own_nearest;
+
+/** @brief Fold one moby into an owner lookup: its tag-block link to the record, and its distance from it.
+ * @param cpu The guest CPU state, read only.
+ * @param m The moby.
+ * @param r The record.
+ * @param o The lookup, updated. */
+static void glow_owner_visit(CPUState* cpu, uint32_t m, const glow_src* r, glow_owner* o) {
+    const uint32_t tag = cpu->read_word(m);
+    if (tag >= 0x80000000u && tag < 0x80800000u)
+        for (uint32_t off = 0; off < GLOW_OWNER_SCAN && (o->link_off < 0 || (int)off < o->link_off); off += 4u)
+            if (cpu->read_word(tag + off) == r->addr) { o->owner = m; o->link_off = (int)off; break; }
+    if (cpu->read_byte(m + game_layout.moby.state_off) & 0x80u) return;   /* dormant */
+    double d2 = 0.0;
+    for (uint32_t k = 0; k < 3u; k++) {
+        const double d = (double)(int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u * k) - r->w[k];
+        d2 += d * d;
+    }
+    if (o->sits == 0u || d2 < o->sits_d2) { o->sits = m; o->sits_d2 = d2; }
+}
+
+/** @brief Find a record's owner by its tag-block link, else the nearest live moby, and the moby it sits on.
+ * @param cpu The guest CPU state, read only.
+ * @param r The record.
+ * @param o Receives the lookup; owner 0 when the moby array is unreadable. */
+static void glow_owner_find(CPUState* cpu, const glow_src* r, glow_owner* o) {
+    memset(o, 0, sizeof *o);
+    o->link_off = -1;
+    const uint32_t head = game_layout.moby.array_head;
+    const uint32_t arr = game_layout.moby.array_direct ? head : cpu->read_word(head);
+    if (arr < 0x80000000u || arr >= 0x80800000u) return;
+    for (uint32_t i = 0; i < 1024u; i++) {
+        const uint32_t m = arr + i * game_layout.moby.array_stride;
+        if (cpu->read_byte(m + game_layout.moby.state_off) == game_layout.moby.state_term) break;
+        glow_owner_visit(cpu, m, r, o);
+    }
+    if (o->link_off < 0) o->owner = o->sits;
+    if (o->link_off < 0) s_own_nearest++; else s_own_linked++;
+}
+
+/** @brief A moby's authored depth offset (the signed byte at angle_off + 3, +0x47), 0 for no moby.
+ * @param cpu The guest CPU state, read only.
+ * @param m The moby, or 0.
+ * @return The offset in ordering-table slots. */
+static int glow_moby_dofs(CPUState* cpu, uint32_t m) {
+    return m ? (int)(int8_t)cpu->read_byte(m + game_layout.moby.angle_off + 3u) : 0;
+}
+
+/** @brief Print one accepted record's owner census line.
+ *
+ * Names the owner (the tag-block link, or `nearest` for a fallback), its
+ * class and depth offset, and the slot the record's key reaches against it
+ * (key + offset); then the same for the live moby the record sits on; then
+ * the slot the fed depth stands at and whether the fan contests by its key.
+ * @param cpu The guest CPU state, read only.
+ * @param slot The pool slot.
+ * @param r The record.
+ * @param rec The record as appended (glow_fan_append). */
+static void glow_owner_line(CPUState* cpu, uint32_t slot, const glow_src* r, const glow_rec* rec) {
+    glow_owner o;
+    glow_owner_find(cpu, r, &o);
+    const int od = glow_moby_dofs(cpu, o.owner), sd = glow_moby_dofs(cpu, o.sits);
+    const uint32_t cls = game_layout.moby.class_off;
+    char link[16];
+    if (o.link_off >= 0) snprintf(link, sizeof link, "+0x%02X", (unsigned)o.link_off);
+    else snprintf(link, sizeof link, "nearest");
+    fprintf(stderr, "[glow-owner f=%u] slot=%u rec=%08X key=%d owner=%08X cls=%03X link=%s dofs=%d"
+                    " owner_slot=%d sits=%08X sits_cls=%03X sits_dofs=%d sits_dist=%.0f sits_slot=%d"
+                    " fed_slot=%.2f contest=%d linked=%lu nearest=%lu\n",
+            openpete_frame, slot, r->addr, rec->key, o.owner, o.owner ? cpu->read_half(o.owner + cls) : 0u,
+            link, od, rec->key + od, o.sits, o.sits ? cpu->read_half(o.sits + cls) : 0u, sd,
+            sqrt(o.sits_d2), rec->key + sd, ((double)rec->depth + OPENPETE_MOBY_TIE_PULL_VZ) / OPENPETE_OT_SLOT_VZ,
+            glow_key_on(), s_own_linked, s_own_nearest);
 }
 
 /** @brief OPENPETE_GLOW_VTX, latched on first use: 0 off, 1 the exit summary, 2 also per-tick lines.
@@ -695,9 +820,10 @@ typedef struct {
  * (glow_fan_build) and appended, and counts into s_accepted. In a view wider
  * than 4:3, a record the routine rejected on its lateral pyramid test alone is
  * built too and offered to glow_wide_admit. With the cull log in range each
- * live record past the box test prints a line; with the log or the probe on,
- * an accepted record's fan at the routine's integer angle is kept in the
- * context.
+ * live record past the box test prints a line; with the census in range each
+ * accepted record prints its owner line (glow_owner_line); with the log or
+ * the probe on, an accepted record's fan at the routine's integer angle is
+ * kept in the context.
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view.
  * @param s The pool slot.
@@ -718,6 +844,7 @@ static void glow_capture_rec(CPUState* cpu, const ngte_view* v, uint32_t s, glow
         c->vslot[a] = (int)s;
         if (c->log || c->vtx) glow_fan_build_int(cpu, v, &r, c->yaw, &c->fi[a]);
         glow_fan_append(&r, c->yaw, &f);
+        if (glow_census_on() && s_item_n > c->first[a]) glow_owner_line(cpu, s, &r, &s_item[c->first[a]].src);
         view = "accept";
         s_accepted++;
     } else if (reveal) {
@@ -772,19 +899,54 @@ static int glow_feed_enabled(void) {
     return v;
 }
 
+/** @brief Add one fan triangle to the native scene as an untextured additive WORLD triangle.
+ *
+ * The fan is flat in view-Z, so any constant W interpolates its colour
+ * screen-linearly: the item's depth serves as both. The vertex colours are
+ * made opaque. A triangle whose record links at a bucket carries it in
+ * ot_slot1. With `key` and a bucket above 0 it also carries the aura rank and
+ * a koff whose slot is one bucket nearer than its own, which runs the aura
+ * contest against the actor key image (psx_key_contest.glsl op_aura_loses):
+ * the fan loses a pixel whose actor or player key lies in that slot or
+ * nearer. The routine appends the fan at its bucket's tail (Spyro 2
+ * mobyfunc.s:2141-2151), after the moby faces the moby draw, which the world
+ * draw runs first (draw/func_800155A0.s:16, the glow routine at :30), spliced
+ * into the same bucket at its tail (mobydraw.s 0x80045444-0x80045478), so a
+ * face of the fan's own bucket is painted under it; the contest's own slot
+ * is therefore the bucket less one. A fan at bucket 0 wins every face and
+ * carries no contest. Counts the triangle in s_fed_tris.
+ * @param it The triangle.
+ * @param key Nonzero when the fan contests by its bucket (glow_key_on). */
+static void glow_feed_tri(const glow_item* it, int key) {
+    const ngte_prim* p = &it->p;
+    openpete_scene_tri st = {0};
+    for (int k = 0; k < 3; k++) {
+        st.v[k].sx = p->x[k]; st.v[k].sy = p->y[k];
+        st.v[k].z = it->depth; st.v[k].pvz = it->depth;
+        st.v[k].rgba = (p->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
+    }
+    st.blend = it->blend;
+    if (it->src.key >= 0) st.ot_slot1 = it->src.key + 1;
+    if (key && it->src.key > 0) {
+        st.koff = (float)((double)(it->src.key - 1) * OPENPETE_OT_SLOT_WORLD + 0.5);
+        st.rank = OPENPETE_SCENE_RANK_AURA;
+    }
+    openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
+    s_fed_tris++;
+}
+
 /** @brief Push every queued triangle to the native scene at the positions this present shows.
  *
  * Does nothing when OPENPETE_GLOW suppresses the feed or nothing was
- * captured. Each triangle becomes one untextured WORLD triangle at its item's
- * depth (also used as the constant W), with the item's blend and the vertex
- * colours made opaque. A triangle of the companion's ring is skipped while the
- * player is hidden (player_hide_active). Counts the triangles in s_fed_tris and
- * tags them as glow particles with sel 0, since a glow ring carries no game
- * particle class. */
+ * captured. Each triangle goes to the scene through glow_feed_tri, tagged as
+ * a glow particle with sel 0, since a glow ring carries no game particle
+ * class. A triangle of the companion's ring is skipped while the player is
+ * hidden (player_hide_active). */
 static void glow_feed_native(void) {
     if (!glow_feed_enabled()) return;
     if (s_item_n <= 0) return;
     const int hide_player = player_hide_active();
+    const int key = glow_key_on();
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_GLOW, 0, 0));
     for (int i = 0; i < s_item_n; i++) {
@@ -794,14 +956,7 @@ static void glow_feed_native(void) {
         player_hide_count_data(sparx ? PH_CAT_SPARX_GLOW : PH_CAT_OTHER_GLOW,
                                sparx && hide_player, p, sizeof *p);
         if (sparx && hide_player) continue;
-        /* The fan is flat in view-Z, so any constant W interpolates its
-         * colour screen-linearly: the slot view-Z serves as W. */
-        static const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-        const float x[4] = { p->x[0], p->x[1], p->x[2], 0.0f };
-        const float y[4] = { p->y[0], p->y[1], p->y[2], 0.0f };
-        const uint32_t rgb[4] = { p->rgb[0], p->rgb[1], p->rgb[2], 0u };
-        s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, zu, zu, rgb, s_item[i].depth,
-                                                    NULL, s_item[i].blend, 3);
+        glow_feed_tri(&s_item[i], key);
     }
     openpete_native_scene_set_tag(0);
 }
