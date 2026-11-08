@@ -33,7 +33,7 @@
 
 /** One named write: guest address, width, target value, owning game. */
 typedef struct {
-    const char* name;   /**< Button label; unique across the table. */
+    const char* name;   /**< Button label; unique among one game's rows. */
     const char* game;   /**< Game id the address belongs to. */
     uint32_t    addr;   /**< Guest virtual address. */
     uint32_t    width;  /**< Access width in bytes: 1, 2 or 4. */
@@ -46,13 +46,65 @@ typedef struct {
  * stores 1 there when Ripto is beaten; the save writer copies the table
  * into the card record. Winter Tundra's portal-gate object (class 0x16D)
  * tests it every tick and, when nonzero, enables the Dragon Shores portal
- * record and frees itself (level_50 moby_update 0x80076830-0x800768B8). */
+ * record and frees itself (level_50 moby_update 0x80076830-0x800768B8).
+ *
+ * Spyro 2 0x80064682, 0x80064686, 0x8006468A: the halfwords of progress
+ * entries 4, 5 and 6, the swim, climb and headbash purchases. An entry's
+ * low halfword is Moneybags' price and its high halfword the paid flag; the
+ * dialogue script's pay opcode stores 1 there once the gem count covers the
+ * price (func_8003A568, sh at 0x8003A708). The player code reads each flag
+ * at the gate, every time, so a write takes effect without a reload:
+ *   - 0x80064682 in the swim code each overlay with water carries (level_10
+ *     spyro, lh at 0x8006FB48 and 0x8006FCC0): Square at the surface
+ *     (state 0x2C) dives (state 0x28) only while it is nonzero. The
+ *     water-entry test (func_8002A4C8, lh at 0x8002A67C) reads it too: a
+ *     fall (state 0x15) or headbash into deep water goes under (state
+ *     0x2A) while it is nonzero and stops at the surface while it is zero;
+ *   - 0x80064686 at the head of the ladder test (func_8002D328, lh at
+ *     0x8002D32C), which returns 0 at once while it is zero;
+ *   - 0x8006468A in the airborne triangle test (func_80035D38, lh at
+ *     0x800366B8 and 0x80036F38), which enters the headbash state 0x2E.
+ *
+ * Spyro 2 0x800698BB: the permanent superflame byte. The powerup gate's
+ * case 10 stores 1 (level_11 moby_update sb at 0x80076030; the gate's code
+ * is repeated in each overlay that places one); the flame button takes
+ * the superflame shot (0x8006A15C = 6, no flame ribbon) while it or the
+ * superflame powerup timer 0x8006A1C8 is nonzero (func_8002FC20, lbu at
+ * 0x8002FE40). The save writer copies it into the card record and the
+ * loader restores it (titlescreen_and_loading 0x80076834, 0x80076A8C); the
+ * new-game reset of the 0x18-byte block at 0x800698B8 keeps it
+ * (func_8001AAA4).
+ *
+ * Spyro 3 0x8006FB93: the same byte, g_CheatFlags + 3, with the same
+ * powerup-gate case 10 writer (level_10 moby sb at 0x8007A754), the same
+ * superflame test beside the timer at g_Spyro + 0x1D0 (func_80045D70, lbu
+ * at 0x80046058) and the same new-game reset that keeps it
+ * (func_80054E5C). */
 static const action_t k_actions[] = {
     { "Ripto defeated (opens the Dragon Shores portal)", "spyro-2",
       0x800646AEu, 2u, 1u,
       "Spyro 2 0x800646AE = 1: Ripto's Arena sets it when Ripto is beaten; "
       "Winter Tundra's portal gate opens the Dragon Shores portal while it "
       "is nonzero. A save written afterwards keeps it." },
+    { "Swim (dive underwater)", "spyro-2", 0x80064682u, 2u, 1u,
+      "Spyro 2 0x80064682 = 1: the paid flag of Moneybags' swim lesson. "
+      "While it is nonzero Square at the water's surface dives; at zero "
+      "Spyro stays at the surface." },
+    { "Climb (ladders)", "spyro-2", 0x80064686u, 2u, 1u,
+      "Spyro 2 0x80064686 = 1: the paid flag of Moneybags' climb lesson. "
+      "The ladder test returns at once while it is zero." },
+    { "Headbash (triangle in the air)", "spyro-2", 0x8006468Au, 2u, 1u,
+      "Spyro 2 0x8006468A = 1: the paid flag of Moneybags' headbash "
+      "lesson. Triangle in the air starts the headbash while it is "
+      "nonzero." },
+    { "Permanent superflame", "spyro-2", 0x800698BBu, 1u, 1u,
+      "Spyro 2 0x800698BB = 1: the powerup gate's permanent-superflame "
+      "case sets it; the flame button fires the superflame shot while it "
+      "is nonzero. The card record keeps it." },
+    { "Permanent superflame", "spyro-3", 0x8006FB93u, 1u, 1u,
+      "Spyro 3 0x8006FB93 = 1 (g_CheatFlags + 3): the powerup gate's "
+      "permanent-superflame case sets it; the flame button fires the "
+      "superflame shot while it is nonzero." },
 };
 
 #define N_ACTIONS ((int)(sizeof k_actions / sizeof k_actions[0]))

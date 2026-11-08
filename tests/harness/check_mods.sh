@@ -151,6 +151,39 @@ source tests/harness/mods_sdk_rungs.sh
 source tests/harness/mods_multigame_rungs.sh
 # shellcheck source=tests/harness/mods_games_rungs.sh
 source tests/harness/mods_games_rungs.sh
+
+# ── debug-flags: each row of the running game writes once and reads back ──
+# The config.toml key `test.apply_tick` queues every row of the running
+# game at that tick. The tick hook writes a queued row and clears its bit on
+# the first tick that reads the target value back, so a row whose write
+# lands logs exactly one write line; a second line for a row means the
+# value did not read back. The expected count is the number of rows the
+# source table carries for the game, so a new row enters the rung with no
+# edit here; the mod's own row count at entry must agree with it.
+say "debug-flags: each $PG_GAME row writes once and reads back"
+rm -rf "${WORK:?}/dbg"; mkdir -p "$WORK/dbg"
+cp -r "$MODS_SRC/debug-flags" "$WORK/dbg/debug-flags"
+rm -rf "${WORK:?}/dbg/debug-flags/.build"
+echo debug-flags > "$WORK/dbg/enabled.txt"
+printf '[test]\napply_tick = 200\n' > "$WORK/dbg/debug-flags/config.toml"
+dbg_want="$(grep -cE "^ *\{ \"[^\"]*\", \"$PG_GAME\"," \
+    "$MODS_SRC/debug-flags/src/debug_flags.c" || true)"
+out="$(run_game "$WORK/dbg" $((1200 + KEY0)))"
+dbg_rows="$(printf '%s\n' "$out" |
+    sed -n "s/.*debug-flags: \([0-9]*\) action(s) for $PG_GAME.*/\1/p" | head -1)"
+dbg_at="$(printf '%s\n' "$out" |
+    grep -cE "mod:debug-flags: .* = [0-9]+ \(was [0-9]+\), tick 200$" || true)"
+dbg_all="$(printf '%s\n' "$out" |
+    grep -cE "mod:debug-flags: .* = [0-9]+ \(was [0-9]+\), tick [0-9]+$" || true)"
+if [ "${dbg_rows:-x}" != "$dbg_want" ]; then
+    bad "debug-flags: the mod reports ${dbg_rows:-no} row(s) for $PG_GAME, the table holds $dbg_want"
+elif [ "$dbg_at" -ne "$dbg_want" ] || [ "$dbg_all" -ne "$dbg_want" ]; then
+    bad "debug-flags: $dbg_at write(s) at tick 200 and $dbg_all in all for $dbg_want row(s)"
+elif [ "$dbg_want" -eq 0 ]; then
+    ok "debug-flags: the table holds no $PG_GAME row and the mod wrote nothing"
+else
+    ok "debug-flags: $dbg_want row(s) written at tick 200, each read back on the next tick"
+fi
 fi
 
 # ══ section matrix: Spyro 1's cross-mod matrix and [test]-block runner ═

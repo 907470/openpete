@@ -17,6 +17,23 @@
 #   Tundra opens the portal without a reload. The game also reads it in
 #   the pause menu (func_800176A4), the HUD (func_8004F6F4) and code in
 #   every level overlay.
+# - Spyro 2, "Swim (dive underwater)", "Climb (ladders)" and "Headbash
+#   (triangle in the air)": the halfwords 0x80064682, 0x80064686 and
+#   0x8006468A = 1, the paid flags of progress entries 4, 5 and 6, which
+#   Moneybags' pay opcode stores when the lesson is bought (func_8003A568).
+#   The player code reads each one at its gate every time: the swim code
+#   of the overlays with water dives on Square at the surface only while
+#   0x80064682 is nonzero, the ladder test (func_8002D328) returns at once
+#   while 0x80064686 is zero, and the airborne triangle test
+#   (func_80035D38) starts the headbash only while 0x8006468A is nonzero.
+#   A press takes effect in the running level.
+# - Spyro 2, "Permanent superflame": the byte 0x800698BB = 1, which the
+#   powerup gate's permanent-superflame case sets. The flame button fires
+#   the superflame shot while it is nonzero (func_8002FC20); the card
+#   record keeps it.
+# - Spyro 3, "Permanent superflame": the byte 0x8006FB93 = 1
+#   (g_CheatFlags + 3), set by the same powerup-gate case and read by the
+#   flame code (func_80045D70) the same way.
 #
 # The flags are guest RAM and a save written after a press keeps them.
 # Play on scratch cards (--card1/--card2) or --no-card to keep a save
@@ -26,7 +43,7 @@
 # uses: `api->override_name` - the Spyro 1 tick hook on GamestateUpdate
 # uses: `api->override_addr` - the Spyro 2 and 3 tick hooks, by address
 # uses: `api->base` - each hook is a pre-hook and runs the game update after the writes
-# uses: `op_read_u16` / `op_write_u16` - reads each flag for the panel and writes queued ones
+# uses: `op_read_u8` / `op_read_u16` / `op_write_u8` / `op_write_u16` - reads each flag for the panel and writes queued ones
 # uses: `api->game_id` - selects the running game's rows
 # uses: `api->config_int` - the headless test trigger
 # uses: `api->log` - one line per write
