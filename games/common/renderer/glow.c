@@ -182,16 +182,11 @@ static void glow_capture_guest(CPUState* cpu, uint32_t start, uint32_t end) {
         if (s_guest[i].code == GLOW_DRMODE) s_groups++;
 }
 
-/** @brief Whether the fans contest the actor key image by their bucket, latched on first use.
+/** @brief Whether the fans contest the actor key image by their bucket: while the key pass runs.
  *
- * On while the key pass runs (openpete_native_key_resolve_on), unless
- * OPENPETE_GLOW_KEY starts with '0', which restores the depth-only order
- * (glow_record_depth) for an A/B from one binary.
  * @return 1 when the fans carry their key, else 0. */
 static int glow_key_on(void) {
-    static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_GLOW_KEY"); v = !(e && *e == '0'); }
-    return v && openpete_native_key_resolve_on();
+    return openpete_native_key_resolve_on();
 }
 
 /** @brief The fan's native depth and its ordering-table key, from the key the routine links it at.
@@ -206,9 +201,8 @@ static int glow_key_on(void) {
  * no authored pull, that is the table's verdict, bias slots nearer than the
  * record; against a moby face the key decides per pixel instead (the aura
  * contest, glow_feed_tri), since a face nearer than the bucket's front edge
- * links at a nearer bucket unless its depth offset is negative. Without the key pass the depth adds GW.owner_offset,
- * the depth offset of the moby a glow most often sits on, so the fan sorts
- * against that moby's faces by depth alone. The fan is additive on a
+ * links at a nearer bucket unless its depth offset is negative. Without the
+ * key pass the fan sorts by that depth alone. The fan is additive on a
  * pipeline that writes no depth (native_render.c gouraud_add_desc), so this
  * depth decides only which opaque pixels it adds onto; it occludes nothing.
  * @param m3 The record's view-space MAC3.
@@ -225,8 +219,7 @@ static float glow_record_depth(double m3, int bias, int* key) {
         k = 0;
     }
     *key = k;
-    const int pull = glow_key_on() ? 0 : GW.owner_offset;
-    return openpete_native_scene_viewz(openpete_worldvz_owner_slot(k + pull));
+    return openpete_native_scene_viewz(openpete_worldvz_owner_slot(k));
 }
 
 /* The routine's verdict on one pool record, in the order it tests them. */

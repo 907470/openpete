@@ -1116,12 +1116,8 @@ typedef struct game_layout {
      * pyramid 4|X| - 3Z < `pyr_x` or 3|Y| - Z < `pyr_y`. `front_bias` is the
      * bias value whose records the routine links at the fixed front entry
      * instead of their own bucket; negative on a game whose routine has no
-     * such branch and clamps to bucket 0 instead. `owner_offset` is the
-     * authored depth offset, in ordering-table slots, of the moby a glow most
-     * often sits on: the fan's native depth adds it only while the key pass
-     * is off, so the fan sorts against that moby's faces by depth alone; with
-     * the key pass on, the fan contests every moby face by its bucket
-     * (games/common/renderer/glow.c glow_feed_tri).
+     * such branch and clamps to bucket 0 instead. The fan contests every moby
+     * face by its own bucket (games/common/renderer/glow.c glow_feed_tri).
      *
      * `shape_table` is the routine's table of 64-byte shape entries the
      * shape byte indexes from 1 (sixteen packed direction pairs, then up to
@@ -1145,7 +1141,6 @@ typedef struct game_layout {
         int32_t  near_z, far_z;
         int32_t  pyr_x, pyr_y;
         int      front_bias;
-        int      owner_offset;
         uint32_t shape_table;
         uint32_t cam_yaw_off;
         uint32_t solo_state_addr, solo_state, solo_flag;
