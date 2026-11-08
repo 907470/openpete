@@ -9845,19 +9845,18 @@ static int  s_tgpu_ca_walk;      /* env-anim colour sectors drawn from near chun
 static int  s_tgpu_ca_tab;       /* env-anim colour sectors drawn with a colour table (census) */
 static int  s_tgpu_ca_units;     /* ... their tables' store units (census) */
 
-/* Active portal-sky planes for the per-sector portal claim. Of the feed's
- * portal semantics, only two ever DROP a CPU-fed terrain tri - the inner-rim
- * cull (bounded by the rim sector broadphase: a sector failing it cannot
- * contain a rim candidate) and the transparent cover (blended faces
- * only, discarded per fragment on both paths). Opaque plane-cover needs no claim at all: covered pixels draw at
- * true depth and the preview repaints over them in core, whoever drew them.
- * So a sector claims iff it passes the rim broadphase, or it has a blended
- * face and its projected bbox overlaps an active outline; everything else
- * near a portal keeps the GPU path and draws identically by construction.
- * s_tgpu_claim_all forces every sector to the CPU when a portal is recent
- * but its planes are momentarily unavailable (safe degenerate); with the
- * plane provider disabled (OPENPETE_TERRAIN_PORTAL_CONFORM=0) the feed
- * drops nothing, and the pre-refinement blanket bbox claim is kept. */
+/* Active portal-sky planes of this walk, the input of the retained rim and
+ * cover globals (tgpu_portal_frames). Of the feed's portal semantics only
+ * two drop a CPU-fed terrain tri: the inner-rim cull and the transparent
+ * cover (blended faces, discarded per fragment). The retained path runs
+ * both, the rim cull in the vertex stage and the cover in the blended
+ * passes' fragment stage, so no sector claims for a portal. Opaque
+ * plane-cover needs neither: covered pixels draw at true depth and the
+ * preview repaints over them in core, whoever drew them. A recent portal
+ * without planes, or the plane provider disabled
+ * (OPENPETE_TERRAIN_PORTAL_CONFORM=0), drops nothing on either path.
+ * s_tgpu_claim_all forces every sector to the CPU walk for one build after
+ * a refused set-2 bind (openpete_tercache_take_bind_refusal). */
 static openpete_portal_skyplane s_tgpu_pplane[6];
 static int s_tgpu_pplane_n = 0;
 static int s_tgpu_claim_all = 0;
@@ -10730,12 +10729,14 @@ static int tgpu_emit_face_split(tgpu_buf* buf, int arena, int ab, int with_var, 
 /** @brief Hashes a sector's live colour arrays with FNV-1a, the liveness test for its baked colours.
  *
  * Covers the LP colours and the HP near and far colours, read through
- * openpete_subtick_host_span.
+ * openpete_subtick_host_span. A range with no single host mapping (a record
+ * running past the end of main RAM or of an imported blob) is read word by
+ * word through rd, the read the bake (tgpu_bake_lp_face, tgpu_hp_face_cols)
+ * and the walk (terrain_color) make for it, so every sector is hashable.
+ * @param cpu The guest CPU state, read for an unmapped range.
  * @param SC The decoded sector.
- * @param out Receives the hash.
- * @return 0, or -1 when a range has no host mapping (the caller claims the
- *         sector). */
-static int tgpu_col_hash(const tscache_t* SC, uint32_t* out) {
+ * @return The hash. */
+static uint32_t tgpu_col_hash(CPUState* cpu, const tscache_t* SC) {
     uint32_t h = 2166136261u;
     struct { uint32_t base; int bytes; } r[3] = {
         { SC->lpColBase, SC->nLpC * 4 },
@@ -10745,11 +10746,12 @@ static int tgpu_col_hash(const tscache_t* SC, uint32_t* out) {
     for (int i = 0; i < 3; i++) {
         if (r[i].bytes <= 0) continue;
         const uint8_t* p = (const uint8_t*)tn_host_span(r[i].base, (uint32_t)r[i].bytes);
-        if (!p) return -1;
-        for (int j = 0; j < r[i].bytes; j++) h = (h ^ p[j]) * 16777619u;
+        for (int j = 0; j < r[i].bytes; j++) {
+            const uint32_t b = p ? p[j] : (rd(cpu, r[i].base + (uint32_t)(j & ~3)) >> (8 * (j & 3))) & 0xFFu;
+            h = (h ^ b) * 16777619u;
+        }
     }
-    *out = h;
-    return 0;
+    return h;
 }
 
 /** @brief Interns the HD-fold replacement entry of one textured face half for its emitted triangles.
@@ -14337,7 +14339,7 @@ static void tbk_note_bake(const tgpu_slot_t* T, const tscache_t* SC) {
  *        chunks.
  * @return 0 when the GPU may draw the sector; otherwise the claim reason
  *         that sends it back to the CPU walk: 1 an invalid slot or an
- *         arena-full build, 3 an unmapped colour range, 4 a slot another
+ *         arena-full build, 4 a slot another
  *         sector already owns this present, 5 a texture-pack claim or an
  *         HD-fold unbakeable face. A full store for the colour table is the
  *         arena-full claim 1. */
@@ -14431,8 +14433,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     if (!dirty && !tgpu_roll_free(T) && T->lastColFrame != openpete_frame) {
         /* Colour liveness once per VBL (colours can only change per tick);
          * a roll-free bake (tgpu_roll_free) reads them from its table. */
-        uint32_t h;
-        if (tgpu_col_hash(SC, &h) != 0) return 3;
+        const uint32_t h = tgpu_col_hash(cpu, SC);
         T->lastColFrame = openpete_frame;
         if (h != T->colHash) { dirty = 1; T->colHash = h; }
     }
@@ -14461,7 +14462,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->bakeTjGen = tj_gen();
         T->bakeTagGen = SC->tagGen;
         T->lastColFrame = openpete_frame;
-        if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
+        T->colHash = tgpu_col_hash(cpu, SC);
         T->bakeVar = (uint8_t)(with_var != 0);
         T->bakePinKey = pinKey;
         static int bid_[2] = { -1, -1 };
@@ -17256,30 +17257,6 @@ static int tocc_audit_in_frame(double oc1, double oc2, double oc3, double radius
     return 1;
 }
 
-/** @brief Returns whether a sector's projected sphere interval overlaps any portal sky plane's screen rect.
- *
- * The retained-GPU portal claim used when the rim refinement frames are
- * unavailable: the exact interval (tsec_screen_interval) widened by 16 px
- * against each plane's rect. A sphere not wholly in front of the eye has
- * no bounded projection, may reach any portal, and claims.
- * @param oc1 The sphere centre's horizontal view coordinate.
- * @param oc2 The sphere centre's vertical view coordinate.
- * @param oc3 The sphere centre's view depth.
- * @param radius The sphere radius in world units of the walk.
- * @return 1 to claim the sector for the portal, else 0. */
-static int tgpu_portal_interval_claim(double oc1, double oc2, double oc3, double radius)
-{
-    double iv[4];
-    if (!tsec_screen_interval(oc1, oc2, oc3, radius, iv)) return 1;
-    for (int pi = 0; pi < s_tgpu_pplane_n; pi++) {
-        const openpete_portal_skyplane* pp = &s_tgpu_pplane[pi];
-        if (iv[1] + 16.0 >= pp->x0 && iv[0] - 16.0 <= pp->x1 &&
-            iv[3] + 16.0 >= pp->y0 && iv[2] - 16.0 <= pp->y1)
-            return 1;
-    }
-    return 0;
-}
-
 /* Sector occlusion-cull verdicts, in the order they are tested. */
 enum { TOCC_KEEP = 0, TOCC_FRUSTUM = 1, TOCC_DEPTH = 2 };
 
@@ -17997,11 +17974,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * claims every sector to the CPU walk, so no retained draw reads the
      * store until a bind succeeds again. */
     s_tgpu_pplane_n = 0; s_tgpu_claim_all = openpete_tercache_take_bind_refusal(); s_tgpu_rim_ok = 0;
+    /* A recent portal with no planes this build, or the plane provider
+     * disabled, leaves rim_n and the cover planes zero: the feed fetches the
+     * same planes from the same camera (terrain_feed_native) and drops
+     * nothing either, so the retained draw needs no claim. */
     if (tgpu_on && terrain_game.portal_sky_recent()) {
         s_tgpu_pplane_n = terrain_game.portal_sky_planes(cpu, &s_view, s_tgpu_pplane, 6);
-        /* Recent portal but planes momentarily gone: claim everything (safe). */
-        if (s_tgpu_pplane_n == 0) s_tgpu_claim_all = 1;
-        else s_tgpu_rim_ok = tgpu_portal_frames(cpu);
+        if (s_tgpu_pplane_n > 0) s_tgpu_rim_ok = tgpu_portal_frames(cpu);
     }
     openpete_tercache_globals tcg;
     if (tgpu_on) {
@@ -18255,20 +18234,19 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * skips the face loop. Claim reasons, in test order:
          *  - near: the bounding sphere may reach the near plane; the CPU
          *    walk near-clips, the GPU path guarantees m3 > 0 instead.
-         *  - portal: a portal is recent and either the planes are gone
-         *    (claim everything) or the rim frames are unavailable and the
-         *    sector's projected bbox meets an opening's outline. With the
-         *    frames derived the vertex stage runs the rim cull and the
-         *    blended passes' fragment stage the transparent cover, so
-         *    nothing claims. Opaque plane-cover needs no claim (per-pixel
-         *    in core).
+         *  - (portals do not claim: with the rim frames derived the vertex
+         *    stage runs the rim cull and the blended passes' fragment stage
+         *    the transparent cover; without planes or frames the feed drops
+         *    nothing and the globals carry none. Opaque plane-cover is
+         *    per-pixel in core.)
+         *  - a refused set-2 bind on an earlier present claims every sector
+         *    once (s_tgpu_claim_all), counted as a build failure.
          *  - (the pack-aware LP regrade does not claim: the bake carries
          *    raw colours and the per-sector grade affine rides the sector
          *    params - lp_grade_apply is mirrored in the vertex stage under
          *    OPTC_SF_LPGRADE, own fit and level mean alike.)
-         *  - build claims (scroll tiles, arena-full, unmapped colours,
-         *    pack-replaced faces, selector-matched faces) come back from
-         *    tgpu_ensure. */
+         *  - build claims (arena-full, a contested slot, pack-replaced
+         *    faces) come back from tgpu_ensure. */
         s_tgpu_own[vi] = 0;
         if (tgpu_on) {
             int claim = 0, want_near = 0;
@@ -18314,21 +18292,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                         s_tgcl_nearb++;   /* census: fully-behind sub-bucket */
                 }
             } else if (s_tgpu_claim_all) {
-                claim = 1; s_tgcl_portal++;
-            } else if (s_tgpu_pplane_n && oc3 > 1.0) {
-                /* Portal claim, refined (see the s_tgpu_pplane comment). With
-                 * the rim frames derived, NOTHING portal-side claims: the
-                 * inner-rim cull runs in the vertex stage on the emitted tri
-                 * rebuilt from the corner attributes (portal_rim_classify
-                 * mirror), and the blended passes' fragment stage discards
-                 * what a portal preview covers (the cover planes ride the
-                 * build's globals). */
-                int pcl = 0;
-                /* Refinement frames unavailable (plane provider disabled):
-                 * blanket projected-interval claim, the pre-refinement rule. */
-                if (!s_tgpu_rim_ok)
-                    pcl = tgpu_portal_interval_claim(oc1, oc2, oc3, (double)SC->radius);
-                if (pcl) { claim = 1; s_tgcl_portal++; }
+                /* A refused set-2 bind: a transient store fault, counted
+                 * with the arena-full build failures. */
+                claim = 1; s_tgcl_build++;
             }
             if (!claim && s_tgpu_own[vi] != 2) {
                 /* own == 2 (behind-camera no-draw) skips the validate/build

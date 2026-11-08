@@ -60,10 +60,12 @@ REASONS = ["near", "portal", "anim", "scroll", "fill", "arena", "col",
 # treats them as covered. prim/pcov are SUB-BUCKETS of portal (rim-broadphase
 # candidate / blended-face over an outline); both are structurally 0 now -
 # the rim cull and the blended-face transparent-cover drop both run in the
-# terrain vertex stage - so any nonzero portal count is the claim-all /
-# no-refinement degenerate (planes momentarily unavailable, or the plane
-# provider disabled). arena is the build-failure
-# backstop bucket (true arena exhaustion / host OOM): the sectors it used
+# terrain vertex stage. portal and col are structurally 0 as well: a
+# portal without planes or with the plane provider disabled drops nothing on
+# either path, and an unmapped colour range is hashed through guest reads.
+# arena is the build-failure
+# backstop bucket (true arena exhaustion / host OOM, a level-edge bake hold,
+# and the one-build claim-all after a refused set-2 bind): the sectors it used
 # to report were actually the OPTC_SLOT_DEAD decode-slot sentinel, which
 # tsc_get now never populates. slot (decode-slot contest) is likewise
 # structurally 0 - eviction skips GPU-owned slots; only a window with 17+
