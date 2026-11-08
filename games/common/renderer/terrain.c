@@ -7497,64 +7497,241 @@ uint32_t terrain_fog_cue(uint32_t nearC, uint32_t farC, double m3) {
     return terrain_fog_blend(nearC, farC, m3, s_fog_ref_last);
 }
 
+/** @brief Returns the first slot of a sector address's decode-cache probe window.
+ * @param s The sector's guest address.
+ * @return The slot index. */
+static uint32_t tsc_home(uint32_t s) {
+    return (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
+}
+
+/** @brief Reads a sector's header signature words +0x04..+0x14, the decode cache's key beside the address.
+ * @param cpu The guest CPU state.
+ * @param s The sector's guest address.
+ * @param g Receives the five words. */
+static void tsc_sig_read(CPUState* cpu, uint32_t s, uint32_t g[5]) {
+    for (uint32_t k = 0; k < 5u; k++) g[k] = rd(cpu, s + 0x04u + k * 4u);
+}
+
+/** @brief Returns the decode-cache entry holding a sector address, whatever its signature.
+ *
+ * The cache holds at most one entry per address: tsc_get places a sector
+ * only after this probe found no entry for it, and re-decodes a changed
+ * sector over the entry this returns. Callers that read the decode go
+ * through tsc_find, which also requires the signature.
+ * @param s The sector's guest address.
+ * @return The entry, or NULL when no entry holds s (always for s 0). */
+static tscache_t* tsc_slot_of(uint32_t s) {
+    if (!s) return NULL;
+    for (uint32_t k = 0; k < TSC_WINDOW; k++) {
+        tscache_t* W = &s_tsc[(tsc_home(s) + k) & (TSC_SLOTS - 1)];
+        if (W->s == s) return W;
+    }
+    return NULL;
+}
+
+/** @brief Returns the decode-cache entry of a sector when its signature matches the header in RAM.
+ *
+ * An entry whose signature differs was decoded from another sector at the
+ * same address (another level's data); its banks and counts do not describe
+ * the sector in RAM, and tsc_get re-decodes it in place at its next lookup.
+ * @param cpu The guest CPU state.
+ * @param s The sector's guest address.
+ * @return The entry, or NULL when the sector is not cached under its current header. */
+static tscache_t* tsc_find(CPUState* cpu, uint32_t s) {
+    tscache_t* W = tsc_slot_of(s);
+    if (!W) return NULL;
+    uint32_t g[5];
+    tsc_sig_read(cpu, s, g);
+    return memcmp(W->sig, g, sizeof g) ? NULL : W;
+}
+
+/* OPENPETE_TERRAIN_TSC_AUDIT=1 (a harness variable, not a knob): checks the
+ * decode cache against guest RAM and prints the totals at exit. Every hit
+ * re-decodes the sector into a scratch entry and compares counts, vertex
+ * banks (not for poly-anim sectors, whose banks the registry path re-decodes)
+ * and every face's decoded words: `stale` counts the hits that differ. Every
+ * lookup counts the probe windows holding two entries of one address (`dup`).
+ * The vertex refresh counts its decodes (`refresh`), the decodes into an
+ * entry whose signature differs from the header in RAM (`refresh_sigbad`)
+ * and the listed sectors whose cached entry it skipped for that reason
+ * (`refresh_skip`). Misses count the decodes over the entry already holding
+ * the address after a signature change (`redecode_sig`) or a vertex rewrite
+ * (`redecode_vh`). hits > 0 and refresh > 0 prove the compares ran. */
+static int s_tsca_on = -1;
+static struct {
+    unsigned long long hits, stale, staleF, staleV, dup, refresh, refreshSigbad, refreshSkip;
+    unsigned long long redecodeSig, redecodeVh;
+} s_tsca;
+
+/** @brief Prints the decode-cache audit totals at exit. */
+static void tsc_audit_at_exit(void) {
+    fprintf(stderr, "[tsc-audit] total hits=%llu stale=%llu stale_faces=%llu stale_verts=%llu dup=%llu"
+            " refresh=%llu refresh_sigbad=%llu refresh_skip=%llu redecode_sig=%llu redecode_vh=%llu\n",
+            s_tsca.hits, s_tsca.stale, s_tsca.staleF, s_tsca.staleV, s_tsca.dup, s_tsca.refresh,
+            s_tsca.refreshSigbad, s_tsca.refreshSkip, s_tsca.redecodeSig, s_tsca.redecodeVh);
+}
+
+/** @brief Tests whether the decode-cache audit runs, registering its exit report on the first call that finds it on.
+ * @return 1 under OPENPETE_TERRAIN_TSC_AUDIT, else 0. */
+static int tsc_audit_on(void) {
+    static int s_reg;
+    ENV_FLAG_LATCH(s_tsca_on, "OPENPETE_TERRAIN_TSC_AUDIT");
+    if (s_tsca_on > 0 && !s_reg) { s_reg = 1; atexit(tsc_audit_at_exit); }
+    return s_tsca_on > 0;
+}
+
+/** @brief Counts the entries of a sector address's probe window that hold the address.
+ * @param s The sector's guest address, nonzero.
+ * @return The count. */
+static int tsc_audit_held(uint32_t s) {
+    int n = 0;
+    for (uint32_t k = 0; k < TSC_WINDOW; k++) n += s_tsc[(tsc_home(s) + k) & (TSC_SLOTS - 1)].s == s;
+    return n;
+}
+
+/** @brief Tests whether two decoded faces carry the same decoded face words.
+ *
+ * Compares the vertex and colour indices, the flags and the HP texture and
+ * word-3 fields; materials, texture generations and scene tags are not
+ * compared.
+ * @param a One face.
+ * @param b The other face.
+ * @return 1 when equal, else 0. */
+static int tsc_audit_face_eq(const tsface_t* a, const tsface_t* b) {
+    return a->i0 == b->i0 && a->i1 == b->i1 && a->i2 == b->i2 && a->i3 == b->i3
+        && a->quad == b->quad && a->flip == b->flip
+        && a->c0 == b->c0 && a->c1 == b->c1 && a->c2 == b->c2 && a->c3 == b->c3
+        && a->fogbias == b->fogbias && a->trirot == b->trirot && a->hq_idx == b->hq_idx
+        && a->abe == b->abe && a->admit == b->admit && a->dside == b->dside
+        && a->otbias == b->otbias && a->tb == b->tb && a->w3 == b->w3;
+}
+
+/** @brief Tests whether a scratch decode's faces differ from a cached entry's, in count or in any face's words.
+ * @param T The scratch decode.
+ * @param W The cached entry.
+ * @return 1 when they differ, else 0. */
+static int tsc_audit_faces_differ(const tscache_t* T, const tscache_t* W) {
+    if (T->nLpF != W->nLpF || T->nHpF != W->nHpF) return 1;
+    for (int t = 0; t < 2; t++) {
+        const tsface_t* a = t ? T->hpF : T->lpF;
+        const tsface_t* b = t ? W->hpF : W->lpF;
+        for (int f = 0; a && b && f < (t ? T->nHpF : T->nLpF); f++)
+            if (!tsc_audit_face_eq(&a[f], &b[f])) return 1;
+    }
+    return 0;
+}
+
+/** @brief Tests whether a scratch decode's vertex banks differ from a cached entry's, in count or content.
+ * @param T The scratch decode.
+ * @param W The cached entry.
+ * @return 1 when they differ, else 0. */
+static int tsc_audit_verts_differ(const tscache_t* T, const tscache_t* W) {
+    return T->nLpV != W->nLpV || T->nHpV != W->nHpV
+        || (T->nLpV && W->lpV && memcmp(T->lpV, W->lpV, sizeof(tsvert_t) * (size_t)T->nLpV))
+        || (T->nHpV && W->hpV && memcmp(T->hpV, W->hpV, sizeof(tsvert_t) * (size_t)T->nHpV));
+}
+
+/** @brief Re-decodes a hit sector from RAM and counts it stale when the cached decode differs.
+ *
+ * Also counts a probe window holding a second entry of the address. Prints
+ * one line per stale hit the first 64 times.
+ * @param cpu The guest CPU state.
+ * @param W The cached entry the lookup hit.
+ * @param g The sector's header signature words.
+ * @param lqTable The LQ table the caller decodes with.
+ * @param hqTable The HQ table the caller decodes with.
+ * @param texTblMode The caller's texture-table mode.
+ * @param hiDetail The caller's hi-detail flag. */
+static void tsc_audit_hit(CPUState* cpu, const tscache_t* W, const uint32_t g[5],
+                          uint32_t lqTable, uint32_t hqTable, int texTblMode, int hiDetail) {
+    s_tsca.hits++;
+    s_tsca.dup += tsc_audit_held(W->s) > 1;
+    tscache_t* T = (tscache_t*)calloc(1, sizeof(*T));
+    if (!T) return;
+    T->s = W->s; memcpy(T->sig, g, sizeof(T->sig));
+    tsc_decode_entry(cpu, T, W->s, g, lqTable, hqTable, texTblMode, hiDetail);
+    if (!T->virt) tsc_kf_apply(cpu, T);
+    const int badV = !W->polyanim && tsc_audit_verts_differ(T, W);
+    const int badF = tsc_audit_faces_differ(T, W);
+    s_tsca.stale += badV || badF;
+    s_tsca.staleF += badF;
+    s_tsca.staleV += badV;
+    static int s_lines;
+    if ((badV || badF) && s_lines++ < 64)
+        fprintf(stderr, "[tsc-audit] stale sector=%08X frame=%u faces=%d verts=%d poly=%d decodeGen=%u\n",
+                W->s, openpete_frame, badF, badV, W->polyanim, W->decodeGen);
+    free(T->lpV); free(T->lpF); free(T->hpV); free(T->hpF);
+    free(T);
+}
+
+/** @brief Counts one listed sector of the vertex refresh: its decode, a signature mismatch, a skip and a duplicate.
+ * @param cpu The guest CPU state.
+ * @param s The sector's guest address, nonzero.
+ * @param C The entry the refresh decodes into, or NULL when it decodes none. */
+static void tsc_audit_refresh(CPUState* cpu, uint32_t s, const tscache_t* C) {
+    uint32_t g[5];
+    tsc_sig_read(cpu, s, g);
+    const int held = tsc_audit_held(s);
+    s_tsca.dup += held > 1;
+    s_tsca.refresh += C != NULL;
+    s_tsca.refreshSigbad += C && memcmp(C->sig, g, sizeof g) != 0;
+    s_tsca.refreshSkip += !C && held > 0;
+}
+
+/** @brief Hashes a signature-matched entry's vertex words in RAM for the in-place rewrite check, counting it in the vertex-hash census.
+ * @param cpu The guest CPU state.
+ * @param W The entry, its signature matching the header in RAM.
+ * @param g The sector's header signature words.
+ * @param sectorPtr The sector pointer table's guest address (the census names moved sectors by index).
+ * @param sectorCnt The sector count.
+ * @return The hash (tsc_vhash). */
+static uint32_t tsc_vhash_check(CPUState* cpu, const tscache_t* W, const uint32_t g[5],
+                                uint32_t sectorPtr, uint32_t sectorCnt) {
+    const uint32_t vh = tsc_vhash(cpu, W->s, g);
+    ENV_FLAG_LATCH(s_vh_on, "OPENPETE_TERRAIN_VHASH_CENSUS");
+    if (!s_vh_on) return vh;
+    if (openpete_frame != s_vh_frame) { tsc_vhash_census_flush(); s_vh_frame = openpete_frame; }
+    s_vh_hashed++;
+    if (W->vhash == vh) return vh;
+    s_vh_moved++;
+    for (uint32_t q = 0; q < sectorCnt && s_vh_listn < 32; q++)
+        if (rd(cpu, sectorPtr + q * 4) == W->s) { s_vh_list[s_vh_listn++] = (uint16_t)q; break; }
+    return vh;
+}
+
 /** @brief Returns sector s's decoded cache entry, decoding it on a miss or a changed signature.
  *
  * The entry holds both tiers' vertices and faces, the colour-array bases and
  * the bytes each tier's faces index, keyed by the sector address and its
- * header signature words; a miss evicts the least recently used entry. */
+ * header signature words. A hit needs both, and for a sector no poly-anim
+ * descriptor names, vertex words in RAM that hash to the decoded ones
+ * (tsc_vhash: the game rewrote them in place). Otherwise the sector is
+ * decoded over the entry already holding its address (another level's
+ * sector there, or a rewrite), so no address is held twice; a sector with
+ * no entry takes tsc_victim's slot. A probe window of TSC_WINDOW slots with
+ * LRU eviction (stamped per terrain_build call) makes thrash need
+ * TSC_WINDOW+1 hot sectors in one window. Every (re)decode steps decodeGen,
+ * which the GPU sector-mesh cache compares to re-bake the slot. */
 static tscache_t* tsc_get(CPUState* cpu, uint32_t s,
                           uint32_t lqTable, uint32_t hqTable,
                           int texTblMode, int hiDetail,
                           uint32_t sectorPtr, uint32_t sectorCnt) {
-    uint32_t g[5] = { rd(cpu, s + 0x04), rd(cpu, s + 0x08), rd(cpu, s + 0x0C),
-                      rd(cpu, s + 0x10), rd(cpu, s + 0x14) };
-    uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
-    /* Probe window + LRU eviction. A 2-way (h, h^1) alternating eviction
-     * thrashes when 3+ visible sectors share a slot pair: each miss is a full
-     * re-decode + gapfill classification (ms-scale for big sectors), repeated
-     * every present. The window makes thrash need TSC_WINDOW+1 hot sectors in
-     * one window; LRU (stamped per terrain_build call) evicts a stale sector,
-     * never this present's working set. Probes are five-word compares, so the
-     * window width is negligible next to one re-decode. */
-    ENV_FLAG_LATCH(s_vh_on, "OPENPETE_TERRAIN_VHASH_CENSUS");
-    uint32_t vh = 0;
-    tscache_t* reuse = NULL;   /* stale decode to re-fill in place */
-    tscache_t* C = NULL;
-    for (uint32_t k = 0; k < TSC_WINDOW; k++) {
-        tscache_t* W = &s_tsc[(h + k) & (TSC_SLOTS - 1)];
-        if (W->s == s && W->sig[0]==g[0] && W->sig[1]==g[1] && W->sig[2]==g[2]
-            && W->sig[3]==g[3] && W->sig[4]==g[4]) {
-            if (!W->polyanim) {
-                if (!vh) vh = tsc_vhash(cpu, s, g);
-                if (s_vh_on) {
-                    if (openpete_frame != s_vh_frame) {
-                        tsc_vhash_census_flush(); s_vh_frame = openpete_frame;
-                    }
-                    s_vh_hashed++;
-                }
-                if (W->vhash != vh) {      /* vertices rewritten in place: re-decode
-                                            * into this same slot, so the stale
-                                            * decode cannot be probed again */
-                    reuse = W;
-                    if (s_vh_on) {
-                        s_vh_moved++;
-                        for (uint32_t q = 0; q < sectorCnt && s_vh_listn < 32; q++)
-                            if (rd(cpu, sectorPtr + q * 4) == s) {
-                                s_vh_list[s_vh_listn++] = (uint16_t)q; break;
-                            }
-                    }
-                    break;
-                }
-            }
-            s_tsc_hit++; W->lastUse = s_tsc_stamp;
-            if (W->fillGen != openpete_fillpick_generation())
-                tsc_retag_fill(cpu, W, sectorPtr, sectorCnt);
-            return W;
-        }
+    uint32_t g[5];
+    tsc_sig_read(cpu, s, g);
+    tscache_t* C = tsc_slot_of(s);
+    const int sigOk = C && !memcmp(C->sig, g, sizeof g);
+    const uint32_t vh = (sigOk && !C->polyanim) ? tsc_vhash_check(cpu, C, g, sectorPtr, sectorCnt) : 0u;
+    if (sigOk && (C->polyanim || C->vhash == vh)) {
+        s_tsc_hit++; C->lastUse = s_tsc_stamp;
+        if (tsc_audit_on()) tsc_audit_hit(cpu, C, g, lqTable, hqTable, texTblMode, hiDetail);
+        if (C->fillGen != openpete_fillpick_generation())
+            tsc_retag_fill(cpu, C, sectorPtr, sectorCnt);
+        return C;
     }
     {
         s_tsc_miss++;
-        C = reuse ? reuse : tsc_victim(h);
+        if (tsc_audit_on()) { s_tsca.redecodeSig += C && !sigOk; s_tsca.redecodeVh += sigOk; }
+        if (!C) C = tsc_victim(tsc_home(s));
         free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
         free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
         tsc_rt_free(C->rt);
@@ -7695,12 +7872,10 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
             if (!s) continue;
             dbg_desc++;
             dbg_kf += it.desc;
-            uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
-            tscache_t* C = NULL;
-            for (uint32_t w = 0; w < TSC_WINDOW; w++) {   /* same probe window as tsc_get */
-                tscache_t* W = &s_tsc[(h + w) & (TSC_SLOTS - 1)];
-                if (W->s == s) { C = W; break; }
-            }
+            /* The entry's counts and offsets come from its signature, so it
+             * is refreshed only while that matches the header in RAM. */
+            tscache_t* C = tsc_find(cpu, s);
+            if (tsc_audit_on() && !s_vanim_sub) tsc_audit_refresh(cpu, s, C);
             if (!C) continue;
             dbg_cached++;
             if (C->lpVprev) dbg_prev++;
@@ -8055,21 +8230,6 @@ static uint32_t canim_lerp(uint32_t p, uint32_t c, double a) {
     return out;
 }
 
-/** @brief Finds the decode-cache slot holding a sector.
- *
- * Probes the TSC_WINDOW slots tsc_get places a sector in, starting at its
- * address hash.
- * @param s The sector's guest address.
- * @return The slot, or NULL when the sector is not cached. */
-static tscache_t* tsc_find(uint32_t s) {
-    uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
-    for (uint32_t w = 0; w < TSC_WINDOW; w++) {
-        tscache_t* W = &s_tsc[(h + w) & (TSC_SLOTS - 1)];
-        if (W->s == s) return W;
-    }
-    return NULL;
-}
-
 /** @brief Returns a decoded sector's colour-anim slot for this build.
  *
  * The slot is the one tsc_col_anim_refresh stamped for this build, and only
@@ -8172,17 +8332,19 @@ static int canim_roll_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
 
 /** @brief Stamps each slot of the last canonical roll on its decode-cache slot and fills its `mix` words.
  *
- * Runs on every build. A slot whose sector is not in the decode cache is
- * not stamped. `mix` is the prev-to-cur lerp while the alpha is below 1 and
- * the slot holds a previous tick; a model slot otherwise takes cur.
+ * Runs on every build. A slot whose sector is not in the decode cache under
+ * its current header (tsc_find) is not stamped. `mix` is the prev-to-cur
+ * lerp while the alpha is below 1 and the slot holds a previous tick; a
+ * model slot otherwise takes cur.
+ * @param cpu The guest CPU state, read only.
  * @param a This build's colour alpha.
  * @return The slots stamped. */
-static int canim_stamp_all(double a) {
+static int canim_stamp_all(CPUState* cpu, double a) {
     int stamped = 0;
     for (int i = 0; i < CANIM_SLOTS; i++) {
         canim_t* A = &s_canim[i];
         if (!A->s || A->rollPres != s_canim_canon_pres) continue;
-        tscache_t* C = tsc_find(A->s);
+        tscache_t* C = tsc_find(cpu, A->s);
         if (!C) continue;
         C->canim = A; C->canimPres = s_vanim_pres;
         stamped++;
@@ -8218,7 +8380,7 @@ static void tsc_col_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sec
         s_roll_frame = openpete_frame;
     }
     s_canim_a = (s_vanim_sub && s_vanim_on) ? (s_canim_en ? s_vanim_alpha : 0.0) : 1.0;
-    int stamped = canim_stamp_all(s_canim_a);
+    int stamped = canim_stamp_all(cpu, s_canim_a);
     canim_bounds_report();
     if (s_cdbg)
         fprintf(stderr, "[canim f=%u sub=%d on=%d en=%d a=%.3f named=%d stamped=%d maxd=%d]\n",
@@ -8524,7 +8686,7 @@ static int acen_kf_bank_hash(int b, const tscache_t* C, const canim_t* S, uint32
  * @param s The sector's guest address.
  * @param A The row. */
 static void acen_kf_sector(CPUState* cpu, uint32_t i, uint32_t s, acen_t* A) {
-    const tscache_t* C = tsc_find(s);
+    const tscache_t* C = tsc_find(cpu, s);
     const canim_t* S = canim_slot(s);
     if (S && S->s != s) S = NULL;
     for (int b = 0; b < TSC_KF_BANKS; b++) {
@@ -8583,7 +8745,7 @@ static void acen_sector(CPUState* cpu, uint32_t i, uint8_t lists, uint32_t secto
         if (lists & 3u) acen_model_check(cpu, i, s, sectorCnt, 0, A);
         if (lists & 4u) acen_model_check(cpu, i, s, sectorCnt, 1, A);
     }
-    const tscache_t* C = tsc_find(s);
+    const tscache_t* C = tsc_find(cpu, s);
     if (C && C->hpV && C->nHpV > 0)
         acen_motion(acen_fnv(2166136261u, C->hpV, sizeof(tsvert_t) * (size_t)C->nHpV),
                     &A->vh, &A->vhOk, &A->vmoved);
