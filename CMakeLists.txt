@@ -2306,6 +2306,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Retained terrain cache state against a fresh bake of the current guest
+    # data (OPENPETE_TERRAIN_AUDIT), headless on llvmpipe: the Spyro 2 attract
+    # demo's first level with the cache forced on. Passes on audits and
+    # re-baked-sector audits above 0 with 0 mismatches, and on the poison
+    # control (one baked corner of the sampled sector offset before upload)
+    # naming that sector and field. Skips (exit 64) without a binary or disc.
+    add_test(NAME terrain_audit_spyro-2
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_terrain_audit.sh
+                     --game spyro-2 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(terrain_audit_spyro-2 PROPERTIES
+        LABELS "slow;terrain;spyro-2"
+        RESOURCE_LOCK openpete_game
+        # Two sequential headless boots to VBL 1500.
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Terrain colour-anim `mix` block bounds: one headless row on Spyro 2 and 3 with
     # the block flush against an inaccessible page and the past-bank face
     # counter. Exit 2 is VACUOUS (the counter at 0) and fails the test. Skips

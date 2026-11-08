@@ -12511,22 +12511,626 @@ static void tgpu_split_rebase(tgpu_buf* buf, uint32_t first) {
         }
 }
 
-/** @brief Allocates and writes the bake's previous-corner records and rebases the near chunks onto them.
+/* ---- Retained-state audit (OPENPETE_TERRAIN_AUDIT=N) ----
+ *
+ * Every Nth tick, on its canonical build, each sector the cache owns is
+ * re-baked from the current decoded guest data and roll state through
+ * tgpu_build_sector into a private sink (no upload), and the result is
+ * compared with a host copy of the bytes the cache holds for that sector:
+ * the chunk vertices and their previous-tick and near-context twins, the
+ * cell records, the previous-corner and split records (captured at the
+ * upload, tgpu_upload_sector), and the colour-table entry the sector state
+ * names (captured at its write, tgpu_coltab_refresh). The fresh bake's
+ * record references are rebased onto the slot's store run first
+ * (tgpu_prev_rebase), so equal state compares equal byte for byte.
+ *
+ * A difference is retained state that no longer matches what the bake
+ * makes of the guest data now: a missed re-bake (UV scroll, a poly-anim or
+ * colour roll, a moved generation), a stale record, or a corrupted upload.
+ * Each mismatch names the sector, arena, element, the face that baked it
+ * (the fresh bake's face map) and the field. The audit reads no walk
+ * output. Sub-tick builds are skipped (they roll nothing and bake nothing).
+ * The fresh bake runs the bake's census counters a second time.
+ *
+ * Controls (test only): OPENPETE_TERRAIN_AUDIT_POISON=<sector index> adds
+ * one unit to the first corner x of the first vertex (or cell record) of
+ * that sector's every bake before its upload; OPENPETE_TERRAIN_AUDIT_SKIP=
+ * tex|anim drops the texture-generation or poly-anim-roll re-bake trigger.
+ * Off (unset or 0), the cost is one latched test per bake, per baked face
+ * and per owned sector. */
+#define TAUD_LOG_MAX 24
+/* A compared field. tab: 0 always compared; 1 not compared on an element
+ * whose colours the vertex stage reads from the sector's colour table (the
+ * chunk keeps the colours of its bake, and a colour roll rewrites only the
+ * table); 2 likewise, except on a cell whose slot 3 keeps its baked words
+ * (OPTC_COLTAB_BAKED). */
+typedef struct { const char* name; uint16_t off, len; uint8_t tab; } taud_field;
+#define TAUD_F(T, f, n, t) { #f, (uint16_t)offsetof(T, f), (uint16_t)(n), (uint8_t)(t) }
+#define TAUD_VERT_HEAD(far_tab) \
+    TAUD_F(rhi_terrain_vertex, px, 6, 0), TAUD_F(rhi_terrain_vertex, flags16, 2, 0), \
+    TAUD_F(rhi_terrain_vertex, uvf_u, 2, 0), TAUD_F(rhi_terrain_vertex, uvn_u, 2, 0), \
+    TAUD_F(rhi_terrain_vertex, rgba_far, 4, far_tab), TAUD_F(rhi_terrain_vertex, rgba_near, 4, 1)
+#define TAUD_VERT_TAIL \
+    TAUD_F(rhi_terrain_vertex, mat_far0, 4, 0), TAUD_F(rhi_terrain_vertex, mat_far1, 4, 0), \
+    TAUD_F(rhi_terrain_vertex, mat_near0, 4, 0), TAUD_F(rhi_terrain_vertex, mat_near1, 4, 0), \
+    TAUD_F(rhi_terrain_vertex, face_flags, 4, 0), TAUD_F(rhi_terrain_vertex, c0x, 6, 0), \
+    TAUD_F(rhi_terrain_vertex, c1x, 6, 0), TAUD_F(rhi_terrain_vertex, c2x, 6, 0), \
+    TAUD_F(rhi_terrain_vertex, c3x, 6, 0), { NULL, 0, 0, 0 }
+/* A plain or anim vertex: a colour-table corner reads both colours from the
+ * table (OPTC_PREV_PAD_COLTAB in its previous-tick twin). */
+static const taud_field k_taud_vert[] = { TAUD_VERT_HEAD(1), TAUD_VERT_TAIL };
+/* A near vertex of a colour-table face (OPTC_FACE_F_COLTAB in pz): rgba_far
+ * holds the corners' table indices and is compared; rgba_near is not read. */
+static const taud_field k_taud_vert_near[] = { TAUD_VERT_HEAD(0), TAUD_VERT_TAIL };
+#undef TAUD_VERT_HEAD
+#undef TAUD_VERT_TAIL
+static const taud_field k_taud_prev[] = {
+    TAUD_F(rhi_terrain_prev, px, 6, 0), TAUD_F(rhi_terrain_prev, pad, 2, 0),
+    TAUD_F(rhi_terrain_prev, c0x, 6, 0), TAUD_F(rhi_terrain_prev, c1x, 6, 0),
+    TAUD_F(rhi_terrain_prev, c2x, 6, 0), TAUD_F(rhi_terrain_prev, c3x, 6, 0),
+    TAUD_F(rhi_terrain_prev, rgb_far, 4, 1), TAUD_F(rhi_terrain_prev, rgb_near, 4, 1),
+    { NULL, 0, 0, 0 } };
+static const taud_field k_taud_ctx[] = {
+    TAUD_F(rhi_terrain_nearctx, a_uf, 4, 0), TAUD_F(rhi_terrain_nearctx, a_far, 4, 1),
+    TAUD_F(rhi_terrain_nearctx, a_near, 4, 1), TAUD_F(rhi_terrain_nearctx, b_uf, 4, 0),
+    TAUD_F(rhi_terrain_nearctx, b_far, 4, 1), TAUD_F(rhi_terrain_nearctx, b_near, 4, 1),
+    { NULL, 0, 0, 0 } };
+/* A colour-table cell: near_rgb[0] holds the corners' table indices. */
+static const taud_field k_taud_cell[] = {
+    TAUD_F(rhi_terrain_cell, c0x, 6, 0), TAUD_F(rhi_terrain_cell, c1x, 6, 0),
+    TAUD_F(rhi_terrain_cell, c2x, 6, 0), TAUD_F(rhi_terrain_cell, c3x, 6, 0),
+    TAUD_F(rhi_terrain_cell, face_flags, 4, 0), TAUD_F(rhi_terrain_cell, info, 4, 0),
+    { "near_rgb0", (uint16_t)offsetof(rhi_terrain_cell, near_rgb), 4, 0 },
+    { "near_rgb1", (uint16_t)(offsetof(rhi_terrain_cell, near_rgb) + 4), 8, 1 },
+    { "near_rgb3", (uint16_t)(offsetof(rhi_terrain_cell, near_rgb) + 12), 4, 2 },
+    TAUD_F(rhi_terrain_cell, tile, 128, 0),
+    { "far_rgb0", (uint16_t)offsetof(rhi_terrain_cell, far_rgb), 12, 1 },
+    { "far_rgb3", (uint16_t)(offsetof(rhi_terrain_cell, far_rgb) + 12), 4, 2 },
+    TAUD_F(rhi_terrain_cell, fog_a, 4, 0), TAUD_F(rhi_terrain_cell, fog_b, 4, 0),
+    { "prev_corners", (uint16_t)sizeof(rhi_terrain_cell), 24, 0 }, { NULL, 0, 0, 0 } };
+#undef TAUD_F
+static const char* const k_taud_arena[OPTC_ARENA_COUNT] = {
+    "OPAQUE", "ALPHA", "ADD", "SUB", "LP", "A_OPAQUE", "A_ALPHA", "A_ADD", "A_SUB", "A_LP",
+    "N_OPAQUE", "N_ALPHA", "N_ADD", "N_SUB", "N_LP", "CN_OPAQUE", "CN_ALPHA", "CN_ADD", "CN_SUB",
+    "CA_OPAQUE", "CA_ALPHA", "CA_ADD", "CA_SUB" };
+static const char* const k_taud_pass[4] = { "lp", "lp-borrowed", "hp", "hp-borrowed" };
+
+/* One sector's retained bytes: per arena the elements of each array, the
+ * previous-corner and split records, the colour-table entry, and (fresh
+ * bakes only) the face that baked each element. */
+typedef struct {
+    tgpu_buf buf[OPTC_ARENA_COUNT];
+    uint32_t* fid[OPTC_ARENA_COUNT];   /* pass << 16 | face, per element */
+    int fcap[OPTC_ARENA_COUNT], marked[OPTC_ARENA_COUNT], cap[OPTC_ARENA_COUNT];
+    uint32_t* pw; int pn, pcap;        /* previous-corner and split records */
+    uint32_t* tw; int tn, tcap;        /* colour-table entry words */
+    int faces;                         /* faces that baked at least one element */
+} taud_bake;
+typedef struct {
+    taud_bake b;
+    uint32_t s; uint8_t gen, valid;
+    uint32_t bakes;                    /* bakes of this sector since it took the slot */
+    uint32_t lastAudit;                /* openpete_frame of the last audit */
+} taud_shadow;
+
+static int s_taud = -1;                /* audit period in ticks, 0 = off */
+static int s_taud_poison = -2;         /* sector index the poison control perturbs, -1 = none */
+static int s_taud_skip_tex, s_taud_skip_anim;
+static taud_shadow* s_taud_sh;         /* TSC_SLOTS entries, allocated when on */
+static taud_bake* s_taud_sink;         /* set while the audit's fresh bake runs */
+static uint64_t s_taud_audits, s_taud_rebaked, s_taud_elems, s_taud_faces, s_taud_pwords,
+                s_taud_twords, s_taud_masked, s_taud_mis, s_taud_missec, s_taud_sub, s_taud_noshadow, s_taud_fail;
+static int s_taud_logged;
+static char s_taud_first[320];
+static int s_taud_sample = -1;      /* the first sector index audited */
+static uint8_t s_taud_secset[512];     /* distinct sector indices audited (0..4095) */
+
+static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
+                             uint32_t hqTable, int sec_index, int with_var);
+static void tgpu_coltab_fill(const canim_t* CA, uint32_t* w, int ent);
+static void tgpu_prev_rebase(tgpu_buf* buf, uint32_t first);
+
+/** @brief Prints the audit's counters and its first mismatch, at exit. */
+static void taud_report(void) {
+    int secs = 0;
+    for (int i = 0; i < (int)sizeof s_taud_secset; i++) secs += __builtin_popcount(s_taud_secset[i]);
+    fprintf(stderr, "[ter-audit] summary period=%d audits=%llu sectors=%d rebaked=%llu elems=%llu "
+            "faces=%llu prev_words=%llu tab_words=%llu tab_masked=%llu mismatches=%llu mismatch_audits=%llu "
+            "subtick_skips=%llu noshadow=%llu bakefail=%llu sample_sec=%d first=%s\n",
+            s_taud, (unsigned long long)s_taud_audits, secs, (unsigned long long)s_taud_rebaked,
+            (unsigned long long)s_taud_elems, (unsigned long long)s_taud_faces,
+            (unsigned long long)s_taud_pwords, (unsigned long long)s_taud_twords,
+            (unsigned long long)s_taud_masked,
+            (unsigned long long)s_taud_mis, (unsigned long long)s_taud_missec,
+            (unsigned long long)s_taud_sub, (unsigned long long)s_taud_noshadow,
+            (unsigned long long)s_taud_fail, s_taud_sample, s_taud_first[0] ? s_taud_first : "none");
+}
+
+/** @brief Latches OPENPETE_TERRAIN_AUDIT and its controls on first use and returns the period.
+ * @return The audit period in ticks, 0 when the audit is off. */
+static int taud_on(void) {
+    if (s_taud >= 0) return s_taud;
+    const char* e = getenv("OPENPETE_TERRAIN_AUDIT");
+    s_taud = (e && *e) ? atoi(e) : 0;
+    if (s_taud < 0) s_taud = 0;
+    if (!s_taud) return 0;
+    s_taud_sh = (taud_shadow*)calloc(TSC_SLOTS, sizeof *s_taud_sh);
+    if (!s_taud_sh) { s_taud = 0; return 0; }
+    const char* p = getenv("OPENPETE_TERRAIN_AUDIT_POISON");
+    s_taud_poison = (p && *p) ? atoi(p) : -1;
+    const char* k = getenv("OPENPETE_TERRAIN_AUDIT_SKIP");
+    s_taud_skip_tex = k && strstr(k, "tex") != NULL;
+    s_taud_skip_anim = k && strstr(k, "anim") != NULL;
+    fprintf(stderr, "[ter-audit] on: period=%d poison=%d skip_tex=%d skip_anim=%d\n",
+            s_taud, s_taud_poison, s_taud_skip_tex, s_taud_skip_anim);
+    atexit(taud_report);
+    return s_taud;
+}
+
+/** @brief Copies n elements of sz bytes into a growable host array.
+ * @param dst The array, reallocated when its capacity is short.
+ * @param cap The array's capacity in elements.
+ * @param src The elements, or NULL for none.
+ * @param n The element count.
+ * @param sz The element size.
+ * @return 0, or -1 when the allocation fails. */
+static int taud_copy(void** dst, int* cap, const void* src, int n, size_t sz) {
+    if (n <= 0 || !src) return 0;
+    if (n > *cap) {
+        void* p = realloc(*dst, sz * (size_t)n);
+        if (!p) return -1;
+        *dst = p; *cap = n;
+    }
+    memcpy(*dst, src, sz * (size_t)n);
+    return 0;
+}
+
+/** @brief Copies one arena's bake buffer, with its twins, into a host copy.
+ *
+ * The copy keeps its own capacities; the twins of a copied arena grow with
+ * its vertex array, so all three take the vertex capacity.
+ * @param d The copy.
+ * @param s The bake buffer.
+ * @param cap The copy's capacity in elements, shared by its arrays.
+ * @return 0, or -1 when an allocation fails. */
+static int taud_copy_buf(tgpu_buf* d, const tgpu_buf* s, int* cap) {
+    d->anim = s->anim; d->nearv = s->nearv; d->rsz = s->rsz; d->n = s->n;
+    if (s->n > *cap) {
+        void* v = realloc(d->v, sizeof *d->v * (size_t)s->n);
+        void* p = v ? realloc(d->pv, sizeof *d->pv * (size_t)s->n) : NULL;
+        void* c = p ? realloc(d->cx, sizeof *d->cx * (size_t)s->n) : NULL;
+        void* r = c ? realloc(d->rec, (s->rsz ? s->rsz : 1u) * (size_t)s->n) : NULL;
+        if (v) d->v = (rhi_terrain_vertex*)v;
+        if (p) d->pv = (rhi_terrain_prev*)p;
+        if (c) d->cx = (rhi_terrain_nearctx*)c;
+        if (r) d->rec = (uint8_t*)r;
+        if (!r) return -1;
+        *cap = s->n;
+    }
+    if (s->n == 0) return 0;
+    if (s->rec) { memcpy(d->rec, s->rec, s->rsz * (size_t)s->n); return 0; }
+    memcpy(d->v, s->v, sizeof *d->v * (size_t)s->n);
+    if (s->anim) memcpy(d->pv, s->pv, sizeof *d->pv * (size_t)s->n);
+    if (s->nearv) memcpy(d->cx, s->cx, sizeof *d->cx * (size_t)s->n);
+    return 0;
+}
+
+/** @brief Copies a bake's arena buffers and its record list into a host copy.
+ * @param K The copy.
+ * @param buf The bake buffers, indexed by arena.
+ * @return 0, or -1 when an allocation fails. */
+static int taud_take(taud_bake* K, const tgpu_buf* buf) {
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++)
+        if (taud_copy_buf(&K->buf[a], &buf[a], &K->cap[a]) != 0) return -1;
+    K->pn = s_prev_n;
+    return taud_copy((void**)&K->pw, &K->pcap, s_prev_w,
+                     s_prev_n * (int)OPTC_PREV_REC_WORDS, sizeof(uint32_t));
+}
+
+/** @brief Records the bytes just uploaded for a slot as its audit shadow.
+ *
+ * Called at the upload site with the buffers as uploaded (record
+ * references rebased). Counts the bakes of the slot's sector.
+ * @param T The slot.
+ * @param buf The uploaded bake buffers, indexed by arena. */
+static void taud_shadow_capture(const tgpu_slot_t* T, const tgpu_buf* buf) {
+    if (!taud_on()) return;
+    taud_shadow* H = &s_taud_sh[T - s_tgpu];
+    H->bakes = (H->valid && H->s == T->s) ? H->bakes + 1u : 1u;
+    H->valid = taud_take(&H->b, buf) == 0;
+    H->s = T->s; H->gen = T->gen;
+}
+
+/** @brief Records the colour-table entry just written for a slot as its audit shadow.
+ * @param T The slot.
+ * @param w The entry's words.
+ * @param ent The entry's units. */
+static void taud_tab_capture(const tgpu_slot_t* T, const uint32_t* w, int ent) {
+    if (!taud_on()) return;
+    taud_shadow* H = &s_taud_sh[T - s_tgpu];
+    H->b.tn = ent * (int)OPTC_PREV_REC_WORDS;
+    if (taud_copy((void**)&H->b.tw, &H->b.tcap, w, H->b.tn, sizeof(uint32_t)) != 0) H->b.tn = 0;
+}
+
+/** @brief Tags the elements a face appended to the audit's fresh bake with the face's identity.
+ *
+ * Every element of every arena past the last mark takes pass << 16 | face.
+ * Returns at once outside the audit's fresh bake.
+ * @param buf The bake buffers, indexed by arena.
+ * @param pass 0 LP, 1 borrowed LP, 2 HP, 3 borrowed HP.
+ * @param f The face's index in its list. */
+static void taud_face_mark(const tgpu_buf* buf, int pass, int f) {
+    taud_bake* K = s_taud_sink;
+    if (!K) return;
+    int any = 0;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        const int n = buf[a].n;
+        if (n <= K->marked[a]) continue;
+        if (n > K->fcap[a]) {
+            uint32_t* p = (uint32_t*)realloc(K->fid[a], sizeof *p * (size_t)n * 2u);
+            if (!p) continue;
+            K->fid[a] = p; K->fcap[a] = n * 2;
+        }
+        for (int i = K->marked[a]; i < n; i++) K->fid[a][i] = (uint32_t)pass << 16 | (uint32_t)f;
+        K->marked[a] = n;
+        any = 1;
+    }
+    K->faces += any;
+}
+
+/** @brief Perturbs the first corner of a poisoned sector's bake before its upload (the audit's negative control).
+ * @param sec_index The level sector index.
+ * @param buf The bake buffers, indexed by arena. */
+static void taud_poison(int sec_index, tgpu_buf* buf) {
+    if (s_taud_sink || !taud_on() || s_taud_poison < 0 || sec_index != s_taud_poison) return;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        if (buf[a].n == 0) continue;
+        if (buf[a].rec) ((rhi_terrain_cell*)buf[a].rec)->c0x += 1;
+        else buf[a].v[0].c0x += 1;
+        return;
+    }
+}
+
+/** @brief Reports whether a slot's texture generation moved, unless the skip-tex control drops that trigger.
+ * @param T The slot.
+ * @param SC The decoded sector.
+ * @return 1 when the bake must follow the texture generation. */
+static int taud_tex_moved(const tgpu_slot_t* T, const tscache_t* SC) {
+    return T->texGen != SC->texGen && !s_taud_skip_tex;
+}
+
+/** @brief Reports whether a poly-anim sector rolled since its bake, unless the skip-anim control drops that trigger.
+ * @param T The slot.
+ * @param SC The decoded sector.
+ * @return 1 when the bake must follow the roll. */
+static int taud_anim_rolled(const tgpu_slot_t* T, const tscache_t* SC) {
+    return SC->polyanim && T->animRoll != SC->vrollPres && !s_taud_skip_anim;
+}
+
+/** @brief Formats up to the first eight bytes of a field as hex.
+ * @param out Receives the text, 17 bytes or more.
+ * @param p The field's bytes.
+ * @param len The field's length. */
+static void taud_hex(char* out, const uint8_t* p, int len) {
+    int n = len < 8 ? len : 8;
+    for (int i = 0; i < n; i++) snprintf(out + 2 * i, 3, "%02x", p[i]);
+    out[2 * n] = 0;
+}
+
+/* The location of one compared array. */
+typedef struct taud_where taud_where;
+struct taud_where {
+    int sec, slot, arena; const char* arr; const taud_field* F; size_t sz;
+    const uint32_t* fid; int nfid;
+    const tgpu_buf* R;                               /* the resident arena */
+    int (*tab)(const taud_where* W, int i);          /* colour-table mode of element i, or NULL */
+};
+
+/** @brief Returns whether a resident plain or anim vertex, or its twin, is a colour-table corner.
+ * @param W Where; W->R is the resident arena.
+ * @param i The element.
+ * @return 1 when its previous-tick twin carries OPTC_PREV_PAD_COLTAB, else 0. */
+static int taud_tab_anim(const taud_where* W, int i) {
+    return (W->R->pv[i].pad & (int16_t)OPTC_PREV_PAD_COLTAB) != 0;
+}
+/** @brief Returns whether a resident near vertex, or its context, belongs to a colour-table face.
+ * @param W Where; W->R is the resident arena.
+ * @param i The element.
+ * @return 1 when its pz carries OPTC_FACE_F_COLTAB, else 0. */
+static int taud_tab_near(const taud_where* W, int i) {
+    return ((uint32_t)(uint16_t)W->R->v[i].pz & OPTC_FACE_F_COLTAB) != 0;
+}
+/** @brief Returns the colour-table mode of a resident cell record.
+ * @param W Where; W->R is the resident arena.
+ * @param i The element.
+ * @return 0 no table, 1 a table face, 2 a table face whose slot 3 keeps its baked words. */
+static int taud_tab_cell(const taud_where* W, int i) {
+    const rhi_terrain_cell* c = (const rhi_terrain_cell*)(W->R->rec + W->R->rsz * (size_t)i);
+    if (!(c->fog_b & OPTC_FACE_F_COLTAB)) return 0;
+    return (c->near_rgb[0] >> 24) == OPTC_COLTAB_BAKED ? 2 : 1;
+}
+
+/** @brief Counts and logs one mismatch, keeping the run's first.
+ * @param W Where.
+ * @param i The element index.
+ * @param fname The field name.
+ * @param a The resident bytes of the field, or NULL.
+ * @param b The fresh bytes of the field, or NULL.
+ * @param len The field's length. */
+static void taud_note(const taud_where* W, int i, const char* fname,
+                      const uint8_t* a, const uint8_t* b, int len) {
+    char ha[20] = "-", hb[20] = "-", face[32] = "-";
+    if (a) taud_hex(ha, a, len);
+    if (b) taud_hex(hb, b, len);
+    if (W->fid && i < W->nfid)
+        snprintf(face, sizeof face, "%s:%u", k_taud_pass[(W->fid[i] >> 16) & 3u], W->fid[i] & 0xFFFFu);
+    char line[256];
+    snprintf(line, sizeof line, "f=%u sec=%d slot=%d arena=%s array=%s elem=%d face=%s field=%s "
+             "resident=%s fresh=%s", openpete_frame, W->sec, W->slot,
+             W->arena >= 0 ? k_taud_arena[W->arena] : "-", W->arr, i, face, fname, ha, hb);
+    if (!s_taud_first[0]) snprintf(s_taud_first, sizeof s_taud_first, "{%s}", line);
+    if (s_taud_logged++ < TAUD_LOG_MAX) fprintf(stderr, "[ter-audit] MISMATCH %s\n", line);
+    s_taud_mis++;
+}
+
+/** @brief Tests whether the vertex stage leaves a field unread on an element of a colour-table mode.
+ * @param F The field.
+ * @param tab The element's colour-table mode (0, 1 or 2, as W->tab returns).
+ * @return 1 when the field is not compared. */
+static int taud_field_unread(const taud_field* F, int tab) {
+    return F->tab && tab && !(F->tab == 2 && tab == 2);
+}
+
+/** @brief Notes a differing field, named with the even byte offset of its first difference when that is past the start.
+ * @param W Where.
+ * @param i The element index.
+ * @param F The field.
+ * @param x The resident element.
+ * @param y The fresh element. */
+static void taud_note_field(const taud_where* W, int i, const taud_field* F,
+                            const uint8_t* x, const uint8_t* y) {
+    int d = 0;
+    while (x[F->off + d] == y[F->off + d]) d++;
+    d &= ~1;
+    char fn[48];
+    if (d) snprintf(fn, sizeof fn, "%s+%d", F->name, d);
+    else snprintf(fn, sizeof fn, "%s", F->name);
+    taud_note(W, i, fn, x + F->off + d, y + F->off + d, F->len - d);
+}
+
+/** @brief Compares two element arrays field by field and notes the first differing field of the first differing element.
+ *
+ * A field whose first two or more bytes agree is named with the even byte
+ * offset of its first difference (field+N) and printed from there.
+ * @param W Where, with the field table and element size.
+ * @param a The resident elements.
+ * @param na Their count.
+ * @param b The fresh elements.
+ * @param nb Their count.
+ * @return 1 on a mismatch, else 0. */
+static int taud_cmp(const taud_where* W, const uint8_t* a, int na, const uint8_t* b, int nb) {
+    const int n = na < nb ? na : nb;
+    s_taud_elems += (uint64_t)n;
+    for (int i = 0; i < n; i++) {
+        const uint8_t* x = a + W->sz * (size_t)i;
+        const uint8_t* y = b + W->sz * (size_t)i;
+        const int tab = (W->tab && i < na) ? W->tab(W, i) : 0;
+        for (const taud_field* F = W->F; F->name; F++) {
+            if (F->off + F->len > W->sz) continue;
+            if (taud_field_unread(F, tab)) { s_taud_masked++; continue; }
+            if (memcmp(x + F->off, y + F->off, F->len) == 0) continue;
+            taud_note_field(W, i, F, x, y);
+            return 1;
+        }
+    }
+    if (na == nb) return 0;
+    char cnt[24];
+    snprintf(cnt, sizeof cnt, "count:%d/%d", na, nb);
+    taud_note(W, n, cnt, NULL, NULL, 0);
+    return 1;
+}
+
+/** @brief Compares one arena of the resident copy with the fresh bake.
+ * @param H The slot's shadow.
+ * @param K The fresh bake.
+ * @param W Where (sector, slot, arena filled).
+ * @return The mismatch count, 0 to 3. */
+static int taud_cmp_arena(const taud_shadow* H, const taud_bake* K, taud_where W) {
+    const int a = W.arena;
+    const tgpu_buf* R = &H->b.buf[a];
+    const tgpu_buf* B = &K->buf[a];
+    W.fid = K->fid[a]; W.nfid = K->marked[a]; W.R = R;
+    if (OPTC_ARENA_IS_CELL(a)) {
+        W.arr = "cell"; W.F = k_taud_cell; W.sz = B->rsz; W.tab = taud_tab_cell;
+        return taud_cmp(&W, R->rec, R->n, B->rec, B->n);
+    }
+    int m = 0;
+    const int near = OPTC_ARENA_IS_NEAR(a);
+    W.tab = near ? taud_tab_near : (R->anim ? taud_tab_anim : NULL);
+    W.arr = "vertex"; W.F = near ? k_taud_vert_near : k_taud_vert;
+    W.sz = sizeof(rhi_terrain_vertex);
+    m += taud_cmp(&W, (const uint8_t*)R->v, R->n, (const uint8_t*)B->v, B->n);
+    if (R->anim && B->anim) {
+        W.arr = "prev"; W.F = k_taud_prev; W.sz = sizeof(rhi_terrain_prev);
+        m += taud_cmp(&W, (const uint8_t*)R->pv, R->n, (const uint8_t*)B->pv, B->n);
+    }
+    if (R->nearv && B->nearv) {
+        W.arr = "nearctx"; W.F = k_taud_ctx; W.sz = sizeof(rhi_terrain_nearctx);
+        m += taud_cmp(&W, (const uint8_t*)R->cx, R->n, (const uint8_t*)B->cx, B->n);
+    }
+    return m;
+}
+
+/** @brief Compares the store words of the resident copy (records, colour-table entry) with the fresh ones, skipping masked words.
+ * @param W Where (sector, slot).
+ * @param arr The array name.
+ * @param a The resident words.
+ * @param na Their count.
+ * @param b The fresh words.
+ * @param nb Their count.
+ * @param mask Per resident word, nonzero to skip it; NULL compares every word.
+ * @return 1 on a mismatch, else 0. */
+static int taud_cmp_words(taud_where W, const char* arr, const uint32_t* a, int na,
+                          const uint32_t* b, int nb, const uint8_t* mask) {
+    W.arena = -1; W.arr = arr; W.fid = NULL; W.nfid = 0;
+    const int n = na < nb ? na : nb;
+    for (int i = 0; i < n; i++) {
+        if (mask && mask[i]) { s_taud_masked++; continue; }
+        if (a[i] == b[i]) continue;
+        taud_note(&W, i, "word", (const uint8_t*)&a[i], (const uint8_t*)&b[i], 4);
+        return 1;
+    }
+    if (na == nb) return 0;
+    char cnt[24];
+    snprintf(cnt, sizeof cnt, "count:%d/%d", na, nb);
+    taud_note(&W, n, cnt, NULL, NULL, 0);
+    return 1;
+}
+
+/** @brief Marks the colour words of the resident anim split records whose colours the vertex stage reads from the colour table.
+ *
+ * An anim arena's split vertex (flags16 bit 14) names its record by px | py;
+ * a record with word 21 bit 0 set takes its corners' colours from the table,
+ * so its far and near words (0-7) and their previous words (12-19) are not
+ * read.
+ * @param H The slot's shadow.
+ * @param first The slot's store run (prevFirst).
+ * @param mask Receives 1 per masked word; H->b.pn x OPTC_PREV_REC_WORDS entries, zeroed by the caller. */
+static void taud_rec_mask(const taud_shadow* H, uint32_t first, uint8_t* mask) {
+    const int nw = H->b.pn * (int)OPTC_PREV_REC_WORDS;
+    for (int a = OPTC_ARENA_ANIM_BASE; a < OPTC_ARENA_NEAR_BASE; a++) {
+        const tgpu_buf* R = &H->b.buf[a];
+        for (int i = 0; i < R->n; i++) {
+            const rhi_terrain_vertex* v = &R->v[i];
+            if (!(v->flags16 & 0x4000u)) continue;
+            const uint32_t r = (uint32_t)(uint16_t)v->px | (uint32_t)(uint16_t)v->py << 16;
+            const long o = ((long)r - (long)first) * (long)OPTC_PREV_REC_WORDS;
+            if (o < 0 || o + 21 >= nw || !(H->b.pw[o + 21] & 1u)) continue;
+            memset(mask + o, 1, 8);
+            memset(mask + o + 12, 1, 8);
+        }
+    }
+}
+
+/** @brief Returns the shadow of a slot the audit compares on this build, or NULL.
+ *
+ * The audit runs on canonical builds of every s_taud-th tick (counted as the
+ * VBLs that ran a canonical build), once per slot per VBL, on a slot whose
+ * shadow holds its current sector and generation.
+ * @param slot The decode slot.
+ * @return The slot's shadow, or NULL to skip it. */
+static taud_shadow* taud_due(int slot) {
+    static uint32_t s_last_frame = 0xFFFFFFFFu, s_ticks;
+    if (!taud_on()) return NULL;
+    if (s_vanim_sub) { s_taud_sub++; return NULL; }
+    if (openpete_frame != s_last_frame) { s_last_frame = openpete_frame; s_ticks++; }
+    if (s_ticks % (uint32_t)s_taud != 0u) return NULL;
+    const tgpu_slot_t* T = &s_tgpu[slot];
+    taud_shadow* H = &s_taud_sh[slot];
+    if (H->lastAudit == openpete_frame + 1u) return NULL;
+    H->lastAudit = openpete_frame + 1u;
+    if (!H->valid || H->s != T->s || H->gen != T->gen) { s_taud_noshadow++; return NULL; }
+    return H;
+}
+
+/** @brief Bakes a sector afresh into the audit's sink, rebased onto the slot's store run, with its colour-table entry encoded as tgpu_coltab_refresh encodes it.
+ * @param cpu The guest CPU state.
+ * @param SC The decoded sector.
+ * @param hqTable The HQ record table's guest address, or 0.
+ * @param sec_index The level sector index.
+ * @param K Receives the bake.
+ * @return 0, or -1 when the bake or an allocation failed. */
+static int taud_fresh(CPUState* cpu, const tscache_t* SC, uint32_t hqTable, int sec_index, taud_bake* K) {
+    const int slot = (int)(SC - s_tsc);
+    const tgpu_slot_t* T = &s_tgpu[slot];
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) { K->buf[a].n = 0; K->marked[a] = 0; }
+    K->faces = 0; K->pn = 0; K->tn = 0;
+    s_taud_sink = K;
+    const int r = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index, T->bakeVar);
+    s_taud_sink = NULL;
+    if (r != 0) return -1;
+    if (K->pn > 0) tgpu_prev_rebase(K->buf, T->prevFirst);
+    const canim_t* CA = T->bakeTab ? tsc_canim(SC) : NULL;
+    if (!CA || T->tabUnits <= 0) return 0;
+    K->tn = T->tabEnt * (int)OPTC_PREV_REC_WORDS;
+    if (K->tn > K->tcap) {
+        uint32_t* p = (uint32_t*)realloc(K->tw, sizeof *p * (size_t)K->tn);
+        if (!p) return -1;
+        K->tw = p; K->tcap = K->tn;
+    }
+    tgpu_coltab_fill(CA, K->tw, T->tabEnt);
+    return 0;
+}
+
+/** @brief Compares a slot's shadow with a fresh bake: every arena, the record words (colour-table colours masked) and the colour-table entry.
+ * @param H The slot's shadow.
+ * @param K The fresh bake.
+ * @param T The slot.
+ * @param W Where (sector and slot filled).
+ * @return The mismatch count. */
+static int taud_compare(const taud_shadow* H, const taud_bake* K, const tgpu_slot_t* T, taud_where W) {
+    static uint8_t* mask;
+    static int mcap;
+    int m = 0;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) { W.arena = a; m += taud_cmp_arena(H, K, W); }
+    const int nw = H->b.pn * (int)OPTC_PREV_REC_WORDS;
+    if (nw > mcap) {
+        uint8_t* p = (uint8_t*)realloc(mask, (size_t)nw);
+        if (p) { mask = p; mcap = nw; }
+    }
+    const int masked = nw > 0 && nw <= mcap;
+    if (masked) {
+        memset(mask, 0, (size_t)nw);
+        taud_rec_mask(H, T->prevFirst, mask);
+    }
+    m += taud_cmp_words(W, "records", H->b.pw, nw, K->pw, K->pn * (int)OPTC_PREV_REC_WORDS,
+                        masked ? mask : NULL);
+    if (K->tn) m += taud_cmp_words(W, "coltab", H->b.tw, H->b.tn, K->tw, K->tn, NULL);
+    return m;
+}
+
+/** @brief Re-bakes one owned sector into the audit's sink and compares it with the slot's resident copy.
+ *
+ * Called after tgpu_ensure validated the slot; taud_due decides whether
+ * this build audits it.
+ * @param cpu The guest CPU state.
+ * @param SC The decoded sector.
+ * @param hqTable The HQ record table's guest address, or 0.
+ * @param sec_index The level sector index. */
+static void taud_sector(CPUState* cpu, const tscache_t* SC, uint32_t hqTable, int sec_index) {
+    const int slot = (int)(SC - s_tsc);
+    taud_shadow* H = taud_due(slot);
+    if (!H) return;
+    static taud_bake K;
+    if (taud_fresh(cpu, SC, hqTable, sec_index, &K) != 0) { s_taud_fail++; return; }
+    s_taud_audits++;
+    s_taud_rebaked += H->bakes > 1u;
+    s_taud_faces += (uint64_t)K.faces;
+    s_taud_pwords += (uint64_t)K.pn * OPTC_PREV_REC_WORDS;
+    s_taud_twords += (uint64_t)K.tn;
+    if (s_taud_sample < 0) s_taud_sample = sec_index;
+    if (sec_index >= 0 && sec_index < 4096) s_taud_secset[sec_index >> 3] |= (uint8_t)(1u << (sec_index & 7));
+    const taud_where W = { sec_index, slot, 0, NULL, NULL, 0, NULL, 0, NULL, NULL };
+    s_taud_missec += taud_compare(H, &K, &s_tgpu[slot], W) > 0;
+}
+
+/** @brief Hands a finished bake to the audit's sink when the audit's fresh bake is running.
+ * @param buf The bake buffers, indexed by arena.
+ * @return 1 when the sink took the bake, 0 outside the audit's fresh bake. */
+static int taud_deliver(const tgpu_buf* buf) {
+    if (!s_taud_sink) return 0;
+    if (taud_take(s_taud_sink, buf) != 0) return -1;
+    return 1;
+}
+
+/** @brief Rebases a bake's record references onto its store allocation.
  *
  * Every near-variant vertex's px | py and every near cell record's fog_a
  * that names a bake-local record, and every plain or anim split vertex's
- * record (tgpu_split_rebase), gains the allocation's first index. A bake
- * without records allocates nothing.
- * @param T The sector's slot; receives the run (prevFirst, prevCount).
+ * record (tgpu_split_rebase), gains the allocation's first index.
  * @param buf The sector's bake buffers, indexed by arena.
- * @return 0, or -1 when the record store is full or the list failed to
- *         grow (the arena-full claim). */
-static int tgpu_prev_upload(tgpu_slot_t* T, tgpu_buf* buf) {
-    T->prevCount = 0;
-    if (s_prev_oom) return -1;
-    if (s_prev_n == 0) return 0;
-    uint32_t first;
-    if (openpete_tercache_prev_alloc(s_prev_n, &first) != 0) return -1;
+ * @param first The allocation's first unit. */
+static void tgpu_prev_rebase(tgpu_buf* buf, uint32_t first) {
     for (int a = OPTC_ARENA_NEAR_BASE; a < OPTC_ARENA_CELL_NEAR_BASE; a++)
         for (int i = 0; i < buf[a].n; i++) {
             rhi_terrain_vertex* v = &buf[a].v[i];
@@ -12541,6 +13145,22 @@ static int tgpu_prev_upload(tgpu_slot_t* T, tgpu_buf* buf) {
             if (c->fog_a != OPTC_PREV_REC_NONE) c->fog_a += first;
         }
     tgpu_split_rebase(buf, first);
+}
+
+/** @brief Allocates and writes the bake's previous-corner records and rebases the near chunks onto them (tgpu_prev_rebase).
+ *
+ * A bake without records allocates nothing.
+ * @param T The sector's slot; receives the run (prevFirst, prevCount).
+ * @param buf The sector's bake buffers, indexed by arena.
+ * @return 0, or -1 when the record store is full or the list failed to
+ *         grow (the arena-full claim). */
+static int tgpu_prev_upload(tgpu_slot_t* T, tgpu_buf* buf) {
+    T->prevCount = 0;
+    if (s_prev_oom) return -1;
+    if (s_prev_n == 0) return 0;
+    uint32_t first;
+    if (openpete_tercache_prev_alloc(s_prev_n, &first) != 0) return -1;
+    tgpu_prev_rebase(buf, first);
     openpete_tercache_prev_write(first, s_prev_w, s_prev_n);
     if (op_prof_on()) s_tbk[TBK_PREV] += (uint64_t)s_prev_n;
     T->prevFirst = first;
@@ -12556,7 +13176,11 @@ static int tgpu_prev_upload(tgpu_slot_t* T, tgpu_buf* buf) {
  * @return 1 when both landed, 0 when the store or an arena is full. */
 static int tgpu_upload_sector(tgpu_slot_t* T, tgpu_buf* buf) {
     if (tgpu_prev_upload(T, buf) != 0) return 0;
-    if (tgpu_upload_chunks(T, buf) == 0) { openpete_tercache_note_bake(); return 1; }
+    if (tgpu_upload_chunks(T, buf) == 0) {
+        openpete_tercache_note_bake();
+        taud_shadow_capture(T, buf);
+        return 1;
+    }
     if (T->prevCount > 0) openpete_tercache_prev_free(T->prevFirst, T->prevCount);
     T->prevCount = 0;
     return 0;
@@ -12930,6 +13554,9 @@ static uint32_t tgpu_bake_gen(int slot) { return s_tpv_sink ? 0u : ((uint32_t)s_
  * @return 1 when the bake landed, else 0. */
 static int tgpu_bake_deliver(int slot, int sec_index, const tscache_t* SC, tgpu_buf* buf) {
     if (s_tpv_sink) return tpv_take(s_tpv_sink, buf) == 0;
+    const int audit = taud_deliver(buf);
+    if (audit) return audit > 0;
+    taud_poison(sec_index, buf);
     tgpu_facedump_sector(slot, sec_index, SC);
     return tgpu_upload_sector(&s_tgpu[slot], buf);
 }
@@ -12937,7 +13564,7 @@ static int tgpu_bake_deliver(int slot, int sec_index, const tscache_t* SC, tgpu_
 /** @brief Records a bake's colour-table misses on its cache slot; a preview bake has no slot.
  * @param slot The decode slot. */
 static void tgpu_bake_note_misses(int slot) {
-    if (!s_tpv_sink) s_tgpu[slot].tabMiss = (uint8_t)s_coltab_miss;
+    if (!s_tpv_sink && !s_taud_sink) s_tgpu[slot].tabMiss = (uint8_t)s_coltab_miss;
 }
 
 /** @brief Builds and uploads all of one sector's chunks.
@@ -13007,19 +13634,23 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     const uint32_t own_sec = tgpu_envm_sec(SC, sec_index);
     const tgpu_lpset own_lp = { tgpu_lp_bank(SC, 0), (anim && !vsnap) ? SC->lpVprev : NULL, SC->nLpV,
                                 SC->lpColBase, CA, sec_index };
-    for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++)
+    for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++) {
         if (tgpu_bake_lp_face(cpu, buf, ab, with_var, base_ff,
                               lp_buckets[tface_envm(&SC->lpF[f], own_sec, 1, 0) != 0],
                               &own_lp, &SC->lpF[f], f) != 0)
             goto done;
+        taud_face_mark(buf, 0, f);
+    }
     if (SC->imp && SC->imp->lpV && SC->imp->lpF) {
         /* Borrowed LP faces: the source LP colours through the host window,
          * no previous-tick state, no authored correction. */
         const tsimp_t* I = SC->imp;
         const tgpu_lpset bor_lp = { tgpu_lp_bank(SC, 1), NULL, I->nLpV, I->lpColBase, NULL, -1 };
-        for (int f = 0; f < I->nLpF; f++)
+        for (int f = 0; f < I->nLpF; f++) {
             if (tgpu_bake_lp_face(cpu, buf, ab, with_var, base_ff, lp_bucket, &bor_lp, &I->lpF[f], f) != 0)
                 goto done;
+            taud_face_mark(buf, 1, f);
+        }
     }
 
     /* ---- HP tier: flat variant + the HQ 2x2 subdivide variant; the
@@ -13030,8 +13661,10 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     tgpu_hpset own = { SC->hpV, SC->hpVprev, SC->nHpV, NULL, NULL, SC->nearBase, SC->farBase, CA, 0u, SC,
                        SC->hpF, tgpu_tj_marks(SC, 1, SC->nHpF) };
     tgpu_own_bank(SC, &X, &own);
-    for (int f = 0; SC->hpV && SC->hpF && f < SC->nHpF; f++)
+    for (int f = 0; SC->hpV && SC->hpF && f < SC->nHpF; f++) {
         if (tgpu_bake_hp_face(&X, &own, &SC->hpF[f], &fail) != 0) goto done;
+        taud_face_mark(buf, 2, f);
+    }
     s_hq_bank = 0;
     if (SC->imp) {
         const tsimp_t* I = SC->imp;
@@ -13045,6 +13678,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         s_hq_bank = 1;
         for (int f = 0; f < I->nF; f++) {
             if (tgpu_bake_hp_face(&XB, &bor, &I->F[f], &fail) != 0) goto done;
+            taud_face_mark(buf, 3, f);
         }
         s_hq_bank = 0;
     }
@@ -13132,6 +13766,25 @@ static int tgpu_coltab_ring(tgpu_slot_t* T, uint32_t sec, int ent) {
     return 0;
 }
 
+/** @brief Encodes a colour slot's current and previous words as one colour-table entry.
+ *
+ * Word 0 is the header (LP count | HP count / 2 << 16), then the current
+ * words of the LP, HP near and HP far arrays, then the same three previous
+ * (the current ones before the slot's first roll); the rest is zero.
+ * @param CA The colour slot.
+ * @param w Receives ent x OPTC_PREV_REC_WORDS words.
+ * @param ent The entry's units. */
+static void tgpu_coltab_fill(const canim_t* CA, uint32_t* w, int ent) {
+    const uint32_t n = CA->nLp + CA->nHp;
+    memset(w, 0, sizeof(*w) * OPTC_PREV_REC_WORDS * (size_t)ent);
+    w[0] = CA->nLp | (CA->nHp / 2u) << 16;
+    const uint32_t* prev = CA->havePrev ? CA->prev : CA->cur;
+    for (uint32_t k = 0; k < n; k++) {
+        w[1u + k] = CA->cur[k] & 0xFFFFFFu;
+        w[1u + n + k] = prev[k] & 0xFFFFFFu;
+    }
+}
+
 /** @brief Writes a colour-table slot's colour slot's latest roll into the next entry of its ring.
  *
  * The entry (openpete_terrain_cache.h, colour tables) holds the colour
@@ -13168,14 +13821,9 @@ static int tgpu_coltab_refresh(tgpu_slot_t* T, const tscache_t* SC) {
         if (!nw) return -1;
         w = nw; wcap = ent * (int)OPTC_PREV_REC_WORDS;
     }
-    memset(w, 0, sizeof(*w) * OPTC_PREV_REC_WORDS * (size_t)ent);
-    w[0] = CA->nLp | (CA->nHp / 2u) << 16;
-    const uint32_t* prev = CA->havePrev ? CA->prev : CA->cur;
-    for (uint32_t k = 0; k < n; k++) {
-        w[1u + k] = CA->cur[k] & 0xFFFFFFu;
-        w[1u + n + k] = prev[k] & 0xFFFFFFu;
-    }
+    tgpu_coltab_fill(CA, w, ent);
     openpete_tercache_prev_write(T->tabFirst + (uint32_t)(nx * ent), w, ent);
+    taud_tab_capture(T, w, ent);
     T->tabStamp[T->tabCur] = openpete_tercache_build_serial();
     T->tabCur = nx;
     T->tabUsed |= (uint8_t)(1u << nx);
@@ -13408,12 +14056,12 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     int dirty = (with_var && !T->bakeVar)
              || (T->bakePinKey != pinKey)
              || (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
-             || (T->texGen != SC->texGen) || (T->vertGen != SC->vertGen)
+             || taud_tex_moved(T, SC) || (T->vertGen != SC->vertGen)
              /* poly-anim: every canonical roll re-bakes (prev,cur) - the
               * content hash alone would leave a paused anim's chunk lerping
               * its last step forever. Sub-tick builds don't roll, so this
               * stays clean between ticks. */
-             || (SC->polyanim && T->animRoll != SC->vrollPres)
+             || taud_anim_rolled(T, SC)
              /* env-anim colour: joining or leaving the colour lists moves
               * the sector between arena families, and each roll re-bakes
               * its (prev, cur) colour pair for the same reason. */
@@ -17353,6 +18001,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 int r = tgpu_ensure(cpu, SC, hqTable, (int)i, want_near);
                 ter_prof_close();   /* ter.ensure */
                 if (r == 0) {
+                    taud_sector(cpu, SC, hqTable, (int)i);
                     s_tgpu_own[vi] = want_near ? 3 : 1;
                     if (want_near) s_tgpu_nvsecs++;
                     s_tgpu_an_walk += want_near & (SC->polyanim != 0);
