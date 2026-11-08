@@ -3653,10 +3653,19 @@ typedef struct tsface {
                                                     * (tsc_tag_uncovered; distance-binning games only) */
     uint8_t  uncovX;                               /* LP only: uncov against the HP mesh plus the sector's
                                                     * borrowed HP faces (tscache_t.imp); == uncov when the
-                                                    * sector borrows none. The LP near outcode reads it. */
+                                                    * sector borrows none. The GPU bake carries it
+                                                    * (FF_LPUNCOVX); no shader reads that bit. */
     uint8_t  ride;                                 /* LP only: uncovX and not a stand-in for the scene's HP
                                                     * mesh (tsc_lp_standin); the faces the extended-LOD
-                                                    * uncov-only ride-along draws */
+                                                    * uncov-only ride-along draws.
+                                                    * uncov, uncovX and ride describe the vertex banks
+                                                    * of tscache_t.tagGen; they are current only on a
+                                                    * sector the ride gate (or an active fardbg trace)
+                                                    * reached this build (tsc_tags_current). Elsewhere,
+                                                    * on an animated sector, they and the bake's
+                                                    * FF_LPRIDE / FF_LPUNCOVX bits may be stale, and no
+                                                    * reader consumes them: the shader reads FF_LPRIDE
+                                                    * only under SF_LPUNCOV, the ride gate's verdict. */
     uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
     uint8_t  admit;                                /* LP only: authored admission field w0 & 0x1F */
     uint8_t  lpkey;                                /* borrowed HP only: admitted solely over the sector's
@@ -3775,6 +3784,8 @@ typedef struct {
      * the decoded verts (content hash, not the unconditional per-tick
      * re-decode). */
     uint32_t decodeGen, texGen, vertGen, vertHash;
+    uint32_t tagGen;             /* the vertGen the LP coverage tags (uncov, uncovX,
+                                  * ride and their counts) were computed at */
     const struct canim* canim;   /* this sector's env-anim colour slot ... */
     uint32_t canimPres;          /* ... valid while this equals s_vanim_pres
                                   * (stamped per build by tsc_col_anim_refresh) */
@@ -4485,24 +4496,60 @@ static void tsc_face_corners(const tsvert_t* V, const tsface_t* F, double q[4][3
  * decoded vertex frame. */
 typedef struct { const tsvert_t* V; const tsface_t* F; int nV, nF; } tsmesh_t;
 
+/** @brief Returns the squared distance from a point to a face's corner bounding box.
+ *
+ * Every point of the face's triangles lies inside the box, so the result
+ * bounds their distance from below.
+ * @param V The face's vertex bank; the face's indices must lie inside it.
+ * @param H The face; a quad's box spans all four corners.
+ * @param p The point.
+ * @return The squared distance, 0 inside the box. */
+static double tsc_face_box_d2(const tsvert_t* V, const tsface_t* H, const double p[3]) {
+    const tsvert_t* c[4] = { &V[H->i0], &V[H->i1], &V[H->i2], &V[H->i3] };
+    const int nc = H->quad ? 4 : 3;
+    double d2 = 0.0;
+    for (int k = 0; k < 3; k++) {
+        int lo = INT32_MAX, hi = INT32_MIN;
+        for (int i = 0; i < nc; i++) {
+            const int v = k == 0 ? c[i]->x : k == 1 ? c[i]->y : c[i]->z;
+            lo = v < lo ? v : lo;
+            hi = v > hi ? v : hi;
+        }
+        const double d = p[k] < lo ? lo - p[k] : p[k] > hi ? p[k] - hi : 0.0;
+        d2 += d * d;
+    }
+    return d2;
+}
+
 /** @brief Returns the squared distance from a point to a set of HP meshes, stopping early inside a bound.
  *
  * Each face whose indices lie inside its mesh's vertex bank contributes the
  * triangles the walk emits: (i0, i1, i2), and for a quad also (i1, i2, i3).
- * The meshes are scanned in order and the scan returns as soon as one
- * triangle lies within stop2.
+ * A face whose corner box (tsc_face_box_d2) lies farther than stop2, with a
+ * margin of 1 squared unit, cannot bring the result to stop2 and is
+ * skipped. The margin covers tsc_tri_d2's rounding: its corner products
+ * and normal are exact integers in double, and the plane and edge
+ * distances it derives from them carry an absolute error near 3 ulp of
+ * the coordinate span (|p - v0| under 2^18), below 1e-9 units, so a
+ * squared distance at stop2 = 64^2 moves by under 1e-6; a face the
+ * margin skips scores above stop2 whatever its shape. The meshes are scanned in order and the scan
+ * returns as soon as one triangle lies within stop2.
  * @param M The meshes.
  * @param nm The mesh count.
  * @param p The point, in the sector's decoded vertex frame.
  * @param stop2 The squared distance at which the scan stops.
- * @return The smallest squared distance found, or a value at or below stop2. */
+ * @return The smallest squared distance found when it is at or below
+ *         stop2, else a value above stop2 (INFINITY when every face was
+ *         skipped). */
 static double tsc_hp_d2(const tsmesh_t* M, int nm, const double p[3], double stop2) {
     double best = INFINITY;
+    const double reject2 = stop2 + 1.0;
     for (int m = 0; m < nm; m++) {
         for (int f = 0; f < M[m].nF && best > stop2; f++) {
             const tsface_t* H = &M[m].F[f];
             const int nV = M[m].nV;
             if (H->i0 >= nV || H->i1 >= nV || H->i2 >= nV || H->i3 >= nV) continue;
+            if (tsc_face_box_d2(M[m].V, H, p) > reject2) continue;
             double q[4][3];
             tsc_face_corners(M[m].V, H, q);
             best = fmin(best, tsc_tri_d2(p, (const double (*)[3])q));
@@ -4650,10 +4697,12 @@ static void tsc_tag_uncovered_borrowed(tscache_t* C, const tsmesh_t* M, int nm, 
  * borrowed faces uncovX equals uncov. Every LP face of a sector with no HP
  * faces is uncov. An uncovX face that is no stand-in for the scene's HP
  * surface (tsc_lp_standin) is tagged ride. A face with an out-of-bank index
- * stays untagged. nUncov, nUncovX and nRide count the tagged faces. A poly-anim sector is re-tagged whenever
- * tsc_vert_anim_refresh decodes moved vertices.
- * @param C The cached sector; its LP faces, nUncov, nUncovX and nRide are updated. */
+ * stays untagged. nUncov, nUncovX and nRide count the tagged faces; tagGen
+ * takes vertGen. tsc_tags_current re-runs this for a poly-anim sector whose
+ * vertices moved since.
+ * @param C The cached sector; its LP faces, nUncov, nUncovX, nRide and tagGen are updated. */
 static void tsc_tag_uncovered(tscache_t* C) {
+    C->tagGen = C->vertGen;
     C->nUncov = C->nUncovX = C->nRide = 0;
     if (!C->lpF || !C->lpV) return;
     for (int f = 0; f < C->nLpF; f++) C->lpF[f].uncov = C->lpF[f].uncovX = C->lpF[f].ride = 0;
@@ -4676,6 +4725,82 @@ static void tsc_tag_uncovered(tscache_t* C) {
         C->nRide += F->ride;
     }
     tsc_tag_uncovered_borrowed(C, M, nm, ownHP);
+}
+
+/* LP coverage re-tag census: tsc_tag_uncovered runs since the last terrain
+ * build's flush, by the site that asked (decode: tsc_derive; ride: the
+ * extended-LOD ride gate; trace: the fardbg drop trace), and a digest of the
+ * tags the ride gate read. */
+enum { TSC_RETAG_DECODE, TSC_RETAG_RIDE, TSC_RETAG_TRACE, TSC_RETAG_N };
+static uint32_t s_retag_n[TSC_RETAG_N];
+static uint64_t s_retag_digest;
+static uint32_t s_retag_reads;
+static int s_retag_cen = -1;   /* OPENPETE_TERRAIN_RETAG_CENSUS: one line per terrain build */
+
+/** @brief Folds a sector's LP coverage tags into the build's read digest under OPENPETE_TERRAIN_RETAG_CENSUS.
+ *
+ * Hashes the sector address, nUncov, nUncovX, nRide and each own and
+ * borrowed LP face's uncov, uncovX and ride bytes, in face order.
+ * @param C The sector whose tags a reader is about to consume. */
+static void tsc_retag_digest(const tscache_t* C) {
+    ENV_FLAG_LATCH(s_retag_cen, "OPENPETE_TERRAIN_RETAG_CENSUS");
+    if (!s_retag_cen) return;
+    if (!s_retag_reads) s_retag_digest = openpete_fnv1a64_init();
+    const int32_t hdr[4] = { (int32_t)C->s, C->nUncov, C->nUncovX, C->nRide };
+    uint64_t h = openpete_fnv1a64_update(s_retag_digest, hdr, sizeof(hdr));
+    for (int f = 0; C->lpF && f < C->nLpF; f++) {
+        const uint8_t t[3] = { C->lpF[f].uncov, C->lpF[f].uncovX, C->lpF[f].ride };
+        h = openpete_fnv1a64_update(h, t, sizeof(t));
+    }
+    for (int f = 0; C->imp && C->imp->lpF && f < C->imp->nLpF; f++) {
+        const uint8_t t[3] = { C->imp->lpF[f].uncov, C->imp->lpF[f].uncovX, C->imp->lpF[f].ride };
+        h = openpete_fnv1a64_update(h, t, sizeof(t));
+    }
+    s_retag_digest = h;
+    s_retag_reads++;
+}
+
+/** @brief Emits and clears the build's re-tag counts and read digest.
+ *
+ * Each reason's count goes to the profile as a COUNT record (ter.retag.*)
+ * while the profiler runs; OPENPETE_TERRAIN_RETAG_CENSUS also prints one
+ * [retag] line carrying the feed key, the sub-tick flag, the counts, the
+ * ride-gate read count and the digest of the tags those reads saw.
+ * @param sub Nonzero for a sub-tick build. */
+static void tsc_retag_census_flush(int sub) {
+    static const char* const names[TSC_RETAG_N] = {
+        "ter.retag.decode", "ter.retag.ride", "ter.retag.trace" };
+    static int ids[TSC_RETAG_N] = { -1, -1, -1 };
+    if (op_prof_on()) {
+        for (int r = 0; r < TSC_RETAG_N; r++) {
+            if (ids[r] < 0) ids[r] = op_prof_intern(names[r]);
+            op_prof_count(ids[r], s_retag_n[r]);
+        }
+    }
+    ENV_FLAG_LATCH(s_retag_cen, "OPENPETE_TERRAIN_RETAG_CENSUS");
+    if (s_retag_cen)
+        fprintf(stderr, "[retag] key=%u sub=%d decode=%u ride=%u trace=%u reads=%u digest=%016llx\n",
+                openpete_feed_key_now(), sub, s_retag_n[TSC_RETAG_DECODE],
+                s_retag_n[TSC_RETAG_RIDE], s_retag_n[TSC_RETAG_TRACE], s_retag_reads,
+                (unsigned long long)(s_retag_reads ? s_retag_digest : 0u));
+    memset(s_retag_n, 0, sizeof(s_retag_n));
+    s_retag_reads = 0;
+}
+
+/** @brief Brings a sector's LP coverage tags up to its current vertex banks before a reader consumes them.
+ *
+ * tsc_derive tags a sector at decode; tsc_vert_anim_refresh steps vertGen
+ * when an animated sector's decoded vertices change and leaves the tags
+ * stale. A reader calls this first: a sector whose tags were computed at
+ * an older vertGen is re-tagged (tsc_tag_uncovered) and the run counted
+ * under the reader's reason. Under original LOD no reader runs, so moving
+ * terrain costs no coverage test.
+ * @param C The sector.
+ * @param reason The asking site, a TSC_RETAG_* value. */
+static void tsc_tags_current(tscache_t* C, int reason) {
+    if (C->tagGen == C->vertGen) return;
+    tsc_tag_uncovered(C);
+    s_retag_n[reason]++;
 }
 
 /* A sector named by an env poly-anim descriptor animates its packed verts in
@@ -6878,8 +7003,10 @@ static void tsc_derive(CPUState* cpu, tscache_t* C, int texTblMode, int hiDetail
     tsc_envm_apply(cpu, C, -1, sectorPtr, sectorCnt);
     if (game_layout.terrain.hp_far) scene_hp_refresh(cpu, sectorPtr, sectorCnt);
     tsc_tag_uncovered(C);
+    s_retag_n[TSC_RETAG_DECODE]++;
     if (tsimp_attach(cpu, C, texTblMode, hiDetail, sectorPtr, sectorCnt)) {
         tsc_tag_uncovered(C);
+        s_retag_n[TSC_RETAG_DECODE]++;
         if (s_imp_census)
             fprintf(stderr, "[hpimport] sector@%08X uncov=%d uncovX=%d\n", C->s, C->nUncov, C->nUncovX);
     }
@@ -7042,10 +7169,10 @@ uint32_t terrain_fog_cue(uint32_t nearC, uint32_t farC, double m3) {
  * The entry holds both tiers' vertices and faces, the colour-array bases and
  * the bytes each tier's faces index, keyed by the sector address and its
  * header signature words; a miss evicts the least recently used entry. */
-static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
-                                uint32_t lqTable, uint32_t hqTable,
-                                int texTblMode, int hiDetail,
-                                uint32_t sectorPtr, uint32_t sectorCnt) {
+static tscache_t* tsc_get(CPUState* cpu, uint32_t s,
+                          uint32_t lqTable, uint32_t hqTable,
+                          int texTblMode, int hiDetail,
+                          uint32_t sectorPtr, uint32_t sectorCnt) {
     uint32_t g[5] = { rd(cpu, s + 0x04), rd(cpu, s + 0x08), rd(cpu, s + 0x0C),
                       rd(cpu, s + 0x10), rd(cpu, s + 0x14) };
     uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
@@ -7253,7 +7380,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
                     hp = (const uint8_t*)C->hpV;
                     for (size_t n = sizeof(tsvert_t) * (size_t)(C->hpV ? nHp : 0), j = 0; j < n; j++)
                         h = (h ^ hp[j]) * 16777619u;
-                    if (h != C->vertHash) { C->vertHash = h; C->vertGen++; tsc_tag_uncovered(C); }
+                    if (h != C->vertHash) { C->vertHash = h; C->vertGen++; }
                 }
             } else if (s_vanim_on) {
                 /* Sub-tick present: fill the fractional lerp banks prev->cur at the
@@ -9318,6 +9445,9 @@ typedef struct {
                                        * drain moved it */
     uint32_t bakeEnvmGen;             /* s_envm_gen at build: the env-anim membership the buckets key on */
     uint32_t bakeTjGen;               /* the marked-edge table's gen at build: a rebuilt table re-bakes */
+    uint32_t bakeTagGen;              /* the sector's tagGen at build: the bake copies the ride and
+                                       * uncovX tags as they stand, without re-tagging, so tags the
+                                       * ride gate brought current since the build re-bake */
     unsigned bakeSelEpoch;            /* material_epoch at build - the baked
                                        * faces carry material BUCKET ids, so a
                                        * selector set that moved makes them
@@ -12557,7 +12687,8 @@ typedef struct {
  * The face's corners, flags (tier LP, fill tag, ride and uncovX,
  * double-sided, quad, floor, admission, OT bias) and colours go into one or
  * two triangles, the quad split on the i1-i2 diagonal as the walk's LP emit
- * does. A face with an out-of-bank index is skipped, mirroring the walk.
+ * does. The ride and uncovX bits are the tags as they stand (tsface_t.ride:
+ * current only on a sector the ride gate reached). A face with an out-of-bank index is skipped, mirroring the walk.
  * @param cpu The guest CPU state.
  * @param buf The per-arena buffers.
  * @param ab The arena family base (anim twins or plain).
@@ -13189,6 +13320,8 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
              || (T->bakeEnvmGen != s_envm_gen)
              /* The marked-edge table was rebuilt: the faces' split marks moved. */
              || (T->bakeTjGen != tj_gen())
+             /* The ride gate brought the LP coverage tags current. */
+             || (T->bakeTagGen != SC->tagGen)
              || tgpu_claim_retry(T);
     /* Migration out of a consolidation source, within the tick's budget. */
     const int mig = tgpu_migrate_due(T, dirty);
@@ -13221,6 +13354,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->bakeSelEpoch = T->selEpoch;
         T->bakeEnvmGen = s_envm_gen;
         T->bakeTjGen = tj_gen();
+        T->bakeTagGen = SC->tagGen;
         T->lastColFrame = openpete_frame;
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
         T->bakeVar = (uint8_t)(with_var != 0);
@@ -13442,17 +13576,23 @@ enum { TN_RIDE_NONE, TN_RIDE_FARONLY, TN_RIDE_GAPONLY, TN_RIDE_UNCOVONLY };
  * the guest's near bound and, on a poly-anim sector, draws the LP bank only
  * while the guest re-packs it. A sector with no HP of its own, whose HP is
  * all borrowed, takes uncov-only without the binning gate: the guest draws
- * its whole LP bank wherever it draws the sector.
+ * its whole LP bank wherever it draws the sector. The uncov-only gate is
+ * the one verdict that reads the coverage tags; it brings them current
+ * first (tsc_tags_current), so they are computed only for sectors it
+ * reaches.
  * @param SC The sector's cache entry.
  * @param G The latched walk config.
  * @param drawHP The sector's HP verdict.
  * @param binLP The draw's own LP list verdict (sector_bin_lists; 0 on a
  *        game that bins by flags).
  * @return One of TN_RIDE_NONE, TN_RIDE_FARONLY, TN_RIDE_GAPONLY, TN_RIDE_UNCOVONLY. */
-static int sector_lp_ride(const tscache_t* SC, const tn_wcfg* G, int drawHP, int binLP) {
-    if (game_layout.terrain.hp_far)
-        return (tn_no_lod() && drawHP && (binLP || SC->nHpF == 0) && SC->nRide > 0)
-               ? TN_RIDE_UNCOVONLY : TN_RIDE_NONE;
+static int sector_lp_ride(tscache_t* SC, const tn_wcfg* G, int drawHP, int binLP) {
+    if (game_layout.terrain.hp_far) {
+        if (!tn_no_lod() || !drawHP || !(binLP || SC->nHpF == 0)) return TN_RIDE_NONE;
+        tsc_tags_current(SC, TSC_RETAG_RIDE);
+        tsc_retag_digest(SC);
+        return SC->nRide > 0 ? TN_RIDE_UNCOVONLY : TN_RIDE_NONE;
+    }
     if (G->lod_handoff && !G->tier_faithful && drawHP) return TN_RIDE_FARONLY;
     if (s_gapfill_en && SC->nGapfill > 0) return TN_RIDE_GAPONLY;
     return TN_RIDE_NONE;
@@ -13477,7 +13617,7 @@ static int sector_lp_near_thr(const tn_sechdr* H, double cbin) {
 
 /** @brief Computes one sector's tier and fill verdicts in the serial prepass.
  *
- * A pure function of the sector cache entry and the latched walk config,
+ * A function of the sector cache entry and the latched walk config,
  * computed once per sector so the GPU-claim decision and the face walk read
  * one result. The bounding centre of the sector's header (sector_header: the
  * source sector's for a sector with borrowed faces) goes through the
@@ -13490,10 +13630,13 @@ static int sector_lp_near_thr(const tn_sechdr* H, double cbin) {
  * lpNearThr is the LP near-outcode bound (sector_lp_near_thr), kept only
  * while the sector's HP draws, since the dropped LP faces owe that cover. The rule
  * comments sit beside each decision in the code and in walk_sector.
- * @param SC The sector's cache entry.
+ * @param SC The sector's cache entry; the ride gate and an active fardbg
+ *        trace bring its LP coverage tags current (tsc_tags_current).
  * @param G The latched walk config.
  * @param V Receives the verdicts. */
-static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V) {
+static void sector_verdicts(tscache_t* SC, const tn_wcfg* G, tn_secverd* V) {
+    /* The fardbg drop trace prints each dropped LP face's uncovX tag. */
+    if (s_fardbg_active) tsc_tags_current(SC, TSC_RETAG_TRACE);
     const int noLP  = (int)game_layout.terrain.no_lp_flag;
     const int noHPf = (int)game_layout.terrain.no_hp_flag;
     const int forceLP = (int)game_layout.terrain.force_lp_flag;
@@ -16904,10 +17047,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* Tier-1 sector decode cache: static level data unpacked once. */
         static int s_hidet = -2;
         if (s_hidet == -2) { const char* e = getenv("OPENPETE_TERRAIN_HIDETAIL"); s_hidet = e ? atoi(e) : -1; }
-        const tscache_t* SC = tsc_get(cpu, s, lqTable, hqTable, texTblMode,
-                                      s_hidet >= 0 ? s_hidet : 0,
-                                      sectorPtr, sectorCnt);
-        tsc_refresh_anim(cpu, (tscache_t*)SC, lqTable, hqTable, texTblMode,
+        tscache_t* SC = tsc_get(cpu, s, lqTable, hqTable, texTblMode,
+                                s_hidet >= 0 ? s_hidet : 0,
+                                sectorPtr, sectorCnt);
+        tsc_refresh_anim(cpu, SC, lqTable, hqTable, texTblMode,
                          s_hidet >= 0 ? s_hidet : 0);
 
         /* Sector occlusion cull - the extended-LOD win. A sector whose entire
@@ -16970,7 +17113,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* Pack-aware LP grade pre-warm: the texture-pack resolve pipeline is
          * not audited for concurrent callers, so the lazy per-sector fit is
          * computed here, serially; the walk only reads SC->lpg_*. */
-        if (s_lpg_active) tsc_lp_grade((tscache_t*)SC);
+        if (s_lpg_active) tsc_lp_grade(SC);
         /* Sector-level tier/fill verdicts - one computation site, consumed
          * by both the retained-GPU claim below and the face walk. */
         sector_verdicts(SC, &G, &s_pre_verd[vi]);
@@ -19299,6 +19442,7 @@ static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) {
     render_material_level_push(cpu);             /* the bake's level keys */
     { OP_PROF_ACCUM_SCOPE("terrain.build");
       terrain_build(cpu, occGroup); }            /* native walk + tris */
+    tsc_retag_census_flush(s_vanim_sub);
     openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
     { OP_PROF_ACCUM_SCOPE("terrain.feed");
       terrain_feed_native(cpu); }                /* push tris to the scene */
