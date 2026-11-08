@@ -259,6 +259,35 @@ foreach(vv plain anim near cells_near cells_anim plain:ctl anim:ctl near:ctl
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${name}.vert.spv)
 endforeach()
+# <variant>_arm2.vert: the five fp64 stages with TERRAIN_FP32_ARM2, the
+# second arm of the precision A/B (OPENPETE_TERRAIN_FP32=3): every verdict
+# and attribute of the fp64 build, the rasterised position from the fp32
+# chain. Diagnostic only; it needs shaderFloat64 as the fp64 stages do.
+foreach(v plain anim near cells_near cells_anim)
+    set(defs --define-macro TERRAIN_FP32_ARM2=1)
+    if(v STREQUAL "plain")
+        set(name terrain_arm2)
+    else()
+        set(name terrain_${v}_arm2)
+        if(v MATCHES "^cells_")
+            list(APPEND defs --define-macro TERRAIN_CELLS=1)
+        endif()
+        string(REGEX REPLACE "^cells_" "" base ${v})
+        string(TOUPPER ${base} V)
+        list(APPEND defs --define-macro TERRAIN_${V}=1)
+    endif()
+    add_custom_command(
+        OUTPUT ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} ${defs}
+                ${RHI_SHADER_SRC_DIR}/terrain.vert
+                -o ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
+        COMMAND ${SPIRV_OPT} ${RHI_TERRAIN_SSA_ARGS}
+                ${RHI_SHADER_OUT_DIR}/${name}.vert.spv -o ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
+        DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
+        COMMENT "glslangValidator terrain.vert (TERRAIN_FP32_ARM2 ${v}) -> ${name}.vert.spv"
+        VERBATIM)
+    list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${name}.vert.spv)
+endforeach()
 # The fp32 build carries no fp64: no module but the five fp64 terrain stages
 # declares the Float64 capability (the primary check, on the compiled
 # output), and no source line of the fp32 build spells an fp64 type,

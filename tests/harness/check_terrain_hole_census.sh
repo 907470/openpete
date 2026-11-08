@@ -63,6 +63,18 @@
 # continues where it stopped; without it every leg's outputs are removed
 # before it runs.
 #
+# --arms runs the precision A/B instead: per pose and LOD three arms, the
+# fp64 stage (p0), TERRAIN_FP32_ARM2 (p3: fp64 verdicts, fp32 rasterised
+# position) and the fp32 stage (p1), each captured as a face-identity and a
+# stock colour image, plus one debug-tint-15 capture of p3 (each retained
+# face's verdict-class word). `terrain_hole_census.py arms` prints bin 1
+# (p0 against p3: edge shifts) and bin 2 (p3 against p1: verdict flips) per
+# row, `classes` the per-class pixel counts. --vprec=subpixel|integer,
+# --texmap=perspective|affine (affine sets the AFFINE_UV stages) and
+# --fog=MODE set the run's configuration (defaults: subpixel, perspective,
+# the game's fog). --start=N captures every leg at frame N in place of the
+# manifest's start (every arm of a row at the same frame).
+#
 # Exit 0 when every engaged row reads pxdiff == 0 for f32 (--holes: the
 # summed holes are at most --max-holes and no row is IMPURE), 1 when any
 # does not or the run is VACUOUS, 64 SKIP (no binary, disc or PIL).
@@ -78,7 +90,7 @@ source scripts/lib/game.sh
 
 BUILD_DIR=build/linux-release
 OUT="" FILTER="" LODS="original extended" LTO=on REPEAT=1 COLOUR=0 JOBS=2 JITTER="" STRIDE=1
-HOLES=0 HPREC=0 CLASSIFY=0 MAXHOLES=0 RESUME=0
+HOLES=0 HPREC=0 CLASSIFY=0 MAXHOLES=0 RESUME=0 ARMS=0 VPREC=subpixel TEXMAP=perspective FOGM="" START=""
 prev=""
 for a in "$@"; do
     case "$a" in
@@ -97,6 +109,11 @@ for a in "$@"; do
         --classify)    CLASSIFY=1;;
         --max-holes=*) MAXHOLES="${a#*=}";;
         --resume)      RESUME=1;;
+        --arms)        ARMS=1;;
+        --vprec=*)     VPREC="${a#*=}";;
+        --texmap=*)    TEXMAP="${a#*=}";;
+        --fog=*)       FOGM="${a#*=}";;
+        --start=*)     START="${a#*=}";;
     esac
     case "$prev" in
         --out) OUT="$a";; --filter) FILTER="$a";; --lods) LODS="$a";;
@@ -148,9 +165,11 @@ leg() {  # tag level pose start lod precision lto faceid [kind: holes|walk]
     [[ "$prec" != 0 ]] && env+=("OPENPETE_TERRAIN_FP32=$prec")
     [[ "$lto" == fast ]] && env+=(OPENPETE_PIPELINE_LTO=0)
     [[ "$fid" == 1 ]] && env+=(OPENPETE_TERRAIN_FACEID=1)
+    [[ "$fid" == c ]] && env+=(OPENPETE_TERRAIN_GPU_TINT=15)
     [[ -n "$JITTER" ]] && env+=("OPENPETE_TERRAIN_CAM_JITTER=$JITTER")
     local -a args=(--no-card --mute 1 --vibration 0 --mods ""
-        --renderer vk --lod "$lod" --aspect 4:3 --vertex-precision subpixel
+        --renderer vk --lod "$lod" --aspect 4:3 --vertex-precision "$VPREC"
+        --texture-mapping "$TEXMAP" ${FOGM:+--fog "$FOGM"}
         "${PG_SKIP_ARGS[@]}" --freecam-pose "$pose"
         --screenshot-native-only --screenshot-on-frame "$start"
         --screenshot-output "$shot"
@@ -192,7 +211,7 @@ while IFS='|' read -r name pose start _; do
     nrow=$((nrow + 1))
     (( (nrow - 1) % STRIDE == 0 )) || continue
     LEVELS+=("${name%%@*}"); POSES+=("$pose"); SLUGS+=("$slug")
-    STARTS+=("${start:-$PG_FREECAM_START}")
+    STARTS+=("${START:-${start:-$PG_FREECAM_START}}")
 done < "$MAN"
 
 run_line() {
@@ -286,6 +305,81 @@ if [[ $HOLES == 1 ]]; then
          "missing=$missing pins=$t_pins holes=$t_holes hole_px=$t_px${summary:+ classes:$summary}" \
          "verdict=$verdict"
     [[ $verdict == PASS ]]
+    exit
+fi
+
+if [[ $ARMS == 1 ]]; then
+    LEGS="$OUT/legs-arms.txt"; rm -f "${OUT:?}/legs-arms.txt"
+    for i in "${!SLUGS[@]}"; do
+        for lod in $LODS; do
+            for prec in 0 3 1; do
+                for fid in 1 0; do
+                    echo "${SLUGS[$i]}__${lod}__p${prec}__f$fid|$i|$lod|$prec|lto|$fid" >> "$LEGS"
+                done
+            done
+            echo "${SLUGS[$i]}__${lod}__p3__fc|$i|$lod|3|lto|c" >> "$LEGS"
+        done
+    done
+    [[ -f "$LEGS" ]] || { echo "[fp32-arms] game=$PG_GAME rows=0 verdict=VACUOUS"; exit 1; }
+    run_legs "$LEGS"
+    rows=0 vac=0 missing=0
+    declare -A T1=() T2=() CL=() CP=()
+    for i in "${!SLUGS[@]}"; do
+        for lod in $LODS; do
+            rows=$((rows + 1))
+            b="$OUT/${SLUGS[$i]}__${lod}"
+            secs="$(secs_of "${b}__p3__f0.log")"
+            l1="$(python3 "$TOOL" arms "${b}__p0__f1-vk.png" "${b}__p3__f1-vk.png" \
+                  "${b}__p0__f0-vk.png" "${b}__p3__f0-vk.png")" || l1="MISSING"
+            l2="$(python3 "$TOOL" arms "${b}__p3__f1-vk.png" "${b}__p1__f1-vk.png" \
+                  "${b}__p3__f0-vk.png" "${b}__p1__f0-vk.png")" || l2="MISSING"
+            lc="$(python3 "$TOOL" classes "${b}__p3__f1-vk.png" "${b}__p3__fc-vk.png")" || lc="MISSING"
+            if [[ "$l1" == MISSING* || "$l2" == MISSING* || "$lc" == MISSING* ]]; then
+                missing=$((missing + 1))
+                echo "[fp32-arms] row=${SLUGS[$i]} lod=$lod MISSING"
+                continue
+            fi
+            note=""
+            tri="$(sed -n 's/.* tri=\([0-9]*\) .*/\1/p' <<<"$l1")"
+            if [[ "${tri:-0}" -eq 0 || "${secs:-0}" -eq 0 ]]; then
+                vac=$((vac + 1)); note=" VACUOUS"
+            else
+                for kvp in $l1; do T1["${kvp%%=*}"]=$(( ${T1["${kvp%%=*}"]:-0} + ${kvp#*=} )); done
+                for kvp in $l2; do T2["${kvp%%=*}"]=$(( ${T2["${kvp%%=*}"]:-0} + ${kvp#*=} )); done
+                for kvp in $lc; do
+                    v="${kvp#*=}"
+                    CL["${kvp%%=*}"]=$(( ${CL["${kvp%%=*}"]:-0} + ${v%%/*} ))
+                    [[ "$v" == */* ]] && CP["${kvp%%=*}"]=$(( ${CP["${kvp%%=*}"]:-0} + ${v#*/} ))
+                done
+            fi
+            echo "[fp32-arms] row=${SLUGS[$i]} lod=$lod secs=${secs:-0}$note"
+            echo "[fp32-arms]   bin1 $l1"
+            echo "[fp32-arms]   bin2 $l2"
+            echo "[fp32-arms]   cls  $lc"
+        done
+    done
+    sum() {
+        local -n A=$1
+        local k o=""
+        for k in px edge face tri vanish vanish_px vanish4 appear appear_px appear4 vanish_vis \
+                 vanish_vis_px appear_vis appear_vis_px repaint repaint_px repaint_int; do
+            o+=" $k=${A[$k]:-0}"
+        done
+        echo "$o"
+    }
+    cls=""
+    for k in ret_px tris impure; do cls+=" $k=${CL[$k]:-0}"; done
+    for k in cells4 tri4 tri2 water hpraw hpfog rim hq lp near tjs snap affine fogoff fogpp \
+             nolod keyed fill blendfar; do cls+=" $k=${CL[$k]:-0}/${CP[$k]:-0}"; done
+    echo "[fp32-arms] game=$PG_GAME vprec=$VPREC texmap=$TEXMAP fog=${FOGM:-auto}" \
+         "lods=\"$LODS\" rows=$rows vacuous=$vac missing=$missing"
+    echo "[fp32-arms] bin1$(sum T1)"
+    echo "[fp32-arms] bin2$(sum T2)"
+    echo "[fp32-arms] classes$cls"
+    verdict=DONE
+    [[ $vac -eq $rows ]] && verdict=VACUOUS
+    echo "[fp32-arms] verdict=$verdict"
+    [[ $verdict == DONE && $missing -eq 0 ]]
     exit
 fi
 

@@ -303,7 +303,9 @@ void openpete_tercache_describe(struct rhi_device *dev);
  *
  * OPENPETE_TERRAIN_FP32 set and not "0" selects the fp32 stages (no
  * Float64 capability); "2" selects them with TERRAIN_FP32_SECDELTA, the
- * hole census's per-sector rounding control; unset, the fp64 stages. Read
+ * hole census's per-sector rounding control; "3" selects TERRAIN_FP32_ARM2,
+ * the fp64 stages rasterising the fp32 position (an fp64 build, so 0 here);
+ * unset, the fp64 stages. Read
  * through openpete_config_device_value at the first call and latched, so
  * the launcher's describe, bring-up's init and every material pipeline
  * take the same build.

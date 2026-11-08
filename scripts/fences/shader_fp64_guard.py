@@ -10,7 +10,7 @@ shader belongs to both builds.
   capability STAMP SPV...
       Primary check, on the compiled output: parse each module's
       OpCapability instructions and fail on Float64 in any module except the
-      five fp64 terrain stages. A capability scan cannot match a comment or
+      five fp64 terrain stages and their five TERRAIN_FP32_ARM2 builds. A capability scan cannot match a comment or
       miss a spelling. Writes STAMP on success.
 
   source GLSLANG SHADER_DIR STAMP
@@ -33,6 +33,11 @@ import sys
 FP64_STAGES = {
     "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
     "terrain_cells_anim.vert.spv", "terrain_cells_near.vert.spv",
+    # TERRAIN_FP32_ARM2: the fp64 build with the fp32 position chain beside
+    # it, the precision A/B's second arm; selected only where the fp64 stages
+    # are (OPENPETE_TERRAIN_FP32=3).
+    "terrain_arm2.vert.spv", "terrain_anim_arm2.vert.spv", "terrain_near_arm2.vert.spv",
+    "terrain_cells_anim_arm2.vert.spv", "terrain_cells_near_arm2.vert.spv",
 }
 FP32_STAGES = {
     "terrain_fp32.vert.spv": [],

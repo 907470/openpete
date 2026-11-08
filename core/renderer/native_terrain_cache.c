@@ -933,9 +933,10 @@ static void tc_pipe(rhi_device *dev, const rhi_pipeline_desc *d, rhi_pipeline **
 /* The vertex stage of each arena family (OPENPETE_MATERIAL_TER_VARIANTS
  * order: plain, anim, near, then the anim and near cell records), per
  * precision build: row 0 the fp64 stage, row 1 the TERRAIN_FP32 stage,
- * row 2 the TERRAIN_FP32_SECDELTA control stage. */
+ * row 2 the TERRAIN_FP32_SECDELTA control stage, row 3 the
+ * TERRAIN_FP32_ARM2 stage (fp64 verdicts, fp32 rasterised position). */
 enum { TC_V_PLAIN, TC_V_ANIM, TC_V_NEAR, TC_V_CELLS_ANIM, TC_V_CELLS_NEAR };
-static const char *const k_tc_vert[3][OPENPETE_MATERIAL_TER_VARIANTS] = {
+static const char *const k_tc_vert[4][OPENPETE_MATERIAL_TER_VARIANTS] = {
     { "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
       "terrain_cells_anim.vert.spv", "terrain_cells_near.vert.spv" },
     { "terrain_fp32.vert.spv", "terrain_anim_fp32.vert.spv", "terrain_near_fp32.vert.spv",
@@ -943,26 +944,32 @@ static const char *const k_tc_vert[3][OPENPETE_MATERIAL_TER_VARIANTS] = {
     { "terrain_fp32ctl.vert.spv", "terrain_anim_fp32ctl.vert.spv",
       "terrain_near_fp32ctl.vert.spv", "terrain_cells_anim_fp32ctl.vert.spv",
       "terrain_cells_near_fp32ctl.vert.spv" },
+    { "terrain_arm2.vert.spv", "terrain_anim_arm2.vert.spv", "terrain_near_arm2.vert.spv",
+      "terrain_cells_anim_arm2.vert.spv", "terrain_cells_near_arm2.vert.spv" },
 };
 
 /** @brief Return the k_tc_vert row OPENPETE_TERRAIN_FP32 selects, latched at the first call.
  *
  * Unset or "0": row 0 (fp64). "2": row 2, the fp32 build with the per-sector
- * rounding control (TERRAIN_FP32_SECDELTA). Any other value: row 1 (fp32).
- * @return 0, 1 or 2. */
+ * rounding control (TERRAIN_FP32_SECDELTA). "3": row 3, the fp64 build
+ * rasterising the fp32 position (TERRAIN_FP32_ARM2). Any other value: row 1
+ * (fp32).
+ * @return 0, 1, 2 or 3. */
 static int tc_precision_row(void)
 {
     static int s_row = -1;
     if (s_row < 0) {
         const char *e = openpete_config_device_value("OPENPETE_TERRAIN_FP32");
-        s_row = !(e && *e && *e != '0') ? 0 : (strcmp(e, "2") == 0 ? 2 : 1);
+        s_row = !(e && *e && *e != '0') ? 0
+              : strcmp(e, "2") == 0 ? 2 : strcmp(e, "3") == 0 ? 3 : 1;
     }
     return s_row;
 }
 
 int openpete_tercache_fp32(void)
 {
-    return tc_precision_row() != 0;
+    const int row = tc_precision_row();
+    return row == 1 || row == 2;
 }
 
 int openpete_tercache_faceid(void)

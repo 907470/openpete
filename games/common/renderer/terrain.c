@@ -17973,6 +17973,65 @@ static void tgpu_budget_end(void) {
     s_bud_mode = TGPU_BUD_OFF;
 }
 
+/** @brief Return the retained globals' debug-tint gflags bits that OPENPETE_TERRAIN_GPU_TINT selects.
+ *
+ * Unset or "0": none. Otherwise bit 29 (tint on) and the mode, value & 7, in
+ * bits 26-28 (terrain_shade.glsl ter_debug_shade: ladder verdict, raw
+ * colour, UV, t0k; mode 7 the per-pixel face attribution word, ter_attr);
+ * value & 8 sets bit 25, under which mode 7 carries the face's
+ * verdict-class bits in place of its identity (terrain.vert). Diagnostic;
+ * unregistered.
+ * @return The gflags bits. */
+static uint32_t tn_gpu_tint_flags(void) {
+    const char* e = getenv("OPENPETE_TERRAIN_GPU_TINT");
+    if (!e || !*e || *e == '0') return 0u;
+    const int v = atoi(e);
+    return (1u << 29) | ((uint32_t)(v & 7) << 26) | ((v & 8) ? (1u << 25) : 0u);
+}
+
+/** @brief Appends this build's camera, and the vertices of every sector decoded since the last call, to the OPENPETE_TERRAIN_FP32_EMU file.
+ *
+ * One `C` line per build: the feed key, the camera (camx camy camz, world/16
+ * as the retained globals carry it), the matrix rows, H, ofx, ofy and the
+ * near plane. One `S` line per sector slot whose decode generation changed
+ * (slot, generation, origin), then one `V` line per decoded vertex in x4
+ * units (origin x4 + local x4: the integer the TERRAIN_FP32 combine forms).
+ * tools/terrain_fp32_emu.py re-runs the fp32 chain over the file.
+ * Diagnostic; unregistered.
+ * @param M The camera rotation matrix.
+ * @param camx Camera X.
+ * @param camy Camera Y.
+ * @param camz Camera Z. */
+static void tn_fp32emu_dump(const int M[3][3], double camx, double camy, double camz) {
+    static int s_on = -1;
+    static FILE* s_fp = NULL;
+    static uint32_t s_gen[TSC_SLOTS];
+    if (s_on < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_FP32_EMU");
+        s_on = (e && *e) ? 1 : 0;
+        if (s_on) s_fp = fopen(e, "w");
+        if (!s_fp) s_on = 0;
+    }
+    if (!s_on) return;
+    fprintf(s_fp, "C %u %.17g %.17g %.17g %d %d %d %d %d %d %d %d %d %.17g %.17g %.17g %.17g\n",
+            openpete_feed_key_now(), camx, camy, camz, M[0][0], M[0][1], M[0][2], M[1][0],
+            M[1][1], M[1][2], M[2][0], M[2][1], M[2][2], s_H, s_ofx, s_ofy, s_nearz);
+    for (int i = 0; i < (int)TSC_SLOTS; i++) {
+        const tscache_t* T = &s_tsc[i];
+        if (T->s == 0u || T->decodeGen == s_gen[i]) continue;
+        s_gen[i] = T->decodeGen;
+        fprintf(s_fp, "S %d %u %d %d %d\n", i, T->decodeGen, T->originX, T->originY, T->originZ);
+        for (int t = 0; t < 2; t++) {
+            const tsvert_t* v = t ? T->hpV : T->lpV;
+            const int n = t ? T->nHpV : T->nLpV;
+            for (int k = 0; v && k < n; k++)
+                fprintf(s_fp, "V %d %d %d\n", (T->originX + v[k].x) * 4,
+                        (T->originY + v[k].y) * 4, (T->originZ + v[k].z) * 4);
+        }
+    }
+    fflush(s_fp);
+}
+
 /** @brief Walks the visible sectors of the current view into the terrain triangle stream and feeds the native scene. */
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_snap_src = 0;                /* until this build latches its walk inputs */
@@ -18404,6 +18463,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             for (int c = 0; c < 3; c++) tcg.mrow[r][c] = (float)M[r][c];
         tcg.ofx = s_ofx; tcg.ofy = s_ofy; tcg.H = s_H; tcg.H_canon = s_view.H_canon;
         tcg.camx = camx; tcg.camy = camy; tcg.camz = camz;
+        tn_fp32emu_dump(M, camx, camy, camz);
         tcg.fogscale = s_fogscale;
         /* Poly-anim lerp alpha: sub-tick paired builds carry the spine's
          * alpha; canonical (and unpaired) builds draw cur exactly. */
@@ -18428,15 +18488,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         tcg.hp_drop_corner_min = game_layout.terrain.hp_drop_corner_min;
         tcg.ot_terms     = tc_ot_terms();
         tcg.gflags = tc_global_flags(s_nearhq && hqTable, lod_handoff);
-        {   /* OPENPETE_TERRAIN_GPU_TINT=<mode>: retained draws replace their
-             * colour with a debug readout, mode = value & 7 (terrain_shade.glsl
-             * ter_debug_shade: ladder verdict, raw colour, UV, t0k; mode 7 the
-             * per-pixel face attribution word, ter_attr). Diagnostic;
-             * unregistered. */
-            const char* e = getenv("OPENPETE_TERRAIN_GPU_TINT");
-            if (e && *e && *e != '0')
-                tcg.gflags |= (1u << 29) | ((uint32_t)(atoi(e) & 7) << 26);
-        }
+        tcg.gflags |= tn_gpu_tint_flags();
         /* Portal inner-rim frames for the vertex-stage cull (zeroed rim_n
          * from the memset when frames are absent - retained tris then carry
          * no rim verdict). */
