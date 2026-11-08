@@ -262,19 +262,34 @@ static void part_rec_point(const part_item* it, int second, const double off[3],
     if (off) { p[0] += off[0]; p[1] += off[1]; p[2] += off[2]; }
 }
 
+/** @brief Wraps a camera-relative difference in quarter world units into [-32768, 32768), as the GTE's int16 vector load does.
+ *
+ * The routine subtracts each unsigned record halfword from the camera
+ * position shifted right by 2 and loads the difference into VXY0 and VZ0,
+ * whose components are int16 (Spyro 2 partsdraw.s:641-664, :709-722), so a
+ * point whose difference passes 0x8000 lands on the other side of the camera
+ * by 0x10000 units. A difference already in range is returned unchanged.
+ * @param d The difference, fractional under a sub-tick camera.
+ * @return The difference modulo 65536 in [-32768, 32768). */
+static double part_wrap16(double d) {
+    if (d >= -32768.0 && d < 32768.0) return d;
+    return d - 65536.0 * floor((d + 32768.0) / 65536.0);
+}
+
 /** @brief Projects a pool point the way the routine does.
  *
  * The GTE vector is (camY - Y, camZ - Z, X - camX) with the camera position
- * divided by four into the pool's quarter world units, rotated by the camera
- * matrix at +0x00 with a zero translation, through the GTE-faithful projection
- * without the SXY bound.
+ * divided by four into the pool's quarter world units, each component wrapped
+ * to int16 as the GTE loads it (part_wrap16), rotated by the camera matrix at
+ * +0x00 with a zero translation, through the GTE-faithful projection without
+ * the SXY bound.
  * @param v The view; supplies the camera matrix, position and offsets.
  * @param p The point (X, Y, Z) in quarter world units.
  * @param o Receives the projection; o->m3 is the view-Z in quarter units. */
 static void part_project(const ngte_view* v, const double p[3], ngte_proj* o) {
     const double cx = v->cam[0] / 4.0, cy = v->cam[1] / 4.0, cz = v->cam[2] / 4.0;
-    ngte_project_gte(v->cam_M, NULL, cy - p[1], cz - p[2], p[0] - cx,
-                     v->ofx, v->ofy, v, 0, o);
+    ngte_project_gte(v->cam_M, NULL, part_wrap16(cy - p[1]), part_wrap16(cz - p[2]),
+                     part_wrap16(p[0] - cx), v->ofx, v->ofy, v, 0, o);
 }
 
 /** @brief Builds a PART_ROT_CLASS billboard's four corners in float, as the routine builds them in integers.
@@ -1532,12 +1547,12 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
      * rolled after that draw, tested above): the displayed state is the same,
      * and the offsets are measured from prev, so they gain curr - prev. */
     const double from_prev = s_item_ref_prev ? 1.0 : 0.0;
-    /* A fixed-layer record's halfwords are signed view coordinates, which
-     * cross zero; the difference wraps to the shorter way round. */
-    const int fixed = (uint32_t)it->cls >= game_layout.particles.fixed_layer_class;
+    /* The halfwords wrap: a fixed-layer record's are signed view coordinates,
+     * and every other class's reach the GTE as an int16 difference from the
+     * camera (part_project), so a record crossing 0 or 0xFFFF moved the
+     * shorter way round. */
     double d[3];
-    for (int k = 0; k < 3; k++)
-        d[k] = fixed ? (double)(int16_t)(uint16_t)(ph[k] - ch[k]) : (double)ph[k] - (double)ch[k];
+    for (int k = 0; k < 3; k++) d[k] = (double)(int16_t)(uint16_t)(ph[k] - ch[k]);
     /* An equal nonzero serial on both sides is one allocation: the record
      * continued, however far it moved. */
     if (cser == 0u &&
@@ -1688,7 +1703,8 @@ static double s_feed_alpha = -1.0;
  * draws against the vertices part_build builds from the record's state.
  * `cal` is the captured primitive's integer vertex minus the build at the
  * tick's state, per axis (the routine's truncation; `in` counts vertices
- * whose both axes lie in (-1, 0]); `can` and `sub` are the distance from each
+ * whose both axes lie in (-1, 0], `far` those more than 4 px from the
+ * build); `can` and `sub` are the distance from each
  * drawn vertex to the build at the state the present shows, on the canonical
  * and the sub-tick feeds; `jit` is the change of the canonical vertex error
  * of one record between consecutive captured sets, the step a vertex makes
@@ -1696,7 +1712,7 @@ static double s_feed_alpha = -1.0;
  * paired primitives part_build built nothing for. A count of zero measured
  * nothing. The pairing audit (part_pair_audit) prints beside it. */
 typedef struct { unsigned long n; double sum, max; } part_err_acc;
-typedef struct { unsigned long n, in; double sum[2], lo[2], hi[2]; } part_cal_acc;
+typedef struct { unsigned long n, in, far; double sum[2], lo[2], hi[2]; } part_cal_acc;
 static part_cal_acc s_vcal[16];
 static part_err_acc s_vplc[2][16];
 static part_err_acc s_vjit[16];
@@ -1711,8 +1727,8 @@ static void part_vertex_report(void) {
         if (!k->n && !s_vplc[0][c].n && !s_vplc[1][c].n && !s_vmiss[c]) continue;
         const double n = k->n ? (double)k->n : 1.0;
         fprintf(stderr, "[part-vertex c%d] cal n=%lu mean=(%.4f,%.4f) lo=(%.4f,%.4f) hi=(%.4f,%.4f) "
-                        "in=%.4f", c, k->n, k->sum[0] / n, k->sum[1] / n, k->lo[0], k->lo[1],
-                k->hi[0], k->hi[1], (double)k->in / n);
+                        "in=%.4f far=%lu", c, k->n, k->sum[0] / n, k->sum[1] / n, k->lo[0], k->lo[1],
+                k->hi[0], k->hi[1], (double)k->in / n, k->far);
         const char* tag[3] = { "can", "sub", "jit" };
         const part_err_acc* e[3] = { &s_vplc[0][c], &s_vplc[1][c], &s_vjit[c] };
         for (int j = 0; j < 3; j++)
@@ -1788,6 +1804,7 @@ static void part_vertex_calib(const part_item* it) {
             a->sum[j] += d[j];
         }
         if (d[0] > -1.0 && d[0] <= 0.0 && d[1] > -1.0 && d[1] <= 0.0) a->in++;
+        if (d[0] * d[0] + d[1] * d[1] > 16.0) a->far++;
         a->n++;
     }
 }
