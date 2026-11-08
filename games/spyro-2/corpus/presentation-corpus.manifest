@@ -234,3 +234,10 @@ crushs-dungeon|1504|2||1504,1506
 # band shows the flat backdrop; 4169 is the present the reporter saw.
 # Blessed pre-fix.
 crush-intro-dragon-shores-portal|4165|2||4169|--skip-to-cutscene crush_intro
+# robotica-farms-spark-wrap: barrel-blast sparks (class-1 streaks) with a
+# position halfword just below 0x10000 (Z 0xFFEF, -17 as int16). The routine's
+# camera-relative difference wraps through the GTE's int16 load; a build that
+# reads the halfword unsigned projects the endpoint ~65000 units off and draws
+# a full-height vertical line on the canonical and intermediate legs.
+# Blessed pre-fix.
+robotica-farms-spark-wrap|1921|2||1923,1925,1957,1959|--skip-to-level robotica_farms
