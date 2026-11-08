@@ -241,3 +241,11 @@ crush-intro-dragon-shores-portal|4165|2||4169|--skip-to-cutscene crush_intro
 # a full-height vertical line on the canonical and intermediate legs.
 # Blessed pre-fix.
 robotica-farms-spark-wrap|1921|2||1923,1925,1957,1959|--skip-to-level robotica_farms
+# idol-springs-block-glow: Foreman Bud's lights-out blocks (class 0x1E5) in
+# Idol Springs. The placement lands Spyro on the block at (109568, 50176),
+# which steps its keyframe byte (Moby+0x3C) yellow to unlit at VBL 1722 and
+# two neighbours unlit to yellow at 1724, each after about 180 unchanged
+# ticks; the free camera engages at 1724, after the step, since it freezes
+# the player update. The game changes the face colours in one tick, so pins
+# 1726-1732 show the current keyframe's colours on both legs.
+idol-springs-block-glow|1726|2||1726,1728,1730,1732|--skip-to-level idol_springs --player-pose 109568,50176,19500,3072@1700 OPENPETE_FREECAM_POSE=107520,57000,21500,3072,300 OPENPETE_FREECAM_AT_VBL=1724
