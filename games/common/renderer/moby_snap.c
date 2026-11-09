@@ -10,6 +10,7 @@
 #include "openpete_fiber.h"          /* openpete_feed_key_now: census line label */
 
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -947,12 +948,19 @@ static long ms_overlaps(const terrain_snap_box* box, const uint8_t* snapped, int
 
 /* One stored plane in world space, and the camera-space plane it came from. */
 typedef struct { double n[3], d; } mc_wplane;
+/* One terrain face a stored moby may contact: level sector, walk pass,
+ * face index, and its walk verdict at the store (TERRAIN_FACE_*). */
+typedef struct { int16_t sec; uint8_t pass, verd; uint16_t face; } mc_fc;
 /* One stored moby: identity, first plane, plane count (0: resolved, no
  * contact), and, while the carry or the verify runs, the world box of its
  * corners at true depth (wb, valid when wb_ok) and the corners themselves
- * (nwc from wc0 in the table's wc, triangle by triangle), and a signature
- * of its guest state at the store (sig, valid when sig_ok: mc_moby_sig). */
-typedef struct { uint32_t mid; int p0, np; float wb[6]; int wb_ok; int wc0, nwc; uint32_t sig; int sig_ok; } mc_ent;
+ * (nwc from wc0 in the table's wc, triangle by triangle), a signature of its
+ * guest state at the store (sig, valid when sig_ok: mc_moby_sig), and its
+ * contact region (rb: ms_moby_cbox widened by MC_CAND) with the faces of the visible
+ * sectors in it and their verdicts (nf from f0 in the table's fc; fc_ok 0
+ * when they were not read: mc_store_cands). */
+typedef struct { uint32_t mid; int p0, np; float wb[6]; int wb_ok; int wc0, nwc; uint32_t sig; int sig_ok;
+                 float rb[6]; int f0, nf, fc_ok; } mc_ent;
 #define MC_HBITS 10
 #define MC_HSIZE (1 << MC_HBITS)
 typedef struct {
@@ -966,6 +974,9 @@ typedef struct {
     openpete_snap_plane* c; int cap_c;   /* parallel to w: the plane as resolved */
     ms_pid*   id;  int cap_id;           /* parallel to w: the plane's source face */
     double  (*wc)[3]; int nwc, cap_wc;   /* the stored mobys' world corners (verify) */
+    uint64_t  vis[16];                   /* the stores' build's visible sectors (terrain_snap_visible) */
+    int       vis_ok;
+    mc_fc*    fc;  int nfc, cap_fc;      /* the stored mobys' candidate faces (mc_ent.f0) */
     unsigned  hgen;            /* generation the slots below hold */
     unsigned  hg[MC_HSIZE];
     int       hi[MC_HSIZE];
@@ -982,6 +993,7 @@ static int      s_rex;
 static double   s_rex_alpha = 1.0;
 static long     s_pc_carried, s_pc_fresh;
 static long     s_pc_refreshed;  /* mobys mc_refresh refused in the present */
+static long     s_pc_fsref;      /* of those, the ones refused on a face-verdict change (mc_faces_changed) */
 
 /* The resolve under way: the table a canonical resolve stores into, and the
  * walk camera it stores under. */
@@ -1019,6 +1031,34 @@ static void ms_moby_wbox(const ms_moby* mb, float wb[6]) {
                 wb[i] = ms_minf(wb[i], (float)w[i]); wb[i + 3] = ms_maxf(wb[i + 3], (float)w[i]);
             }
         }
+}
+
+/** @brief A world box containing a queued moby's triangle corners at true depth: the world box of the eight corners of their camera-space box, under the resolve's camera.
+ *
+ * It contains every corner (ms_moby_wcorner), and costs one camera-space
+ * bound per corner where the exact world box costs one world transform per
+ * corner.
+ * @param mb The moby.
+ * @param wb Receives x0, y0, z0, x1, y1, z1; inverted (x0 > x1) for a moby without triangles. */
+static void ms_moby_cbox(const ms_moby* mb, float wb[6]) {
+    const double iH = 1.0 / s_rs_view[0], ofx = s_rs_view[1], ofy = s_rs_view[2];
+    double lo[3] = { 1e300, 1e300, 1e300 }, hi[3] = { -1e300, -1e300, -1e300 };
+    for (int t = 0; t < mb->nt; t++)
+        for (int k = 0; k < 3; k++) {
+            const float* v = s_q_tri[mb->t0 + t][k];
+            const double z = (double)v[2] - mb->off;
+            const double c[3] = { ((double)v[0] - ofx) * z * iH, ((double)v[1] - ofy) * z * iH, z };
+            for (int i = 0; i < 3; i++) { lo[i] = ms_min(lo[i], c[i]); hi[i] = ms_max(hi[i], c[i]); }
+        }
+    for (int i = 0; i < 3; i++) { wb[i] = 1e30f; wb[i + 3] = -1e30f; }
+    if (!mb->nt) return;
+    for (int q = 0; q < 8; q++) {
+        const double c[3] = { (q & 1) ? hi[0] : lo[0], (q & 2) ? hi[1] : lo[1], (q & 4) ? hi[2] : lo[2] };
+        for (int i = 0; i < 3; i++) {
+            const double w = s_rs_Li[i][0] * c[0] + s_rs_Li[i][1] * c[1] + s_rs_Li[i][2] * c[2] + s_rs_P[i];
+            wb[i] = ms_minf(wb[i], (float)w); wb[i + 3] = ms_maxf(wb[i + 3], (float)w);
+        }
+    }
 }
 
 static struct CPUState* s_vf_cpu;   /* the guest, for the verify's moby class and state signature */
@@ -1068,7 +1108,7 @@ static int mc_verify_mode(void) {
 void moby_snap_present(int rex, double alpha) {
     s_rex = rex;
     s_rex_alpha = rex ? alpha : 1.0;
-    if (rex) s_pc_carried = s_pc_fresh = s_pc_refreshed = 0;
+    if (rex) s_pc_carried = s_pc_fresh = s_pc_refreshed = s_pc_fsref = 0;
 }
 
 /** @brief Hash a moby identity to a table slot.
@@ -1097,7 +1137,7 @@ static void mc_empty(mc_tab* t, uint32_t ep, unsigned scene) {
         for (int k = 0; k < 2; k++) memset(s_mc[k].hg, 0, sizeof s_mc[k].hg);
         s_mc_gen = 1;
     }
-    t->hgen = s_mc_gen; t->ne = t->npl = t->nwc = 0; t->epoch = ep; t->scene = scene; t->valid = 1;
+    t->hgen = s_mc_gen; t->ne = t->npl = t->nwc = t->nfc = 0; t->vis_ok = 0; t->epoch = ep; t->scene = scene; t->valid = 1;
     t->cam_mixed = -1;
     t->dup = t->full = 0;
 }
@@ -1163,6 +1203,7 @@ static void mc_store(mc_tab* t, const ms_moby* mb, const openpete_snap_plane* ou
     e->mid = mid; e->p0 = t->npl; e->np = np;
     e->wb_ok = s_rs_wb;
     e->wc0 = t->nwc; e->nwc = 0;
+    e->f0 = e->nf = e->fc_ok = 0;
     e->sig_ok = mc_moby_sig(mid, &e->sig);
     if (s_rs_wb) {
         ms_moby_wbox(mb, e->wb);
@@ -1306,7 +1347,165 @@ static double mc_corner_delta(const mc_tab* ep, const mc_ent* e, const ms_moby* 
 static int* s_vc_np; static int* s_vc_p0; static int s_vc_cap, s_vc_cap0;
 static openpete_snap_plane* s_vc_pl; static int s_vc_plcap, s_vc_n;
 static ms_pid* s_vc_id; static int s_vc_idcap;   /* parallel to s_vc_pl: the source faces */
-static uint8_t* s_vc_ref; static int s_vc_refcap; /* per queued moby: 1 when mc_refresh refused its planes */
+static uint8_t* s_vc_ref; static int s_vc_refcap; /* per queued moby: mc_refresh's verdict when it refused its planes, else 0 */
+
+/* World units a stored moby's contact region extends past the world box of
+ * its corners' camera-space box (ms_moby_cbox; mc_ent.rb). */
+#define MC_CAND 64.0f
+/* Per queued moby: 1 when a sector the endpoint's build did not find
+ * visible reaches its endpoint contact region in the present's build
+ * (mc_present_sectors). */
+static uint8_t* s_pq_new; static int s_pq_cap;
+static int s_pq_ok;
+/* Cache of terrain_snap_face_verdict, keyed by sector, pass and face; a
+ * slot holds while its stamp equals the build's (terrain_snap_build). */
+#define MC_FV_BITS 12
+static uint32_t s_fv_key[1 << MC_FV_BITS];
+static uint8_t  s_fv_v[1 << MC_FV_BITS];
+static unsigned s_fv_gen[1 << MC_FV_BITS], s_fv_cur;
+
+/** @brief Index the entries of a terrain query result by the boxes their hit sets name: for each box, the entries in result order.
+ * @param base The result's first entry.
+ * @param stride Its entry size.
+ * @param off The offset of an entry's uint64_t hit[2].
+ * @param m The entry count.
+ * @param nb The box count, at most 128.
+ * @param s0 Receives each box's first slot in the returned index.
+ * @param ns Receives each box's entry count.
+ * @return The index (entry numbers), valid until the next call, or NULL on an allocation failure. */
+static const int* ms_hit_index(const void* base, size_t stride, size_t off, int m, int nb, int* s0, int* ns) {
+    static int* s_ix; static int s_ixcap;
+    int total = 0;
+    for (int k = 0; k < nb; k++) ns[k] = 0;
+    for (int j = 0; j < m; j++) {
+        const uint64_t* h = (const uint64_t*)((const char*)base + (size_t)j * stride + off);
+        for (int w = 0; w < 2; w++)
+            for (uint64_t r = h[w]; r; r &= r - 1) { ns[w * 64 + __builtin_ctzll(r)]++; total++; }
+    }
+    for (int k = 0, at = 0; k < nb; k++) { s0[k] = at; at += ns[k]; ns[k] = 0; }
+    if (!ms_grow((void**)&s_ix, &s_ixcap, total + 1, sizeof *s_ix)) return NULL;
+    for (int j = 0; j < m; j++) {
+        const uint64_t* h = (const uint64_t*)((const char*)base + (size_t)j * stride + off);
+        for (int w = 0; w < 2; w++)
+            for (uint64_t r = h[w]; r; r &= r - 1) {
+                const int k = w * 64 + __builtin_ctzll(r);
+                s_ix[s0[k] + ns[k]++] = j;
+            }
+    }
+    return s_ix;
+}
+
+/** @brief Record on one chunk of stored entries the faces their contact regions reach, with their verdicts (terrain_snap_faces).
+ * @param t The table.
+ * @param x The entries' indices in it, -1 for a moby not recorded.
+ * @param rb Their contact regions.
+ * @param nb The chunk's size, at most 128. */
+static void mc_store_chunk(mc_tab* t, const int* x, const float (*rb)[6], int nb) {
+    int s0[128], ns[128];
+    const terrain_snap_face* ff = NULL;
+    const int mf = terrain_snap_faces(rb, nb, &ff);
+    const int* ix = mf >= 0 ? ms_hit_index(ff, sizeof *ff, offsetof(terrain_snap_face, hit), mf, nb, s0, ns) : NULL;
+    if (!ix) return;
+    for (int k = 0; k < nb; k++) {
+        if (x[k] < 0 || !ms_grow((void**)&t->fc, &t->cap_fc, t->nfc + ns[k] + 1, sizeof *t->fc)) continue;
+        mc_ent* e = &t->e[x[k]];
+        e->f0 = t->nfc;
+        for (int q = 0; q < ns[k]; q++) {
+            const terrain_snap_face* f = &ff[ix[s0[k] + q]];
+            const mc_fc c = { f->sec, f->pass, f->verd, f->face };
+            t->fc[t->nfc++] = c;
+        }
+        e->nf = ns[k]; e->fc_ok = 1;
+    }
+}
+
+/** @brief Record in a canonical store the build's visible sectors and, for each queued moby, its contact region (ms_moby_cbox widened by MC_CAND) and the faces of the visible sectors in it with their walk verdicts.
+ * @param t The table the resolve stored into. */
+static void mc_store_cands(mc_tab* t) {
+    t->vis_ok = terrain_snap_visible(t->vis);
+    if (!t->vis_ok) return;
+    for (int g = 0; g < s_q_nm; g += 128) {
+        const int nb = s_q_nm - g < 128 ? s_q_nm - g : 128;
+        int x[128];
+        float rb[128][6];
+        for (int k = 0; k < nb; k++) {
+            x[k] = mc_find(t, s_q_mob[g + k].mid);
+            for (int a = 0; a < 3; a++) { rb[k][a] = 1e30f; rb[k][a + 3] = -1e30f; }
+            if (x[k] >= 0 && (!s_rs_wb || !s_q_mob[g + k].nt)) x[k] = -1;
+            if (x[k] < 0) continue;
+            mc_ent* e = &t->e[x[k]];
+            ms_moby_cbox(&s_q_mob[g + k], e->rb);
+            for (int a = 0; a < 3; a++) { e->rb[a] -= MC_CAND; e->rb[a + 3] += MC_CAND; }
+            memcpy(rb[k], e->rb, sizeof rb[k]);
+        }
+        mc_store_chunk(t, x, (const float (*)[6])rb, nb);
+    }
+}
+
+/** @brief Mark each queued moby whose endpoint contact region a sector reaches that the present's build finds visible and the endpoint's did not (s_pq_new).
+ * @param ep The endpoint.
+ * @return 0 on an allocation failure, else 1. */
+static int mc_present_sectors(const mc_tab* ep) {
+    if (!ms_grow((void**)&s_pq_new, &s_pq_cap, s_q_nm, 1)) return 0;
+    memset(s_pq_new, 0, (size_t)s_q_nm);
+    s_pq_ok = ep->vis_ok;
+    if (!s_pq_ok) return 1;
+    for (int g = 0; g < s_q_nm; g += 128) {
+        const int nb = s_q_nm - g < 128 ? s_q_nm - g : 128;
+        float rb[128][6];
+        for (int k = 0; k < nb; k++) {
+            const int x = mc_find(ep, s_q_mob[g + k].mid);
+            for (int a = 0; a < 3; a++) { rb[k][a] = 1e30f; rb[k][a + 3] = -1e30f; }
+            if (x >= 0 && ep->e[x].fc_ok) memcpy(rb[k], ep->e[x].rb, sizeof rb[k]);
+        }
+        const terrain_snap_sector* ss = NULL;
+        const int m = terrain_snap_sectors((const float (*)[6])rb, nb, ep->vis, &ss);
+        if (m < 0) { s_pq_ok = 0; return 1; }
+        for (int j = 0; j < m; j++)
+            for (int w = 0; w < 2; w++)
+                for (uint64_t r = ss[j].hit[w]; r; r &= r - 1) s_pq_new[g + w * 64 + __builtin_ctzll(r)] = 1;
+    }
+    return 1;
+}
+
+/** @brief A face's walk verdict in the present's build, through the per-build cache.
+ * @param c The face.
+ * @return Its verdict (terrain_snap_face_verdict). */
+static int mc_verdict(const mc_fc* c) {
+    const uint32_t key = ((uint32_t)(uint16_t)c->sec << 19) | ((uint32_t)c->pass << 16) | c->face;
+    const unsigned h = (key * 2654435761u) >> (32 - MC_FV_BITS);
+    if (s_fv_gen[h] == s_fv_cur && s_fv_key[h] == key) return s_fv_v[h];
+    const int v = terrain_snap_face_verdict(c->sec, c->pass, c->face);
+    s_fv_gen[h] = s_fv_cur; s_fv_key[h] = key; s_fv_v[h] = (uint8_t)v;
+    return v;
+}
+
+/** @brief Whether the terrain faces a queued moby may contact can differ between the endpoint's walk and the present's.
+ *
+ * The endpoint recorded the moby's contact region and every face of its
+ * visible sectors in it, drawn or not, with its walk verdict
+ * (mc_store_cands). The present keeps the endpoint's face set when its
+ * moby corners' box (ms_moby_cbox) stays inside that region, no sector the endpoint did not find
+ * visible reaches the region (mc_present_sectors), and every recorded face
+ * takes the same verdict under the present's camera
+ * (terrain_snap_face_verdict: the walk's own gate chain, so a face turning
+ * to or from the eye or crossing an LP admission distance is seen).
+ * @param ep The endpoint.
+ * @param e The moby's entry in it.
+ * @param mb The queued moby.
+ * @param k Its queue index.
+ * @param same 1 when the present camera equals the endpoint's bit for bit: the region test is left to mc_refresh's exact corner comparison.
+ * @return 1 when they can differ or a record is missing, else 0. */
+static int mc_faces_changed(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int k, int same) {
+    if (!e->fc_ok || !s_pq_ok || s_pq_new[k] || !s_rs_wb) return 1;
+    float wb[6];
+    if (!same) ms_moby_cbox(mb, wb);   /* a bit-equal camera compares the corners exactly (mc_refresh) */
+    for (int a = 0; a < 3 && !same; a++)
+        if (wb[a] < e->rb[a] || wb[a + 3] > e->rb[a + 3]) return 1;
+    for (int q = 0; q < e->nf; q++)
+        if (mc_verdict(&ep->fc[e->f0 + q]) != ep->fc[e->f0 + q].verd) return 1;
+    return 0;
+}
 
 /** @brief Whether the carry's refresh test runs (OPENPETE_MOBY_SNAP_CARRY_REFRESH, default on; 0 turns it off for an A/B of the verify), read once.
  * @return 1 when on, else 0. */
@@ -1332,7 +1531,9 @@ static int mc_still(uint32_t mid) {
  *
  * It must when its guest state changed between the T-1 and T stores
  * (mc_still not 1): the present draws it at a phase between two poses, so
- * its contacts may differ from either endpoint's. With the present camera
+ * its contacts may differ from either endpoint's. It must when the terrain
+ * faces it may contact can differ between the endpoint's walk and the
+ * present's (mc_faces_changed). With the present camera
  * bit-equal to the endpoint's its projected corners are also compared
  * (mc_corner_delta), exactly: any difference, or a changed triangle count,
  * refreshes it, which covers pose inputs the signature does not read. Under
@@ -1344,11 +1545,13 @@ static int mc_still(uint32_t mid) {
  * @param ep The endpoint.
  * @param e The moby's entry in it.
  * @param mb The queued moby.
+ * @param k Its queue index.
  * @param same 1 when the present camera equals the endpoint's bit for bit.
- * @return 1 when it resolves fresh, else 0. */
-static int mc_refresh(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int same) {
+ * @return 0 when it takes the endpoint's planes, 2 when it resolves fresh on a face-verdict change, 1 when it resolves fresh for another reason. */
+static int mc_refresh(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int k, int same) {
     if (!mc_refresh_on()) return 0;
     if (mc_still(mb->mid) != 1) return 1;
+    if (mc_faces_changed(ep, e, mb, k, same)) return 2;
     if (!same) return 0;
     int topo = 0;
     const double d = s_rs_wb && e->wb_ok ? mc_corner_delta(ep, e, mb, &topo) : -1.0;
@@ -1405,11 +1608,14 @@ static int mc_map(const mc_tab* ep, const double L[3][3], const double P[3]) {
     const int same_cam = ep && !ep->cam_mixed && !memcmp(ep->L, L, sizeof ep->L) && !memcmp(ep->P, P, 3 * sizeof *P);
     double Q[3][3];
     const int inv = ep && mc_inv_t(Lm, Q);
+    s_fv_cur = terrain_snap_build();
+    if (ep && mc_refresh_on() && !mc_present_sectors(ep)) return 0;
     for (int k = 0; k < s_q_nm; k++) {
         const int x = inv || same ? mc_find(ep, s_q_mob[k].mid) : -1;
         s_vc_np[k] = -1; s_vc_ref[k] = 0;
         if (x < 0) continue;
-        if (mc_refresh(ep, &ep->e[x], &s_q_mob[k], same_cam)) { s_vc_ref[k] = 1; s_pc_refreshed++; continue; }
+        const int ref = mc_refresh(ep, &ep->e[x], &s_q_mob[k], k, same_cam);
+        if (ref) { s_vc_ref[k] = (uint8_t)ref; s_pc_refreshed++; s_pc_fsref += ref == 2; continue; }
         if (!mc_map_ent(ep, &ep->e[x], same, Q, Pm, k)) return 0;
     }
     return 1;
@@ -1457,6 +1663,7 @@ typedef struct {
     long mism_mobys, mism_cls[MC_NCLS], ovf, cam_moved;
     long moved_topo;      /* moved mobys whose triangle count changed */
     long refreshed;       /* mobys mc_refresh resolved fresh (not compared) */
+    long refreshed_fs;    /* of those, the ones resolved fresh on a face-verdict change */
     long moved_box;       /* mismatching mobys whose world box moved over MC_MOVED */
     long static_box;      /* mismatching mobys the box delta would class static (grazing and
                            * vanim not holding, box at most MC_MOVED) */
@@ -1516,7 +1723,8 @@ static void mc_vf_print(void) {
                     "moved_topo=%ld moved_box=%ld static_box=%ld carry_only_mobys=%ld fresh_only_mobys=%ld carry_only_planes=%ld "
                     "fresh_only_planes=%ld side_flips=%ld slab_diff=%ld dside_diff=%ld absent=%ld unresolved=%ld "
                     "overflow=%ld cam_moved=%ld cam_dp_mean=%.3f cam_dp_max=%.3f cam_dl_max=%.6f dup=%ld full=%ld "
-                    "rebuilds=%ld refreshed=%ld cmov=%ld/%ld/%ld/%ld/%ld/%ld/%ld cmov_mism=%ld/%ld/%ld/%ld/%ld/%ld/%ld\n",
+                    "rebuilds=%ld refreshed=%ld cmov=%ld/%ld/%ld/%ld/%ld/%ld/%ld cmov_mism=%ld/%ld/%ld/%ld/%ld/%ld/%ld "
+                    "refreshed_fs=%ld\n",
             mc_verify_mode(), mc_carry_on(), v->resolves, v->presents, v->presents_anz, v->mobys, v->planes,
             v->mism_mobys, v->mism_cls[MC_CLS_MOVED], v->mism_cls[MC_CLS_GRAZING], v->mism_cls[MC_CLS_STATIC],
             v->mism_cls[MC_CLS_VANIM], v->moved_topo, v->moved_box, v->static_box, v->carry_only_m, v->fresh_only_m,
@@ -1525,7 +1733,8 @@ static void mc_vf_print(void) {
             v->resolves ? v->dp_sum / (double)v->resolves : 0.0, v->dp_max, v->dl_max,
             s_mc[0].dup + s_mc[1].dup, s_mc[0].full + s_mc[1].full, s_mc_rebuilds, v->refreshed,
             v->cmov[0], v->cmov[1], v->cmov[2], v->cmov[3], v->cmov[4], v->cmov[5], v->cmov[6],
-            v->cmov_m[0], v->cmov_m[1], v->cmov_m[2], v->cmov_m[3], v->cmov_m[4], v->cmov_m[5], v->cmov_m[6]);
+            v->cmov_m[0], v->cmov_m[1], v->cmov_m[2], v->cmov_m[3], v->cmov_m[4], v->cmov_m[5], v->cmov_m[6],
+            v->refreshed_fs);
 }
 
 /** @brief Find the fresh plane that matches a carried one under the verify tolerance.
@@ -1784,6 +1993,7 @@ static int mc_vf_moby(int qi) {
     int topo = 0;
     if (s_vc_ref[qi]) {
         s_vs.refreshed++;
+        s_vs.refreshed_fs += s_vc_ref[qi] == 2;
         mc_vf_cmov_line(qi, mc_vf_moved(qi, &topo), topo);
         return 0;
     }
@@ -1903,18 +2113,23 @@ static int ms_carry_begin(ms_census* cs) {
 }
 
 /** @brief Finish the carry of the resolve under way: the verify comparison, and the per-present counts for the profiler (carried, fresh, and refreshed: the fresh ones mc_refresh refused).
+ *
+ * A canonical store also records each moby's contact region and candidate
+ * faces (mc_store_cands), the endpoint side of mc_faces_changed.
  * @param cs The resolve's census; its overflow counts into the verify's. */
 static void ms_carry_end(const ms_census* cs) {
+    if (s_store && mc_refresh_on()) mc_store_cands(s_store);
     if (s_vf_on) { s_vs.ovf += cs->ovf; mc_vf_compare(s_rs_ep, s_rs_L, s_rs_P); }
     s_store = NULL; s_vf_on = 0;
     if (s_rex && mc_carry_on() && op_prof_on()) {
         static int id_c = -1, id_f = -1;
-        static int id_r = -1;
+        static int id_r = -1, id_s = -1;
         if (id_c < 0) { id_c = op_prof_intern("mrexn.snap_carried"); id_f = op_prof_intern("mrexn.snap_fresh");
-                        id_r = op_prof_intern("mrexn.snap_refreshed"); }
+                        id_r = op_prof_intern("mrexn.snap_refreshed"); id_s = op_prof_intern("mrexn.snap_refreshed_fs"); }
         op_prof_count(id_c, (uint64_t)s_pc_carried);
         op_prof_count(id_f, (uint64_t)s_pc_fresh);
         op_prof_count(id_r, (uint64_t)s_pc_refreshed);
+        op_prof_count(id_s, (uint64_t)s_pc_fsref);
     }
 }
 

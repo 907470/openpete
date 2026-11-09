@@ -225,6 +225,54 @@ int  terrain_snap_camera(double L[3][3], double P[3]);
 int  terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_tri** out,
                           terrain_snap_census* cen);
 
+/* A walk verdict of one terrain face: dropped (a gate or the back-face cull
+ * removed it, or its pass or sector did not run), drawn flat, or drawn on
+ * the near/HQ path. */
+enum { TERRAIN_FACE_DROPPED = 0, TERRAIN_FACE_FLAT = 1, TERRAIN_FACE_NEAR = 2 };
+/* A visible sector of the last build whose bounding sphere meets a world
+ * box, and the boxes it meets (bit k of hit[k >> 6]). A list of them is in
+ * ascending sector order. */
+typedef struct { int16_t sec; uint64_t hit[2]; } terrain_snap_sector;
+/* A face of such a sector whose corners' world box meets a world box: its
+ * level sector index, walk pass (0, 1, 3 or 4: hole-fill passes are left
+ * out) and face index, its verdict under the build's camera
+ * (TERRAIN_FACE_*), and the boxes it meets. */
+typedef struct { int16_t sec; uint8_t pass, verd; uint16_t face; uint64_t hit[2]; } terrain_snap_face;
+/** @brief List the visible sectors of the last build whose bounding sphere, widened for vertex animation, meets a world box.
+ * @param wb The boxes, full-world units: x0, y0, z0, x1, y1, z1.
+ * @param nb Box count, at most 128.
+ * @param skip Level sectors to leave out, as bits (sector s is bit s & 63 of skip[s >> 6]), or NULL.
+ * @param out Receives the sectors, valid until the next call.
+ * @return The sector count, or -1 when terrain_snap_ready does not hold. */
+int  terrain_snap_sectors(const float (*wb)[6], int nb, const uint64_t skip[16],
+                          const terrain_snap_sector** out);
+/** @brief Read the level sectors the last build found visible with a decode (the sectors terrain_snap_sectors can list), as bits.
+ * @param vis Receives the set: sector s is bit s & 63 of vis[s >> 6].
+ * @return 1 when a build is latched and fed the scene now accumulating, else 0 (vis cleared). */
+int  terrain_snap_visible(uint64_t vis[16]);
+/** @brief A stamp of the last terrain build, distinct for each build: the face verdicts of terrain_snap_face_verdict hold while it is unchanged.
+ * @return The stamp. */
+unsigned terrain_snap_build(void);
+/** @brief List the faces of the sectors terrain_snap_sectors finds whose corners' world box meets a world box, each with its walk verdict under the last build's camera.
+ *
+ * Every face of the LP and HP passes (own and borrowed) is a candidate,
+ * drawn or not; the corners are the pass's vertices at the build's
+ * vertex-animation phase.
+ * @param wb The boxes, full-world units: x0, y0, z0, x1, y1, z1.
+ * @param nb Box count, at most 128.
+ * @param out Receives the faces, valid until the next call.
+ * @return The face count, or -1 when terrain_snap_ready does not hold. */
+int  terrain_snap_faces(const float (*wb)[6], int nb, const terrain_snap_face** out);
+/** @brief The walk verdict of one terrain face under the last build's camera: the walk's own gate chain (tn_face_classify, tn_face_gate) over the face's corners projected by the build's camera.
+ *
+ * A sector the build did not find visible, a pass that does not run for it
+ * and a face index out of range read TERRAIN_FACE_DROPPED.
+ * @param sec The level sector index.
+ * @param pass The walk pass, 0-5.
+ * @param face The face index within the pass.
+ * @return TERRAIN_FACE_DROPPED, TERRAIN_FACE_FLAT or TERRAIN_FACE_NEAR. */
+int  terrain_snap_face_verdict(int sec, int pass, int face);
+
 /* A level's terrain read from the disc into host bytes, in the record
  * layout the walk's decoders read: the sector records and the texture
  * tables at byte offsets into one buffer. */
