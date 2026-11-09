@@ -283,13 +283,14 @@ typedef struct moby_game {
      * may set or clear `textured`, and may fill `tex` to draw the face from a
      * substitute texture page and CLUT; it returns 0 to leave the face alone,
      * or 1 + the treatment index it applied, which the walk counts. `material`
-     * is the record's material word, `M` its model-to-view matrix, `moby` the
+     * is the record's material word, `M` its model-to-view matrix at unit
+     * scale, `moby` the
      * Moby the record was built from, `rec` the cull record's own address (0
      * for a record the walk built itself, which carries no guest record), and
      * `ev` the four corners' model-to-view rotated positions, which a
      * coordinate-generating treatment reads. NULL
      * where the game's special faces are handled by the walk's own branch. */
-    int  (*special_face)(CPUState* cpu, uint32_t material, const int M[3][3],
+    int  (*special_face)(CPUState* cpu, uint32_t material, const float M[3][3],
                          uint32_t moby, uint32_t rec, const struct moby_wface* F,
                          uint32_t c[4], const float ev[4][3], int* textured,
                          moby_face_tex_t* tex);

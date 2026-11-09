@@ -32,11 +32,13 @@ extern "C" {
 /* The most skeleton parts any player walk iterates. */
 #define PLAYER_PARTS_MAX 4
 
-/* One part's model->view transform: the 1.0 = 4096 rotation and the view-space
+/* One part's model->view transform: the 1.0 = 4096 rotation, the same
+ * rotation at unit scale in float (the projection's), and the view-space
  * origin in full world units. `present` is 0 for a part the pose does not
  * carry, and the walk emits nothing for it. */
 typedef struct player_xform {
     int    M[3][3];
+    float  Mf[3][3];
     double TR[3];
     int    present;
 } player_xform_t;

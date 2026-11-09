@@ -60,6 +60,18 @@ void ngte_mac(const int M[3][3], double vx, double vy, double vz,
     *m3 = (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
 }
 
+void ngte_mac_f(const float M[3][3], double vx, double vy, double vz,
+                double* m1, double* m2, double* m3) {
+    *m1 = (double)M[0][0]*vx + (double)M[0][1]*vy + (double)M[0][2]*vz;
+    *m2 = (double)M[1][0]*vx + (double)M[1][1]*vy + (double)M[1][2]*vz;
+    *m3 = (double)M[2][0]*vx + (double)M[2][1]*vy + (double)M[2][2]*vz;
+}
+
+void ngte_mat_unit_f(const int M[3][3], float out[3][3]) {
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) out[i][j] = (float)M[i][j] * (1.0f / 4096.0f);
+}
+
 void ngte_occl_camera(const ngte_view* v, struct openpete_occl_camera* c) {
     for (int i = 0; i < 3; i++) c->pos[i] = (float)v->cam[i];
     for (int r = 0; r < 3; r++) {
@@ -122,11 +134,20 @@ double ngte_project_raw(const int M[3][3], const double TR[3],
                         double vx, double vy, double vz,
                         double ofx_px, double ofy_px, const ngte_view* v,
                         double* out_sx, double* out_sy, int* out_sat) {
+    float Mf[3][3];
+    ngte_mat_unit_f(M, Mf);
+    return ngte_project_raw_f(Mf, TR, vx, vy, vz, ofx_px, ofy_px, v, out_sx, out_sy, out_sat);
+}
+
+double ngte_project_raw_f(const float M[3][3], const double TR[3],
+                          double vx, double vy, double vz,
+                          double ofx_px, double ofy_px, const ngte_view* v,
+                          double* out_sx, double* out_sy, int* out_sat) {
     const double H = v->H_eff;
     double t0 = TR ? TR[0] : 0.0, t1 = TR ? TR[1] : 0.0, t2 = TR ? TR[2] : 0.0;
-    double mac1 = t0 + (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
-    double mac2 = t1 + (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
-    double mac3 = t2 + (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
+    double r1, r2, r3;
+    ngte_mac_f(M, vx, vy, vz, &r1, &r2, &r3);
+    double mac1 = t0 + r1, mac2 = t1 + r2, mac3 = t2 + r3;
     double z = (mac3 != 0.0) ? mac3 : 1.0;
     *out_sx = ofx_px + mac1 * H / z;
     *out_sy = ofy_px + mac2 * H / z;
@@ -181,11 +202,19 @@ void ngte_project_gte(const int M[3][3], const double TR[3],
                       double vx, double vy, double vz,
                       double ofx, double ofy, const ngte_view* v,
                       int sxy_clamp, ngte_proj* o) {
+    float Mf[3][3];
+    ngte_mat_unit_f(M, Mf);
+    ngte_project_gte_f(Mf, TR, vx, vy, vz, ofx, ofy, v, sxy_clamp, o);
+}
+
+void ngte_project_gte_f(const float M[3][3], const double TR[3],
+                        double vx, double vy, double vz,
+                        double ofx, double ofy, const ngte_view* v,
+                        int sxy_clamp, ngte_proj* o) {
     double t0 = TR ? TR[0] : 0.0, t1 = TR ? TR[1] : 0.0, t2 = TR ? TR[2] : 0.0;
-    double mac1 = t0 + (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
-    double mac2 = t1 + (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
-    double mac3 = t2 + (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
-    ngte_screen_gte(mac1, mac2, mac3, ofx, ofy, v, sxy_clamp, o);
+    double r1, r2, r3;
+    ngte_mac_f(M, vx, vy, vz, &r1, &r2, &r3);
+    ngte_screen_gte(t0 + r1, t1 + r2, t2 + r3, ofx, ofy, v, sxy_clamp, o);
 }
 
 static int s_unr_tab[257];
@@ -365,6 +394,47 @@ void ngte_compose_euler_f(CPUState* cpu, const int start[3][3], const double ang
         t2[i][j] = (t1[i][0]*Rx[0][j] + t1[i][1]*Rx[1][j] + t1[i][2]*Rx[2][j]) / 4096.0;
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
         out[i][j] = (t2[i][0]*Rz[0][j] + t2[i][1]*Rz[1][j] + t2[i][2]*Rz[2][j]) / 4096.0;
+}
+
+void ngte_word_angles(uint32_t rot, double ang[3]) {
+    ang[0] = (double)(rot & 0xFFu);
+    ang[1] = (double)((rot >> 8) & 0xFFu);
+    ang[2] = (double)((rot >> 16) & 0xFFu);
+}
+
+void ngte_compose_euler_mf(CPUState* cpu, const float start[3][3], const double ang[3],
+                           float out[3][3]) {
+    double s[3], c[3];
+    for (int k = 0; k < 3; k++) ngte_sincos_f(cpu, ang[k], &s[k], &c[k]);
+    const float sz = (float)(s[0] / 4096.0), cz = (float)(c[0] / 4096.0);
+    const float sx = (float)(s[1] / 4096.0), cx = (float)(c[1] / 4096.0);
+    const float sy = (float)(s[2] / 4096.0), cy = (float)(c[2] / 4096.0);
+    const float Ry[3][3] = {{cy, 0.0f, -sy}, {0.0f, 1.0f, 0.0f}, {sy, 0.0f, cy}};
+    const float Rx[3][3] = {{1.0f, 0.0f, 0.0f}, {0.0f, cx, -sx}, {0.0f, sx, cx}};
+    const float Rz[3][3] = {{cz, -sz, 0.0f}, {sz, cz, 0.0f}, {0.0f, 0.0f, 1.0f}};
+    float t1[3][3], t2[3][3];
+    ngte_mat_mul3_f(start, Ry, t1);
+    ngte_mat_mul3_f((const float (*)[3])t1, Rx, t2);
+    ngte_mat_mul3_f((const float (*)[3])t2, Rz, out);
+}
+
+void ngte_compose_euler_at(CPUState* cpu, const int start[3][3], const double ang[3], int out[3][3],
+                           float outf[3][3]) {
+    ngte_euler_sc e;
+    ngte_sincos_interp(cpu, ang[2], &e.sy, &e.cy);
+    ngte_sincos_interp(cpu, ang[1], &e.sx, &e.cx);
+    ngte_sincos_interp(cpu, ang[0], &e.sz, &e.cz);
+    ngte_compose_euler(start, &e, out);
+    if (!outf) return;
+    float S[3][3];
+    ngte_mat_unit_f(start, S);
+    ngte_compose_euler_mf(cpu, (const float (*)[3])S, ang, outf);
+}
+
+void ngte_mat_mul3_f(const float A[3][3], const float B[3][3], float O[3][3]) {
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            O[i][j] = A[i][0] * B[0][j] + A[i][1] * B[1][j] + A[i][2] * B[2][j];
 }
 
 /* ---- texture page / CLUT bitfields -------------------------------------- */

@@ -29,6 +29,18 @@ struct CPUState;
  * @param n Triangle count. */
 void moby_snap_queue(uint32_t mid, int mordinal, int dofs, float off_m,
                      const float (*v)[3][3], int n);
+/** @brief Whether the carry verify's corner probe is on (OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV=1), read once.
+ * @return 1 when on, else 0. */
+int moby_snap_probe_on(void);
+/** @brief Attach the probe's tags to the moby moby_snap_queue last queued: its triangles' face keys and its record path.
+ *
+ * Ignored unless the probe is on and the last queued moby is `mid` with `n` triangles.
+ * @param mid The moby identity.
+ * @param fk The triangles' face keys, in queue order.
+ * @param n Their count.
+ * @param path The record path the walk took for the moby (1 cull record, 2 host-built record, 3 shaded, 0 other).
+ * @param kr Its first eligible corner's key depth over its perspective W (kvz / tvz). */
+void moby_snap_queue_probe(uint32_t mid, const uint32_t* fk, int n, int path, float kr);
 /** @brief Note one walk pass's ranked mobys, ordinal base + k + 1 for mids[k], for the ordinal-collision census.
  * @param mids The pass's ranked moby identities in ordinal order.
  * @param n Their count.

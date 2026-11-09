@@ -167,6 +167,24 @@ void ngte_read_matrix(CPUState* cpu, uint32_t p, int M[3][3]);
 void ngte_mac(const int M[3][3], double vx, double vy, double vz,
               double* m1, double* m2, double* m3);
 
+/** @brief The rotation half of an MVMVA through a unit-scale float matrix, in double: m = M · v.
+ *
+ * @param M Rotation, 1.0 = 1.0.
+ * @param vx The vector's X.
+ * @param vy The vector's Y.
+ * @param vz The vector's Z.
+ * @param m1 Receives row 0's product.
+ * @param m2 Receives row 1's product.
+ * @param m3 Receives row 2's product. */
+void ngte_mac_f(const float M[3][3], double vx, double vy, double vz,
+                double* m1, double* m2, double* m3);
+
+/** @brief A Q12 matrix at unit scale in float; exact, since every Q12 entry fits a float mantissa.
+ *
+ * @param M The matrix, 4096 = 1.0.
+ * @param out Receives M / 4096. */
+void ngte_mat_unit_f(const int M[3][3], float out[3][3]);
+
 /** @brief IR1/2/3 as the hardware hands them back with lm = 0: MAC saturated to signed 16 bits.
  *
  * A walk that mirrors a draw reading IR after MVMVA needs the saturation,
@@ -177,6 +195,28 @@ void ngte_mac(const int M[3][3], double vx, double vy, double vz,
 static inline double ngte_ir_clamp(double mac) {
     return mac < -32768.0 ? -32768.0 : (mac > 32767.0 ? 32767.0 : mac);
 }
+
+/** @brief ngte_project_raw through a unit-scale float rotation: MAC = TR + M · v.
+ *
+ * The int form converts its Q12 matrix with ngte_mat_unit_f and calls this
+ * one; the conversion and the product are exact, so both forms return the
+ * same value for the same Q12 matrix.
+ * @param M Rotation, 1.0 = 1.0.
+ * @param TR Translation, or NULL for zero.
+ * @param vx The vertex's X.
+ * @param vy The vertex's Y.
+ * @param vz The vertex's Z.
+ * @param ofx_px Screen X offset in pixels.
+ * @param ofy_px Screen Y offset in pixels.
+ * @param v The view; supplies H_eff and H_canon.
+ * @param out_sx Receives the screen X.
+ * @param out_sy Receives the screen Y.
+ * @param out_sat Receives the saturation verdict, or NULL.
+ * @return mac3, the view-space Z. */
+double ngte_project_raw_f(const float M[3][3], const double TR[3],
+                          double vx, double vy, double vz,
+                          double ofx_px, double ofy_px, const ngte_view* v,
+                          double* out_sx, double* out_sy, int* out_sat);
 
 /** @brief Projects a vertex in unclamped float: screen = offset + MAC · H_eff / z.
  *
@@ -257,6 +297,23 @@ void ngte_project_gte(const int M[3][3], const double TR[3],
                       double vx, double vy, double vz,
                       double ofx, double ofy, const ngte_view* v,
                       int sxy_clamp, ngte_proj* o);
+
+/** @brief ngte_project_gte through a unit-scale float rotation: MAC = TR + M · v, then ngte_screen_gte.
+ *
+ * @param M Rotation, 1.0 = 1.0.
+ * @param TR Translation, or NULL for zero.
+ * @param vx The vertex's X.
+ * @param vy The vertex's Y.
+ * @param vz The vertex's Z.
+ * @param ofx Screen X offset in pixels.
+ * @param ofy Screen Y offset in pixels.
+ * @param v The view.
+ * @param sxy_clamp Nonzero applies the SXY bound.
+ * @param o Receives the projection. */
+void ngte_project_gte_f(const float M[3][3], const double TR[3],
+                        double vx, double vy, double vz,
+                        double ofx, double ofy, const ngte_view* v,
+                        int sxy_clamp, ngte_proj* o);
 
 /** One RTPS vertex as the GTE leaves it: MAC1-3, SZ3, the divide's quotient and SXY2. */
 typedef struct {
@@ -417,6 +474,46 @@ void ngte_compose_euler(const int start[3][3], const ngte_euler_sc* e, int out[3
  * @param out    the product, Q12 scale, unrounded. */
 void ngte_compose_euler_f(CPUState* cpu, const int start[3][3], const double ang[3],
                           double out[3][3]);
+
+/** @brief The packed euler word's three angles as byte angles {Z, X, Y}, the order ngte_compose_euler_f and ngte_compose_euler_mf take.
+ *
+ * @param rot The packed euler word (Z at byte 0, X at byte 1, Y at byte 2).
+ * @param ang Receives {Z, X, Y}, 256 to the turn. */
+void ngte_word_angles(uint32_t rot, double ang[3]);
+
+/** @brief O = A · B for unit-scale float matrices, accumulated in float.
+ *
+ * @param A The left factor.
+ * @param B The right factor.
+ * @param O Receives the product; must not alias A or B. */
+void ngte_mat_mul3_f(const float A[3][3], const float B[3][3], float O[3][3]);
+
+/** @brief out = start·Ry·Rx·Rz at unit scale in float, from the game's sine table at fractional byte angles.
+ *
+ * The axis order and signs are ngte_compose_euler's. Each axis reads
+ * ngte_sincos_f (linear between table entries, the entry itself at an
+ * integer angle) scaled by 1/4096; the three products accumulate in float
+ * (ngte_mat_mul3_f) with no per-step truncation.
+ * @param cpu Reads the game's sin/cos table.
+ * @param start The left factor at unit scale.
+ * @param ang {Z, X, Y} byte angles.
+ * @param out Receives the product at unit scale. */
+void ngte_compose_euler_mf(CPUState* cpu, const float start[3][3], const double ang[3],
+                           float out[3][3]);
+
+/** @brief Compose start·Ry·Rx·Rz at fractional byte angles in both forms: Q12 as the GTE does it, and at unit scale in float.
+ *
+ * The Q12 form samples the table at the angles rounded to integers
+ * (ngte_sincos_interp) and truncates each product (ngte_compose_euler); the
+ * float form converts start (ngte_mat_unit_f) and composes unrounded
+ * (ngte_compose_euler_mf).
+ * @param cpu Reads the game's sin/cos table.
+ * @param start The left factor, Q12.
+ * @param ang {Z, X, Y} byte angles.
+ * @param out Receives the product, Q12.
+ * @param outf Receives the product at unit scale, or NULL. */
+void ngte_compose_euler_at(CPUState* cpu, const int start[3][3], const double ang[3], int out[3][3],
+                           float outf[3][3]);
 
 /* ---- texture page / CLUT bitfields --------------------------------------
  * One decode of the GPU's two texture words, shared by every feeder that

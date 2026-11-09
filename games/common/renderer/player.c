@@ -344,7 +344,7 @@ static int player_plane_disabled(void) {
  * vertex off the screen edge. Mirroring the cap and the IR16 and SXY clamps
  * leaves every in-range vertex equal to the hardware's, where the quotient is
  * exact. The UNR reciprocal's sub-pixel error is not reproduced.
- * @param M The part rotation, Q12.
+ * @param M The part rotation at unit scale.
  * @param TR The part translation.
  * @param vx The vertex's X.
  * @param vy The vertex's Y.
@@ -356,11 +356,11 @@ static int player_plane_disabled(void) {
  * @param out_sy Receives the screen Y.
  * @param out_sat Receives the saturation flag (divide capped or SZ3 not positive); may be NULL.
  * @return MAC3, the vertex's view-Z. */
-static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
+static double project(const float M[3][3], const double TR[3], double vx, double vy, double vz,
                       double ofx_px, double ofy_px, const ngte_view* v,
                       double* out_sx, double* out_sy, int* out_sat) {
     ngte_proj o;
-    ngte_project_gte(M, TR, vx, vy, vz, ofx_px, ofy_px, v, 1, &o);
+    ngte_project_gte_f(M, TR, vx, vy, vz, ofx_px, ofy_px, v, 1, &o);
     *out_sx = o.sx;
     *out_sy = o.sy;
     if (out_sat) *out_sat = o.sat;
@@ -397,7 +397,7 @@ void player_proj_vert(int i, float* sx, float* sy, float* vz, int* sat, int* par
  * signed plane distance. Stops at MAX_SPROJ entries.
  * @param cpu Reads the streams.
  * @param block The part-transform block's guest base.
- * @param M The part rotation, Q12.
+ * @param M The part rotation at unit scale.
  * @param TR The part translation.
  * @param ofx Screen X offset in pixels.
  * @param ofy Screen Y offset in pixels.
@@ -405,7 +405,7 @@ void player_proj_vert(int i, float* sx, float* sy, float* vz, int* sat, int* par
  * @param part The part index.
  * @param count The part's vertex count.
  * @return The vertices appended. */
-static int player_project_part(CPUState* cpu, uint32_t block, const int M[3][3], const double TR[3],
+static int player_project_part(CPUState* cpu, uint32_t block, const float M[3][3], const double TR[3],
                                double ofx, double ofy, const ngte_view* v, int part, int count) {
     uint32_t fd = player_rec_word(cpu, block, part, PL.part_flags_off);
     uint32_t blend_raw = fd & PL.blend_mask;
@@ -516,7 +516,7 @@ int player_project_all(CPUState* cpu) {
         int count = player_game.part_vcount ? player_game.part_vcount(fd, &cursor) : 0;
         if (count <= 0) continue;
         if (!s_xf[p].present) continue;
-        s_eng_verts += player_project_part(cpu, block, s_xf[p].M, s_xf[p].TR,
+        s_eng_verts += player_project_part(cpu, block, (const float (*)[3])s_xf[p].Mf, s_xf[p].TR,
                                           v->ofx, v->ofy, v, p, count);
         s_eng_parts++;
         nseg++;

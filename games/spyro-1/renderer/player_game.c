@@ -157,29 +157,31 @@ static int s1_scratch_mat(void) {
     return v;
 }
 
-/** @brief Composes M = start * Ry * Rx * Rz from a packed euler word.
+/** @brief Composes a part's M = start * Ry * Rx * Rz from a packed euler word, in Q12 and at unit scale in float.
  *
  * A zero word gives the identity (sin 0 = 0, cos 0 = 4096), so M = start,
  * the sticky case. When player_rot_interp holds sub-tick float angles for
  * `part`, they replace the word's bytes and render rotation below the 8-bit
- * euler grid; otherwise the byte-exact table lookup is used.
+ * euler grid. The Q12 form samples the table at the angles rounded to
+ * integers and truncates each product as the GTE does; the float form
+ * composes onto the parent's float matrix at the unrounded angles
+ * (ngte_compose_euler_mf).
  * @param cpu The guest CPU state.
- * @param start The matrix to compose onto.
+ * @param start The matrix to compose onto, Q12.
+ * @param startf The same matrix at unit scale.
  * @param rot The packed euler word (Z at byte 0, X at byte 1, Y at byte 2).
- * @param out Receives the composed matrix.
+ * @param out Receives the composed matrix, Q12, and its unit-scale twin.
  * @param part The skeleton part index, 0 = body. */
-static void s1_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot,
-                             int out[3][3], int part) {
+static void s1_compose_euler(CPUState* cpu, const int start[3][3], const float startf[3][3],
+                             uint32_t rot, player_xform_t* out, int part) {
     ngte_euler_sc e;
     double ang[3];
-    if (player_rot_interp(part, ang)) {
-        ngte_sincos_interp(cpu, ang[0], &e.sz, &e.cz);   /* Z (+0 byte) */
-        ngte_sincos_interp(cpu, ang[1], &e.sx, &e.cx);   /* X (+1 byte) */
-        ngte_sincos_interp(cpu, ang[2], &e.sy, &e.cy);   /* Y (+2 byte) */
-    } else {
-        ngte_euler_sincos(cpu, rot, &e);
-    }
-    ngte_compose_euler(start, &e, out);
+    if (!player_rot_interp(part, ang)) ngte_word_angles(rot, ang);
+    ngte_sincos_interp(cpu, ang[0], &e.sz, &e.cz);   /* Z (+0 byte) */
+    ngte_sincos_interp(cpu, ang[1], &e.sx, &e.cx);   /* X (+1 byte) */
+    ngte_sincos_interp(cpu, ang[2], &e.sy, &e.cy);   /* Y (+2 byte) */
+    ngte_compose_euler(start, &e, out->M);
+    ngte_compose_euler_mf(cpu, startf, ang, out->Mf);
 }
 
 /** @brief Derives one skeleton part's model-to-view transform from gamestate.
@@ -210,6 +212,7 @@ static int s1_part_xform(CPUState* cpu, const ngte_view* v, int part,
             ngte_read_matrix(cpu, e + PL.part_matrix_off, out->M);
         else if (parent)
             memcpy(out->M, parent->M, sizeof out->M);
+        ngte_mat_unit_f((const int (*)[3])out->M, out->Mf);
         for (int i = 0; i < 3; i++)
             out->TR[i] = (double)(int32_t)cpu->read_word(e + PL.part_tr_off + (uint32_t)i * 4u);
         out->present = 1;
@@ -235,15 +238,17 @@ static int s1_part_xform(CPUState* cpu, const ngte_view* v, int part,
         double IR1 = cfy - sfy, IR2 = cfz - sfz, IR3 = sfx - cfx;
         for (int i = 0; i < 3; i++)
             out->TR[i] = (PM[i][0]*IR1 + PM[i][1]*IR2 + PM[i][2]*IR3) / 4096.0;
-        s1_compose_euler(cpu, PM, cpu->read_word(PL.base + PL.rot_off[0]), out->M, 0);
+        float PMf[3][3];
+        ngte_mat_unit_f(PM, PMf);
+        s1_compose_euler(cpu, PM, (const float (*)[3])PMf, cpu->read_word(PL.base + PL.rot_off[0]), out, 0);
         out->present = 1;
         return 1;
     }
 
     if (!parent || !PL.rot_off[part]) return 0;
     uint32_t rot = cpu->read_word(PL.base + PL.rot_off[part]);
-    if (rot) s1_compose_euler(cpu, parent->M, rot, out->M, part);
-    else     memcpy(out->M, parent->M, sizeof out->M);
+    if (rot) s1_compose_euler(cpu, parent->M, parent->Mf, rot, out, part);
+    else   { memcpy(out->M, parent->M, sizeof out->M); memcpy(out->Mf, parent->Mf, sizeof out->Mf); }
     out->present = 1;   /* the origin comes from the seam joint */
     return 1;
 }
@@ -307,15 +312,15 @@ static void s1_seam_joint(CPUState* cpu, const player_xform_t* parent,
     int VZ =  s1_seam_field(jA, jB, 0,  ir0, dual);
     int VX = -s1_seam_field(jA, jB, 11, ir0, dual);
     int VY = -s1_seam_field(jA, jB, 22, ir0, dual);
-    /* FRACTIONAL: the body's translation plus (M . V) / 4096. Carrying the
+    /* FRACTIONAL: the body's translation plus Mf . V. Carrying the
      * body's fractional translation through to the seam keeps the head and
      * tail origins tracking the continuous body below the one-unit grid; the
      * projection's own IR16 saturation handles off-screen, so the per-
      * component saturation the routine applies is dropped. */
     for (int i = 0; i < 3; i++)
         out[i] = parent->TR[i]
-               + ((double)parent->M[i][0]*VX + (double)parent->M[i][1]*VY
-                + (double)parent->M[i][2]*VZ) / 4096.0;
+               + ((double)parent->Mf[i][0]*VX + (double)parent->Mf[i][1]*VY
+                + (double)parent->Mf[i][2]*VZ);
 }
 
 /* ---- face stream -------------------------------------------------------- */

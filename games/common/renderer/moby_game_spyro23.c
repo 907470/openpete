@@ -593,7 +593,8 @@ static int s23_water_plane(CPUState* cpu, uint32_t mat, uint32_t moby, uint32_t 
  * four colours with one sheen colour computed from the face normal.
  * @param cpu The guest CPU state, read only.
  * @param mat The record's material word.
- * @param M The model-to-view matrix, Q12; mode 2 rotates the face normal by it.
+ * @param M The model-to-view matrix at unit scale; mode 2 rotates the face
+ *        normal by it and floors each component as the GTE's >> 12 does.
  * @param moby Unused.
  * @param rec The cull record's address, passed to the environment setup.
  * @param F The face; `hl` must be 1, and n1..n3 are the normal mode 2 reads.
@@ -604,7 +605,7 @@ static int s23_water_plane(CPUState* cpu, uint32_t mat, uint32_t moby, uint32_t 
  * @param tex Receives mode 1's substitute page, CLUT and coordinates; the walk
  *        zeroes it before the call.
  * @return 0 when the face is left alone, else 1 plus the mode applied. */
-static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
+static int s23_special_face(CPUState* cpu, uint32_t mat, const float M[3][3],
                            uint32_t moby, uint32_t rec, const moby_wface_t* F,
                            uint32_t c[4], const float ev[4][3], int* textured,
                            moby_face_tex_t* tex) {
@@ -700,15 +701,15 @@ static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
     }
 
     /* mode 2. The normal through the model matrix, scaled by IR0, projected on
-     * the light vector over the background colour. Every stage truncates the
-     * way its GTE op does: MVMVA and CC shift by 12, GPF does not, and CC's
+     * the light vector over the background colour. The rotation is the float
+     * model-to-view matrix, floored to the IR register; every later stage
+     * truncates the way its GTE op does: CC shifts by 12, GPF does not, and CC's
      * second stage multiplies by a white 8-bit modulating colour. */
     int ir0 = (int)((mat >> 23) & 0x1Eu);
     int ir[3];
     for (int i = 0; i < 3; i++) {
-        long m = (long)M[i][0] * F->n1 + (long)M[i][1] * F->n2
-               + (long)M[i][2] * F->n3;
-        ir[i] = s23_clamp_ir(m >> 12);
+        const double m = (double)M[i][0] * F->n1 + (double)M[i][1] * F->n2 + (double)M[i][2] * F->n3;
+        ir[i] = s23_clamp_ir((long)floor(m));
     }
     for (int i = 0; i < 3; i++) ir[i] = s23_clamp_ir((long)ir0 * ir[i]);
     long dot = (long)moby_game_s23.spec_light[0] * ir[0]
@@ -1619,15 +1620,15 @@ static double s23_simple_model_radius(CPUState* cpu, uint32_t H) {
     return s_s23_radius[slot].r;
 }
 
-/** @brief A bound on how far a Q12 matrix stretches any vector: the square root of the largest absolute row sum of R^T R.
+/** @brief A bound on how far a unit-scale matrix stretches any vector: the square root of the largest absolute row sum of R^T R.
  *
  * Every induced norm of R^T R bounds its largest eigenvalue, which is the
  * square of R's spectral norm, so the result is never below the true
  * stretch; for the near-orthonormal camera-times-rotation matrices it is
  * within a fraction of a percent of it.
- * @param R The matrix, 4096 = 1.0.
+ * @param R The matrix, 1.0 = 1.0.
  * @return The bound, 1.0 = no stretch. */
-static double s23_matrix_stretch(const int R[3][3]) {
+static double s23_matrix_stretch(const float R[3][3]) {
     double worst = 0.0;
     for (int i = 0; i < 3; i++) {
         double row = 0.0;
@@ -1638,7 +1639,7 @@ static double s23_matrix_stretch(const int R[3][3]) {
         }
         if (row > worst) worst = row;
     }
-    return sqrt(worst) / 4096.0;
+    return sqrt(worst);
 }
 
 /** @brief Print the submitted screen-space centroid, extent and placement of one second-kind record under OPENPETE_MOBY_POSTRACE_CLS.
@@ -1694,15 +1695,48 @@ static void s23_simple_postrace(CPUState* cpu, uint32_t moby, const float (*vscr
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param pl The record's placement.
- * @param R The record's composed matrix, Q12.
+ * @param R The record's composed matrix at unit scale.
  * @return 1 when hidden, else 0. */
-static int s23_simple_hidden(CPUState* cpu, uint32_t moby, const s23_place* pl, const int R[3][3]) {
+static int s23_simple_hidden(CPUState* cpu, uint32_t moby, const s23_place* pl, const float R[3][3]) {
     if (pl->screen) return 0;
     const double org[3] = { pl->TR[0] * 2.0, pl->TR[1] * 2.0, pl->TR[2] * 2.0 };
     const double rad = 2.0 * s23_simple_model_radius(cpu, pl->header) * s23_matrix_stretch(R) + 1.0;
     if (!moby_simple_occluded(cpu, moby, org, rad)) return 0;
     s_simple_occl++;
     s_simple_culled++;
+    return 1;
+}
+
+/** @brief The present camera's position change since the tick, in the units and signs of a second-kind record's stored delta.
+ *
+ * The camera position the cull subtracted is baked into every record's
+ * delta (mobydraw.s:53 the camera position, :81,87,94 the three
+ * subtractions, :621-627 the store), so replaying a record under a staged
+ * camera re-rotates it but keeps the tick's translation; the decode re-bases
+ * the delta by this change. The cull stores (moby - cam) >> 2 on the first
+ * component and (cam - moby) >> 2 on the other two, so a camera that moved
+ * by e shifts the stored halves by -e/4, +e/4 and +e/4. The present
+ * position is the fractional interpolated camera (openpete_native_interp_pos)
+ * when one is published, else the staged integer position. Held in double
+ * and added before the transform, so a present position equal to the tick's
+ * is a no-op bit for bit.
+ *
+ * A tick camera is installed only for a sub-tick present, so its absence is
+ * what keeps every canonical decode - the inline pass and the canonical lag
+ * leg alike - bit for bit what the cull wrote: no camera delta, no
+ * per-record own motion and the tick's own rotation word.
+ * @param cpu The guest CPU state, read only.
+ * @param dcam Receives the change, zero on a canonical decode.
+ * @return 1 on a sub-tick present (a tick camera is installed), else 0. */
+static int s23_simple_cam_delta(CPUState* cpu, double dcam[3]) {
+    static const double sign[3] = { -0.25, 0.25, 0.25 };
+    int32_t tickpos[3];
+    dcam[0] = dcam[1] = dcam[2] = 0.0;
+    if (!s23_simple_tick_camera_pos(tickpos)) return 0;
+    double cf[3];
+    if (!openpete_native_interp_pos(game_layout.cam.base, cf))
+        for (int i = 0; i < 3; i++) cf[i] = (double)(int32_t)cpu->read_word(game_layout.cam.position + 4u * (uint32_t)i);
+    for (int i = 0; i < 3; i++) dcam[i] = (cf[i] - (double)tickpos[i]) * sign[i];
     return 1;
 }
 
@@ -1732,30 +1766,8 @@ static int s23_simple_decode(CPUState* cpu) {
     int skip_lp = cpu->read_word(moby_game_s23.simple_skip_lowpoly) != 0u;
     int emitted = 0;
 
-    /* The camera position the cull subtracted is baked into every record's
-     * delta (mobydraw.s:53 the camera position, :81,87,94 the three
-     * subtractions, :621-627 the store), so replaying a record under a staged
-     * camera re-rotates it but keeps the tick's translation.
-     * Re-base the delta by the camera-position change. The cull stores
-     * (moby - cam) >> 2 on the first component and (cam - moby) >> 2 on the
-     * other two, so a camera that moved by e shifts the stored halves by
-     * -e/4, +e/4 and +e/4. Held in double and added before the transform, so a
-     * staged position equal to the tick's is a no-op bit for bit.
-     *
-     * A tick camera is installed only for a sub-tick present, so its absence is
-     * what keeps every canonical decode - the inline pass and the canonical lag
-     * leg alike - bit for bit what the cull wrote: no camera delta, no
-     * per-record own motion and the tick's own rotation word. */
-    double dcam[3] = { 0.0, 0.0, 0.0 };
-    int32_t tickpos[3];
-    const int bracketed = s23_simple_tick_camera_pos(tickpos);
-    if (bracketed) {
-        static const double sign[3] = { -0.25, 0.25, 0.25 };
-        for (int i = 0; i < 3; i++) {
-            int32_t staged = (int32_t)cpu->read_word(game_layout.cam.position + 4u * (uint32_t)i);
-            dcam[i] = ((double)staged - (double)tickpos[i]) * sign[i];
-        }
-    }
+    double dcam[3];
+    const int bracketed = s23_simple_cam_delta(cpu, dcam);
 
     static double vpos[S23_SIMPLE_VERTS][3];
     static float  vscr[S23_SIMPLE_VERTS][2];
@@ -1825,13 +1837,16 @@ static int s23_simple_decode(CPUState* cpu) {
          * so a moby turning a byte per tick sweeps instead of stepping; the
          * canonical pass takes the tick's word, where the composition is the
          * table lookup the draw itself does. */
+        /* R, in Q12, is the draw's GTE compose and feeds the face lighting
+         * and the paint key; Rf, the same rotation at unit scale composed in
+         * float at the unrounded angles, places the vertices. */
         int R[3][3];
-        ngte_euler_sc esc;
-        if (!bracketed || !moby_record_euler_at_present(cpu, moby, &esc))
-            ngte_euler_sincos(cpu, rot, &esc);
-        ngte_compose_euler(pl.R, &esc, R);
+        float Rf[3][3];
+        double ang[3];
+        if (!bracketed || !moby_record_angles_at_present(cpu, moby, ang)) ngte_word_angles(rot, ang);
+        ngte_compose_euler_at(cpu, pl.R, ang, R, Rf);
 
-        if (s23_simple_hidden(cpu, moby, &pl, R)) continue;
+        if (s23_simple_hidden(cpu, moby, &pl, (const float (*)[3])Rf)) continue;
 
         moby_simple_record(cpu, moby);
         if (pl.screen) moby_simple_screen_origin(pl.ofx, pl.ofy);
@@ -1853,7 +1868,7 @@ static int s23_simple_decode(CPUState* cpu) {
             double vz = (double)((int32_t)w >> 21);           /* bits 21-31 */
             vmod[i][0] = vx; vmod[i][1] = vy; vmod[i][2] = vz;
             double e1, e2, e3;
-            ngte_mac(R, vx, vy, vz, &e1, &e2, &e3);
+            ngte_mac_f((const float (*)[3])Rf, vx, vy, vz, &e1, &e2, &e3);
             /* world/2 in the game's space; the shared walk takes full world. */
             vpos[i][0] = (e1 + TR[0]) * 2.0;
             vpos[i][1] = (e2 + TR[1]) * 2.0;

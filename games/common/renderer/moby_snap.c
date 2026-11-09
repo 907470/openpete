@@ -47,11 +47,12 @@ static inline double ms_max(double a, double b) { return b > a ? b : a; }
  * bounds of that run (screen x0, y0, x1, y1, view-Z z0, z1); its index in
  * the queue as collected (qi) and whether its planes go to the scene's
  * table (add; 0 for a moby the carry already placed). */
-typedef struct { uint32_t mid; int mord, dofs; float off; int t0, nt; float b[6]; int qi; int add; } ms_moby;
+typedef struct { uint32_t mid; int mord, dofs; float off; int t0, nt; float b[6]; int qi; int add; int path; float kr; } ms_moby;
 
 static ms_moby*   s_q_mob;  static int s_q_nm, s_q_capm;
 static float    (*s_q_tri)[3][3]; static int s_q_nt, s_q_capt;
 static float    (*s_q_bnd)[6]; static int s_q_capb;   /* per s_q_tri: its bounds */
+static uint32_t*  s_q_fk; static int s_q_capf;       /* per s_q_tri: its face key, while the probe is on */
 static unsigned   s_q_epoch = ~0u;
 
 /* The planes one moby may own; more are counted as overflow. */
@@ -151,6 +152,12 @@ static void ms_bounds_tris(const float (*t)[3][3], float (*b)[6], int n, float u
     }
 }
 
+int moby_snap_probe_on(void) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV"); s_on = e && *e == '1'; }
+    return s_on;
+}
+
 void moby_snap_queue(uint32_t mid, int mordinal, int dofs, float off_m,
                      const float (*v)[3][3], int n) {
     ms_scene_sync();
@@ -158,12 +165,24 @@ void moby_snap_queue(uint32_t mid, int mordinal, int dofs, float off_m,
     if (!ms_grow((void**)&s_q_mob, &s_q_capm, s_q_nm + 1, sizeof *s_q_mob) ||
         !ms_grow((void**)&s_q_tri, &s_q_capt, s_q_nt + n, sizeof *s_q_tri) ||
         !ms_grow((void**)&s_q_bnd, &s_q_capb, s_q_nt + n, sizeof *s_q_bnd)) return;
+    if (moby_snap_probe_on()) {
+        if (!ms_grow((void**)&s_q_fk, &s_q_capf, s_q_nt + n, sizeof *s_q_fk)) return;
+        memset(&s_q_fk[s_q_nt], 0, (size_t)n * sizeof *s_q_fk);
+    }
     ms_moby* m = &s_q_mob[s_q_nm++];
     m->mid = mid; m->mord = mordinal; m->dofs = dofs; m->off = off_m;
-    m->t0 = s_q_nt; m->nt = n;
+    m->t0 = s_q_nt; m->nt = n; m->path = 0; m->kr = 0.0f;
     memcpy(&s_q_tri[s_q_nt], v, (size_t)n * sizeof *s_q_tri);
     ms_bounds_tris(&s_q_tri[s_q_nt], &s_q_bnd[s_q_nt], n, m->b);
     s_q_nt += n;
+}
+
+void moby_snap_queue_probe(uint32_t mid, const uint32_t* fk, int n, int path, float kr) {
+    if (!moby_snap_probe_on() || !s_q_nm) return;
+    ms_moby* m = &s_q_mob[s_q_nm - 1];
+    if (m->mid != mid || m->nt != n) return;
+    memcpy(&s_q_fk[m->t0], fk, (size_t)n * sizeof *fk);
+    m->path = path; m->kr = kr;
 }
 
 /* ---- geometry ------------------------------------------------------------ */
@@ -745,6 +764,7 @@ static long ms_falsify(int nt, const openpete_snap_plane* out, int np,
 }
 
 static void ms_result(const ms_moby* mb, const openpete_snap_plane* out, const ms_pid* id, int np);
+static void mc_vf_near(const ms_moby* mb, int nc, int nl);
 
 /** @brief Find one queued moby's contact planes against the captured terrain.
  * @param mb The moby.
@@ -789,6 +809,7 @@ static int ms_moby_planes(const ms_moby* mb, const terrain_snap_tri* tt, const i
         if (!ms_plane_add(P, &np, &s_tt[j], &tt[j])) cs->ovf++;
     }
     if (t) { t1 = ms_mono_ns(); cs->test_ns += t1 - t; t = t1; }
+    mc_vf_near(mb, nc, nl);
     if (!np) return 0;
     ms_make_rest(m, nt, view);
     for (int k = 0; k < np; k++) {
@@ -953,14 +974,16 @@ typedef struct { double n[3], d; } mc_wplane;
 typedef struct { int16_t sec; uint8_t pass, verd; uint16_t face; } mc_fc;
 /* One stored moby: identity, first plane, plane count (0: resolved, no
  * contact), and, while the carry or the verify runs, the world box of its
- * corners at true depth (wb, valid when wb_ok) and the corners themselves
- * (nwc from wc0 in the table's wc, triangle by triangle), a signature of its
+ * corners at raster depth (wb, valid when wb_ok) and the corners themselves
+ * at key depth (nwc from wc0 in the table's wc, triangle by triangle:
+ * ms_moby_kcorner), a signature of its
  * guest state at the store (sig, valid when sig_ok: mc_moby_sig), and its
  * contact region (rb: ms_moby_cbox widened by MC_CAND) with the faces of the visible
  * sectors in it and their verdicts (nf from f0 in the table's fc; fc_ok 0
  * when they were not read: mc_store_cands). */
 typedef struct { uint32_t mid; int p0, np; float wb[6]; int wb_ok; int wc0, nwc; uint32_t sig; int sig_ok;
-                 float rb[6]; int f0, nf, fc_ok; } mc_ent;
+                 float rb[6]; int f0, nf, fc_ok;
+                 int path; float off, kr; } mc_ent;   /* path, off: the probe's (moby_snap_queue_probe) */
 #define MC_HBITS 10
 #define MC_HSIZE (1 << MC_HBITS)
 typedef struct {
@@ -974,6 +997,7 @@ typedef struct {
     openpete_snap_plane* c; int cap_c;   /* parallel to w: the plane as resolved */
     ms_pid*   id;  int cap_id;           /* parallel to w: the plane's source face */
     double  (*wc)[3]; int nwc, cap_wc;   /* the stored mobys' world corners (verify) */
+    uint32_t* fk;  int cap_fk;           /* parallel to wc while the probe is on: the corner's face key */
     uint64_t  vis[16];                   /* the stores' build's visible sectors (terrain_snap_visible) */
     int       vis_ok;
     mc_fc*    fc;  int nfc, cap_fc;      /* the stored mobys' candidate faces (mc_ent.f0) */
@@ -1004,21 +1028,49 @@ static double   s_rs_Li[3][3];  /* the inverse of s_rs_L, while the verify runs 
 static float    s_rs_view[3];   /* H, ofx, ofy of the resolve under way */
 static int      s_rs_wb;        /* s_rs_Li holds: moby world boxes are computed */
 
-/** @brief One queued moby triangle corner at true depth (key depth less off) in world space, under the resolve's camera.
+/** @brief One queued moby triangle corner unprojected at its key depth less a depth offset, in world space, under the resolve's camera.
  * @param mb The moby.
  * @param t The triangle, relative to the moby's run.
  * @param k The corner.
+ * @param off The depth subtracted from the key depth.
  * @param w Receives the world point. */
-static void ms_moby_wcorner(const ms_moby* mb, int t, int k, double w[3]) {
+static void ms_moby_corner_at(const ms_moby* mb, int t, int k, double off, double w[3]) {
     const double H = s_rs_view[0], ofx = s_rs_view[1], ofy = s_rs_view[2];
     const float* v = s_q_tri[mb->t0 + t][k];
-    const double z = (double)v[2] - mb->off;
+    const double z = (double)v[2] - off;
     const double c[3] = { ((double)v[0] - ofx) * z / H, ((double)v[1] - ofy) * z / H, z };
     for (int i = 0; i < 3; i++)
         w[i] = s_rs_Li[i][0] * c[0] + s_rs_Li[i][1] * c[1] + s_rs_Li[i][2] * c[2] + s_rs_P[i];
 }
 
-/** @brief The world box of a queued moby's triangle corners at true depth (ms_moby_wcorner).
+/** @brief One queued moby triangle corner at its raster depth (key depth less off) in world space, under the resolve's camera.
+ *
+ * The raster depth carries the tie pull and the near-floor lift, so the
+ * point lies off the corner along the view ray: the contact tests' space.
+ * @param mb The moby.
+ * @param t The triangle, relative to the moby's run.
+ * @param k The corner.
+ * @param w Receives the world point. */
+static void ms_moby_wcorner(const ms_moby* mb, int t, int k, double w[3]) {
+    ms_moby_corner_at(mb, t, k, (double)mb->off, w);
+}
+
+/** @brief One queued moby triangle corner at its key depth, the projected geometry's own view-Z, in world space, under the resolve's camera.
+ *
+ * The screen position and the key depth are one projection of the model
+ * vertex, so the point is the vertex itself: a moby still in the world
+ * gives the same point under any camera, which the raster-depth point
+ * (ms_moby_wcorner) does not, since its pull lies along a ray the camera
+ * turns.
+ * @param mb The moby.
+ * @param t The triangle, relative to the moby's run.
+ * @param k The corner.
+ * @param w Receives the world point. */
+static void ms_moby_kcorner(const ms_moby* mb, int t, int k, double w[3]) {
+    ms_moby_corner_at(mb, t, k, 0.0, w);
+}
+
+/** @brief The world box of a queued moby's triangle corners at raster depth (ms_moby_wcorner).
  * @param mb The moby.
  * @param wb Receives x0, y0, z0, x1, y1, z1. */
 static void ms_moby_wbox(const ms_moby* mb, float wb[6]) {
@@ -1033,7 +1085,7 @@ static void ms_moby_wbox(const ms_moby* mb, float wb[6]) {
         }
 }
 
-/** @brief A world box containing a queued moby's triangle corners at true depth: the world box of the eight corners of their camera-space box, under the resolve's camera.
+/** @brief A world box containing a queued moby's triangle corners at raster depth: the world box of the eight corners of their camera-space box, under the resolve's camera.
  *
  * It contains every corner (ms_moby_wcorner), and costs one camera-space
  * bound per corner where the exact world box costs one world transform per
@@ -1219,10 +1271,16 @@ static void mc_store(mc_tab* t, const ms_moby* mb, const openpete_snap_plane* ou
     if (s_rs_wb) {
         ms_moby_wbox(mb, e->wb);
         if (ms_grow((void**)&t->wc, &t->cap_wc, t->nwc + 3 * mb->nt, sizeof *t->wc)) {
+            const int probe = moby_snap_probe_on() &&
+                              ms_grow((void**)&t->fk, &t->cap_fk, t->nwc + 3 * mb->nt, sizeof *t->fk);
             for (int q = 0; q < mb->nt; q++)
-                for (int k = 0; k < 3; k++) ms_moby_wcorner(mb, q, k, t->wc[t->nwc++]);
+                for (int k = 0; k < 3; k++) {
+                    if (probe) t->fk[t->nwc] = s_q_fk[mb->t0 + q];
+                    ms_moby_kcorner(mb, q, k, t->wc[t->nwc++]);
+                }
             e->nwc = 3 * mb->nt;
         }
+        e->path = mb->path; e->off = mb->off; e->kr = mb->kr;
     }
     for (int k = 0; k < np; k++) {
         mc_wplane* w = &t->w[t->npl];
@@ -1321,7 +1379,7 @@ static double mc_subset_dist(const double (*a)[3], int na, const double (*b)[3],
     return sqrt(worst);
 }
 
-/** @brief How far a queued moby's projected triangle corners moved from a stored entry's, in world space at true depth under each leg's own camera.
+/** @brief How far a queued moby's projected triangle corners moved from a stored entry's, in world space at key depth under each leg's own camera.
  *
  * With equal triangle counts the corners correspond in walk order and the
  * result is the largest distance between a corner and the same corner at
@@ -1331,7 +1389,7 @@ static double mc_subset_dist(const double (*a)[3], int na, const double (*b)[3],
  * the other: 0 when one face set's corners are a subset of the other's.
  * @param ep The table holding the entry.
  * @param e The moby's stored entry.
- * @param mb The queued moby (its corners unprojected by ms_moby_wcorner).
+ * @param mb The queued moby (its corners unprojected by ms_moby_kcorner).
  * @param topo Set to 1 when the triangle counts differ, else 0.
  * @return The distance in world units, or -1 when the entry kept no corners. */
 static double mc_corner_delta(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int* topo) {
@@ -1339,7 +1397,7 @@ static double mc_corner_delta(const mc_tab* ep, const mc_ent* e, const ms_moby* 
     *topo = 0;
     if (!e->nwc || !mb->nt || !ms_grow((void**)&s_pw, &s_pwcap, 3 * mb->nt, sizeof *s_pw)) return -1.0;
     for (int q = 0; q < mb->nt; q++)
-        for (int k = 0; k < 3; k++) ms_moby_wcorner(mb, q, k, s_pw[3 * q + k]);
+        for (int k = 0; k < 3; k++) ms_moby_kcorner(mb, q, k, s_pw[3 * q + k]);
     const double (*ew)[3] = (const double (*)[3])&ep->wc[e->wc0];
     const int np = 3 * mb->nt;
     if (e->nwc != np) {
@@ -1359,6 +1417,7 @@ static int* s_vc_np; static int* s_vc_p0; static int s_vc_cap, s_vc_cap0;
 static openpete_snap_plane* s_vc_pl; static int s_vc_plcap, s_vc_n;
 static ms_pid* s_vc_id; static int s_vc_idcap;   /* parallel to s_vc_pl: the source faces */
 static uint8_t* s_vc_ref; static int s_vc_refcap; /* per queued moby: mc_refresh's verdict when it refused its planes, else 0 */
+static uint8_t* s_vc_inj; static int s_vc_injcap; /* per queued moby: 1 when the calibration injected into its carried planes */
 
 /* World units a stored moby's contact region extends past the world box of
  * its corners' camera-space box (ms_moby_cbox; mc_ent.rb). */
@@ -1548,11 +1607,12 @@ static int mc_still(uint32_t mid) {
  * bit-equal to the endpoint's its projected corners are also compared
  * (mc_corner_delta), exactly: any difference, or a changed triangle count,
  * refreshes it, which covers pose inputs the signature does not read. Under
- * a moving camera the corners are not compared: the walk projects a moby
- * through a Q12 model-to-view matrix composed with the camera
- * (ngte_compose_euler), whose truncation moves an unchanged moby's corners
- * from one camera to the next by more than the motions that change its
- * contacts, so no corner bound separates motion from it.
+ * a moving camera the corners are not compared: the S2/S3 simple kind
+ * places a moby from its cull record's camera-relative offsets, held in
+ * integer quarter-world units ((moby - camera) >> 2, mobydraw.s:617-630),
+ * so an unchanged moby's corners step by whole grid units (1.0, 2.236) from
+ * one camera to the next, more than the motions that change its contacts,
+ * and no corner bound separates motion from that step.
  * @param ep The endpoint.
  * @param e The moby's entry in it.
  * @param mb The queued moby.
@@ -1567,6 +1627,36 @@ static int mc_refresh(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int 
     int topo = 0;
     const double d = s_rs_wb && e->wb_ok ? mc_corner_delta(ep, e, mb, &topo) : -1.0;
     return topo || d != 0.0;
+}
+
+/** @brief The verify's calibration injection (OPENPETE_MOBY_SNAP_CARRY_VERIFY_INJECT: 1 a stale plane, 2 a dropped plane), read once; 0 unless the verify runs.
+ * @return 0, 1 or 2. */
+static int mc_inject_mode(void) {
+    static int s = -1;
+    if (s < 0) {
+        const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY_VERIFY_INJECT");
+        s = mc_verify_mode() && e && (*e == '1' || *e == '2') ? *e - '0' : 0;
+    }
+    return s;
+}
+
+/** @brief Inject the calibration's fault (mc_inject_mode) into every eighth carried moby with planes, already appended at s_vc_p0[k]: a copy of its first plane 64 world units off, or its last plane dropped.
+ * @param k The moby's queue index.
+ * @return 0 on an allocation failure, else 1. */
+static int mc_inject(int k) {
+    static unsigned s_n;
+    const int mode = mc_inject_mode();
+    s_vc_inj[k] = 0;
+    if (!mode || s_vc_np[k] <= 0 || s_n++ % 8u) return 1;
+    s_vc_inj[k] = 1;
+    if (mode == 2) { s_vc_np[k]--; s_vc_n--; return 1; }
+    if (!ms_grow((void**)&s_vc_pl, &s_vc_plcap, s_vc_n + 1, sizeof *s_vc_pl) ||
+        !ms_grow((void**)&s_vc_id, &s_vc_idcap, s_vc_n + 1, sizeof *s_vc_id)) return 0;
+    s_vc_pl[s_vc_n] = s_vc_pl[s_vc_p0[k]];
+    s_vc_pl[s_vc_n].d += 64.0f;
+    s_vc_id[s_vc_n] = s_vc_id[s_vc_p0[k]];
+    s_vc_n++; s_vc_np[k]++;
+    return 1;
 }
 
 /** @brief Append one stored moby's planes for queue index k at s_vc_n: as resolved when the cameras are equal, else mapped into the present camera.
@@ -1593,7 +1683,7 @@ static int mc_map_ent(const mc_tab* ep, const mc_ent* e, int same, const double 
     if (!ok) return 1;
     s_vc_np[k] = e->np;
     s_vc_n += e->np;
-    return 1;
+    return mc_inject(k);
 }
 
 /** @brief Map the endpoint's planes of every queued moby into the present camera (s_vc_np, s_vc_p0, s_vc_pl).
@@ -1609,7 +1699,8 @@ static int mc_map_ent(const mc_tab* ep, const mc_ent* e, int same, const double 
 static int mc_map(const mc_tab* ep, const double L[3][3], const double P[3]) {
     if (!ms_grow((void**)&s_vc_np, &s_vc_cap, s_q_nm, sizeof *s_vc_np) ||
         !ms_grow((void**)&s_vc_p0, &s_vc_cap0, s_q_nm, sizeof *s_vc_p0) ||
-        !ms_grow((void**)&s_vc_ref, &s_vc_refcap, s_q_nm, 1)) return 0;
+        !ms_grow((void**)&s_vc_ref, &s_vc_refcap, s_q_nm, 1) ||
+        !ms_grow((void**)&s_vc_inj, &s_vc_injcap, s_q_nm, 1)) return 0;
     s_vc_n = 0;
     const int vm = mc_verify_mode();
     const double (*Lm)[3] = vm == 2 && ep ? ep->L : L;
@@ -1623,7 +1714,7 @@ static int mc_map(const mc_tab* ep, const double L[3][3], const double P[3]) {
     if (ep && mc_refresh_on() && !mc_present_sectors(ep)) return 0;
     for (int k = 0; k < s_q_nm; k++) {
         const int x = inv || same ? mc_find(ep, s_q_mob[k].mid) : -1;
-        s_vc_np[k] = -1; s_vc_ref[k] = 0;
+        s_vc_np[k] = -1; s_vc_ref[k] = 0; s_vc_inj[k] = 0;
         if (x < 0) continue;
         const int ref = mc_refresh(ep, &ep->e[x], &s_q_mob[k], k, same_cam);
         if (ref) { s_vc_ref[k] = (uint8_t)ref; s_pc_refreshed++; s_pc_fsref += ref == 2; continue; }
@@ -1644,30 +1735,58 @@ static int mc_map(const mc_tab* ep, const double L[3][3], const double P[3]) {
  * mobys (planes on one side only) and planes (unmatched); matched planes
  * whose side, slab or double-sided flag differ; table refusals (overflow).
  * A mismatching moby takes the first class that holds: moved, when a corner
- * of the triangles its faces project (true depth, world space) lies more
+ * of the triangles its faces project (key depth, world space) lies more
  * than MC_MOVED world units from the same corner at the endpoint, or its
  * triangle count changed (a moby moving or animating across faces within
  * the tick); grazing, when every unmatched plane its corners straddle by
  * less than MC_GRAZE world units (a grazing contact, which the exact
  * triangle test decides differently under another camera's float
- * projection); vanim, when every mismatching plane's source sector moves
+ * projection); tangent, when every unmatched plane not grazing is the
+ * plane of a present candidate terrain triangle whose intersection margin
+ * with the moby's triangles (mc_pair_margin) lies within MC_TANGENT of
+ * zero, the largest such margin when several share the plane (an edge of
+ * one triangle touching the other: the exact test's verdict there follows
+ * the float projection, not the geometry); split, when every unmatched
+ * plane not grazing or tangent matches, under the comparison's tolerance, a
+ * plane of the other leg already partnered (two faces within the merge
+ * tolerance of each other that one leg merged into one plane and the other
+ * kept apart: ms_plane_add compares offsets at the eye, so the merge follows
+ * the camera); vanim, when every mismatching plane's source sector moves
  * within the tick by its vertex animation (a plane of the moby, carried or
  * fresh, from that sector carries terrain_snap_tri.vanim), so the fresh
  * plane lies at the sub-tick lerp of the sector's vertex banks and the
  * carried one at the endpoint's banks; static, the rest.
  * Engagement: resolves and presents compared, presents at alpha != 0,
- * mobys and planes compared, and the present-to-endpoint camera delta. */
+ * mobys and planes compared, and the present-to-endpoint camera delta.
+ * Calibration (OPENPETE_MOBY_SNAP_CARRY_VERIFY_INJECT): 1 appends to every
+ * eighth carried moby with planes a copy of its first plane 64 world units
+ * off (a face no present triangle lies in), 2 drops its last carried plane
+ * (a contact face missing from the carried set); the census counts the
+ * injected mobys' classes (inj). */
 #define MC_MOVED 0.5
 #define MC_GRAZE 2.0
+/* The tangent class's margin bound, world units: a still moby's contact
+ * margin against an unchanged terrain triangle varies by up to 0.005
+ * between the resolves of one tick (float screen corners unprojected under
+ * each camera), and no margin that decides a contact on one leg only lies
+ * between 0.005 and 0.04. */
+#define MC_TANGENT 0.01
+#define MC_TMAR_N 6   /* unmatched-plane margin census buckets: none, then |m| below 0.001, 0.01, 0.1, 1, the rest */
 #define MC_CMOV_N 7   /* corner-displacement census buckets (s_cmov_hi) */
-enum { MC_CLS_MOVED, MC_CLS_GRAZING, MC_CLS_STATIC, MC_CLS_VANIM, MC_NCLS };
-static const char* const s_mc_cls_name[MC_NCLS] = { "moved", "grazing", "static", "vanim" };
+enum { MC_CLS_MOVED, MC_CLS_GRAZING, MC_CLS_STATIC, MC_CLS_VANIM, MC_CLS_TANGENT, MC_CLS_SPLIT, MC_NCLS };
+static const char* const s_mc_cls_name[MC_NCLS] = { "moved", "grazing", "static", "vanim", "tangent", "split" };
 static int* s_vf_np; static int* s_vf_p0; static int s_vf_cap, s_vf_cap0;
 static openpete_snap_plane* s_vf_pl; static int s_vf_plcap, s_vf_n;
 static ms_pid* s_vf_id; static int s_vf_idcap;       /* parallel to s_vf_pl: the source faces */
 static uint32_t* s_vq_mid; static int s_vq_cap, s_vq_n;
 static float (*s_vq_wb)[6]; static int s_vq_wbcap;   /* per queue index: the present's world box */
 static int s_vf_on;
+/* The present's near contacts (mc_vf_near): per queue index, the planes of
+ * the candidate terrain triangles whose margin against the moby exceeds
+ * -MC_TANGENT, with that margin. */
+typedef struct { float n[3], d, m; } mc_near;
+static mc_near* s_vt; static int s_vt_cap, s_vt_n;
+static int* s_vt_p0; static int* s_vt_np; static int s_vt_cap0, s_vt_cap1;
 typedef struct {
     long resolves, presents, presents_anz, mobys, planes, absent, unresolved;
     long carry_only_m, fresh_only_m, carry_only_p, fresh_only_p, side, slab, dside;
@@ -1680,6 +1799,10 @@ typedef struct {
                            * vanim not holding, box at most MC_MOVED) */
     long cmov[MC_CMOV_N], cmov_m[MC_CMOV_N];  /* corner displacement buckets (s_cmov_hi): every compared moby, the
                                * mismatching ones */
+    long tmar[MC_TMAR_N]; /* unmatched planes by their present near-contact margin (mc_vf_tangent) */
+    long inj, inj_clean;  /* calibration-injected mobys compared; of those, the ones that matched */
+    long graze_loose;     /* grazing mobys a mismatching plane of which is neither tangent nor split */
+    long inj_cls[MC_NCLS];
     double dp_sum, dp_max, dl_max;
     unsigned last_epoch;
 } mc_vstat;
@@ -1716,10 +1839,13 @@ static int mc_vf_begin(void) {
     if (!ms_grow((void**)&s_vf_np, &s_vf_cap, s_q_nm, sizeof *s_vf_np) ||
         !ms_grow((void**)&s_vf_p0, &s_vf_cap0, s_q_nm, sizeof *s_vf_p0) ||
         !ms_grow((void**)&s_vq_mid, &s_vq_cap, s_q_nm, sizeof *s_vq_mid) ||
-        !ms_grow((void**)&s_vq_wb, &s_vq_wbcap, s_q_nm, sizeof *s_vq_wb)) return 0;
-    s_vq_n = s_q_nm; s_vf_n = 0;
+        !ms_grow((void**)&s_vq_wb, &s_vq_wbcap, s_q_nm, sizeof *s_vq_wb) ||
+        !ms_grow((void**)&s_vt_p0, &s_vt_cap0, s_q_nm, sizeof *s_vt_p0) ||
+        !ms_grow((void**)&s_vt_np, &s_vt_cap1, s_q_nm, sizeof *s_vt_np)) return 0;
+    s_vq_n = s_q_nm; s_vf_n = 0; s_vt_n = 0;
     for (int k = 0; k < s_q_nm; k++) {
         s_vf_np[k] = -1; s_vq_mid[k] = s_q_mob[k].mid;
+        s_vt_np[k] = 0; s_vt_p0[k] = 0;
         if (s_rs_wb) ms_moby_wbox(&s_q_mob[k], s_vq_wb[k]);
     }
     return 1;
@@ -1735,7 +1861,8 @@ static void mc_vf_print(void) {
                     "fresh_only_planes=%ld side_flips=%ld slab_diff=%ld dside_diff=%ld absent=%ld unresolved=%ld "
                     "overflow=%ld cam_moved=%ld cam_dp_mean=%.3f cam_dp_max=%.3f cam_dl_max=%.6f dup=%ld full=%ld "
                     "rebuilds=%ld refreshed=%ld cmov=%ld/%ld/%ld/%ld/%ld/%ld/%ld cmov_mism=%ld/%ld/%ld/%ld/%ld/%ld/%ld "
-                    "refreshed_fs=%ld\n",
+                    "refreshed_fs=%ld mismatch_tangent=%ld mismatch_split=%ld tmar=%ld/%ld/%ld/%ld/%ld/%ld "
+                    "inj=%ld inj_clean=%ld inj_cls=%ld/%ld/%ld/%ld/%ld/%ld graze_loose=%ld\n",
             mc_verify_mode(), mc_carry_on(), v->resolves, v->presents, v->presents_anz, v->mobys, v->planes,
             v->mism_mobys, v->mism_cls[MC_CLS_MOVED], v->mism_cls[MC_CLS_GRAZING], v->mism_cls[MC_CLS_STATIC],
             v->mism_cls[MC_CLS_VANIM], v->moved_topo, v->moved_box, v->static_box, v->carry_only_m, v->fresh_only_m,
@@ -1745,7 +1872,127 @@ static void mc_vf_print(void) {
             s_mc[0].dup + s_mc[1].dup, s_mc[0].full + s_mc[1].full, s_mc_rebuilds, v->refreshed,
             v->cmov[0], v->cmov[1], v->cmov[2], v->cmov[3], v->cmov[4], v->cmov[5], v->cmov[6],
             v->cmov_m[0], v->cmov_m[1], v->cmov_m[2], v->cmov_m[3], v->cmov_m[4], v->cmov_m[5], v->cmov_m[6],
-            v->refreshed_fs);
+            v->refreshed_fs, v->mism_cls[MC_CLS_TANGENT], v->mism_cls[MC_CLS_SPLIT],
+            v->tmar[0], v->tmar[1], v->tmar[2], v->tmar[3], v->tmar[4], v->tmar[5],
+            v->inj, v->inj_clean, v->inj_cls[0], v->inj_cls[1], v->inj_cls[2], v->inj_cls[3], v->inj_cls[4],
+            v->inj_cls[5], v->graze_loose);
+}
+
+/** @brief Whether two planes agree under the verify tolerance, up to the normal's orientation: normals within twice the merge cosine deficit, offsets within twice the merge distance.
+ * @param n First normal.
+ * @param d First offset.
+ * @param m Second normal.
+ * @param e Second offset.
+ * @param sg Receives +1 or -1, the second normal's orientation against the first.
+ * @return 1 when they agree, else 0. */
+static int mc_plane_eq(const float n[3], double d, const float m[3], double e, double* sg) {
+    const double cs = (double)n[0] * m[0] + (double)n[1] * m[1] + (double)n[2] * m[2];
+    const double s = cs < 0.0 ? -1.0 : 1.0;
+    *sg = s;
+    return fabs(cs) > 1.0 - 2.0 * MS_MERGE_DN && fabs(d - s * e) < 2.0 * MS_MERGE_DD;
+}
+
+/** @brief The signed margin by which segment a-b meets triangle T, world units.
+ *
+ * A segment that crosses T's plane: the smaller of its end points' distances
+ * to the plane and the crossing point's distances inside T's edges (negative
+ * outside an edge). One that does not: minus its nearer end point's
+ * distance to the plane, or that point's projection's distance outside an
+ * edge when larger. Positive exactly where ms_seg_tri holds, up to its
+ * tolerance; its magnitude is how far a corner must move to change that.
+ * @param a Segment start.
+ * @param b Segment end.
+ * @param T The triangle.
+ * @return The margin. */
+static double mc_seg_margin(ms_v3 a, ms_v3 b, const ms_tri* T) {
+    const double da = v3dot(T->n, a) - T->d, db = v3dot(T->n, b) - T->d;
+    const int cross = da * db <= 0.0 && da != db;
+    double m = cross ? ms_min(fabs(da), fabs(db)) : -ms_min(fabs(da), fabs(db));
+    ms_v3 x;
+    if (cross) {
+        const double t = da / (da - db);
+        x.x = a.x + (b.x - a.x) * t; x.y = a.y + (b.y - a.y) * t; x.z = a.z + (b.z - a.z) * t;
+    } else {
+        const ms_v3 q = fabs(da) < fabs(db) ? a : b;
+        const double dq = fabs(da) < fabs(db) ? da : db;
+        x.x = q.x - T->n.x * dq; x.y = q.y - T->n.y * dq; x.z = q.z - T->n.z * dq;
+    }
+    for (int i = 0; i < 3; i++) {
+        const ms_v3 e = v3sub(T->p[(i + 1) % 3], T->p[i]), w = v3sub(x, T->p[i]);
+        const double l = v3len(e);
+        if (l > 0.0) m = ms_min(m, v3dot(T->n, v3cross(e, w)) / l);
+    }
+    return m;
+}
+
+/** @brief The signed intersection margin of two triangles: the largest margin (mc_seg_margin) of an edge of either against the other, positive where ms_tri_tri holds.
+ * @param A First triangle.
+ * @param B Second triangle.
+ * @return The margin, world units. */
+static double mc_pair_margin(const ms_tri* A, const ms_tri* B) {
+    double m = -1e30;
+    for (int i = 0; i < 3; i++) {
+        m = ms_max(m, mc_seg_margin(A->p[i], A->p[(i + 1) % 3], B));
+        m = ms_max(m, mc_seg_margin(B->p[i], B->p[(i + 1) % 3], A));
+    }
+    return m;
+}
+
+/** @brief Whether two camera-space bounds lie more than g apart on any axis.
+ * @param a First triangle.
+ * @param b Second triangle.
+ * @param g The gap.
+ * @return 1 when they do. */
+static int mc_box_apart(const ms_tri* a, const ms_tri* b, double g) {
+    return a->hi.x < b->lo.x - g || a->lo.x > b->hi.x + g || a->hi.y < b->lo.y - g ||
+           a->lo.y > b->hi.y + g || a->hi.z < b->lo.z - g || a->lo.z > b->hi.z + g;
+}
+
+/** @brief Record, for the verify, every candidate terrain triangle of a moby's fresh resolve whose intersection margin with the moby's near triangles exceeds -MC_TANGENT (s_vt), with its plane and that margin.
+ * @param mb The moby.
+ * @param nc Its usable candidates (s_cj).
+ * @param nl Its near triangles (s_ml). */
+static void mc_vf_near(const ms_moby* mb, int nc, int nl) {
+    const int qi = mb->qi;
+    if (!s_vf_on || qi < 0 || qi >= s_vq_n) return;
+    s_vt_p0[qi] = s_vt_n; s_vt_np[qi] = 0;
+    for (int q = 0; q < nc; q++) {
+        const ms_tri* F = &s_tt[s_cj[q]];
+        double m = -1e30;
+        for (int l = 0; l < nl; l++)
+            if (!mc_box_apart(&s_mt[s_ml[l]], F, MC_TANGENT)) m = ms_max(m, mc_pair_margin(&s_mt[s_ml[l]], F));
+        if (m <= -MC_TANGENT || !ms_grow((void**)&s_vt, &s_vt_cap, s_vt_n + 1, sizeof *s_vt)) continue;
+        mc_near* r = &s_vt[s_vt_n++];
+        r->n[0] = (float)F->n.x; r->n[1] = (float)F->n.y; r->n[2] = (float)F->n.z;
+        r->d = (float)F->d; r->m = (float)m;
+        s_vt_np[qi]++;
+    }
+}
+
+/** @brief Whether an unmatched plane of a moby is a tangent contact: present candidate triangles lie in it (mc_plane_eq) and the largest of their margins is within MC_TANGENT of zero; counts the margin in the census (tmar).
+ * @param qi The moby's queue index.
+ * @param pl The plane.
+ * @return 1 when tangent, else 0. */
+static int mc_vf_tangent(int qi, const openpete_snap_plane* pl) {
+    double m = -1e30, sg;
+    int any = 0;
+    for (int r = s_vt_p0[qi]; r < s_vt_p0[qi] + s_vt_np[qi]; r++)
+        if (mc_plane_eq(pl->n, pl->d, s_vt[r].n, s_vt[r].d, &sg)) { any = 1; m = ms_max(m, s_vt[r].m); }
+    const double a = fabs(m);
+    s_vs.tmar[!any ? 0 : a < 0.001 ? 1 : a < 0.01 ? 2 : a < 0.1 ? 3 : a < 1.0 ? 4 : 5]++;
+    return any && a < MC_TANGENT;
+}
+
+/** @brief Whether a plane agrees (mc_plane_eq) with any plane of the other leg.
+ * @param pl The plane.
+ * @param o The other leg's planes.
+ * @param no Their count.
+ * @return 1 when one agrees, else 0. */
+static int mc_vf_has_eq(const openpete_snap_plane* pl, const openpete_snap_plane* o, int no) {
+    double sg;
+    for (int j = 0; j < no; j++)
+        if (mc_plane_eq(pl->n, pl->d, o[j].n, o[j].d, &sg)) return 1;
+    return 0;
 }
 
 /** @brief Find the fresh plane that matches a carried one under the verify tolerance.
@@ -1757,13 +2004,9 @@ static void mc_vf_print(void) {
  * @return The fresh plane's index, or -1. */
 static int mc_vf_match(const openpete_snap_plane* c, const openpete_snap_plane* f, int nf, uint8_t* used, double* sg) {
     for (int j = 0; j < nf; j++) {
-        if (used[j]) continue;
-        const double cs = (double)c->n[0] * f[j].n[0] + (double)c->n[1] * f[j].n[1] + (double)c->n[2] * f[j].n[2];
-        const double s = cs < 0.0 ? -1.0 : 1.0;
-        if (fabs(cs) > 1.0 - 2.0 * MS_MERGE_DN && fabs((double)c->d - s * f[j].d) < 2.0 * MS_MERGE_DD) {
-            used[j] = 1; *sg = s;
-            return j;
-        }
+        if (used[j] || !mc_plane_eq(c->n, c->d, f[j].n, f[j].d, sg)) continue;
+        used[j] = 1;
+        return j;
     }
     return -1;
 }
@@ -1842,21 +2085,73 @@ static int mc_vf_moby_class(uint32_t mid, int32_t pos[3]) {
 
 static double s_vf_dp, s_vf_dl;   /* the compared resolve's present-to-endpoint camera position and matrix deltas */
 
-/** @brief Print one compared or refreshed moby's corner displacement under OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV=1, the first 200000 of the run, with its still verdict (mc_still) and the camera delta.
+/* The probe's per-moby face pairing (mc_vf_fk_pair): triangles at the same
+ * index with the same face key, triangles paired by face key, the present's
+ * triangles with no partner, the corner distance over the key pairs and the
+ * pair holding it. */
+typedef struct { int same, paired, unpaired; double mv; int worst_q, worst_k; } mc_fkp;
+
+/** @brief Pair a queued moby's triangles with the endpoint's by face key and measure the corner distance over the pairs.
+ *
+ * Each present triangle takes the first unused stored triangle with its face
+ * key; the walk emits a moby's faces in stream order, so equal keys pair the
+ * same face. Read only while the probe is on (moby_snap_probe_on).
+ * @param e The moby's endpoint entry.
+ * @param mb The queued moby.
+ * @param o Receives the pairing. */
+static void mc_vf_fk_pair(const mc_ent* e, const ms_moby* mb, mc_fkp* o) {
+    static uint8_t* s_used; static int s_ucap;
+    memset(o, 0, sizeof *o);
+    o->worst_q = o->worst_k = -1;
+    const int ns = e->nwc / 3;
+    if (!s_rs_ep->fk || !ms_grow((void**)&s_used, &s_ucap, ns + 1, 1)) return;
+    memset(s_used, 0, (size_t)ns + 1u);
+    const uint32_t* sfk = &s_rs_ep->fk[e->wc0];
+    const double (*ew)[3] = (const double (*)[3])&s_rs_ep->wc[e->wc0];
+    for (int q = 0; q < mb->nt; q++) {
+        const uint32_t f = s_q_fk[mb->t0 + q];
+        if (q < ns && sfk[3 * q] == f) o->same++;
+        int m = -1;
+        for (int j = 0; j < ns && m < 0; j++) if (!s_used[j] && sfk[3 * j] == f) m = j;
+        if (m < 0) { o->unpaired++; continue; }
+        s_used[m] = 1; o->paired++;
+        for (int k = 0; k < 3; k++) {
+            double w[3];
+            ms_moby_kcorner(mb, q, k, w);
+            const double d = sqrt(mc_d2(w, ew[3 * m + k]));
+            if (d > o->mv) { o->mv = d; o->worst_q = q; o->worst_k = k; }
+        }
+    }
+}
+
+/** @brief Print one compared or refreshed moby's corner displacement under OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV=1, the first 200000 of the run.
+ *
+ * The line carries the still verdict (mc_still), the camera delta, and the
+ * probe's face-key pairing (mc_vf_fk_pair), record path and key offset on
+ * both legs.
  * @param qi The moby's queue index.
  * @param mv Its corner displacement (mc_vf_moved).
  * @param topo 1 when its triangle count changed. */
 static void mc_vf_cmov_line(int qi, double mv, int topo) {
-    static int s_on = -1, s_n;
-    if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV"); s_on = e && *e == '1'; }
-    if (!s_on || s_n >= 200000) return;
+    static int s_n;
+    if (!moby_snap_probe_on() || s_n >= 200000) return;
     s_n++;
     int32_t pos[3];
     const int mcls = mc_vf_moby_class(s_vq_mid[qi], pos);
+    const mc_ent* e = mc_vf_ent(qi);
+    mc_fkp fp = { 0, 0, 0, -1.0, -1, -1 };
+    if (e) mc_vf_fk_pair(e, &s_q_mob[qi], &fp);
     fprintf(stderr, "[snap-carry-cmov] key=%u alpha=%.3f mid=%u mclass=%d nt=%d topo=%d moved=%.6f box=%.4f np=%d/%d "
-                    "still=%d dp=%.3f dl=%.6f ref=%d\n",
+                    "still=%d dp=%.3f dl=%.6f ref=%d ent_nt=%d fk_same=%d fk_pair=%d fk_un=%d mvfk=%.6f wq=%d wk=%d "
+                    "path=%d/%d off=%.3f/%.3f kr=%.6f/%.6f z=%.0f wc=%.1f,%.1f,%.1f\n",
             openpete_feed_key_now(), s_rex_alpha, s_vq_mid[qi], mcls, s_q_mob[qi].nt, topo, mv,
-            mc_vf_box_moved(qi), s_vc_np[qi], s_vf_np[qi], mc_still(s_vq_mid[qi]), s_vf_dp, s_vf_dl, s_vc_ref[qi]);
+            mc_vf_box_moved(qi), s_vc_np[qi], s_vf_np[qi], mc_still(s_vq_mid[qi]), s_vf_dp, s_vf_dl, s_vc_ref[qi],
+            e ? e->nwc / 3 : -1, fp.same, fp.paired, fp.unpaired, fp.mv, fp.worst_q, fp.worst_k,
+            s_q_mob[qi].path, e ? e->path : -1, (double)s_q_mob[qi].off, e ? (double)e->off : 0.0,
+            (double)s_q_mob[qi].kr, e ? (double)e->kr : 0.0, (double)s_q_mob[qi].b[4],
+            fp.worst_q >= 0 ? (double)s_q_tri[s_q_mob[qi].t0 + fp.worst_q][fp.worst_k][0] : 0.0,
+            fp.worst_q >= 0 ? (double)s_q_tri[s_q_mob[qi].t0 + fp.worst_q][fp.worst_k][1] : 0.0,
+            fp.worst_q >= 0 ? (double)s_q_tri[s_q_mob[qi].t0 + fp.worst_q][fp.worst_k][2] : 0.0);
 }
 
 /** @brief Print one plane of a mismatch detail: its geometry, source face, mark, partner, and the eye's signed distance to it under the endpoint camera (eye_ep; the present's is -d, so a sign change means the eye crossed the plane).
@@ -1878,7 +2173,7 @@ static void mc_vf_detail_plane(const char* leg, int j, const openpete_snap_plane
             id->vanim, m, de);
 }
 
-/** @brief Print one mismatching moby: a header line for each of the first 2048 of the run, and its carried and fresh planes with their source faces and partners for the first 256 static or vanim ones (every class outside mode 1).
+/** @brief Print one mismatching moby: a header line for each of the first 2048 of the run, and its carried and fresh planes with their source faces and partners for the first 256 not moved or grazing (every class outside mode 1).
  * @param qi The moby's queue index.
  * @param why The mismatch kind (planes, carry_only_moby, fresh_only_moby).
  * @param cls The class decision (MC_CLS_*).
@@ -1892,10 +2187,10 @@ static void mc_vf_detail(int qi, const char* why, int cls, double moved, double 
     const int mcls = mc_vf_moby_class(s_vq_mid[qi], pos);
     const int nc = s_vc_np[qi], nf = s_vf_np[qi];
     fprintf(stderr, "[snap-carry-mismatch] key=%u alpha=%.3f mid=%u mclass=%d pos=%d,%d,%d class=%s why=%s "
-                    "carry_np=%d fresh_np=%d nt=%d moved=%.2f box=%.2f\n",
+                    "carry_np=%d fresh_np=%d nt=%d moved=%.2f box=%.2f inj=%d\n",
             openpete_feed_key_now(), s_rex_alpha, s_vq_mid[qi], mcls, pos[0], pos[1], pos[2], s_mc_cls_name[cls],
-            why, nc, nf, s_q_mob[qi].nt, moved, box);
-    const int planes = mc_verify_mode() != 1 || cls == MC_CLS_STATIC || cls == MC_CLS_VANIM;
+            why, nc, nf, s_q_mob[qi].nt, moved, box, s_vc_inj[qi]);
+    const int planes = mc_verify_mode() != 1 || (cls != MC_CLS_MOVED && cls != MC_CLS_GRAZING);
     if (!planes || s_np >= 256) return;
     s_np++;
     uint8_t used[MS_MAX_PLANES] = { 0 };
@@ -1933,18 +2228,30 @@ static double mc_straddle(const ms_moby* mb, const openpete_snap_plane* pl) {
 }
 
 /* What explains a moby's mismatching planes: each flag holds while every
- * mismatching plane so far is a grazing contact (graze) or lies in a sector
- * the vertex animation moves (vanim). */
-typedef struct { int graze, vanim; } mc_why;
+ * mismatching plane so far is a grazing contact (graze), one of those or a
+ * tangent contact (tan), one of those or a split merge (split), a tangent
+ * contact or a split merge (strict: the grazing test left out), or lies in a
+ * sector the vertex animation moves (vanim). */
+typedef struct { int graze, tan, split, strict, vanim; } mc_why;
+
+/* The other leg of a plane under explanation: its planes. */
+typedef struct { const openpete_snap_plane* pl; int n; } mc_leg;
 
 /** @brief Fold one mismatching plane into a moby's explanations.
  * @param qi The moby's queue index.
  * @param pl The plane.
  * @param id Its source face.
- * @param unmatched 1 for a plane with no partner (tested for grazing), 0 for a partnered one whose attributes differ (never grazing).
+ * @param unmatched 1 for a plane with no partner (tested for grazing, tangent and split), 0 for a partnered one whose attributes differ (none of them).
+ * @param o The other leg's planes.
  * @param w The explanations, updated. */
-static void mc_vf_explain(int qi, const openpete_snap_plane* pl, const ms_pid* id, int unmatched, mc_why* w) {
-    w->graze &= unmatched && fabs(mc_straddle(&s_q_mob[qi], pl)) < MC_GRAZE;
+static void mc_vf_explain(int qi, const openpete_snap_plane* pl, const ms_pid* id, int unmatched, mc_leg o, mc_why* w) {
+    const int g = unmatched && fabs(mc_straddle(&s_q_mob[qi], pl)) < MC_GRAZE;
+    const int t = unmatched && mc_vf_tangent(qi, pl);
+    w->graze &= g;
+    w->tan &= g || t;
+    const int e = unmatched && mc_vf_has_eq(pl, o.pl, o.n);
+    w->split &= g || t || e;
+    w->strict &= t || e;
     w->vanim &= mc_vf_vsec(qi, id->sec);
 }
 
@@ -1956,6 +2263,7 @@ static long mc_vf_planes(int qi, mc_why* w) {
     const int nc = s_vc_np[qi], nf = s_vf_np[qi];
     uint8_t used[MS_MAX_PLANES] = { 0 };
     const openpete_snap_plane* f = &s_vf_pl[s_vf_p0[qi]];
+    const mc_leg lf = { f, nf }, lc = { &s_vc_pl[s_vc_p0[qi]], nc };
     long bad = 0;
     for (int j = 0; j < nc; j++) {
         const openpete_snap_plane* c = &s_vc_pl[s_vc_p0[qi] + j];
@@ -1964,19 +2272,19 @@ static long mc_vf_planes(int qi, mc_why* w) {
         s_vs.planes++;
         if (m < 0) {
             s_vs.carry_only_p++; bad++;
-            mc_vf_explain(qi, c, &s_vc_id[s_vc_p0[qi] + j], 1, w);
+            mc_vf_explain(qi, c, &s_vc_id[s_vc_p0[qi] + j], 1, lf, w);
             continue;
         }
         const int side = (c->side < 0.0f) != (sg * f[m].side < 0.0);
         const int nb = side + (c->slab != f[m].slab) + (c->dside != f[m].dside);
         s_vs.side += side; s_vs.slab += c->slab != f[m].slab; s_vs.dside += c->dside != f[m].dside;
         bad += nb;
-        if (nb) mc_vf_explain(qi, c, &s_vc_id[s_vc_p0[qi] + j], 0, w);
+        if (nb) mc_vf_explain(qi, c, &s_vc_id[s_vc_p0[qi] + j], 0, lf, w);
     }
     for (int j = 0; j < nf; j++) {
         if (used[j]) continue;
         s_vs.fresh_only_p++; bad++;
-        mc_vf_explain(qi, &f[j], &s_vf_id[s_vf_p0[qi] + j], 1, w);
+        mc_vf_explain(qi, &f[j], &s_vf_id[s_vf_p0[qi] + j], 1, lc, w);
     }
     return bad;
 }
@@ -1988,15 +2296,26 @@ static long mc_vf_planes(int qi, mc_why* w) {
  * @param n Their count.
  * @param w The explanations, updated. */
 static void mc_vf_explain_all(int qi, const openpete_snap_plane* pl, const ms_pid* id, int n, mc_why* w) {
-    for (int j = 0; j < n; j++) mc_vf_explain(qi, &pl[j], &id[j], 1, w);
+    const mc_leg none = { NULL, 0 };
+    for (int j = 0; j < n; j++) mc_vf_explain(qi, &pl[j], &id[j], 1, none, w);
+}
+
+/** @brief The class of a mismatching moby: the first that holds of moved, grazing, tangent, split, vanim, static.
+ * @param mv Its corner displacement (mc_vf_moved).
+ * @param w The explanations of its mismatching planes.
+ * @return The class (MC_CLS_*). */
+static int mc_vf_class(double mv, const mc_why* w) {
+    if (mv > MC_MOVED) return MC_CLS_MOVED;
+    if (w->graze) return MC_CLS_GRAZING;
+    if (w->tan) return MC_CLS_TANGENT;
+    if (w->split) return MC_CLS_SPLIT;
+    return w->vanim ? MC_CLS_VANIM : MC_CLS_STATIC;
 }
 
 /** @brief Compare one moby's carried planes against its fresh ones and count the classes.
  *
  * A moby mc_refresh refused counts as refreshed and is not compared. A
- * mismatching moby takes the first class that holds: moved (mc_vf_moved
- * over MC_MOVED), grazing (every unmatched plane a grazing contact), vanim
- * (every mismatching plane in a sector the vertex animation moves), static.
+ * mismatching moby takes the first class that holds (mc_vf_class).
  * @param qi The moby's queue index.
  * @return 1 when any class other than absent or unresolved holds, else 0. */
 static int mc_vf_moby(int qi) {
@@ -2014,22 +2333,25 @@ static int mc_vf_moby(int qi) {
     const double mv = mc_vf_moved(qi, &topo);
     mc_vf_cmov_add(mv, s_vs.cmov);
     mc_vf_cmov_line(qi, mv, topo);
-    if (!nc && !nf) return 0;
-    mc_why w = { 1, 1 };
+    s_vs.inj += s_vc_inj[qi];
+    if (!nc && !nf) { s_vs.inj_clean += s_vc_inj[qi]; return 0; }
+    mc_why w = { 1, 1, 1, 1, 1 };
     const char* why = "planes";
     if (nc && !nf) { s_vs.carry_only_m++; why = "carry_only_moby"; }
     if (nf && !nc) { s_vs.fresh_only_m++; why = "fresh_only_moby"; }
     const long bad = nc && nf ? mc_vf_planes(qi, &w) : 0;
-    if (nc && nf && !bad) return 0;
+    if (nc && nf && !bad) { s_vs.inj_clean += s_vc_inj[qi]; return 0; }
     if (nc && !nf) mc_vf_explain_all(qi, &s_vc_pl[s_vc_p0[qi]], &s_vc_id[s_vc_p0[qi]], nc, &w);
     if (nf && !nc) mc_vf_explain_all(qi, &s_vf_pl[s_vf_p0[qi]], &s_vf_id[s_vf_p0[qi]], nf, &w);
     const double box = mc_vf_box_moved(qi);
     mc_vf_cmov_add(mv, s_vs.cmov_m);
-    const int cls = mv > MC_MOVED ? MC_CLS_MOVED : w.graze ? MC_CLS_GRAZING : w.vanim ? MC_CLS_VANIM : MC_CLS_STATIC;
+    const int cls = mc_vf_class(mv, &w);
     s_vs.mism_cls[cls]++;
+    if (s_vc_inj[qi]) s_vs.inj_cls[cls]++;
     s_vs.moved_topo += cls == MC_CLS_MOVED && topo;
     s_vs.moved_box += box > MC_MOVED;
-    s_vs.static_box += !(box > MC_MOVED) && !w.graze && !w.vanim;
+    s_vs.static_box += !(box > MC_MOVED) && !w.split && !w.vanim;
+    s_vs.graze_loose += cls == MC_CLS_GRAZING && !w.strict;
     mc_vf_detail(qi, why, cls, mv, box);
     return 1;
 }

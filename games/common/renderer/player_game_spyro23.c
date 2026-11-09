@@ -207,29 +207,31 @@ static int s23_part_vcount(uint32_t flags, int* cursor) {
     return count < 0 ? 0 : count;
 }
 
-/** @brief Composes the matrix start times Ry Rx Rz from a packed byte euler, as func_8004EA90 does.
+/** @brief Composes the matrix start times Ry Rx Rz from a packed byte euler, as func_8004EA90 does, in Q12 and at unit scale in float.
  *
  * func_8004EA90 (asm/stdutil.s) applies the Y byte at bits 16-23 first, then X
  * at 8-15, then Z at 0-7, each against the running matrix. Where
  * player_rot_interp holds sub-tick float angles for the part, the sines and
  * cosines come from those, so rotation renders below the 8-bit euler grid.
+ * The Q12 form samples the table at the angles rounded to integers and
+ * truncates each product as the GTE does; the float form composes onto the
+ * float start at the unrounded angles (ngte_compose_euler_mf).
  * @param cpu Reads the sine table.
- * @param start The matrix the rotations apply against.
+ * @param start The matrix the rotations apply against, Q12.
+ * @param startf The same matrix at unit scale.
  * @param rot The packed byte euler.
- * @param out Receives the composed matrix.
+ * @param out Receives the composed matrix, Q12, and its unit-scale twin.
  * @param part The part whose interpolated angles are looked up. */
-static void s23_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot,
-                             int out[3][3], int part) {
+static void s23_compose_euler(CPUState* cpu, const int start[3][3], const float startf[3][3],
+                             uint32_t rot, player_xform_t* out, int part) {
     ngte_euler_sc e;
     double ang[3];
-    if (player_rot_interp(part, ang)) {
-        ngte_sincos_interp(cpu, ang[0], &e.sz, &e.cz);
-        ngte_sincos_interp(cpu, ang[1], &e.sx, &e.cx);
-        ngte_sincos_interp(cpu, ang[2], &e.sy, &e.cy);
-    } else {
-        ngte_euler_sincos(cpu, rot, &e);
-    }
-    ngte_compose_euler(start, &e, out);
+    if (!player_rot_interp(part, ang)) ngte_word_angles(rot, ang);
+    ngte_sincos_interp(cpu, ang[0], &e.sz, &e.cz);
+    ngte_sincos_interp(cpu, ang[1], &e.sx, &e.cx);
+    ngte_sincos_interp(cpu, ang[2], &e.sy, &e.cy);
+    ngte_compose_euler(start, &e, out->M);
+    ngte_compose_euler_mf(cpu, startf, ang, out->Mf);
 }
 
 /** @brief Derives a part's model-to-view matrix and translation from gamestate.
@@ -266,7 +268,9 @@ static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
         double IR1 = v->cam[1] - sfy, IR2 = v->cam[2] - sfz, IR3 = sfx - v->cam[0];
         for (int i = 0; i < 3; i++)
             out->TR[i] = (PM[i][0]*IR1 + PM[i][1]*IR2 + PM[i][2]*IR3) / 4096.0;
-        s23_compose_euler(cpu, PM, cpu->read_word(PL.base + PL.rot_off[0]), out->M, 0);
+        float PMf[3][3];
+        ngte_mat_unit_f(PM, PMf);
+        s23_compose_euler(cpu, PM, (const float (*)[3])PMf, cpu->read_word(PL.base + PL.rot_off[0]), out, 0);
         /* The mirrored copy (spyrodraw.s:283-302): with the gate set the draw
          * negates the composed matrix's second column in place - the high half
          * of the record word at +0x10, the low half of +0x18 and the high half
@@ -281,7 +285,7 @@ static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
         if (s_neg < 0) { const char* e = getenv("OPENPETE_PLAYER_VERIFY_NOMIRROR");
                          s_neg = !(e && *e && *e != '0'); }
         if (player_mirror_pass() && s_neg)
-            for (int i = 0; i < 3; i++) out->M[i][1] = -out->M[i][1];
+            for (int i = 0; i < 3; i++) { out->M[i][1] = -out->M[i][1]; out->Mf[i][1] = -out->Mf[i][1]; }
         out->present = 1;
         return 1;
     }
@@ -290,8 +294,8 @@ static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
      * this is not the mirrored pass (spyrodraw.s:316-318,326-330). */
     uint32_t rot = player_mirror_pass()
                  ? 0u : cpu->read_word(PL.base + PL.rot_off[1]);
-    if (rot) s23_compose_euler(cpu, parent->M, rot, out->M, part);
-    else     memcpy(out->M, parent->M, sizeof out->M);
+    if (rot) s23_compose_euler(cpu, parent->M, parent->Mf, rot, out, part);
+    else   { memcpy(out->M, parent->M, sizeof out->M); memcpy(out->Mf, parent->Mf, sizeof out->Mf); }
     out->present = 1;   /* the origin comes from the seam joint */
     return 1;
 }
@@ -348,8 +352,8 @@ static void s23_seam_joint(CPUState* cpu, const player_xform_t* parent,
     int VY = -s23_seam_field(jA, jB, 22, ir0, dual);
     for (int i = 0; i < 3; i++)
         out[i] = parent->TR[i]
-               + ((double)parent->M[i][0]*VX + (double)parent->M[i][1]*VY
-                + (double)parent->M[i][2]*VZ) / 4096.0;
+               + ((double)parent->Mf[i][0]*VX + (double)parent->Mf[i][1]*VY
+                + (double)parent->Mf[i][2]*VZ);
 }
 
 /** @brief The face stream, the model colour block and the tint word, shared by both parts.

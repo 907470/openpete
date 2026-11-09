@@ -568,10 +568,10 @@ static const ngte_view* moby_record_view(uint32_t mob) {
     return moby_is_hud(mob) ? &s_view_canon : &s_view;
 }
 
-/** @brief Float RTPS mirror with translation, through the shared ngte_project_raw.
+/** @brief Float RTPS mirror with translation, through the shared ngte_project_raw_f.
  *
  * The caller owns the near-plane policy: the returned view Z is unfloored.
- * @param M The model-to-view rotation, 4096 = 1.0.
+ * @param M The model-to-view rotation, 1.0 = 1.0.
  * @param TR The projection translation.
  * @param vx The model-space vertex X.
  * @param vy The model-space vertex Y.
@@ -583,10 +583,10 @@ static const ngte_view* moby_record_view(uint32_t mob) {
  * @param out_sy Receives the screen Y.
  * @param out_sat Receives the GTE's would-have-saturated flags.
  * @return The view Z (MAC3). */
-static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
+static double project(const float M[3][3], const double TR[3], double vx, double vy, double vz,
                       double ofx_px, double ofy_px, const ngte_view* v,
                       double* out_sx, double* out_sy, int* out_sat) {
-    return ngte_project_raw(M, TR, vx, vy, vz, ofx_px, ofy_px, v, out_sx, out_sy, out_sat);
+    return ngte_project_raw_f(M, TR, vx, vy, vz, ofx_px, ofy_px, v, out_sx, out_sy, out_sat);
 }
 
 /** @brief GTE near-plane mirror: re-project one vertex through the GTE's divide cap when it lies in the saturation regime.
@@ -601,7 +601,7 @@ static double project(const int M[3][3], const double TR[3], double vx, double v
  * the hardware had, so the vertex re-projects through ngte_project_gte with
  * the divide cap and the +-1024 SXY saturation. A vertex further than H/2
  * keeps its float projection. NGTE_LIMIT counts the regime at both H values.
- * @param M The model-to-view rotation, 4096 = 1.0.
+ * @param M The model-to-view rotation, 1.0 = 1.0.
  * @param TR The projection translation.
  * @param vx The model-space vertex X.
  * @param vy The model-space vertex Y.
@@ -613,7 +613,7 @@ static double project(const int M[3][3], const double TR[3], double vx, double v
  * @param sx Replaced with the GTE screen X inside the regime.
  * @param sy Replaced with the GTE screen Y inside the regime.
  * @return 1 when the vertex was in the regime, else 0. */
-static int moby_gte_near_fixup(const int M[3][3], const double TR[3],
+static int moby_gte_near_fixup(const float M[3][3], const double TR[3],
                                double vx, double vy, double vz, double vzz,
                                double ofx, double ofy, const ngte_view* v,
                                double* sx, double* sy) {
@@ -621,7 +621,7 @@ static int moby_gte_near_fixup(const int M[3][3], const double TR[3],
     NGTE_LIMIT(NGTE_SITE_MOBY_NEAR, in, !(vzz > 0.0 && v->H_eff < 2.0 * vzz));
     if (!in) return 0;
     ngte_proj gp;
-    ngte_project_gte(M, TR, vx, vy, vz, ofx, ofy, v, 1, &gp);
+    ngte_project_gte_f(M, TR, vx, vy, vz, ofx, ofy, v, 1, &gp);
     *sx = gp.sx; *sy = gp.sy;
     return 1;
 }
@@ -630,7 +630,8 @@ static int moby_gte_near_fixup(const int M[3][3], const double TR[3],
  * reuses the shaded path's euler matrix composer, defined later in this file.
  * Takes the moby vaddr (not the raw rotation word) so the composer can look up
  * the moby's prev/curr snapshots for sub-tick float rotation interpolation. */
-static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3]);
+static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3],
+                                 float outf[3][3]);
 
 /* Forward decls: the dragon-rescue cutscene actor selector and its ownership
  * window, defined with the cutscene struct offsets later in this file. The
@@ -1558,6 +1559,61 @@ static int moby_tier_vcount(CPUState* cpu, uint32_t header, int zsf4, int negctl
     return n;
 }
 
+/** @brief OPENPETE_MOBY_MF_BOUND=1: check one vertex's float projection against the Q12 matrix's, within |v|_1 * 3/4096 * H/z per axis.
+ *
+ * The float rotation and the Q12 one are the same rotation, the Q12 one
+ * rounded or truncated per element by at most 3 units of 1/4096 over its
+ * compose, so a vertex v moves on screen by at most that bound. Counts the
+ * vertices checked (engagement), those over the bound, those over the bound
+ * with the perspective term (|v|_1 * 3/4096 * (H + |s - of|) / z, the first
+ * order effect of the view-Z error on an off-centre vertex) and the largest
+ * ratio of delta to the plain bound, printed once per second of VBLs; vertices behind or near
+ * the GTE regime (z <= H_canon / 2) are not checked.
+ * @param M The Q12 matrix.
+ * @param Mf_probe The float matrix the projection used.
+ * @param TR The projection translation.
+ * @param vx The vertex X.
+ * @param vy The vertex Y.
+ * @param vz The vertex Z.
+ * @param ofx The screen offset X.
+ * @param ofy The screen offset Y.
+ * @param v The view.
+ * @param sx The float projection's screen X.
+ * @param sy The float projection's screen Y.
+ * @param z The float projection's view Z. */
+static void moby_mf_bound_check(const int M[3][3], const float Mf_probe[3][3], const double TR[3], double vx,
+                                double vy, double vz, double ofx, double ofy, const ngte_view* v, double sx,
+                                double sy, double z) {
+    static int s_on = -1; static long s_n, s_over, s_overp; static double s_worst; static unsigned s_next;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_MF_BOUND"); s_on = e && *e == '1'; }
+    if (!s_on || !(z > 0.0 && v->H_canon < 2.0 * z)) return;
+    float Mu[3][3];
+    ngte_mat_unit_f(M, Mu);
+    double qx, qy;
+    project((const float (*)[3])Mu, TR, vx, vy, vz, ofx, ofy, v, &qx, &qy, NULL);
+    const double e = (fabs(vx) + fabs(vy) + fabs(vz)) * 3.0 / 4096.0;
+    const double b = e * v->H_eff / z;
+    const double bp = e * (v->H_eff + fmax(fabs(sx - ofx), fabs(sy - ofy))) / z;
+    const double d = fmax(fabs(qx - sx), fabs(qy - sy));
+    s_n++;
+    if (d > b + 1e-6) s_over++;
+    if (d > bp * 1.01 + 1e-6) s_overp++;
+    if (b > 0.0 && d / b > s_worst) {
+        s_worst = d / b;
+        if (s_worst > 1.0) {
+            double dm = 0.0;
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 3; c++) dm = fmax(dm, fabs((double)Mu[r][c] - (double)Mf_probe[r][c]) * 4096.0);
+            fprintf(stderr, "[moby-mf-bound-worst vbl=%u] ratio=%.3f d=%.4f b=%.4f z=%.1f v=(%.1f,%.1f,%.1f) dM=%.3f\n",
+                    openpete_frame, s_worst, d, b, z, vx, vy, vz, dm);
+        }
+    }
+    if (openpete_frame < s_next) return;
+    s_next = openpete_frame + 60u;
+    fprintf(stderr, "[moby-mf-bound vbl=%u] checked=%ld over=%ld over_persp=%ld worst_ratio=%.4f\n", openpete_frame, s_n,
+            s_over, s_overp, s_worst);
+}
+
 /** @brief Decode one moby record's vertex stream with the game's codec and project every vertex in float.
  *
  * The cull-record path (moby_project_record) and the host-built record path
@@ -1619,7 +1675,9 @@ static int moby_tier_vcount(CPUState* cpu, uint32_t header, int zsf4, int negctl
  * @param depth_k The factor from the projected view-Z to the depth written (moby_record_depth_k); 1 writes the projected view-Z.
  * @param TR_raw The stored translation, before the (<< 2) >> m_Scale rescale.
  * @param TR_frac The full-precision centre on TR_raw's scale (moby_centre_at), or NULL for the integer path.
- * @param M The model-to-view rotation, 4096 = 1.0.
+ * @param M The model-to-view rotation, 4096 = 1.0: the paint key's integer RTPS reads it.
+ * @param Mf The model-to-view rotation at unit scale: the projection, the
+ *        near fixup and the env-UV offset read it.
  * @param zsf4 The record's tier; below 0 selects the LP vertex count.
  * @param v The view.
  * @param out Receives one projection per vertex.
@@ -1631,8 +1689,8 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
                                const moby_pose_t* prev, double blend_alpha, double gpf_frac,
                                double depth_k, const int TR_raw[3],
                                const double TR_frac[3],
-                               const int M[3][3], int zsf4, const ngte_view* v,
-                               proj_xy* out, int cap) {
+                               const int M[3][3], const float Mf[3][3], int zsf4,
+                               const ngte_view* v, proj_xy* out, int cap) {
     if (header < 0x80000000u || !moby_pose_live(header, frameA)) return 0;
     if (headerB < 0x80000000u) headerB = header;
     /* C2_TR (projection translation) = (TR_stored << 2) >> m_Scale  [F798
@@ -1812,8 +1870,9 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
             vz = p[2] + (vz - p[2]) * blend_alpha;
         }
         double sx, sy; int sat;
-        double vzz = project(M, TR, vx, vy, vz, ofx, ofy, v, &sx, &sy, &sat);
-        int unr = moby_gte_near_fixup(M, TR, vx, vy, vz, vzz, ofx, ofy, v, &sx, &sy);
+        double vzz = project(Mf, TR, vx, vy, vz, ofx, ofy, v, &sx, &sy, &sat);
+        moby_mf_bound_check(M, Mf, TR, vx, vy, vz, ofx, ofy, v, sx, sy, vzz);
+        int unr = moby_gte_near_fixup(Mf, TR, vx, vy, vz, vzz, ofx, ofy, v, &sx, &sy);
         /* The Z-buffer needs FULL-WORLD view-Z so mobys sort vs terrain / Spyro /
          * each other. project's mac3 is in the m_scale-adjusted world/4 scale
          * (C2_TR = (stored<<2)>>m_scale, stored is world/4), so multiply by
@@ -1850,10 +1909,10 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
          * consistent. (Any positive multiple works - interpolation sees ratios
          * only - so the 1<<ds normalizer just keeps it in depth units.) */
         out[i].tvz = (float)(vzz * (double)(1 << ds));
-        /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
-        out[i].ex = (float)((M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0);
-        out[i].ey = (float)((M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0);
-        out[i].ez = (float)((M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0);
+        /* rotated vertex offset Mf.v = viewPos-TR -- the specular env-UV input. */
+        { double e1, e2, e3;
+          ngte_mac_f(Mf, vx, vy, vz, &e1, &e2, &e3);
+          out[i].ex = (float)e1; out[i].ey = (float)e2; out[i].ez = (float)e3; }
         out[i].mv[0] = (float)vx; out[i].mv[1] = (float)vy; out[i].mv[2] = (float)vz;
     }
     /* Near-floor: if the pulls pushed this record past the near plane, lift
@@ -1885,7 +1944,8 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
  * @param depth_k The projected view-Z to written depth factor.
  * @param TR_raw The stored translation.
  * @param TR_frac The full-precision centre, or NULL.
- * @param M The model-to-view rotation.
+ * @param M The model-to-view rotation, Q12 (the paint key).
+ * @param Mf The model-to-view rotation at unit scale (the projection).
  * @param zsf4 The record's tier; receives the tier the vertices were decoded
  *        at, MOBY_FOGSAT_LP_TIER where the fog-saturation cull swapped in the
  *        LP model (moby_fog_sat_verdict).
@@ -1900,19 +1960,19 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
                                const moby_pose_t* prev, double blend_alpha, double gpf_frac,
                                double depth_k, const int TR_raw[3],
                                const double TR_frac[3],
-                               const int M[3][3], int* zsf4, const ngte_view* v,
-                               proj_xy* out, int cap) {
+                               const int M[3][3], const float Mf[3][3], int* zsf4,
+                               const ngte_view* v, proj_xy* out, int cap) {
     const uint64_t t0 = mst_now();
     int n = moby_decode_project_body(cpu, header, headerB, frameA, frameB, w0, prev,
                                      blend_alpha, gpf_frac, depth_k, TR_raw, TR_frac,
-                                     M, *zsf4, v, out, cap);
+                                     M, Mf, *zsf4, v, out, cap);
     const int fs = moby_fog_sat_verdict(cpu, header, out, n);
     if (fs == MOBY_FS_SKIP) n = 0;
     if (fs == MOBY_FS_LP) {
         *zsf4 = MOBY_FOGSAT_LP_TIER;
         n = moby_decode_project_body(cpu, header, headerB, frameA, frameB, w0, prev,
                                      blend_alpha, gpf_frac, depth_k, TR_raw, TR_frac,
-                                     M, *zsf4, v, out, cap);
+                                     M, Mf, *zsf4, v, out, cap);
     }
     mst_add(MST_DP, t0);
     if (n > 0) { msc_add(MSC_VERTS, n); msc_add(MSC_RECS, 1); }
@@ -1991,6 +2051,7 @@ static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
  * construction, not by two derivations agreeing. */
 static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]);
 static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t header, double tr[3]);
+static void moby_canon_mf(CPUState* cpu, const moby_record_t* R, float Mf[3][3]);
 static void moby_centre_census(const char* pass);
 static double moby_record_depth_k(CPUState* cpu, uint32_t moby);
 static void moby_sphere_shell_pull(CPUState* cpu, uint32_t moby, uint32_t header,
@@ -2014,14 +2075,15 @@ static void moby_sphere_shell_pull(CPUState* cpu, uint32_t moby, uint32_t header
  * derivation applies, the decode projects the stored TR.
  * @param cpu The guest CPU state, read only.
  * @param R The extracted record.
+ * @param Mf The record's model-to-view rotation at unit scale (moby_canon_mf).
  * @param zsf4 The record's tier verdict after the --no-lod adjustment
  *        (record_zsf4), which selects the tier's vertex count; receives the
  *        tier drawn (moby_decode_project).
  * @param out Receives the projected vertices.
  * @param cap The capacity of out.
  * @return The number of vertices written. */
-static int moby_project_record(CPUState* cpu, const moby_record_t* R, int* zsf4,
-                               proj_xy* out, int cap) {
+static int moby_project_record(CPUState* cpu, const moby_record_t* R, const float Mf[3][3],
+                               int* zsf4, proj_xy* out, int cap) {
     const ngte_view* v = moby_record_view(R->moby);
     double tr[3];
     const double* TR_frac = NULL;
@@ -2033,7 +2095,7 @@ static int moby_project_record(CPUState* cpu, const moby_record_t* R, int* zsf4,
     const double depth_k = moby_record_depth_k(cpu, R->moby);
     const int n = moby_decode_project(cpu, R->header, R->header_b, R->frame_a, R->frame_b, R->w0,
                                       NULL, 0.0, -1.0, depth_k,
-                                      R->TR_raw, TR_frac, R->M,
+                                      R->TR_raw, TR_frac, R->M, Mf,
                                       zsf4, v, out, cap);
     moby_sphere_shell_pull(cpu, R->moby, R->header, depth_k, out, n);
     return n;
@@ -2066,9 +2128,9 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                                     * snapshotted at capture: the flame-heat
                                     * level (ApplyFlameHeat*) - consumed by the
                                     * mod-texture face red-shift */
-                 int M[3][3];      /* model-to-view rotation, Q12: the per-face
-                                    * special material rotates a face normal by
-                                    * it */
+                 float Mf[3][3];   /* model-to-view rotation at unit scale: the
+                                    * per-face special material rotates a face
+                                    * normal by it */
                  double zf;        /* the present's ZSF4 at full precision,
                                     * read only when zf_on (fade_snap_present_z);
                                     * the tier and face set stay zsf4's */
@@ -2653,16 +2715,23 @@ static void rowscale_census(const char* src, uint32_t rec, uint32_t moby, int ro
 /** @brief Applies the game's draw-time row scale of the record at `rec` to a matrix built for that record.
  *
  * The factors are the ones the game's draw multiplies into the record after its
- * cull (moby_game.record_row_scale); each row is scaled in double and rounded
- * once. The specular queue shares the record addresses and is never scaled, so
- * a specular pass ("SP"/"SPEC") applies nothing. Returns 1 when the game scales
- * the record. */
-static int moby_draw_row_scale(CPUState* cpu, uint32_t rec, const char* mat, int M[3][3]) {
+ * cull (moby_game.record_row_scale); each row of M is scaled in double and
+ * rounded once, each row of Mf scaled in float. The specular queue shares the
+ * record addresses and is never scaled, so a specular pass ("SP"/"SPEC")
+ * applies nothing.
+ * @param cpu The guest CPU state, read only.
+ * @param rec The record's guest address.
+ * @param mat The pass's material tag, or NULL.
+ * @param M The matrix, Q12, scaled in place.
+ * @param Mf Its unit-scale twin, scaled in place, or NULL.
+ * @return 1 when the game scales the record, else 0. */
+static int moby_draw_row_scale(CPUState* cpu, uint32_t rec, const char* mat, int M[3][3], float Mf[3][3]) {
     if (!moby_game.record_row_scale || (mat && mat[0] == 'S' && mat[1] == 'P')) return 0;
     double sc[3];
     if (!moby_game.record_row_scale(cpu, rec, sc)) return 0;
     for (int row = 0; row < 3; row++) {
         for (int c = 0; c < 3; c++) M[row][c] = (int)lround(M[row][c] * sc[row]);
+        if (Mf) for (int c = 0; c < 3; c++) Mf[row][c] *= (float)sc[row];
         rowscale_census("hook", rec, cpu->read_word(rec + game_layout.moby.rec_moby_off), row, sc[row]);
     }
     return 1;
@@ -2672,19 +2741,26 @@ static int moby_draw_row_scale(CPUState* cpu, uint32_t rec, const char* mat, int
  *
  * The matrix is the camera·euler compose of the record's moby
  * (shaded_compose_euler, the builder's compose) with the game's factors applied
- * by moby_draw_row_scale. The record's own matrix carries the draw's FIXED_MUL
- * truncation of the same product; replacing it makes the canonical present and
- * the alpha-1 sub-tick present one computation. Records the draw does not scale
- * keep the cull's matrix. */
-static void moby_canon_row_scale(CPUState* cpu, uint32_t rec, moby_record_t* R) {
+ * by moby_draw_row_scale, in Q12 into R->M and at unit scale into Mf. The
+ * record's own matrix carries the draw's FIXED_MUL truncation of the same
+ * product; replacing it makes the canonical present and the alpha-1 sub-tick
+ * present one computation. Records the draw does not scale keep the cull's
+ * matrix and Mf is not written.
+ * @param cpu The guest CPU state, read only.
+ * @param rec The record's guest address.
+ * @param R The record, whose M is rewritten when the draw scales it.
+ * @param Mf Receives the unit-scale matrix when 1 is returned.
+ * @return 1 when the draw scales the record, else 0. */
+static int moby_canon_row_scale(CPUState* cpu, uint32_t rec, moby_record_t* R, float Mf[3][3]) {
     double sc[3];
     if (!moby_game.host_reveal || !moby_game.record_row_scale ||
         (s_cur_mat && s_cur_mat[0] == 'S' && s_cur_mat[1] == 'P') ||
         R->moby < 0x80000000u || !moby_game.record_row_scale(cpu, rec, sc))
-        return;
+        return 0;
     int PM[3][3]; memcpy(PM, s_view.cam_M, sizeof PM);
-    shaded_compose_euler(cpu, PM, R->moby, R->M);
-    moby_draw_row_scale(cpu, rec, s_cur_mat, R->M);
+    shaded_compose_euler(cpu, PM, R->moby, R->M, Mf);
+    moby_draw_row_scale(cpu, rec, s_cur_mat, R->M, Mf);
+    return 1;
 }
 
 /** @brief Re-applies a render-time per-row scale the game baked into the record's matrix.
@@ -2693,8 +2769,14 @@ static void moby_canon_row_scale(CPUState* cpu, uint32_t rec, moby_record_t* R) 
  * in M cannot see it. The rebuild is a camera·euler rotation, so |rebuild row|
  * equals |unscaled record row| and the ratio |record row| / |rebuild row| is
  * that scale; a ratio inside 0.99-1.01 is Q12 truncation noise and is left
- * alone. */
-static void moby_ratio_row_scale(CPUState* cpu, uint32_t rec, uint32_t moby, int M[3][3]) {
+ * alone. M's row is scaled and rounded, Mf's row scaled in float by the same
+ * ratio.
+ * @param cpu The guest CPU state, read only.
+ * @param rec The record's guest address.
+ * @param moby The Moby address, for the census line.
+ * @param M The rebuilt matrix, Q12, scaled in place.
+ * @param Mf Its unit-scale twin, scaled in place. */
+static void moby_ratio_row_scale(CPUState* cpu, uint32_t rec, uint32_t moby, int M[3][3], float Mf[3][3]) {
     int rM[3][3]; moby_rec_matrix(cpu, rec + game_layout.moby.rec_matrix_off, rM);
     for (int row = 0; row < 3; row++) {
         double mr = sqrt((double)rM[row][0]*rM[row][0] + (double)rM[row][1]*rM[row][1] + (double)rM[row][2]*rM[row][2]);
@@ -2703,6 +2785,7 @@ static void moby_ratio_row_scale(CPUState* cpu, uint32_t rec, uint32_t moby, int
         double sc = mr / mb;
         if (sc >= 0.99 && sc <= 1.01) continue;
         for (int c = 0; c < 3; c++) M[row][c] = (int)lround(M[row][c] * sc);
+        for (int c = 0; c < 3; c++) Mf[row][c] *= (float)sc;
         rowscale_census("ratio", rec, moby, row, sc);
     }
 }
@@ -2838,6 +2921,45 @@ static int moby_fog_sat_verdict(CPUState* cpu, uint32_t header, const proj_xy* p
     return v;
 }
 
+/** @brief Fill one canonical record's metadata (s_recs) for the walk and the sub-tick replays, and snapshot its fade tier.
+ *
+ * The face stream follows the drawn tier (HP or LP, --no-lod aware); the
+ * environment metal flag is the material word's high byte, which the cull
+ * copies (read @8002176C srl 24, bnez .L800226F8); the full material word
+ * carries the highlight back-colour (.L80021DB4), byte 2's specular
+ * intensity and the per-moby tint. The fade snapshot keeps the tick's tier
+ * (zsf4), so every sub-tick re-extract inherits it.
+ * @param cpu The guest CPU state, read only.
+ * @param nrec The record's index in s_recs, below MAX_RECORDS.
+ * @param rec The cull record's address.
+ * @param R The record as read.
+ * @param Mf Its model-to-view matrix at unit scale.
+ * @param off Its first projected vertex in s_proj.
+ * @param got Its projected vertex count.
+ * @param zsf4 The tick's tier verdict.
+ * @param dzsf4 The tier drawn (after the fog-saturation swap). */
+static void canon_rec_put(CPUState* cpu, int nrec, uint32_t rec, const moby_record_t* R, const float Mf[3][3],
+                          int off, int got, int zsf4, int dzsf4) {
+    rec_meta* m = &s_recs[nrec];
+    *m = (rec_meta){ .addr = rec, .proj_off = off, .proj_n = got,
+        .header = R->header, .header_b = R->header_b,
+        .faceblock = moby_tier_faceblock(cpu, R->header, dzsf4), .w0 = R->w0,
+        .metal = (int)((R->material >> 24) & 0xFFu),
+        .mscol = R->material,
+        .moby = R->moby,
+        .zsf4 = dzsf4,
+        .env_az = atan2f((float)R->TR_raw[2], (float)R->TR_raw[0]),
+        .frameA = R->frame_a };
+    memcpy(m->Mf, Mf, sizeof m->Mf);
+    m->heat = moby_game.spec_colour_off
+        ? (uint8_t)moby_heat_scalar(cpu->read_word(m->moby + moby_game.spec_colour_off)) : 0u;
+    fade_snap_put(cpu, m->moby, zsf4, R->header);
+    if (moby_trace_target() && m->moby == moby_trace_target())
+        fprintf(stderr, "[moby-trace vbl=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
+                openpete_frame, m->moby, rec, zsf4, got, s_cur_mat ? s_cur_mat : "?");
+    if (tier_dbg_on()) moby_tier_census_record(cpu, R, zsf4, got);
+}
+
 /** @brief Projects every live cull record's vertices into s_proj for the canonical pass and fills s_recs.
  *
  * The projection is the native float decode, RTPS and TR; s_recs is the record
@@ -2861,43 +2983,18 @@ static int project_all_records_inner(CPUState* cpu) {
          * inherits the (--no-lod-neutralized) tier too. */
         int zsf4 = record_zsf4(cpu, &R);
         moby_animsw_census(cpu, R.moby);
-        moby_canon_row_scale(cpu, rec, &R);
+        float Mf[3][3];
+        if (!moby_canon_row_scale(cpu, rec, &R, Mf)) moby_canon_mf(cpu, &R, Mf);
         pose_hold_begin(R.moby, R.header, R.header_b, R.frame_a, R.frame_b, R.w0);
         /* dzsf4: the tier drawn, which the fog-saturation cull may swap; the
          * fade snapshot keeps the tick's, and each sub-tick present takes
          * its own verdict. */
         int dzsf4 = zsf4;
-        int got = moby_project_record(cpu, &R, &dzsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        int got = moby_project_record(cpu, &R, (const float (*)[3])Mf, &dzsf4, s_proj + s_proj_n,
+                                      MAX_PROJ - s_proj_n);
         pose_hold_end(got);
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
-        if (nrec < MAX_RECORDS) {
-            uint32_t header = R.header;
-            s_recs[nrec] = (rec_meta){ .addr = rec, .proj_off = off, .proj_n = got,
-                .header = header, .header_b = R.header_b,
-                /* face stream per the record's tier (HP or LP, --no-lod-aware) */
-                .faceblock = moby_tier_faceblock(cpu, header, dzsf4), .w0 = w0,
-                /* env metal flag = high byte of the record's material word (the
-                 * cull pass copies it; read @8002176C srl 24, bnez .L800226F8) */
-                .metal = (int)((R.material >> 24) & 0xFFu),
-                /* the full material word: the highlight back-colour (.L80021DB4) +
-                 * byte2 spec-intensity. Carries the per-moby tint (flamed chest -> red). */
-                .mscol = R.material,
-                .moby = R.moby,
-                .zsf4 = dzsf4,
-                .env_az = atan2f((float)R.TR_raw[2], (float)R.TR_raw[0]),
-                .frameA = R.frame_a };
-            memcpy(s_recs[nrec].M, R.M, sizeof s_recs[nrec].M);
-            s_recs[nrec].heat = moby_game.spec_colour_off
-                ? (uint8_t)moby_heat_scalar(
-                      cpu->read_word(s_recs[nrec].moby + moby_game.spec_colour_off))
-                : 0u;
-            fade_snap_put(cpu, s_recs[nrec].moby, zsf4, header);
-            if (moby_trace_target() && s_recs[nrec].moby == moby_trace_target())
-                fprintf(stderr, "[moby-trace vbl=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
-                        openpete_frame, s_recs[nrec].moby, rec, zsf4, got,
-                        s_cur_mat ? s_cur_mat : "?");
-            if (tier_dbg_on()) moby_tier_census_record(cpu, &R, zsf4, got);
-        }
+        if (nrec < MAX_RECORDS) canon_rec_put(cpu, nrec, rec, &R, (const float (*)[3])Mf, off, got, zsf4, dzsf4);
         s_proj_n += got; nrec++;
         if (s_proj_n >= MAX_PROJ) break;
     }
@@ -2938,7 +3035,10 @@ static int moby_reveal_zsf4(int md, int trz) {
  * a host-built record for a moby the .s already culled in must match the .s record
  * field-for-field (M/TR within GTE truncation, header/frameA/frameB/blend exact).
  * Only after that A/B passes is the builder trusted on the revealed (off-4:3) set. */
-typedef struct { uint32_t header, header_b, frameA, frameB, w0, mscol; int metal; int TR_raw[3]; double TR_frac[3]; int M[3][3]; } moby_fields;
+/* M is the record's model-to-view matrix in Q12, the paint key's input; Mf
+ * the same rotation at unit scale in float, the projection's. */
+typedef struct { uint32_t header, header_b, frameA, frameB, w0, mscol; int metal; int TR_raw[3]; double TR_frac[3]; int M[3][3];
+                 float Mf[3][3]; } moby_fields;
 
 /** @brief Build the regular (animated) render-record fields for one moby from game state.
  *
@@ -2977,7 +3077,7 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) - the SAME euler compose the shaded
      * path uses, from the moby angle bytes. */
     int PM[3][3]; memcpy(PM, s_view.cam_M, sizeof PM);
-    shaded_compose_euler(cpu, PM, moby, f->M);
+    shaded_compose_euler(cpu, PM, moby, f->M, f->Mf);
     /* TR = ProjMatrix . swizzled (cam-moby)>>2  (the cull's centre MVMVA: IR1=(cy-my)>>2,
      * IR2=(cz-mz)>>2, IR3=(mx-cx)>>2; MAC=(PM·IR)>>12). NOT scaled by m_Scale or <<1
      * here - moby_decode_project applies (<<2)>>m_Scale, matching the .s record store. */
@@ -3335,7 +3435,7 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
       pose_hold_begin(m, f->header, f->header_b, f->frameA, f->frameB, f->w0);
       const double depth_k = moby_record_depth_k(cpu, m);
       got = moby_decode_project(cpu, f->header, f->header_b, f->frameA, f->frameB, f->w0, pd.dprev, pd.dalpha, -1.0, depth_k, f->TR_raw, f->TR_frac, f->M,
-                                &dzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+                                (const float (*)[3])f->Mf, &dzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
       moby_sphere_shell_pull(cpu, m, f->header, depth_k, s_proj + s_proj_n, got);
       pose_hold_end(got);
       if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
@@ -3352,7 +3452,7 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
         .clr_alpha = (float)pd.clr_alpha };
     s_recs[s_nrecs].model_held = pd.model_held;
     s_recs[s_nrecs].clr_flags = (uint8_t)pd.clr_flags;
-    memcpy(s_recs[s_nrecs].M, f->M, sizeof s_recs[s_nrecs].M);
+    memcpy(s_recs[s_nrecs].Mf, f->Mf, sizeof s_recs[s_nrecs].Mf);
     s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f->mscol);
     /* Sole feeder: the walk applies the SPEC face treatment for this moby,
      * but only for a moby the specular pass itself renders - everything
@@ -4866,7 +4966,7 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
  * projection, the same GTE near-plane mirror and the same emit the animated
  * walk uses, so both kinds reach the scene in one category and one depth
  * space. */
-static const int MOBY_IDENT_Q12[3][3] = { {4096,0,0}, {0,4096,0}, {0,0,4096} };
+static const float MOBY_IDENT_F[3][3] = { {1.0f,0.0f,0.0f}, {0.0f,1.0f,0.0f}, {0.0f,0.0f,1.0f} };
 
 /* The projection origin of the record being decoded, and the view it projects
  * through. A record whose model is placed in screen space names its own origin
@@ -4919,9 +5019,9 @@ void moby_simple_project(const double p[3], float* sx, float* sy) {
     double ofx, ofy;
     const ngte_view* view = moby_simple_view(&ofx, &ofy);
     double x, y; int sat;
-    double vzz = project(MOBY_IDENT_Q12, NULL, p[0], p[1], p[2],
+    double vzz = project(MOBY_IDENT_F, NULL, p[0], p[1], p[2],
                          ofx, ofy, view, &x, &y, &sat);
-    moby_gte_near_fixup(MOBY_IDENT_Q12, NULL, p[0], p[1], p[2],
+    moby_gte_near_fixup(MOBY_IDENT_F, NULL, p[0], p[1], p[2],
                         vzz, ofx, ofy, view, &x, &y);
     *sx = (float)x; *sy = (float)y;
 }
@@ -4955,9 +5055,9 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
         double sx, sy; int sat;
         /* The point is already in view space, so the rotate step is identity
          * and the translation zero; only the divide is left to do. */
-        double vzz = project(MOBY_IDENT_Q12, NULL, p[k][0], p[k][1], p[k][2],
+        double vzz = project(MOBY_IDENT_F, NULL, p[k][0], p[k][1], p[k][2],
                              ofx, ofy, view, &sx, &sy, &sat);
-        int unr = moby_gte_near_fixup(MOBY_IDENT_Q12, NULL, p[k][0], p[k][1], p[k][2],
+        int unr = moby_gte_near_fixup(MOBY_IDENT_F, NULL, p[k][0], p[k][1], p[k][2],
                                       vzz, ofx, ofy, view, &sx, &sy);
         q[k].sx = (float)sx; q[k].sy = (float)sy;
         q[k].vz = (float)vzz; q[k].tvz = (float)vzz; q[k].kvz = (float)vzz;
@@ -6563,7 +6663,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 for (int q = 0; q < 4; q++) {
                     ev[q][0] = pv4[q]->ex; ev[q][1] = pv4[q]->ey; ev[q][2] = pv4[q]->ez;
                 }
-                int applied = moby_game.special_face(cpu, R->mscol, R->M, R->moby,
+                int applied = moby_game.special_face(cpu, R->mscol, (const float (*)[3])R->Mf, R->moby,
                                                      R->addr, F, cc, ev, &tex2, &stex);
                 if (applied && stex.set) {
                     /* The treatment's substitute page and CLUT, in place of the
@@ -9930,6 +10030,29 @@ static int moby_snap_gather(int i0, int i1, float (**buf)[3][3], int* cap, int* 
     return n;
 }
 
+static int moby_snap_path(uint32_t mob);
+/** @brief Hand the corner probe one queued moby's eligible triangles' face keys and its record path (moby_snap_queue_probe).
+ * @param mob The moby pointer.
+ * @param i0 Its first walk triangle.
+ * @param i1 One past its last.
+ * @param n Its eligible triangle count. */
+static void moby_snap_probe_tags(uint32_t mob, int i0, int i1, int n) {
+    static uint32_t* s_fk; static int s_fcap;
+    if (n > s_fcap) {
+        void* q = realloc(s_fk, (size_t)n * sizeof *s_fk);
+        if (!q) return;
+        s_fk = q; s_fcap = n;
+    }
+    int k = 0;
+    float kr = 0.0f;
+    for (int j = i0; j < i1 && k < n; j++)
+        if (moby_snap_face(j)) {
+            if (!k && s_wtri[j].v[0].tvz != 0.0f) kr = s_wtri[j].v[0].kvz / s_wtri[j].v[0].tvz;
+            s_fk[k++] = s_wtri_fkey[j];
+        }
+    moby_snap_queue_probe(moby_scene_identity(mob), s_fk, k, moby_snap_path(mob), kr);
+}
+
 /** @brief Queue the walk's pulled mobys for the sunk-pickup contact test (moby_snap_queue).
  *
  * The walk emits a moby's triangles contiguously. Each queued moby carries
@@ -9950,9 +10073,11 @@ static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
         while (j < s_gout.n && s_wtri_moby[j] == mob) j++;
         int f = i;
         const int n = moby_snap_gather(i, j, &s_buf, &s_cap, &f);
-        if (n)
+        if (n) {
             moby_snap_queue(moby_scene_identity(mob), moby_snap_ordinal(rord, mob), s_wtri_dofs[f],
                             s_wtri[f].v[0].kvz - s_wtri[f].v[0].vz, (const float (*)[3][3])s_buf, n);
+            if (moby_snap_probe_on()) moby_snap_probe_tags(mob, i, j, n);
+        }
         i = j;
     }
 }
@@ -11605,17 +11730,21 @@ static const openpete_interp_obj_t* record_euler_pair(CPUState* cpu, uint32_t mo
     return o;
 }
 
-int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e) {
+int moby_record_angles_at_present(CPUState* cpu, uint32_t moby, double ang[3]) {
     double t;
     const openpete_interp_obj_t* o = record_euler_pair(cpu, moby, &t);
     if (!o) return 0;
     const uint32_t ao = game_layout.moby.angle_off;
-    double fZ = lerp_byte_angle(o->prev[ao + 0u], o->curr[ao + 0u], t);
-    double fX = lerp_byte_angle(o->prev[ao + 1u], o->curr[ao + 1u], t);
-    double fY = lerp_byte_angle(o->prev[ao + 2u], o->curr[ao + 2u], t);
-    ngte_sincos_interp(cpu, fY, &e->sy, &e->cy);
-    ngte_sincos_interp(cpu, fX, &e->sx, &e->cx);
-    ngte_sincos_interp(cpu, fZ, &e->sz, &e->cz);
+    for (uint32_t k = 0; k < 3u; k++) ang[k] = lerp_byte_angle(o->prev[ao + k], o->curr[ao + k], t);
+    return 1;
+}
+
+int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e) {
+    double ang[3];
+    if (!moby_record_angles_at_present(cpu, moby, ang)) return 0;
+    ngte_sincos_interp(cpu, ang[2], &e->sy, &e->cy);
+    ngte_sincos_interp(cpu, ang[1], &e->sx, &e->cx);
+    ngte_sincos_interp(cpu, ang[0], &e->sz, &e->cz);
     return 1;
 }
 
@@ -11923,82 +12052,115 @@ static double gem_idle_phase(CPUState* cpu, uint32_t m, uint32_t cls, uint32_t p
     return fmod((double)e->base_ticks + (double)(openpete_frame - e->t0_frame), 256.0);
 }
 
-/** @brief Compose a moby's euler rotation onto a matrix as start * Ry * Rx * Rz.
+/** @brief A moby's props pointer when the idle wobble may apply to it: the wobble is on, it is not a billboard, its class is 14 or 83 to 87, and its props pointer is a RAM address.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @param cls Receives its class.
+ * @return The props pointer, or 0 when the wobble does not apply. */
+static uint32_t gem_idle_props(CPUState* cpu, uint32_t moby, uint32_t* cls) {
+    if (!moby_idle_on() || (cpu->read_byte(moby + moby_game.render_radius_off) & 0x80)) return 0;
+    *cls = cpu->read_half(moby + game_layout.moby.class_off);
+    if (*cls != 14u && (*cls < 83u || *cls > 87u)) return 0;
+    const uint32_t props = cpu->read_word(moby + moby_game.props_off);
+    return props >= 0x80000000u ? props : 0;
+}
+
+/** @brief The wobble angles of a frozen collectable: its RAM euler moved by the table's sine and cosine deltas between the wobble phase and the frozen seed.
+ *
+ * The deltas are the float form of the handler's ((s16)table >> shift):
+ * over 512 for class 14, over 128 otherwise. Taken as a delta around the
+ * frozen RAM pose, the angles equal the RAM euler at the seed phase, and for
+ * a settled gem the handler's own formula (RAM +0x44 = cos[t0] >> 7 +
+ * m_RotY); an unsettled far gem (substate 0, its base angles never written
+ * since the load) wobbles around its placed pose instead of its
+ * uninitialized props bytes. Y stays the RAM byte, which the handler leaves.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @param cls Its class.
+ * @param props Its props pointer.
+ * @param ang Receives {Z, X, Y} in byte angles. */
+static void gem_idle_wobble(CPUState* cpu, uint32_t moby, uint32_t cls, uint32_t props, double ang[3]) {
+    uint8_t t0 = 0;
+    const double ph = gem_idle_phase(cpu, moby, cls, props, &t0);
+    int si, ci, s0, c0;
+    ngte_sincos_interp(cpu, ph, &si, &ci);
+    ngte_sincos_interp(cpu, (double)t0, &s0, &c0);
+    const double div = (cls == 14u) ? 512.0 : 128.0;
+    ang[0] = (double)cpu->read_byte(moby + game_layout.moby.angle_off + 0u) + ((double)ci - (double)c0) / div;
+    ang[1] = (double)cpu->read_byte(moby + game_layout.moby.angle_off + 1u) + ((double)si - (double)s0) / div;
+    ang[2] = (double)cpu->read_byte(moby + game_layout.moby.angle_off + 2u);
+    s_idle_active++;
+    if (moby_trace_target() == moby)
+        fprintf(stderr, "[moby-idle vbl=%u] %08X ph=%.1f base=%u eul=(%.1f,%.1f,%.1f)\n",
+                openpete_frame, moby, ph, (unsigned)cpu->read_byte(props + 0x13), ang[0], ang[1], ang[2]);
+}
+
+/** @brief Release a live (not frozen) collectable from the idle wobble: clear its table entry so a re-freeze re-seeds from RAM, and count it.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @param props Its props pointer, read by the trace line. */
+static void gem_idle_release(CPUState* cpu, uint32_t moby, uint32_t props) {
+    gem_idle_ent* e = gem_idle_slot(moby);
+    if (e->moby == moby) e->moby = 0;
+    s_idle_live++;
+    if (moby_trace_target() != moby) return;
+    int32_t dx = (int32_t)cpu->read_word(moby_game.player_pos + 0x0) - (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u);
+    int32_t dy = (int32_t)cpu->read_word(moby_game.player_pos + 0x4) - (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u);
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    fprintf(stderr, "[moby-idle vbl=%u] %08X live: wd=%u oct=%d sub=%u spawn=%u ticks=%u\n",
+            openpete_frame, moby, cpu->read_byte(moby + game_layout.moby.drawn_off),
+            (dx < dy) ? ((dx * 3) >> 3) + dy : dx + ((dy * 3) >> 3),
+            cpu->read_byte(moby + moby_game.substate_off), cpu->read_byte(props + 0x0E),
+            (unsigned)cpu->read_byte(props + 0x13));
+}
+
+/** @brief The idle wobble angles of a frozen collectable, in place of its RAM euler.
+ *
+ * A non-billboard moby of class 14 or 83 to 87 that gem_idle_frozen accepts
+ * renders the pose its own math would produce had it kept ticking: the Z and
+ * X angles move by the table's sine and cosine deltas between the wobble
+ * phase (gem_idle_phase) and the frozen seed, over 512 (class 14) or 128,
+ * around the RAM bytes (gem_idle_wobble); Y stays the RAM byte. A moby the
+ * frozen test rejects clears its table entry (gem_idle_release), so a
+ * re-freeze re-seeds from RAM.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @param ang Receives {Z, X, Y} in byte angles when 1 is returned.
+ * @return 1 when the wobble supplies the angles, else 0. */
+static int shaded_idle_angles(CPUState* cpu, uint32_t moby, double ang[3]) {
+    uint32_t cls = 0;
+    const uint32_t props = gem_idle_props(cpu, moby, &cls);
+    if (!props) return 0;
+    if (!gem_idle_frozen(cpu, moby, props)) {
+        gem_idle_release(cpu, moby, props);
+        return 0;
+    }
+    gem_idle_wobble(cpu, moby, cls, props, ang);
+    return 1;
+}
+
+/** @brief Compose a moby's euler rotation onto a matrix as start * Ry * Rx * Rz, in Q12 and at unit scale in float.
  *
  * Mirrors func_80022A2C's matrix build (block_80022DBC..80022F34). The
- * angles come from, in order: the idle wobble of a frozen collectable (a
- * non-billboard moby of class 14 or 83 to 87 that gem_idle_frozen accepts),
- * computed as a delta around the RAM angles; the present's interpolated
- * angles (moby_record_euler_at_present); the canonical table lookup of the
- * m_Rotation word at angle_off (Y = (rot >> 15) & 0x1FE, X = (rot & 0xFF00)
- * >> 7, Z = (rot & 0xFF) << 1 as table indices). The sin and cos table values
- * enter unmodified.
+ * angles come from, in order: the idle wobble of a frozen collectable
+ * (shaded_idle_angles); the present's interpolated angles
+ * (moby_record_angles_at_present); the m_Rotation word at angle_off. The Q12
+ * form samples the table at those angles rounded to integers
+ * (ngte_sincos_interp; the table entries themselves at integer angles) and
+ * truncates each product as the GTE does (ngte_compose_euler); the float form
+ * samples it unrounded and accumulates in float (ngte_compose_euler_mf).
  * @param cpu The guest CPU state, read only.
  * @param start The matrix to rotate, 12-bit fixed point.
  * @param moby The moby's PSX address, which keys its prev and curr snapshots.
- * @param out Receives the composed matrix. */
-static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3]) {
-    ngte_euler_sc e;
-    int composed = 0;
-    /* Idle-anim override: a FROZEN collectable renders the pose its own math
-     * would produce had it kept ticking. Billboards excluded (the tally/HUD
-     * gems carry a different props layout than MobyCollectableProps). */
-    if (moby_idle_on() && !(cpu->read_byte(moby + moby_game.render_radius_off) & 0x80)) {
-        uint32_t cls = cpu->read_half(moby + game_layout.moby.class_off);
-        if (cls == 14u || (cls >= 83u && cls <= 87u)) {
-            uint32_t props = cpu->read_word(moby + moby_game.props_off);
-            if (props >= 0x80000000u) {
-                if (gem_idle_frozen(cpu, moby, props)) {
-                    uint8_t t0 = 0;
-                    double ph = gem_idle_phase(cpu, moby, cls, props, &t0);
-                    int si, ci, s0, c0;
-                    ngte_sincos_interp(cpu, ph, &si, &ci);
-                    ngte_sincos_interp(cpu, (double)t0, &s0, &c0);
-                    /* float mirror of ((s16)lut>>shift): /128 gems, /512 statue.
-                     * Wobble as a DELTA around the frozen RAM pose: at ph==t0
-                     * this IS the RAM euler (seamless seed), and for a SETTLED
-                     * gem it equals the canonical formula (RAM +0x44 =
-                     * cos[t0]>>7 + m_RotY). An UNSETTLED far gem (substate 0 -
-                     * never updated since load, base m_RotY/RotZ never written)
-                     * wobbles around its placed pose instead of snapping to
-                     * uninitialized props bytes (beast-makers). */
-                    double div = (cls == 14u) ? 512.0 : 128.0;
-                    double fZ = (double)cpu->read_byte(moby + game_layout.moby.angle_off + 0u) + ((double)ci - (double)c0) / div;
-                    double fX = (double)cpu->read_byte(moby + game_layout.moby.angle_off + 1u) + ((double)si - (double)s0) / div;
-                    double fY = (double)cpu->read_byte(moby + game_layout.moby.angle_off + 2u);   /* untouched by the handler */
-                    ngte_sincos_interp(cpu, fY, &e.sy, &e.cy);
-                    ngte_sincos_interp(cpu, fX, &e.sx, &e.cx);
-                    ngte_sincos_interp(cpu, fZ, &e.sz, &e.cz);
-                    composed = 1; s_idle_active++;
-                    if (moby_trace_target() == moby)
-                        fprintf(stderr, "[moby-idle vbl=%u] %08X ph=%.1f base=%u eul=(%.1f,%.1f,%.1f)\n",
-                                openpete_frame, moby, ph,
-                                (unsigned)cpu->read_byte(props + 0x13), fZ, fX, fY);
-                } else {
-                    gem_idle_ent* e = gem_idle_slot(moby);
-                    if (e->moby == moby) e->moby = 0;   /* drop: re-freeze re-seeds from RAM */
-                    if (moby_trace_target() == moby) {
-                        int32_t dx = (int32_t)cpu->read_word(moby_game.player_pos + 0x0) - (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u);
-                        int32_t dy = (int32_t)cpu->read_word(moby_game.player_pos + 0x4) - (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u);
-                        if (dx < 0) dx = -dx;
-                        if (dy < 0) dy = -dy;
-                        fprintf(stderr, "[moby-idle vbl=%u] %08X live: wd=%u oct=%d sub=%u spawn=%u ticks=%u\n",
-                                openpete_frame, moby, cpu->read_byte(moby + game_layout.moby.drawn_off),
-                                (dx < dy) ? ((dx * 3) >> 3) + dy : dx + ((dy * 3) >> 3),
-                                cpu->read_byte(moby + moby_game.substate_off), cpu->read_byte(props + 0x0E),
-                                (unsigned)cpu->read_byte(props + 0x13));
-                    }
-                    s_idle_live++;
-                }
-            }
-        }
-    }
-    /* A host-composed euler above owns the whole rotation; otherwise take the
-     * present's interpolated angles, and the canonical byte-exact table lookup
-     * when there is no usable pair. */
-    if (!composed && !moby_record_euler_at_present(cpu, moby, &e))
-        ngte_euler_sincos(cpu, cpu->read_word(moby + game_layout.moby.angle_off + 0u), &e);
-    ngte_compose_euler(start, &e, out);
+ * @param out Receives the composed matrix, Q12.
+ * @param outf Receives the composed matrix at unit scale, or NULL. */
+static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3],
+                                 float outf[3][3]) {
+    double ang[3];
+    if (!shaded_idle_angles(cpu, moby, ang) && !moby_record_angles_at_present(cpu, moby, ang))
+        ngte_word_angles(cpu->read_word(moby + game_layout.moby.angle_off + 0u), ang);
+    ngte_compose_euler_at(cpu, start, ang, out, outf);
 }
 
 /** @brief Compare the shaded mobys' native projection with the shaded pass's prims.
@@ -12058,7 +12220,8 @@ static void shaded_verify(CPUState* cpu) {
             uint32_t w = cpu->read_byte(p) | (cpu->read_byte(p+1)<<8) | (cpu->read_byte(p+2)<<16);
             int VZ=((int32_t)(w<<24))>>23, VX=((int32_t)(w<<16))>>23, VY=((int32_t)(w<<8))>>23;
             double sx,sy; int sat;
-            project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,&vc, &sx,&sy,&sat);
+            float Mu[3][3]; ngte_mat_unit_f(M, Mu);
+            project((const float (*)[3])Mu,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,&vc, &sx,&sy,&sat);
             sv[n].sx=(float)sx; sv[n].sy=(float)sy; sv[n].sat=sat; n++;
         }
     }
@@ -12229,6 +12392,17 @@ typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls;
                  * large X extent into view-Z, so it self-occludes despite a small
                  * model-space Z. Either spread ≥ threshold -> HUD3D. */
 static shaded_rec s_shrecs[256]; static int s_nshrecs;
+
+/** @brief The record path a walk moby took, for the corner probe: 1 a cull record, 2 a host-built record, 3 the shaded walk, 0 another.
+ * @param mob The moby pointer.
+ * @return The path. */
+static int moby_snap_path(uint32_t mob) {
+    for (int r = 0; r < s_nrecs; r++)
+        if (s_recs[r].moby == mob) return s_recs[r].addr ? 1 : 2;
+    for (int r = 0; r < s_nshrecs; r++)
+        if (s_shrecs[r].moby == mob) return 3;
+    return 0;
+}
 
 /** @brief The integer translation the shaded pass loads for a 3D moby (r_moby.s 4015-4154).
  *
@@ -12417,13 +12591,13 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         int hud_rec = openpete_ui_moby_is_addr_static(m) || openpete_ui_moby_is_addr_ui(m);
         const ngte_view* rv = (billboard || hud_rec) ? &s_view_shd_canon : v;
         if (billboard && !hud_rec && !near_ot) NGTE_CENSUS_HIT(bb_untagged);
-        int M[3][3]; double TR[3]; double mofx, mofy;
+        int M[3][3]; float Mf[3][3]; double TR[3]; double mofx, mofy;
         double vz_scale = 1.0;   /* depth -> full-world (set for the 3D path below) */
         if (billboard) {
             /* base = [4096 0 0/0 2560 0/0 0 4096] composed with the moby euler
              * (block_80022D64 base, then the Ry/Rx/Rz MVMVA chain). */
             int base[3][3]={{4096,0,0},{0,2560,0},{0,0,4096}};
-            shaded_compose_euler(cpu, base, m, M);
+            shaded_compose_euler(cpu, base, m, M, Mf);
             /* Billboard position interp: px/py here are SCREEN
              * coords the game animates per tick (pz = depth) - fed raw, a
              * moving billboard (the level-transition tally gems flying to the
@@ -12481,7 +12655,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         } else {
             /* model->view = PM (camera ProjMatrix) composed with the full moby
              * euler rotation (block_80022CE4 PM start, then the same chain). */
-            shaded_compose_euler(cpu, PM, m, M);
+            shaded_compose_euler(cpu, PM, m, M, Mf);
             /* TR (moby centre in view space) = the .s's swizzled centre MVMVA
              * (block_80022B40..80022D18): IR=((cam.y-my)>>2,(cam.z-mz)>>2,(mx-cam.x)>>2)
              * loaded as (IR1,IR2,IR3); MAC=(PM·IR)>>12; TR=MAC<<1; then an optional
@@ -12580,8 +12754,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * depth so the Z-buffer couldn't separate a moby's faces
              * (interior/back faces would punch through the front). Per-vertex Z is
              * what the real Z-buffer needs. */
-            double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,rv, &sx,&sy,&sat);
-            int unr = moby_gte_near_fixup(M, TR, (double)VX,(double)VY,(double)VZ, vzz,
+            double vzz = project((const float (*)[3])Mf,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,rv,
+                                 &sx,&sy,&sat);
+            int unr = moby_gte_near_fixup((const float (*)[3])Mf, TR, (double)VX,(double)VY,(double)VZ, vzz,
                                           mofx, mofy, rv, &sx, &sy);
             if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
             double fvz = vzz*vz_scale;
@@ -14153,7 +14328,7 @@ static void occl_sphere_box(const double o[3], double r, occl_box_t* b) {
     double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
     for (int k = 0; k < 8; k++) {
         double sx, sy; int sat;
-        project(MOBY_IDENT_Q12, NULL, o[0] + ((k & 1) ? r : -r), o[1] + ((k & 2) ? r : -r),
+        project(MOBY_IDENT_F, NULL, o[0] + ((k & 1) ? r : -r), o[1] + ((k & 2) ? r : -r),
                 o[2] + ((k & 4) ? r : -r), s_view.ofx, s_view.ofy, &s_view, &sx, &sy, &sat);
         if (k == 0 || sx < x0) x0 = sx;
         if (k == 0 || sx > x1) x1 = sx;
@@ -14726,9 +14901,10 @@ void moby_replay_world_offset(uint32_t moby, double out[3]) {
  * because only the camera-motion term needs it; the N*TR term carries S
  * already.
  *
- * A present whose staged camera words equal the tick's (the canonical present,
- * or alpha 1) for a moby with no own-motion offset returns with the record
- * untouched, so that leg stays bit-exact; so does a present with no tick
+ * M is rounded to Q12 for the paint key; Mf takes N*M at unit scale
+ * unrounded. A present whose staged camera words equal the tick's (the
+ * canonical present, or alpha 1) for a moby with no own-motion offset returns
+ * with the record untouched, so that leg stays bit-exact; so does a present with no tick
  * camera installed, a record whose header is not an address, or a singular
  * tick matrix. Host-side only: the staged camera is a sub-tick view copy and
  * no guest word is written.
@@ -14801,7 +14977,10 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t mob
     for (int r = 0; r < 3; r++) {
         f->TR_frac[r] = TR[r];
         f->TR_raw[r]  = (int32_t)lround(TR[r]);
-        for (int c = 0; c < 3; c++) f->M[r][c] = (int)lround(M[r][c]);
+        for (int c = 0; c < 3; c++) {
+            f->M[r][c] = (int)lround(M[r][c]);
+            f->Mf[r][c] = (float)(M[r][c] / 4096.0);
+        }
     }
 }
 
@@ -14848,7 +15027,7 @@ enum { REC_ROT_NOPAIR = 0, REC_ROT_SAME, REC_ROT_SWAPPED, REC_ROT_SWAPPED_FINE, 
  * is E(present) from moby_record_euler_at_present, so the matrix becomes
  * M * E(curr)^-1 * E(present); translation and scale are untouched. Where
  * E(present) equals E(curr) (every alpha-1 present, a moby that did not
- * turn), M is kept bit-exact.
+ * turn), M is kept bit-exact. Mf takes the same product unrounded.
  *
  * A moby whose colour word has bit 30 set takes the fine-angle composition
  * (Spyro 2 mobydraw.s:229-230 to .L8004419C, Spyro 3 mobydraw.s:227-228 to
@@ -14890,11 +15069,16 @@ static int record_rotation_to_present(CPUState* cpu, moby_fields* f, uint32_t mo
         for (int c = 0; c < 3; c++)
             Q[r][c] = Ei[r][0] * Ep[0][c] + Ei[r][1] * Ep[1][c] + Ei[r][2] * Ep[2][c];
     int M[3][3];
+    float Mf[3][3];
     for (int r = 0; r < 3; r++)
-        for (int c = 0; c < 3; c++)
+        for (int c = 0; c < 3; c++) {
             M[r][c] = (int)lround((double)f->M[r][0] * Q[0][c] + (double)f->M[r][1] * Q[1][c]
                                   + (double)f->M[r][2] * Q[2][c]);
+            Mf[r][c] = (float)((double)f->Mf[r][0] * Q[0][c] + (double)f->Mf[r][1] * Q[1][c]
+                               + (double)f->Mf[r][2] * Q[2][c]);
+        }
     memcpy(f->M, M, sizeof M);
+    memcpy(f->Mf, Mf, sizeof Mf);
     return fine ? REC_ROT_SWAPPED_FINE : REC_ROT_SWAPPED;
 }
 
@@ -15149,6 +15333,192 @@ static void rec_pose_from_current_queue(CPUState* cpu, uint32_t moby, moby_field
     if (moby_snapshot_curr_pose(cpu, moby, &oc, &pose)) moby_fields_set_pose(f, &pose);
 }
 
+/* A record's matrix is the camera·euler compose when it lies within this
+ * many Q12 units of ngte_compose_euler's at the tick (moby_mf_compose): the
+ * GTE compose ngte_compose_euler mirrors truncates the same way, so a modelled
+ * record differs from it only where the cull's fine-angle form borrows from
+ * a negative cosine (one unit) or the draw's FIXED_MUL row scale rounds. */
+#define MOBY_MF_TOL 8
+
+/* OPENPETE_MOBY_MF_CENSUS=1: per-second counts of the records moby_mf_compose
+ * composed, composed mirrored and left carried, with a histogram of the
+ * smaller element difference: 0, 1, 2, 3-8, 9-64, over 64. */
+static long s_mf_bins[3], s_mf_dh[6];
+
+/** @brief Count one moby_mf_compose verdict, and print the counts once per second of VBLs under OPENPETE_MOBY_MF_CENSUS=1.
+ * @param d The record's largest element difference from the compose (the smaller of the plain and mirrored forms).
+ * @param mir 1 when the mirrored form matched. */
+static void moby_mf_census(int d, int mir) {
+    static int s_on = -1; static unsigned s_next;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_MF_CENSUS"); s_on = e && *e == '1'; }
+    if (!s_on) return;
+    s_mf_bins[d > MOBY_MF_TOL ? 2 : mir]++;
+    s_mf_dh[d == 0 ? 0 : d == 1 ? 1 : d == 2 ? 2 : d <= 8 ? 3 : d <= 64 ? 4 : 5]++;
+    if (openpete_frame < s_next) return;
+    s_next = openpete_frame + 60u;
+    fprintf(stderr, "[moby-mf vbl=%u] composed=%ld mirrored=%ld carried=%ld d=%ld/%ld/%ld/%ld/%ld/%ld\n",
+            openpete_frame, s_mf_bins[0], s_mf_bins[1], s_mf_bins[2],
+            s_mf_dh[0], s_mf_dh[1], s_mf_dh[2], s_mf_dh[3], s_mf_dh[4], s_mf_dh[5]);
+}
+
+/** @brief Compose a record's projection rotation in float at the present's angles where its stored matrix is the camera·euler compose.
+ *
+ * The record's Q12 matrix Mq is tested against ngte_compose_euler(Ct, ec),
+ * the GTE compose at the tick's camera and euler, and against the same
+ * product with column 1 negated (the mirrored draw of a reflected moby,
+ * Spyro 3 mobydraw.s 0x800310E4-0x80031120). Within MOBY_MF_TOL the record
+ * is that compose and Mf becomes Cp·Ry·Rx·Rz at unit scale in float at the
+ * present's angles (ngte_compose_euler_mf), column 1 negated for the
+ * mirrored match. Otherwise Mf is left as the caller set it.
+ * @param cpu The guest CPU state, read only.
+ * @param Mq The record's stored matrix, Q12.
+ * @param Ct The camera matrix the tick composed against, Q12.
+ * @param ec The tick's euler sin/cos pairs, as the cull composed them.
+ * @param Cp The camera matrix this present projects through, Q12.
+ * @param ang The present's angles {Z, X, Y} in byte angles.
+ * @param Mf Receives the composed matrix when 1 is returned.
+ * @return 1 when composed, 0 when the record is not the compose. */
+static int moby_mf_compose(CPUState* cpu, const int Mq[3][3], const int Ct[3][3],
+                           const ngte_euler_sc* ec, const int Cp[3][3], const double ang[3],
+                           float Mf[3][3]) {
+    int C[3][3];
+    ngte_compose_euler(Ct, ec, C);
+    int d0 = 0, d1 = 0;
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) {
+            const int a = abs(Mq[r][c] - C[r][c]);
+            const int b = c == 1 ? abs(Mq[r][c] + C[r][c]) : a;
+            d0 = a > d0 ? a : d0;
+            d1 = b > d1 ? b : d1;
+        }
+    const int mir = d1 < d0, d = mir ? d1 : d0;
+    moby_mf_census(d, mir);
+    if (d > MOBY_MF_TOL) return 0;
+    float S[3][3];
+    ngte_mat_unit_f(Cp, S);
+    ngte_compose_euler_mf(cpu, (const float (*)[3])S, ang, Mf);
+    if (mir) for (int r = 0; r < 3; r++) Mf[r][1] = -Mf[r][1];
+    return 1;
+}
+
+/** @brief A moby state's euler as the cull composes it: the table sin/cos pairs and the same angles in fractional byte angles.
+ *
+ * The fine-angle form takes the 12-bit angles (moby_angles12) through
+ * moby_euler12 and their byte angles as angle / 16; the byte form the angle
+ * word's bytes through ngte_euler_sincos.
+ * @param cpu The guest CPU state, read only.
+ * @param st The state's bytes.
+ * @param len Their valid count.
+ * @param fine 1 for the fine-angle form.
+ * @param e Receives the pairs.
+ * @param ang Receives {Z, X, Y} in byte angles. */
+static void moby_state_euler(CPUState* cpu, const uint8_t* st, uint16_t len, int fine,
+                             ngte_euler_sc* e, double ang[3]) {
+    if (fine) {
+        int a[3];
+        moby_angles12(st, len, a);
+        const double ad[3] = { (double)a[0], (double)a[1], (double)a[2] };
+        moby_euler12(cpu, ad, e);
+        for (int k = 0; k < 3; k++) ang[k] = ad[k] / 16.0;
+        return;
+    }
+    const uint32_t ao = game_layout.moby.angle_off;
+    const uint32_t w = (uint32_t)st[ao] | ((uint32_t)st[ao + 1u] << 8) | ((uint32_t)st[ao + 2u] << 16);
+    ngte_euler_sincos(cpu, w, e);
+    ngte_word_angles(w, ang);
+}
+
+/* Bytes of a moby's RAM state moby_ram_state copies: the angle word and the
+ * colour word, at their layout offsets. */
+#define MOBY_RAM_STATE_LEN 256u
+
+/** @brief Copy a moby's angle and colour words from RAM into a zeroed state buffer at their layout offsets, the form moby_state_euler reads.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param st Receives the bytes, MOBY_RAM_STATE_LEN long.
+ * @return The valid length, 0 when an offset lies past the buffer. */
+static uint16_t moby_ram_state(CPUState* cpu, uint32_t moby, uint8_t st[MOBY_RAM_STATE_LEN]) {
+    const uint32_t ao = game_layout.moby.angle_off, co = game_layout.moby.colour_off;
+    memset(st, 0, MOBY_RAM_STATE_LEN);
+    if (ao + 4u > MOBY_RAM_STATE_LEN || co + 4u > MOBY_RAM_STATE_LEN) return 0;
+    for (uint32_t k = 0; k < 4u; k++) st[ao + k] = cpu->read_byte(moby + ao + k);
+    if (co) for (uint32_t k = 0; k < 4u; k++) st[co + k] = cpu->read_byte(moby + co + k);
+    return (uint16_t)MOBY_RAM_STATE_LEN;
+}
+
+/** @brief The projection rotation of a canonical cull record: the camera·euler compose in float where the record is that compose, else its own matrix at unit scale.
+ *
+ * The tick's euler is the moby's RAM angle word (the fine-angle form under
+ * colour bit 30), the camera the record's view's (moby_record_view), so the
+ * canonical present's float compose is the one an alpha-1 replay composes.
+ * @param cpu The guest CPU state, read only.
+ * @param R The record.
+ * @param Mf Receives the rotation at unit scale. */
+static void moby_canon_mf(CPUState* cpu, const moby_record_t* R, float Mf[3][3]) {
+    ngte_mat_unit_f(R->M, Mf);
+    if (R->moby < 0x80000000u) return;
+    uint8_t st[MOBY_RAM_STATE_LEN];
+    const uint16_t len = moby_ram_state(cpu, R->moby, st);
+    if (!len) return;
+    ngte_euler_sc ec;
+    double ang[3];
+    moby_state_euler(cpu, st, len, moby_fine_angles(st, len), &ec, ang);
+    const int (*C)[3] = (const int (*)[3])moby_record_view(R->moby)->cam_M;
+    moby_mf_compose(cpu, R->M, C, &ec, C, ang, Mf);
+}
+
+/** @brief The projection rotation of a replayed cull record: the camera·euler compose in float at this present where the record is that compose.
+ *
+ * The tick's euler and its form are record_rotation_to_present's: the
+ * record's reference state (rec_ref_state), the fine-angle form when the
+ * reference or either snapshot has colour bit 30, and the moby's RAM state
+ * when the moby has no snapshot pair. The present's angles are the pair's
+ * at record_euler_pair's phase, the tick's where it gives none. The tick's
+ * camera is the staged tick camera (record_replay_camera), else the present's.
+ * A record that is not the compose keeps the Mf record_rebase_to_present and
+ * record_rotation_to_present carried: N * Mq * Q at unit scale, unrounded.
+ * @param cpu The guest CPU state, read only.
+ * @param f The record fields; Mf is rewritten when the record is the compose.
+ * @param moby The Moby address.
+ * @param Mq The record's stored matrix, Q12, before the rebase. */
+static void record_replay_mf(CPUState* cpu, moby_fields* f, uint32_t moby, const int Mq[3][3]) {
+    if (f->header < 0x80000000u) return;
+    int Rp[3][3];
+    ngte_read_matrix(cpu, game_layout.cam.proj_matrix, Rp);
+    const int (*TM)[3];
+    const int32_t* TP;
+    const int (*Ct)[3] = record_replay_camera(&TM, &TP) ? TM : (const int (*)[3])Rp;
+    const openpete_interp_obj_t* o = moby_interp_find(moby);
+    const uint8_t* ref = o ? rec_ref_state(o) : NULL;
+    uint8_t ram[MOBY_RAM_STATE_LEN];
+    uint16_t len = o ? o->blob_len : 0;
+    if (!ref) {
+        len = moby_ram_state(cpu, moby, ram);
+        if (!len) return;
+        ref = ram;
+    }
+    const int fine = moby_fine_angles(ref, len)
+                     || (o && o->have_prev && moby_fine_angles(o->prev, o->blob_len))
+                     || (o && moby_fine_angles(o->curr, o->blob_len));
+    ngte_euler_sc ec;
+    double ang[3];
+    moby_state_euler(cpu, ref, len, fine, &ec, ang);
+    double t;
+    const openpete_interp_obj_t* pr = record_euler_pair(cpu, moby, &t);
+    if (pr) {
+        int p[3], q[3];
+        moby_angles12(pr->prev, pr->blob_len, p);
+        moby_angles12(pr->curr, pr->blob_len, q);
+        for (int k = 0; k < 3; k++) {
+            if (!fine) { ang[k] = lerp_byte_angle(p[k] >> 4, q[k] >> 4, t); continue; }
+            int d = q[k] - p[k];
+            if (d > 2048) d -= 4096; else if (d < -2048) d += 4096;
+            ang[k] = ((double)p[k] + (double)d * t) / 16.0;
+        }
+    }
+    moby_mf_compose(cpu, Mq, Ct, &ec, (const int (*)[3])Rp, ang, f->Mf);
+}
+
 /** @brief Build a record's fields by replaying the record the cull wrote, on a game with no host record builder.
  *
  * The record is read exactly as the canonical pass read it, so the pose is
@@ -15161,7 +15531,8 @@ static void rec_pose_from_current_queue(CPUState* cpu, uint32_t moby, moby_field
  * carries the tick's grid residue turned onto this camera, so the centre at
  * this present replaces it where the game stores the scaled centre
  * (moby_record_centre_final); TR_raw keeps the rebased integer for the paint
- * key.
+ * key. Mf, the projection's rotation, is composed in float at this present
+ * where the record's matrix is the camera·euler compose (record_replay_mf).
  * @param cpu The guest CPU state, read only.
  * @param rec The record's guest address.
  * @param moby The Moby address.
@@ -15179,6 +15550,7 @@ static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby
     f->mscol   = LR.material;
     f->metal   = (int)((LR.material >> 24) & 0xFFu);
     memcpy(f->M, LR.M, sizeof f->M);
+    ngte_mat_unit_f(LR.M, f->Mf);
     for (int k = 0; k < 3; k++) {
         f->TR_raw[k]  = LR.TR_raw[k];
         f->TR_frac[k] = (double)LR.TR_raw[k];
@@ -15192,6 +15564,7 @@ static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby
     }
     record_rebase_to_present(cpu, f, moby);
     rot_bins[record_rotation_to_present(cpu, f, moby)]++;
+    record_replay_mf(cpu, f, moby, (const int (*)[3])LR.M);
     double ctr[3];
     if (moby_record_centre_final(cpu, moby, f->header, ctr))
         memcpy(f->TR_frac, ctr, sizeof ctr);
@@ -15746,8 +16119,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 gpf_frac = moby_gpf_subtick(mobys[i], (int)(rw0 & 0xFFu), gpf_frac);
             }
         }
-        if (!moby_draw_row_scale(cpu, recs[i], s_cur_mat, f.M))
-            moby_ratio_row_scale(cpu, recs[i], mobys[i], f.M);
+        if (!moby_draw_row_scale(cpu, recs[i], s_cur_mat, f.M, f.Mf))
+            moby_ratio_row_scale(cpu, recs[i], mobys[i], f.M, f.Mf);
         }
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
@@ -15794,7 +16167,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
           const double depth_k = moby_record_depth_k(cpu, mobys[i]);
           got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0,
                                     pd.dprev, pd.dalpha, gpf_frac, depth_k,
-                                    f.TR_raw, f.TR_frac, f.M, &zsf4, moby_record_view(mobys[i]),
+                                    f.TR_raw, f.TR_frac, f.M, (const float (*)[3])f.Mf, &zsf4,
+                                    moby_record_view(mobys[i]),
                                     s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           moby_sphere_shell_pull(cpu, mobys[i], f.header, depth_k, s_proj + s_proj_n, got);
           if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
@@ -15856,7 +16230,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_recs[s_nrecs].wbase_p1 = moby_present_wbase(cpu, mobys[i]);
         moby_wbase_trace(cpu, recs[i], mobys[i], s_recs[s_nrecs].wbase_p1);
         s_recs[s_nrecs].model_held = pd.model_held;
-        memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
+        memcpy(s_recs[s_nrecs].Mf, f.Mf, sizeof s_recs[s_nrecs].Mf);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         /* The colour fade follows this present's centre and the authored term
          * between the two ticks; the tier above stays the tick's. */

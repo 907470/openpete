@@ -270,6 +270,18 @@ int moby_record_halfword_offset(uint32_t moby, uint32_t off, double* out);
 int moby_record_euler_at_present(struct CPUState* cpu, uint32_t moby,
                                  ngte_euler_sc* e);
 
+/** @brief The euler angles a record displays at this present, as fractional byte angles {Z, X, Y}.
+ *
+ * The angles moby_record_euler_at_present samples the table at, before its
+ * rounding to integer sine and cosine: each axis the shortest arc between the
+ * pair's previous and current byte at the pair's phase, under the same
+ * conditions.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param ang Receives {Z, X, Y}; left untouched when 0 is returned.
+ * @return 1 when the pair supplies the angles, else 0 (the caller takes the m_Rotation word). */
+int moby_record_angles_at_present(struct CPUState* cpu, uint32_t moby, double ang[3]);
+
 /** @brief Set the occlusion cull's pan allowance: the camera's rotation this tick as screen-pixel motion.
  *
  * The value is rad/tick times an overestimated pixels-per-radian. The feeder
