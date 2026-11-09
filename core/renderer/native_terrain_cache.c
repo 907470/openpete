@@ -585,20 +585,33 @@ static int tc_buf_max(void)
     return v;
 }
 
+/** @brief Return OPENPETE_TC_PREV_CAP, the previous-tick store capacity a harness forces, in units.
+ *
+ * Read once. Outside the knob registry.
+ * @return The units, or 0 when unset or below 1. */
+static uint32_t tc_prev_cap_env(void)
+{
+    static int read;
+    static uint32_t v;
+    if (!read) {
+        read = 1;
+        const char *e = getenv("OPENPETE_TC_PREV_CAP");
+        const long x = (e && *e) ? strtol(e, NULL, 10) : 0;
+        v = x >= 1 ? (uint32_t)x : 0u;
+    }
+    return v;
+}
+
 /** @brief Return the previous-tick store's capacity at init, in units: OPENPETE_TC_PREV_CAP, else TC_PREV_CAP.
  *
- * Read once; a value below 1 takes TC_PREV_CAP. A harness shrinks it so
- * the store runs out. Outside the knob registry.
+ * A harness shrinks it so the store runs out; set, it also overrides the
+ * level-edge estimate (openpete_tercache_request_resize), so the store
+ * starts every level at the squeeze and grows from there.
  * @return Units. */
 static uint32_t tc_prev_cap_init(void)
 {
-    static uint32_t v;
-    if (!v) {
-        const char *e = getenv("OPENPETE_TC_PREV_CAP");
-        const long x = (e && *e) ? strtol(e, NULL, 10) : 0;
-        v = x >= 1 ? (uint32_t)x : TC_PREV_CAP;
-    }
-    return v;
+    const uint32_t v = tc_prev_cap_env();
+    return v ? v : TC_PREV_CAP;
 }
 
 static long s_refuse_cnt[TC_SITE_N], s_refuse_skip[TC_SITE_N];
@@ -2193,7 +2206,7 @@ void openpete_tercache_request_resize(int level_id)
     s_tc.rz_window = 1;
     s_tc.rz_store_cap = s_tc.prev_cap;
     memcpy(s_tc.rz_est, s_tc.est, sizeof s_tc.rz_est);
-    if (s_tc.est_have && s_tc.est_prev > s_tc.rz_store_cap)
+    if (s_tc.est_have && !tc_prev_cap_env() && s_tc.est_prev > s_tc.rz_store_cap)
         s_tc.rz_store_cap = s_tc.est_prev > UINT32_MAX / 2u ? UINT32_MAX / 2u : (uint32_t)s_tc.est_prev;
     atomic_store_explicit(&s_tc.rz_req, 1, memory_order_release);
 }
@@ -2824,7 +2837,8 @@ void openpete_tercache_set_content(int level_id, const openpete_tercache_content
         const uint32_t f = tc_floor_cap(a), v = tc_est_sat(e[a]);
         s_tc.est[a] = v > f ? v : f;
     }
-    s_tc.est_prev = D * (c->prev_rec + c->split_anim_units) + c->coltab_units + c->split_units;
+    s_tc.est_prev = D * (c->prev_rec + c->split_anim_units) + c->coltab_units + c->split_units
+                  + c->ring_units;
     if (!s_tc.est_have || level_id != s_tc.est_level) {
         tc_est_census_level();
         s_tc.est_level = level_id;

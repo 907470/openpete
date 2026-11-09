@@ -39,11 +39,16 @@
 #                 hold_drops no higher than the stock run's, claims_sum=0;
 #                 migrate_ticks is reported.
 #   store         OPENPETE_TERRAIN_ANIMNEAR=1 and OPENPETE_TERRAIN_CANIMNEAR=1
-#                 with OPENPETE_TC_PREV_CAP small and the position ring's
+#                 with OPENPETE_TC_PREV_CAP small (it overrides the
+#                 level-edge store estimate) and the position ring's
 #                 starting depth squeezed to 1 (OPENPETE_TC_RING_INITIAL=1),
 #                 so the previous-tick store and the rings must grow:
-#                 prev_grow>0, prev_fail=0, claims_sum=0, ring_grow>0,
-#                 ring_fail=0; ring_writes=0 is VACUOUS.
+#                 prev_grow>0, prev_fail=0, claims_sum=0, ring_grow>0;
+#                 ring_writes=0 is VACUOUS. A ring run the squeezed store
+#                 refuses while its growth is pending re-bakes the sector
+#                 whole (ring_fail, ring_rebakes and prev_grow_claims are
+#                 reported, not checked); steady-pose checks ring_fail=0
+#                 at the store's own sizing.
 #   failed-edge   OPENPETE_TC_REFUSE=edge:* on a run that crosses a level edge
 #                 with a held scene: failed_edges>0, consolidations>0,
 #                 hold_takes>0, sealed_allocs=0, hold_drops=0, claims_sum=0;
@@ -210,7 +215,7 @@ if want store; then
     ran=1
     run_leg store 1900 OPENPETE_TERRAIN_ANIMNEAR=1 OPENPETE_TERRAIN_CANIMNEAR=1 \
         OPENPETE_TC_PREV_CAP=256 OPENPETE_TC_RING_INITIAL=1 -- --skip-to-level "$STORE_AREA" --lod extended
-    check store prev_grow\>0 prev_fail=0 claims_sum=0 ring_grow\>0 ring_fail=0
+    check store prev_grow\>0 prev_fail=0 claims_sum=0 ring_grow\>0
     ring_vacuous store
 fi
 

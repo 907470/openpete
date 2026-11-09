@@ -10304,10 +10304,13 @@ static void tj_level_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t n, uint
 static uint32_t tj_sector_addv(uint32_t q);
 static uint32_t tj_sector_recs(uint32_t q);
 
+static int tgpu_ring_on(void);
+
 /** @brief Tests whether an animation-list member sector re-bakes on every roll.
  *
  * A poly-anim sector re-bakes at every vertex roll (its slot's animRoll
- * against the sector's vrollPres). A colour-only sector re-bakes at every
+ * against the sector's vrollPres) unless it bakes ring faces (ring), whose
+ * roll writes a position-ring entry. A colour-only sector re-bakes at every
  * colour roll unless it bakes against a colour table (tgpu_coltab_mode,
  * default under OPENPETE_TERRAIN_CANIMNEAR), whose roll rewrites the table
  * and not the chunks (tgpu_roll_free). A colour-table bake with a face
@@ -10316,9 +10319,10 @@ static uint32_t tj_sector_recs(uint32_t q);
  * sector is counted roll-free and its extra copies take the watermark
  * growth.
  * @param m The sector's lists: bit 0 vertex, bit 1 colour.
+ * @param ring 1 for a poly-anim sector baked with ring faces (tgpu_content_ring).
  * @return 1 for a sector that re-bakes on every roll, else 0. */
-static int tgpu_content_rolls(uint8_t m) {
-    return (m & 1u) || ((m & 2u) && !tgpu_canimnear_on());
+static int tgpu_content_rolls(uint8_t m, int ring) {
+    return ((m & 1u) && !ring) || ((m & 2u) && !tgpu_canimnear_on());
 }
 
 /* One sector's content figures. Per draw class (OPTC_ARENA_OPAQUE .. LP):
@@ -10333,7 +10337,18 @@ typedef struct {
     uint64_t hpf, lpf, hpc, lpc;
     uint64_t ca[OPTC_CLASS_COUNT - 1];   /* anim-cell records per HP draw class */
     int texanim;                         /* an HP face is on an animated tile */
+    uint64_t ring_ent;                   /* store units of one position-ring entry;
+                                          * 0 for an imported sector, which bakes
+                                          * its positions (tgpu_ring_sector) */
 } tgpu_sec_cls;
+
+/** @brief Tests whether a list member sector bakes ring faces: a poly-anim sector of the scene with the position ring on (tgpu_ring_sector).
+ * @param m The sector's lists: bit 0 vertex, bit 1 colour.
+ * @param v The sector's figures.
+ * @return 1 for ring faces, else 0. */
+static int tgpu_content_ring(uint8_t m, const tgpu_sec_cls* v) {
+    return (m & 1u) && v->ring_ent && tgpu_ring_on();
+}
 
 /** @brief Adds one sector to the plain, anim, near-churn, cell and store figures of a content bound.
  *
@@ -10342,7 +10357,8 @@ typedef struct {
  * re-bakes it (texanim). A poly-anim sector (vertex list) bakes the full
  * plain cost into the anim family, its near twins re-bake every roll under
  * OPENPETE_TERRAIN_ANIMNEAR, and it takes one previous-corner record per
- * face. A colour-only sector bakes the flat variant alone under
+ * face; baked with ring faces (tgpu_content_ring) it takes a position ring
+ * of OPTC_COLTAB_RING entries instead and re-bakes on no roll. A colour-only sector bakes the flat variant alone under
  * OPENPETE_TERRAIN_CANIMNEAR=0; by default it bakes the HQ variants against
  * a colour-table ring of OPTC_COLTAB_RING entries of 1 + 2 x (LP + 2 x HP
  * colours) words. A member's anim figures also go to the roll figures when
@@ -10357,7 +10373,8 @@ typedef struct {
 static void tgpu_content_add(openpete_tercache_content* c, uint8_t m, const tgpu_sec_cls* v,
                              uint64_t cellK) {
     c->cell_r += cellK * v->hpf;
-    const int rolls = tgpu_content_rolls(m) || v->texanim;
+    const int ring = tgpu_content_ring(m, v);
+    const int rolls = tgpu_content_rolls(m, ring) || v->texanim;
     for (int k = 0; k < OPTC_CLASS_COUNT - 1; k++) {
         c->ca_r[k] += v->ca[k];
         c->ca_roll_r[k] += rolls ? v->ca[k] : 0u;
@@ -10377,7 +10394,8 @@ static void tgpu_content_add(openpete_tercache_content* c, uint8_t m, const tgpu
         c->roll_v[k] += rolls ? sv[k] : 0u;
         c->animnear_v[k] += near ? v->full[k] : 0u;
     }
-    if (m & 1u) c->prev_rec += v->hpf + v->lpf;
+    if (ring) c->ring_units += OPTC_COLTAB_RING * v->ring_ent;
+    else if (m & 1u) c->prev_rec += v->hpf + v->lpf;
     if ((m & 2u) && coltab)
         c->coltab_units += OPTC_COLTAB_RING *
             ((1u + 2u * (v->lpc + 2u * v->hpc) + OPTC_PREV_REC_WORDS - 1u) / OPTC_PREV_REC_WORDS);
@@ -10448,7 +10466,8 @@ static void tgpu_content_face_cells(CPUState* cpu, const tsface_t* F, uint32_t h
 /** @brief Reads one sector's content figures, splitting its plain vertex bound over the draw classes from its decoded faces.
  *
  * The header words +0x10 and +0x14 give the LP and HP face counts (bits
- * 16-23) and colour counts (bits 8-15). A scene sector whose LP faces
+ * 16-23), colour counts (bits 8-15) and vertex counts (bits 0-7), which
+ * size a position-ring entry (tgpu_ring_ent's layout). A scene sector whose LP faces
  * match an HP source sector (s_tsv.borHp, borLp) adds that source sector's
  * faces, the most tsimp_attach borrows onto it. The sector's HP and LP
  * faces are decoded with tsc_decode_faces, the decode the bake reads. An
@@ -10489,6 +10508,8 @@ static void tgpu_content_classes(CPUState* cpu, uint32_t s, uint32_t q, uint32_t
     const uint64_t addv = tj_sector_addv(q);
     out->hpf = (uint64_t)nHpF + borHp; out->lpf = (uint64_t)nLpF + borLp;
     out->hpc = nHpC; out->lpc = nLpC;
+    out->ring_ent = virt ? 0u : (1u + 3u * ((g3 & 0xFFu) + (g4 & 0xFFu)) + OPTC_PREV_REC_WORDS - 1u)
+                              / OPTC_PREV_REC_WORDS;
     const uint32_t lpFaces = s + 0x1C + ((g3 & 0xFFu) + nLpC) * 4u;
     const uint32_t hpFaces = s + 0x1C + ((g4 >> 24) & 0xFFu) * 4u + ((g4 & 0xFFu) + nHpC * 2u) * 4u;
     tsc_decode_faces(&src, hpFaces, nHpF, 16, lqTable, hqTable, texTblMode, 0, F);
@@ -10563,7 +10584,7 @@ static void tgpu_content(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt, 
         tgpu_sec_cls v;
         tgpu_content_classes(cpu, s, q, guestCnt, mem, lqTable, hqTable, texTblMode, &v);
         tgpu_content_add(c, mem, &v, cellK);
-        if (tgpu_content_rolls(mem)) c->split_anim_units += 4u * (uint64_t)tj_sector_recs(q);
+        if (tgpu_content_rolls(mem, tgpu_content_ring(mem, &v))) c->split_anim_units += 4u * (uint64_t)tj_sector_recs(q);
         else c->split_units += (mem ? 4u : 2u) * (uint64_t)tj_sector_recs(q);
         c->sectors++;
     }

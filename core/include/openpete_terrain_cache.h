@@ -1027,7 +1027,8 @@ void openpete_tercache_prev_free(uint32_t first, int count);
  * The device-owning thread allocates one fresh {vb, pv} pair per arena,
  * sized at the estimate openpete_tercache_set_content made, raised to the
  * floor, and a fresh previous-tick store at max(store estimate, current
- * capacity) (present_service), since device objects are
+ * capacity), the current capacity alone under the harness squeeze
+ * OPENPETE_TC_PREV_CAP (present_service), since device objects are
  * illegal on the builder's thread. The builder adopts them at its next
  * frame_begin: each arena collapses to one buffer whose bookkeeping resets
  * to high = 0 with an empty free list, the store's allocator resets, and
@@ -1310,9 +1311,15 @@ typedef struct {
      * re-bake on every roll or tile step. */
     uint64_t ca_r[OPTC_CLASS_COUNT - 1], ca_roll_r[OPTC_CLASS_COUNT - 1];
     /* Previous-tick store units: one previous-corner record per HP and LP
-     * face of each poly-anim sector, and the colour-table rings of the
-     * colour-anim sectors (0 unless their near chunks read a table). */
+     * face of each poly-anim sector baked with its positions, and the
+     * colour-table rings of the colour-anim sectors (0 unless their near
+     * chunks read a table). */
     uint64_t prev_rec, coltab_units;
+    /* The position rings of the poly-anim sectors baked with ring faces:
+     * OPTC_COLTAB_RING entries of one header word and three words per LP
+     * and HP vertex, held once per residency (a roll writes an entry and
+     * frees nothing). */
+    uint64_t ring_units;
     /* The store units the marked-edge split's records take: split_units 2
      * per record of a plain sector and 4 per record of a roll-free anim
      * sector, split_anim_units 4 per record of an anim sector that re-bakes
@@ -1339,7 +1346,7 @@ typedef struct {
  * cells cell_r x 2 / N; every other arena, and any estimate below it, the
  * floor (16,384 vertices, 1,024 records on a cell arena). The
  * store's estimate is (prev_rec + split_anim_units) x the defer factor +
- * coltab_units + split_units. Prints the outgoing figures' `[tc-est]` census line when the level changes.
+ * coltab_units + split_units + ring_units. Prints the outgoing figures' `[tc-est]` census line when the level changes.
  * @param level_id The level the table belongs to.
  * @param c The content bound. */
 void openpete_tercache_set_content(int level_id, const openpete_tercache_content *c);
