@@ -82,6 +82,9 @@
 #include "openpete_interp_objs.h"   /* the per-record prev/curr snapshots */
 #include "openpete_psx.h"           /* openpete_psx_to_host_span */
 #include "game_layout.h"
+#include "renderer/subtick_anchor_chk.h"
+
+static int s_sac_live;   /* the sub-tick anchor probe judges this present's points */
 
 #include <math.h>
 #include <stdint.h>
@@ -137,9 +140,11 @@ enum { TR_SRC_NONE = 0, TR_SRC_RIBBON, TR_SRC_MESH };
  * near plane cut (fan 1) holds n corners in winding order and feeds as a fan
  * from corner 0; n below 3 feeds nothing. `near` marks a build with a corner
  * short of TR_NEAR_M3, which takes the near-plane path, and `clipped` one the
- * plane cut, whichever form it took. */
+ * plane cut, whichever form it took. `vz` is the mean full-world view Z of the
+ * shown points the corners sit about, under the build's view. */
 typedef struct {
     int      n, fan, near, clipped;
+    double   vz;
     float    x[TR_POLY_MAX], y[TR_POLY_MAX], u[TR_POLY_MAX], v[TR_POLY_MAX];
     uint32_t rgb[TR_POLY_MAX];
 } tr_poly;
@@ -831,12 +836,27 @@ static void tr_near_census(const tr_item* set, int n) {
                 c[1].items, c[1].unpaired, c[1].unbuilt, c[1].near, c[1].clipped, c[1].culled);
 }
 
+/** @brief The depth an item feeds at: the tick's, moved by its shown points' view-Z change on a sub-tick build.
+ *
+ * The tick's depth is the routine's own (a ribbon segment's mean MAC3, a
+ * mesh entry's summed SZ), from the same points the corners sit about, so
+ * the sub-tick build moves it by the mean view Z the points gained or lost
+ * between the tick's view and the present's. Equal to the tick's depth for
+ * the capture's build, and for an unbuilt item, which has no shown points.
+ * @param it The item.
+ * @param q The build being fed, or NULL for an unbuilt item.
+ * @return The scene depth, clamped at 1. */
+static float tr_item_depth(const tr_item* it, const tr_poly* q) {
+    if (q != &it->pp || sac_tick_depth(1)) return it->depth;
+    return openpete_native_scene_viewz(openpete_worldvz_full((float)((double)it->depth + q->vz - it->b.vz)));
+}
+
 /** @brief Feeds one item to the native scene as world triangles.
  *
  * An unclipped build or an unbuilt item feeds as the primitive does: a quad
  * split into (0,1,2) and (1,3,2), a triangle (0,1,2) alone. A polygon the
  * near plane cut feeds as a fan from its corner 0. Every vertex takes the
- * item's single depth. A built item's corners, texture coordinates and
+ * item's single depth (tr_item_depth). A built item's corners, texture coordinates and
  * colours are its float build, the sub-tick one while the rebase is active
  * and the capture's otherwise; an unbuilt item feeds the routine's corners.
  * Only 3 and 4 vertex primitives are fed. Counts the triangles fed.
@@ -850,6 +870,7 @@ static void tr_add_prim(const tr_item* it) {
     float x[4], y[4], u[4], v[4];
     uint32_t rgb[4];
     const tr_poly* q = it->built ? (s_reb_active ? &it->pp : &it->b) : NULL;
+    const float depth = tr_item_depth(it, q);
     if (q && q->fan) {
         for (int i = 1; i + 1 < q->n; i++) {
             const int idx[3] = { 0, i, i + 1 };
@@ -858,7 +879,7 @@ static void tr_add_prim(const tr_item* it) {
                 x[k] = q->x[j]; y[k] = q->y[j]; u[k] = q->u[j]; v[k] = q->v[j]; rgb[k] = q->rgb[j];
             }
             x[3] = x[2]; y[3] = y[2]; u[3] = u[2]; v[3] = v[2]; rgb[3] = rgb[2];
-            s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, it->depth, tpp, blend, 3);
+            s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, depth, tpp, blend, 3);
         }
         return;
     }
@@ -870,7 +891,7 @@ static void tr_add_prim(const tr_item* it) {
         if (q) { x[k] = q->x[j]; y[k] = q->y[j]; u[k] = q->u[j]; v[k] = q->v[j]; rgb[k] = q->rgb[j]; }
         else   { x[k] = p->x[j]; y[k] = p->y[j]; u[k] = (float)p->u[j]; v[k] = (float)p->v[j]; rgb[k] = p->rgb[j]; }
     }
-    s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, it->depth, tpp, blend, p->nv);
+    s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, depth, tpp, blend, p->nv);
 }
 
 /** @brief Feeds a set of items to the native scene under the tracer tag.
@@ -1066,11 +1087,12 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
  * is clipped against a near plane in camera space and projected in float,
  * at capture and at every present alike, so the shown pose decides what
  * remains of it. At the end of the tick's interval the replay emits the
- * capture's build verbatim.
+ * capture's build verbatim. A built item's depth is the canonical pairing's,
+ * moved by the view Z its shown points gained or lost between the tick's
+ * view and the present's (tr_item_depth).
  *
- * Out of scope, each its own channel of the same record: the ribbon's DPCS
- * fade by the head's depth and along the ring, and the primitives' depth,
- * which the replay keeps from the canonical pairing. */
+ * Out of scope, its own channel of the same record: the ribbon's DPCS fade by
+ * the head's depth and along the ring. */
 
 /* A point's speed ceiling, in full world units per tick. The store is keyed by
  * slot address, so a slot a new record respawns into inside one tick pairs
@@ -1126,14 +1148,91 @@ static int tr_prev_point(int src, const tr_corner* c, int32_t w[3]) {
     return 1;
 }
 
+/** @brief Resolves the world point a corner shows at a present below alpha 1.
+ *
+ * The point is the tick's point moved toward its previous point by
+ * (1 - alpha); a previous point farther than TR_REUSE_CEILING is not used and
+ * the point stays at the tick's. Counts the lerped and held points per
+ * producer.
+ * @param src The corner's producer.
+ * @param c The corner.
+ * @param alpha The present's position in the tick interval, below 1.
+ * @param p Holds the tick's point on entry; receives the shown point.
+ * @param prev Receives the previous point when one was used.
+ * @return 1 when the point was lerped toward a previous point, 0 when held. */
+static int tr_point_at(int src, const tr_corner* c, double alpha, double p[3], double prev[3]) {
+    int32_t pw[3];
+    int lerped = 0;
+    if (tr_prev_point(src, c, pw)) {
+        double d[3], sq = 0.0;
+        for (int j = 0; j < 3; j++) { d[j] = (double)pw[j] - p[j]; sq += d[j] * d[j]; }
+        if (sq <= TR_REUSE_CEILING * TR_REUSE_CEILING) {
+            for (int j = 0; j < 3; j++) { prev[j] = pw[j]; p[j] += d[j] * (1.0 - alpha); }
+            s_reb_worldmax = fmax(s_reb_worldmax, sqrt(sq));
+            lerped = 1;
+        }
+    }
+    s_reb_stat[src][lerped ? 0 : 1]++;
+    return lerped;
+}
+
+/** @brief Prints why a held point found no previous state, at sub-tick anchor probe level 2.
+ *
+ * The reasons are the keyed store's: no entry, no previous snapshot, stamps
+ * out of order, a pair spanning more than TR_PAIR_STALE_NS, or another
+ * refusal (a ring that does not decode, a changed live pointer, a step past
+ * TR_REUSE_CEILING).
+ * @param src The corner's producer.
+ * @param c The corner. */
+static void tr_sac_held_line(int src, const tr_corner* c) {
+    if (sac_level() < 2) return;
+    const openpete_interp_obj_t* so = openpete_interp_objs_find(c->key);
+    const char* why = "other";
+    if (!so) why = "nokey";
+    else if (!so->have_prev) why = "noprev";
+    else if (so->curr_ns <= so->prev_ns) why = "order";
+    else if (so->curr_ns - so->prev_ns > TR_PAIR_STALE_NS) why = "stale";
+    const double T = (double)g_openpete_tick_period_ns;
+    const double age = so ? (double)((int64_t)openpete_interp_present_now() - (int64_t)so->curr_ns) / T : -1.0;
+    const double span = (so && so->have_prev) ? (double)(so->curr_ns - so->prev_ns) / T : -1.0;
+    fprintf(stderr, "[sac-held %s vbl=%u] key=%08X why=%s curr_age_ticks=%.2f span_ticks=%.2f\n",
+            src == TR_SRC_MESH ? "mesh" : "ribbon", openpete_frame, c->key, why, age, span);
+}
+
+/** @brief Hands one shown point to the sub-tick anchor probe with the keyed store's stamps.
+ * @param src The corner's producer.
+ * @param c The corner.
+ * @param v The present's view.
+ * @param prev The previous point the shown point was lerped from, or NULL when held.
+ * @param o The shown point's projection, as fed. */
+static void tr_sac_point(int src, const tr_corner* c, const ngte_view* v, const double* prev,
+                         const ngte_proj* o) {
+    if (o->m3 < TR_NEAR_M3) return;
+    if (!prev) tr_sac_held_line(src, c);
+    const openpete_interp_obj_t* so = openpete_interp_objs_find(c->key);
+    const double cw[3] = { (double)c->w[0], (double)c->w[1], (double)c->w[2] };
+    sac_judge(src == TR_SRC_MESH ? SAC_MESH : SAC_RIBBON, c->key ^ ((uint32_t)c->age << 24), prev, cw,
+              so ? (int64_t)so->prev_ns : 0, so ? (int64_t)so->curr_ns : 0, o->sx, o->sy, v);
+}
+
+/** @brief Hands one built item's depth on this present to the sub-tick anchor probe.
+ *
+ * The true depth is the tick's moved by the shown points' view-Z change; the
+ * stale one is the tick's.
+ * @param it The item, its sub-tick build done.
+ * @param alpha The present's alpha. */
+static void tr_sac_depth(const tr_item* it, double alpha) {
+    const double truth = (double)it->depth + it->pp.vz - it->b.vz;
+    sac_depth(it->src == TR_SRC_MESH ? SAC_MESH : SAC_RIBBON, it->depth, tr_item_depth(it, &it->pp), truth, alpha);
+}
+
 /** @brief Projects the point a corner was placed about as a present shows it.
  *
- * Below alpha 1 the point is the tick's point moved toward its previous point
- * by (1 - alpha); a previous point farther than TR_REUSE_CEILING is not used
- * and the point stays at the tick's. Counts the lerped and held points per
- * producer below alpha 1. The projection's m1, m2 and m3 are the point in
- * camera space; its screen position is valid only at m3 >= TR_NEAR_M3, which
- * the caller tests.
+ * Below alpha 1 the point is tr_point_at's; at alpha 1 or above it is the
+ * tick's. The projection's m1, m2 and m3 are the point in camera space; its
+ * screen position is valid only at m3 >= TR_NEAR_M3, which the caller tests.
+ * While the sub-tick anchor probe is live each shown point is handed to it
+ * (tr_sac_point).
  * @param src The corner's producer.
  * @param c The corner.
  * @param v The view to project under.
@@ -1143,21 +1242,10 @@ static int tr_prev_point(int src, const tr_corner* c, int32_t w[3]) {
 static int tr_shown(int src, const tr_corner* c, const ngte_view* v, double alpha, ngte_proj* o) {
     if (!c->key) return 0;
     double p[3] = { (double)c->w[0], (double)c->w[1], (double)c->w[2] };
-    if (alpha < 1.0) {
-        int32_t pw[3];
-        int lerped = 0;
-        if (tr_prev_point(src, c, pw)) {
-            double d[3], sq = 0.0;
-            for (int j = 0; j < 3; j++) { d[j] = (double)pw[j] - p[j]; sq += d[j] * d[j]; }
-            if (sq <= TR_REUSE_CEILING * TR_REUSE_CEILING) {
-                for (int j = 0; j < 3; j++) p[j] += d[j] * (1.0 - alpha);
-                s_reb_worldmax = fmax(s_reb_worldmax, sqrt(sq));
-                lerped = 1;
-            }
-        }
-        s_reb_stat[src][lerped ? 0 : 1]++;
-    }
+    double prev[3];
+    const int lerped = alpha < 1.0 && tr_point_at(src, c, alpha, p, prev);
     tr_project_world(v, p, o);
+    if (s_sac_live && alpha < 1.0) tr_sac_point(src, c, v, lerped ? prev : NULL, o);
     return 1;
 }
 
@@ -1317,15 +1405,19 @@ static void tr_poly_attrs(const ngte_prim* p, tr_poly* o) {
  * @param alpha The present's position in the tick interval.
  * @param n The corner count.
  * @param s Receives the n shown projections.
+ * @param o Receives in vz the mean view Z of the n shown points.
  * @return -1 when a corner has no source, 1 when every shown corner is at or
  *         past TR_NEAR_M3, else 0. */
 static int tr_shown_corners(const tr_item* it, const ngte_view* v, double alpha, int n,
-                            ngte_proj s[4]) {
+                            ngte_proj s[4], tr_poly* o) {
     int front = 1;
+    double sum = 0.0;
     for (int k = 0; k < n; k++) {
         if (!tr_shown(it->src, &it->c[k], v, alpha, &s[k])) return -1;
         if (s[k].m3 < TR_NEAR_M3) front = 0;
+        sum += s[k].m3;
     }
+    o->vz = sum / n;
     return front;
 }
 
@@ -1340,7 +1432,7 @@ static int msh_build(const tr_item* it, const ngte_view* v, double alpha, tr_pol
     const ngte_prim* p = &it->p;
     const int n = p->nv == 3 ? 3 : 4;
     ngte_proj s[4];
-    const int front = tr_shown_corners(it, v, alpha, n, s);
+    const int front = tr_shown_corners(it, v, alpha, n, s, o);
     if (front < 0) return 0;
     if (front) {
         o->n = n;
@@ -1431,7 +1523,7 @@ static int rib_build(const tr_item* it, const ngte_view* v, double alpha, tr_pol
     const double hm3 = tr_shown(it->src, &it->head, v, alpha, &h) ? h.m3 : it->head.m3;
     const double a = rib_head_width(it->wb, hm3, v->s);
     ngte_proj s[4];
-    const int front = tr_shown_corners(it, v, alpha, 4, s);
+    const int front = tr_shown_corners(it, v, alpha, 4, s, o);
     if (front < 0) return 0;
     if (!front) { rib_clip(it, v, a, s, o); return 1; }
     o->n = 4;
@@ -1854,7 +1946,9 @@ static void tr_rebase_all(const ngte_view* v, double alpha) {
     }
     for (int i = 0; i < s_tick_n; i++) {
         tr_item* it = &s_tick[i];
-        if (it->built) (void)tr_item_build(it, v, alpha, &it->pp);
+        if (!it->built) continue;
+        if (!tr_item_build(it, v, alpha, &it->pp)) it->pp.vz = it->b.vz;
+        if (s_sac_live) tr_sac_depth(it, alpha);
     }
     s_reb_active = 1;
 }
@@ -1868,7 +1962,11 @@ void tracers_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
         const double a = (bracketed && pick < 0) ? alpha : 1.0;
         ngte_view v;
         ngte_view_build(cpu, &v);
+        s_sac_live = sac_level() > 0 && bracketed && pick < 0;
+        if (s_sac_live) sac_present_begin(SAC_RIBBON, a);
+        if (sac_level() > 0 && !bracketed && pick < 0 && s_tick_n > 0) sac_unbracketed_present(SAC_RIBBON);
         tr_rebase_all(&v, a);
+        s_sac_live = 0;
         if (pick < 0) tr_vtx_present(&v, a);
         render_material_level_push(cpu);
         tr_feed_native(s_tick, s_tick_n);

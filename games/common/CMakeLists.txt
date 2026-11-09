@@ -50,6 +50,7 @@ set(OPENPETE_GAME_COMMON_SOURCES
     # The glow/glint/tracer effect family: five self-linking producers,
     # registered only by a game whose game_layout names their routines.
     renderer/glow.c
+    renderer/subtick_anchor_chk.c
     renderer/glint.c
     renderer/zap.c
     renderer/tracers.c

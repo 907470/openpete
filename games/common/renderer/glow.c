@@ -40,7 +40,10 @@
 // orders it against terrain as the table does, and the key itself contests the
 // actor key image per pixel (the aura contest, psx_key_contest.glsl
 // op_aura_loses), which orders it against every moby face by that face's own
-// bucket, depth offset included.
+// bucket, depth offset included. A sub-tick present takes the depth from the
+// bucket of the view Z its record shows at under the present's camera, so
+// the fan meets terrain where that present draws it; the key it contests by
+// stays the tick's.
 //
 // The routine's lateral cull is the 4:3 frame plus a fixed margin. In a wider
 // view a record it dropped on that test alone is drawn too unless its fan has
@@ -74,6 +77,7 @@
 #include "openpete_interp.h"        /* the camera snapshot pair */
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
 #include "game_layout.h"
+#include "renderer/subtick_anchor_chk.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -94,10 +98,10 @@ extern unsigned openpete_frame;
 #define GLOW_TRI_N      16
 #define GLOW_REC_MAX    32      /* records one call can draw: at least GW.slots */
 
-/* One drawn record as its fan is rebuilt from: the depth its triangles take,
- * the slot address the keyed store holds its previous copy under, the
- * position words and packed word the tick read (the phase byte as the routine
- * left it), and the camera yaw halfword the routine read. */
+/* One drawn record as its fan is rebuilt from: the depth its triangles take
+ * under the tick's view, the slot address the keyed store holds its previous
+ * copy under, the position words and packed word the tick read (the phase
+ * byte as the routine left it), and the camera yaw halfword the routine read. */
 typedef struct {
     float    depth;
     int      key;        /* the bucket it links at, -1 for the front entry */
@@ -107,9 +111,16 @@ typedef struct {
     int      yaw;
 } glow_rec;
 
-/* One fed triangle. `p` carries the positions this present draws; cx/cy keep
- * the ones built at capture, which a held cut and a present past the near
- * plane show. gx/gy are the routine's own corners, read only by the vertex
+/** @brief The signed ordering-table bias byte of a record's packed word.
+ * @param packed The packed word.
+ * @return The bias. */
+static int glow_bias(uint32_t packed) {
+    return (int)(int8_t)(uint8_t)((packed >> 24) & 0xFFu);
+}
+
+/* One fed triangle. `p` and `depth` carry the positions and depth this
+ * present draws; cx/cy and src.depth keep the ones built at capture, which a
+ * held cut and a present past the near plane show. gx/gy are the routine's own corners, read only by the vertex
  * probe (glow_vtx_*) and never fed. */
 typedef struct {
     ngte_prim p;
@@ -313,9 +324,12 @@ static int glow_solo_skips(CPUState* cpu, uint32_t packed) {
  * The angle here is yaw / 16 + phase, unfloored, read through ngte_sincos_f,
  * so the ring turns with the camera between yaw steps of 16. */
 
-/* One built fan in screen space, under the view it was built for. */
+/* One built fan in screen space, under the view it was built for, with the
+ * depth its triangles take there (glow_record_depth of the centre's view Z,
+ * set by glow_fan_at). */
 typedef struct {
     int      n;                         /* triangles */
+    float    depth;
     float    x[GLOW_TRI_N][3], y[GLOW_TRI_N][3];
     uint32_t rgb;                       /* the centre colour, low 24 bits */
     float    xmin, xmax;
@@ -402,7 +416,7 @@ static void glow_fan_build(CPUState* cpu, const ngte_view* v, const glow_src* r,
  * @param f The fan. */
 static void glow_fan_append(const glow_src* r, int yaw, const glow_fan* f) {
     glow_rec rec;
-    rec.depth = glow_record_depth(r->m3, (int)(int8_t)(uint8_t)((r->packed >> 24) & 0xFFu), &rec.key);
+    rec.depth = glow_record_depth(r->m3, glow_bias(r->packed), &rec.key);
     rec.addr = r->addr;
     for (int k = 0; k < 3; k++) rec.w[k] = r->w[k];
     rec.packed = r->packed;
@@ -1131,7 +1145,11 @@ static void glow_rebase_dbg_arm(void) {
 /** @brief Build the fan a present shows one captured record at, under the present's view.
  *
  * The record, phase and yaw come from glow_shown; a shown centre below the
- * routine's near plane builds no fan.
+ * routine's near plane builds no fan. The fan's depth is glow_record_depth of
+ * the shown centre's view Z under the present's view, so the fan meets the
+ * terrain at the depth this present shows it at; at alpha 1 the view and the
+ * record are the tick's and the depth is the capture's. The ordering-table
+ * key the fan contests moby faces by stays the tick's (glow_feed_tri).
  * @param cpu The guest CPU state, read only.
  * @param v The present's view.
  * @param rec The record as the tick read it.
@@ -1149,18 +1167,57 @@ static int glow_fan_at(CPUState* cpu, const ngte_view* v, const glow_rec* rec, d
     f->n = 0;
     if (r.m3 < (double)GW.near_z) return 0;
     glow_fan_build(cpu, v, &r, ang, f);
+    int key;
+    f->depth = glow_record_depth(r.m3, glow_bias(r.packed), &key);
     return 1;
 }
 
-/** @brief Set one triangle's fed positions from a fan, or from its capture when the fan lacks it.
+/** @brief Set one triangle's fed positions and depth from a fan, or from its capture when the fan lacks it.
  * @param it The triangle.
  * @param f The fan its record shows at this present, or NULL. */
 static void glow_item_place(glow_item* it, const glow_fan* f) {
     const int use = f && it->tri < f->n;
+    it->depth = (use && !sac_tick_depth(0)) ? f->depth : it->src.depth;
     for (int k = 0; k < 3; k++) {
         it->p.x[k] = use ? f->x[it->tri][k] : it->cx[k];
         it->p.y[k] = use ? f->y[it->tri][k] : it->cy[k];
     }
+}
+
+/** @brief Hand one record's fed centre to the sub-tick anchor probe with the keyed store's pair.
+ *
+ * The previous point is the store's previous snapshot when its pair spans at
+ * most one and a half tick periods, else none; the current point is the
+ * position the tick drew. A store current snapshot whose position differs
+ * from the drawn one is printed at probe level 2.
+ * @param rec The record as the tick read it.
+ * @param f The fan built for this present.
+ * @param v The present's view. */
+static void glow_sac(const glow_rec* rec, const glow_fan* f, const ngte_view* v) {
+    const double cw[3] = { rec->w[0], rec->w[1], rec->w[2] };
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(rec->addr);
+    if (!o || !o->have_prev || o->curr_ns <= o->prev_ns ||
+        o->curr_ns - o->prev_ns > g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2 ||
+        (uint32_t)o->blob_len < GW.pos_off + 12u) {
+        sac_judge(SAC_GLOW, rec->addr, NULL, cw, 0, 0, f->csx, f->csy, v);
+        return;
+    }
+    int32_t pw[3], cc[3];
+    memcpy(pw, o->prev + GW.pos_off, 12);
+    memcpy(cc, o->curr + GW.pos_off, 12);
+    if ((cc[0] != rec->w[0] || cc[1] != rec->w[1] || cc[2] != rec->w[2]) && sac_level() >= 2)
+        fprintf(stderr, "[sac-glow-currmismatch vbl=%u] rec=%08X drawn=(%d,%d,%d) store=(%d,%d,%d)\n",
+                openpete_frame, rec->addr, rec->w[0], rec->w[1], rec->w[2], cc[0], cc[1], cc[2]);
+    const double p[3] = { pw[0], pw[1], pw[2] };
+    sac_judge(SAC_GLOW, rec->addr, p, cw, (int64_t)o->prev_ns, (int64_t)o->curr_ns, f->csx, f->csy, v);
+}
+
+/** @brief Hand one record's depth on this present to the sub-tick anchor probe: the capture's, the fed and the true one.
+ * @param it The record's first triangle, placed for this present.
+ * @param f The fan built for this present.
+ * @param alpha The present's alpha. */
+static void glow_sac_depth(const glow_item* it, const glow_fan* f, double alpha) {
+    sac_depth(SAC_GLOW, it->src.depth, it->depth, f->depth, alpha);
 }
 
 /** @brief Rebuild every queued fan at the state this present shows, under the staged camera.
@@ -1188,8 +1245,10 @@ static void glow_rebuild_all(CPUState* cpu, double alpha) {
             int paired;
             ok = glow_fan_at(cpu, &v, &it->src, alpha, yp, &f, &paired);
             s_reb_stat[paired ? 0 : 1]++;
+            if (ok && sac_level() > 0) glow_sac(&it->src, &f, &v);
         }
         glow_item_place(it, ok ? &f : NULL);
+        if (ok && it->tri == 0 && sac_level() > 0) glow_sac_depth(it, &f, alpha);
     }
 }
 
@@ -1351,8 +1410,15 @@ void glow_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
              * under: the fans stand where that tick built them. */
             glow_restore_capture();
         } else if (bracketed) {
+            sac_present_begin(SAC_GLOW, alpha);
             glow_rebuild_all(cpu, alpha);
             glow_vtx_present(cpu, 1, alpha);
+        } else if (s_item_n > 0 && sac_level() > 0) {
+            sac_unbracketed_present(SAC_GLOW);
+            for (int i = 0; i < s_item_n; i++)
+                if (s_item[i].tri == 0)
+                    sac_unbracketed_anchor(SAC_GLOW, hypot((double)s_item[i].p.x[0] - s_item[i].cx[0],
+                                                           (double)s_item[i].p.y[0] - s_item[i].cy[0]));
         }
         render_material_level_push(cpu);
         glow_feed_native();
