@@ -39,8 +39,11 @@
 #                 hold_drops no higher than the stock run's, claims_sum=0;
 #                 migrate_ticks is reported.
 #   store         OPENPETE_TERRAIN_ANIMNEAR=1 and OPENPETE_TERRAIN_CANIMNEAR=1
-#                 with OPENPETE_TC_PREV_CAP small, so the previous-tick store
-#                 must grow: prev_grow>0, prev_fail=0.
+#                 with OPENPETE_TC_PREV_CAP small and the position ring's
+#                 starting depth squeezed to 1 (OPENPETE_TC_RING_INITIAL=1),
+#                 so the previous-tick store and the rings must grow:
+#                 prev_grow>0, prev_fail=0, claims_sum=0, ring_grow>0,
+#                 ring_fail=0; ring_writes=0 is VACUOUS.
 #   failed-edge   OPENPETE_TC_REFUSE=edge:* on a run that crosses a level edge
 #                 with a held scene: failed_edges>0, consolidations>0,
 #                 hold_takes>0, sealed_allocs=0, hold_drops=0, claims_sum=0;
@@ -49,6 +52,11 @@
 #   refuse-grow   OPENPETE_TC_REFUSE=grow:*,cons:* with the squeeze: every
 #                 growth and consolidation refused. Reports the claims the
 #                 refusal policy leaves (the exhaustion case); no verdict.
+#   refuse-ring   the steady-pose run with OPENPETE_TC_REFUSE=ring:* and
+#                 OPENPETE_TC_RING_INITIAL=1: every position-ring run
+#                 refused, so every poly-anim sector bakes its positions
+#                 whole: claims_sum=0, ring_writes=0, ring_fail>0,
+#                 ring_rebakes>0.
 #   steady-pose   Spyro 2 skelos_badlands at a freecam pose under
 #                 --texture-mapping affine and --lod extended, where the
 #                 poly-anim cell-record arena (CA_OPAQUE) re-bakes every
@@ -58,7 +66,9 @@
 #                 consolidations=0, exhaust_warnings=0, and at most
 #                 STEADY_REQ growth requests per arena after the level
 #                 load (7: a growth series that fits the 8 slots; an arena
-#                 that never settles requests without bound).
+#                 that never settles requests without bound). The
+#                 position rings: ring_fail=0, ring_rebakes=0;
+#                 ring_writes=0 is VACUOUS.
 #   custom-level  the M4 fixture, built at run time from the disc: a scratch
 #                 mod whose WAD is lofty_castle's (level 52) served with
 #                 `replace = true` over the donor toasty (sunny_flight, the
@@ -124,10 +134,12 @@ run_leg() {  # tag frame-limit envs... -- args...
     return $rc
 }
 
-# A field of the leg's `tercache:` row (the last one), or empty.
+# A field of the leg's `tercache:` or `tercache-ring:` row (the last of
+# each), or empty.
 field() {  # tag name
-    grep -o '^tercache: .*' "$OUT/$1.log" 2>/dev/null | tail -1 |
-        tr ' ' '\n' | sed -n "s/^$2=//p"
+    { grep -o '^tercache: .*' "$OUT/$1.log" 2>/dev/null | tail -1
+      grep -o '^tercache-ring: .*' "$OUT/$1.log" 2>/dev/null | tail -1; } |
+        tr ' ' '\n' | sed -n "s/^$2=//p" | head -1
 }
 
 fail=0
@@ -138,6 +150,7 @@ check() {
     local tag="$1"; shift
     local bakes; bakes="$(field "$tag" bakes)"
     echo "[tercache-growth] leg=$tag $(grep -o '^tercache: .*' "$OUT/$tag.log" | tail -1 | cut -c11-)"
+    echo "[tercache-growth] leg=$tag $(grep -o '^tercache-ring: .*' "$OUT/$tag.log" | tail -1)"
     if [[ -z "$bakes" || "$bakes" == 0 ]]; then
         echo "[tercache-growth] leg=$tag VACUOUS (no tercache: row or bakes=0)"; fail=1; return
     fi
@@ -196,8 +209,9 @@ fi
 if want store; then
     ran=1
     run_leg store 1900 OPENPETE_TERRAIN_ANIMNEAR=1 OPENPETE_TERRAIN_CANIMNEAR=1 \
-        OPENPETE_TC_PREV_CAP=256 -- --skip-to-level "$STORE_AREA" --lod extended
-    check store prev_grow\>0 prev_fail=0
+        OPENPETE_TC_PREV_CAP=256 OPENPETE_TC_RING_INITIAL=1 -- --skip-to-level "$STORE_AREA" --lod extended
+    check store prev_grow\>0 prev_fail=0 claims_sum=0 ring_grow\>0 ring_fail=0
+    ring_vacuous store
 fi
 
 if want failed-edge; then
@@ -207,6 +221,14 @@ if want failed-edge; then
         hold_drops=0 claims_sum=0
 fi
 
+# A leg that ran no ring sector compared nothing about the position ring.
+ring_vacuous() {  # tag
+    local w; w="$(field "$1" ring_writes)"
+    if [[ -z "$w" || "$w" == 0 ]]; then
+        echo "[tercache-growth] leg=$1 VACUOUS (ring_writes=${w:-none})"; fail=1
+    fi
+}
+
 if want steady-pose; then
     if [[ "$GAME" != spyro-2 ]]; then
         echo "[tercache-growth] leg=steady-pose SKIP (the pose is a Spyro 2 row)"
@@ -215,7 +237,8 @@ if want steady-pose; then
         run_leg steady-pose "$STEADY_LIMIT" -- --skip-to-level skelos_badlands \
             --freecam-pose "pos=(116034, 2704, 95746) yaw=1112 pitch=541" \
             --texture-mapping affine --lod extended
-        check steady-pose claims_sum=0 consolidations=0 exhaust_warnings=0
+        check steady-pose claims_sum=0 consolidations=0 exhaust_warnings=0 ring_fail=0 ring_rebakes=0
+        ring_vacuous steady-pose
         # Growth and consolidation requests per arena after the level load.
         req="$(sed -n '/loader took level=/,$p' "$OUT/steady-pose.log" |
             sed -n 's/^\[ter-gpu\] arena \([0-9]*\) \(grow\|consolidation\) request.*/\1/p' |
@@ -234,6 +257,19 @@ if want refuse-grow; then
     ran=1
     run_leg refuse-grow 1900 "${SQ[@]}" OPENPETE_TC_REFUSE='grow:*,cons:*' -- --skip-to-level "$SPAWN"
     check refuse-grow
+fi
+
+if want refuse-ring; then
+    if [[ "$GAME" != spyro-2 ]]; then
+        echo "[tercache-growth] leg=refuse-ring SKIP (the pose is a Spyro 2 row)"
+    else
+        ran=1
+        run_leg refuse-ring "$STEADY_LIMIT" OPENPETE_TC_RING_INITIAL=1 OPENPETE_TC_REFUSE='ring:*' -- \
+            --skip-to-level skelos_badlands \
+            --freecam-pose "pos=(116034, 2704, 95746) yaw=1112 pitch=541" \
+            --texture-mapping affine --lod extended
+        check refuse-ring claims_sum=0 ring_writes=0 ring_fail\>0 ring_rebakes\>0
+    fi
 fi
 
 # The M4 fixture: lofty_castle's WAD (level 52) as a replace-mode custom

@@ -46,9 +46,11 @@
 # (the last census line at or before the pinned VBL from the same kind of
 # build, sub=1 for an :inter row), the engagement of the near stage's lerp,
 # and likewise the env-anim colour sectors drawn from near-variant chunks
-# (canimnear=) and those drawn with a colour table (coltab=). An :inter row
-# whose captured present drew no previous-corner record and no colour table
-# is VACUOUS.
+# (canimnear=) and those drawn with a colour table (coltab=), and the
+# sectors drawn with position-ring faces (ringsecs=) with their faces'
+# triangles whose ring-entry corners move (ringmv=). An :inter row whose
+# captured present drew no previous-corner record, no colour table and no
+# moving ring triangle is VACUOUS.
 #
 # Usage:
 #   tests/harness/check_cache_walk_ab.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
@@ -166,7 +168,7 @@ inter = row.endswith("-inter")
 cen = re.compile(r"\[tgpu-cen f=\d+\] sub=\d+ secs=(\d+)")
 tri = re.compile(r"\[nearcen\] frame=\d+ nearFaces=\d+ subTris=\d+ terrainTris=(\d+)")
 anl = re.compile(r"\[tgpu-cen f=(\d+)\] sub=(\d+) .* animnear=(\d+) animrecs=(\d+)"
-                 r" canimnear=(\d+) coltab=(\d+)")
+                 r" canimnear=(\d+) coltab=(\d+) tabunits=\d+ ringsecs=(\d+) ringmv=(\d+)")
 
 def peak(path, pat):
     v = 0
@@ -179,15 +181,15 @@ def peak(path, pat):
 secs_a, secs_b = peak(a_log, cen), peak(b_log, cen)
 tris_a = peak(a_log, tri)
 def at_capture(path):
-    """animnear, animrecs, canimnear, coltab of the census line of the captured present."""
-    v = (0, 0, 0, 0)
+    """animnear, animrecs, canimnear, coltab, ringsecs, ringmv of the census line of the captured present."""
+    v = (0, 0, 0, 0, 0, 0)
     for line in open(path, errors="replace"):
         m = anl.search(line)
         if m and int(m.group(1)) <= start and int(m.group(2)) == int(inter):
-            v = tuple(int(m.group(k)) for k in range(3, 7))
+            v = tuple(int(m.group(k)) for k in range(3, 9))
     return v
 
-animnear_b, animrecs_b, canimnear_b, coltab_b = at_capture(b_log)
+animnear_b, animrecs_b, canimnear_b, coltab_b, ringsecs_b, ringmv_b = at_capture(b_log)
 A = Image.open(a_png).convert("RGB")
 B = Image.open(b_png).convert("RGB")
 if A.size != B.size:
@@ -212,15 +214,16 @@ if secs_b == 0 or secs_a != 0 or tris_a == 0:
     print("[cache-walk-ab] row=%s verdict=VACUOUS px=%d secsB=%d secsA=%d trisA=%d"
           % (row, diff, secs_b, secs_a, tris_a))
     sys.exit(1)
-# An :inter row exists to compare the near stage's lerps; a captured present
-# that drew no previous-corner record and no colour table compared none of them.
-if inter and animrecs_b == 0 and coltab_b == 0:
-    print("[cache-walk-ab] row=%s verdict=VACUOUS px=%d animrecsB=0 coltabB=0" % (row, diff))
+# An :inter row exists to compare the lerps; a captured present that drew no
+# previous-corner record, no colour table and no moving position-ring
+# triangle compared none of them.
+if inter and animrecs_b == 0 and coltab_b == 0 and ringmv_b == 0:
+    print("[cache-walk-ab] row=%s verdict=VACUOUS px=%d animrecsB=0 coltabB=0 ringmvB=0" % (row, diff))
     sys.exit(1)
 print("[cache-walk-ab] row=%s verdict=%s px=%d maxChannelDelta=%d secsB=%d trisA=%d animnearB=%d "
-      "animrecsB=%d canimnearB=%d coltabB=%d%s"
+      "animrecsB=%d canimnearB=%d coltabB=%d ringsecsB=%d ringmvB=%d%s"
       % (row, "PASS" if diff == 0 else "FAIL", diff, delta, secs_b, tris_a, animnear_b, animrecs_b,
-         canimnear_b, coltab_b, "" if first_px is None else " first=%s" % (first_px,)))
+         canimnear_b, coltab_b, ringsecs_b, ringmv_b, "" if first_px is None else " first=%s" % (first_px,)))
 sys.exit(0 if diff == 0 else 1)
 AB_PY
     if [[ $? -eq 0 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi

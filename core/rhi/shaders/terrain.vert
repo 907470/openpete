@@ -90,16 +90,35 @@
  * in front of the camera, which is what makes the raw H/m3 projection (no
  * near clipping, no straddle handling) safe here. */
 
+#if !defined(TERRAIN_CELLS) && (defined(TERRAIN_ANIM) || defined(TERRAIN_NEAR))
+/* The anim and near chunk stages read a ring face's positions from the
+ * sector's position ring (ring_fetch): the position and corner inputs land
+ * in these names, which the rest of the stage reads. */
+#define TERRAIN_RINGV
+#endif
 #ifndef TERRAIN_CELLS
+#ifdef TERRAIN_RINGV
+layout(location = 0) in ivec4 inPosA;     /* xyz: sector-local x4 fixed; w: flags16 */
+#else
 layout(location = 0) in ivec4 inPos;      /* xyz: sector-local x4 fixed; w: flags16 */
+#endif
 layout(location = 1) in uvec4 inUV;       /* far u,v, near u,v (texels)   */
 layout(location = 2) in vec4  inColFar;   /* far colour  (UNORM 0..1)     */
 layout(location = 3) in vec4  inColNear;  /* near colour (UNORM 0..1)     */
 layout(location = 4) in uvec4 inMat;      /* far0, far1, near0, near1     */
 layout(location = 5) in uint  inFaceFlags;
+#ifdef TERRAIN_RINGV
+/* A ring face's chunk: px its own bank index, c0x, c0y, c0z, c1x its
+ * corners' (openpete_terrain_cache.h, position rings). */
+layout(location = 6) in ivec4 inC0A;      /* c0.xyz, c1.x   (x4 fixed)    */
+layout(location = 7) in ivec4 inC1A;      /* c1.yz, c2.xy                 */
+layout(location = 8) in ivec4 inC2A;      /* c2.z, c3.xyz                 */
+ivec4 inPos, inC0, inC1, inC2;
+#else
 layout(location = 6) in ivec4 inC0;       /* c0.xyz, c1.x   (x4 fixed)    */
 layout(location = 7) in ivec4 inC1;       /* c1.yz, c2.xy                 */
 layout(location = 8) in ivec4 inC2;       /* c2.z, c3.xyz                 */
+#endif
 #endif
 #if defined(TERRAIN_ANIM) && !defined(TERRAIN_CELLS)
 /* Poly-anim chunks (binding 1, rhi_terrain_prev): previous-tick twin of the
@@ -107,10 +126,11 @@ layout(location = 8) in ivec4 inC2;       /* c2.z, c3.xyz                 */
  * fp64 at the build's alpha and CAST TO FLOAT before the camera transform -
  * the exact mirror of tsc_vanim_lerp filling cvF (alpha = 1 on canonical
  * builds collapses to cur bit-exactly, ints casting to float losslessly). */
-layout(location = 9)  in ivec4 inPrevPos; /* prev xyz (x4 fixed), pad     */
-layout(location = 10) in ivec4 inPrevC0;
-layout(location = 11) in ivec4 inPrevC1;
-layout(location = 12) in ivec4 inPrevC2;
+layout(location = 9)  in ivec4 inPrevPosA; /* prev xyz (x4 fixed), pad    */
+layout(location = 10) in ivec4 inPrevC0A;
+layout(location = 11) in ivec4 inPrevC1A;
+layout(location = 12) in ivec4 inPrevC2A;
+ivec4 inPrevPos, inPrevC0, inPrevC1, inPrevC2;
 /* Previous-tick far and near colour words (R,G,B,A bytes): equal to the
  * current colours except on an env-anim colour sector. */
 layout(location = 13) in uvec2 inPrevCol;
@@ -1452,6 +1472,52 @@ uint coltab_col(uint slot, int arr, uint idx)
     return coltab_lerp(prevRec.w[at + nLp + 2u * nHp], prevRec.w[at]);
 }
 
+#if defined(TERRAIN_CELLS) || defined(TERRAIN_RINGV)
+#define FACE_F_RING    4u
+#define PAD_RING       0x2000u
+/* Set by ring_corners: this vertex's face reads the position ring, and
+ * ringP0..ringP3 hold its previous corners; ringBad: the sector state names
+ * no ring entry, so the vertex is killed. */
+bool  ringOn = false;
+bool  ringBad = false;
+ivec3 ringP0, ringP1, ringP2, ringP3;
+/* The two sign-extended int16 halves of a ring word, low first. */
+ivec2 ring_s16x2(uint w) {
+    return ivec2(bitfieldExtract(int(w), 0, 16), bitfieldExtract(int(w), 16, 16));
+}
+/* The ring entry word base the sector state names (gq.w, in units). */
+uint ring_base(uint slot) {
+    return floatBitsToUint(s.sec[slot].gq.w) * 6u;
+}
+/* Bank vertex idx's current and previous positions (x4 fixed) from the
+ * ring entry at word b; lp selects the LP bank, else the HP bank after it
+ * (openpete_terrain_cache.h, position rings). */
+void ring_pos(uint b, bool lp, uint idx, out ivec3 cur, out ivec3 prev) {
+    uint off = lp ? 0u : (prevRec.w[b] & 0xFFFFu);
+    uint at = b + 1u + 3u * (off + idx);
+    ivec2 c = ring_s16x2(prevRec.w[at]);
+    ivec2 p = ring_s16x2(prevRec.w[at + 1u]);
+    ivec2 z = ring_s16x2(prevRec.w[at + 2u]);
+    cur = ivec3(c, z.x);
+    prev = ivec3(p, z.y);
+}
+/* A ring face's corners from the bank indices in idx (i0..i3): the current
+ * ones into inC0..inC2 in the chunk layout, the previous into ringP0..3. */
+void ring_corners(uint slot, bool lp, ivec4 idx) {
+    if (floatBitsToUint(s.sec[slot].gq.w) == 0xFFFFFFFFu) { ringBad = true; return; }
+    uint b = ring_base(slot);
+    ivec3 c0, c1, c2, c3;
+    ring_pos(b, lp, uint(idx.x) & 0xFFFFu, c0, ringP0);
+    ring_pos(b, lp, uint(idx.y) & 0xFFFFu, c1, ringP1);
+    ring_pos(b, lp, uint(idx.z) & 0xFFFFu, c2, ringP2);
+    ring_pos(b, lp, uint(idx.w) & 0xFFFFu, c3, ringP3);
+    inC0 = ivec4(c0, c1.x);
+    inC1 = ivec4(c1.yz, c2.xy);
+    inC2 = ivec4(c2.z, c3);
+    ringOn = true;
+}
+#endif
+
 /* ---- marked-edge split (terrain.c tj_split_topo, tgpu_emit_face_split) ----
  * A split vertex (flags16 bit 14) is one member of a sub-triangle of its
  * base triangle, the emitted triangle its flags name: a flat face's half or
@@ -1817,6 +1883,22 @@ void near_prev_corners(uint r, out ivec3 p0, out ivec3 p1, out ivec3 p2, out ive
     p2 = ivec3(B.z, B.w, C.x);
     p3 = C.yzw;
 }
+/* This vertex's face's previous corners, true when they differ from its
+ * current ones: a ring face's from the position ring, any other face's from
+ * its previous-corner record, which the bake writes only for a face whose
+ * corners moved. False leaves the stage on the current corners. */
+bool near_prev_get(out ivec3 p0, out ivec3 p1, out ivec3 p2, out ivec3 p3) {
+    if (ringOn) {
+        p0 = ringP0; p1 = ringP1; p2 = ringP2; p3 = ringP3;
+        return p0 != inC0.xyz || p1 != ivec3(inC0.w, inC1.x, inC1.y)
+            || p2 != ivec3(inC1.z, inC1.w, inC2.x) || p3 != inC2.yzw;
+    }
+    p0 = p1 = p2 = p3 = ivec3(0);
+    const uint r = near_prev_rec();
+    if (r == PREV_REC_NONE || (near_face_flags() & FACE_F_PREV) == 0u) return false;
+    near_prev_corners(r, p0, p1, p2, p3);
+    return true;
+}
 #ifndef TERRAIN_CELLS
 /* Node n of a face's 2x2 subdivide (NODEMAP numbering) coloured from its
  * four corner colours q (i0 = TL, i1 = TR, i2 = BR, i3 = BL) in the bake's
@@ -1843,6 +1925,42 @@ int near_member_node(int k, bool hqv, bool quad, bool lp, bool tri2n, int subq) 
     return HPQ[base][k];
 }
 #endif
+#endif
+
+#ifdef TERRAIN_RINGV
+/* Copies the chunk's position and corner inputs into the names the stage
+ * reads; a ring face (OPTC_PREV_PAD_RING in an anim vertex's pad,
+ * FACE_F_RING in a near vertex's face flags) takes its corners from the
+ * position ring instead, and an anim vertex that is neither an HQ node nor
+ * a split vertex takes its own position from it too. */
+void vert_fetch() {
+    inPos = inPosA;
+    inC0 = inC0A; inC1 = inC1A; inC2 = inC2A;
+#ifdef TERRAIN_ANIM
+    inPrevPos = inPrevPosA;
+    inPrevC0 = inPrevC0A; inPrevC1 = inPrevC1A; inPrevC2 = inPrevC2A;
+    bool ring = (uint(inPrevPosA.w) & PAD_RING) != 0u;
+#else
+    bool ring = (uint(inPosA.z) & FACE_F_RING) != 0u;
+#endif
+    if (!ring) return;
+    uint slot = inFaceFlags & FF_SLOT_MASK;
+    bool lp = (inFaceFlags & FF_TIER_LP) != 0u;
+    ring_corners(slot, lp, inC0A);
+    if (ringBad) return;
+#ifdef TERRAIN_ANIM
+    inPrevC0 = ivec4(ringP0, ringP1.x);
+    inPrevC1 = ivec4(ringP1.yz, ringP2.xy);
+    inPrevC2 = ivec4(ringP2.z, ringP3);
+    uint f16 = uint(inPosA.w) & 0xFFFFu;
+    if ((f16 & 1u) == 0u && (f16 & 0x4000u) == 0u) {
+        ivec3 c, p;
+        ring_pos(ring_base(slot), lp, uint(inPosA.x) & 0xFFFFu, c, p);
+        inPos.xyz = c;
+        inPrevPos.xyz = p;
+    }
+#endif
+}
 #endif
 
 #ifdef TERRAIN_CELLS
@@ -1877,6 +1995,15 @@ void cell_unpack() {
     inPrevC1 = ivec4(cell_s16x2(inCellPA.z), cell_s16x2(inCellPA.w));
     inPrevC2 = ivec4(cell_s16x2(inCellPB.x), cell_s16x2(inCellPB.y));
 #endif
+    /* A ring face's record names its corners' bank indices. */
+    if ((cellHqFog.y & FACE_F_RING) != 0u) {
+        ring_corners(inCellCB.z & FF_SLOT_MASK, false, inC0);
+#ifdef TERRAIN_ANIM
+        inPrevC0 = ivec4(ringP0, ringP1.x);
+        inPrevC1 = ivec4(ringP1.yz, ringP2.xy);
+        inPrevC2 = ivec4(ringP2.z, ringP3);
+#endif
+    }
 }
 /* tgpu_rgb_pt mirror: node k (0..4) of the 5-node edge a..b in the drain's
  * halving order (midpoint first, then the quarter points off it). */
@@ -2033,6 +2160,12 @@ void main()
 #ifdef TERRAIN_CELLS
     if (!cells_fetch()) { kill_vert(); return; }
 #endif
+#ifdef TERRAIN_RINGV
+    vert_fetch();
+#endif
+#if defined(TERRAIN_CELLS) || defined(TERRAIN_RINGV)
+    if (ringBad) { kill_vert(); return; }
+#endif
     uint ff   = inFaceFlags;
     uint slot = ff & FF_SLOT_MASK;
     uint sf   = floatBitsToUint(s.sec[slot].o.w);
@@ -2109,16 +2242,14 @@ void main()
 #elif defined(TERRAIN_NEAR)
     /* A poly-anim sector's face with a previous-corner record lerps as the
      * anim stage does; every other face takes cam_rel. */
-    const uint prec = near_prev_rec();
     precise vec3 lc0, lc1, lc2, lc3;
-    if (prec == PREV_REC_NONE || (near_face_flags() & FACE_F_PREV) == 0u) {
+    ivec3 pc0, pc1, pc2, pc3;
+    if (!near_prev_get(pc0, pc1, pc2, pc3)) {
         lc0 = cam_rel(wo + cc0);
         lc1 = cam_rel(wo + cc1);
         lc2 = cam_rel(wo + cc2);
         lc3 = cam_rel(wo + cc3);
     } else {
-        ivec3 pc0, pc1, pc2, pc3;
-        near_prev_corners(prec, pc0, pc1, pc2, pc3);
         float va = G_VA;
         lc0 = cam_rel_lerp(wo + pc0, wo + cc0, va);
         lc1 = cam_rel_lerp(wo + pc1, wo + cc1, va);
@@ -2168,10 +2299,8 @@ void main()
 #ifdef TERRAIN_NEAR
     /* A poly-anim sector's face with a previous-corner record: the anim
      * stage's tsc_vanim_lerp mirror on the record's corners. */
-    const uint prec = near_prev_rec();
-    if (prec != PREV_REC_NONE && (near_face_flags() & FACE_F_PREV) != 0u) {
-        ivec3 pc0, pc1, pc2, pc3;
-        near_prev_corners(prec, pc0, pc1, pc2, pc3);
+    ivec3 pc0, pc1, pc2, pc3;
+    if (near_prev_get(pc0, pc1, pc2, pc3)) {
         const ivec3 cc0 = inC0.xyz;
         const ivec3 cc1 = ivec3(inC0.w, inC1.x, inC1.y);
         const ivec3 cc2 = ivec3(inC1.z, inC1.w, inC2.x);
@@ -2215,15 +2344,13 @@ void main()
     }
 #elif defined(TERRAIN_NEAR)
     {
-        const uint fr = near_prev_rec();
-        if (fr == PREV_REC_NONE || (near_face_flags() & FACE_F_PREV) == 0u) {
+        ivec3 p0, p1, p2, p3;
+        if (!near_prev_get(p0, p1, p2, p3)) {
             f0 = mac_of(cam_rel(a2o + a2c0));
             f1 = mac_of(cam_rel(a2o + a2c1));
             f2 = mac_of(cam_rel(a2o + a2c2));
             f3 = mac_of(cam_rel(a2o + a2c3));
         } else {
-            ivec3 p0, p1, p2, p3;
-            near_prev_corners(fr, p0, p1, p2, p3);
             float fa = g.ofH.w;
             f0 = mac_of(cam_rel_lerp(a2o + p0, a2o + a2c0, fa));
             f1 = mac_of(cam_rel_lerp(a2o + p1, a2o + a2c1, fa));

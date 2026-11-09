@@ -35,7 +35,7 @@
 #define TC_PREV_CAP 65536u
 
 /* Allocation sites the refusal knob (tc_refuse) can target. */
-enum { TC_SITE_EDGE, TC_SITE_GROW, TC_SITE_CONS, TC_SITE_STORE, TC_SITE_N };
+enum { TC_SITE_EDGE, TC_SITE_GROW, TC_SITE_CONS, TC_SITE_STORE, TC_SITE_RING, TC_SITE_N };
 
 /* Colour/depth slots of a cell-record pipeline set. No FILL: cells are HP
  * faces, and the hole-fill backing is LP only. */
@@ -171,6 +171,8 @@ typedef struct {
     float gp[4], gq[4];     /* pack LP grade affine v' = p*v + q*255 (rgb);
                              * valid only with OPTC_SF_LPGRADE set in o.w;
                              * gp[3]: the bits of the colour table's first
+                             * unit (OPTC_PREV_REC_NONE for none); gq[3]:
+                             * the bits of the position-ring entry's first
                              * unit (OPTC_PREV_REC_NONE for none)            */
 } tc_sector_ubo;
 
@@ -607,7 +609,7 @@ static long s_refuse_cnt[TC_SITE_N], s_refuse_skip[TC_SITE_N];
  * @param p The item's first character; parsing stops at a comma or the end. */
 static void tc_refuse_item(const char *p)
 {
-    static const char *const names[TC_SITE_N] = { "edge", "grow", "cons", "store" };
+    static const char *const names[TC_SITE_N] = { "edge", "grow", "cons", "store", "ring" };
     for (int k = 0; k < TC_SITE_N; k++) {
         const size_t n = strlen(names[k]);
         if (strncmp(p, names[k], n) != 0 || p[n] != ':') continue;
@@ -622,7 +624,8 @@ static void tc_refuse_item(const char *p)
  *
  * OPENPETE_TC_REFUSE is a comma list of `site:count[@skip]`, site one of
  * edge (the level-edge replacement), grow (a growth buffer), cons (a
- * consolidation buffer) or store (a previous-tick store replacement):
+ * consolidation buffer), store (a previous-tick store replacement) or ring
+ * (a position-ring run, builder thread, openpete_tercache_ring_alloc):
  * past the first @p skip allocations at the site, the next @p count are
  * refused, `*` meaning every one. Read once; device-owning thread only,
  * like every allocation it gates. Outside the knob registry; a harness
@@ -1969,6 +1972,35 @@ int openpete_tercache_prev_alloc(int count, uint32_t *out_first)
     return 0;
 }
 
+/* Position-ring census (openpete_tercache_ring_note), printed on the
+ * tercache-ring exit row. */
+static uint64_t s_ring_cnt[OPTC_RING_NOTE_N];
+/* The previous-tick store's largest capacity and high-water mark seen at a
+ * ring note, for the same row (the store is gone by the time it prints). */
+static uint32_t s_ring_store_cap, s_ring_store_high;
+
+int openpete_tercache_ring_alloc(int count, uint32_t *out_first)
+{
+    if (tc_refuse(TC_SITE_RING)) return -1;
+    return openpete_tercache_prev_alloc(count, out_first);
+}
+
+uint32_t openpete_tercache_posring_max(void)
+{
+    return (uint32_t)(TC_RING + OPENPETE_TERCACHE_HOLDS + 1);
+}
+
+void openpete_tercache_ring_note(int kind, uint64_t n)
+{
+    if (kind < 0 || kind >= OPTC_RING_NOTE_N) return;
+    if (s_tc.prev_cap > s_ring_store_cap) s_ring_store_cap = s_tc.prev_cap;
+    if (s_tc.prev_alloc.high > s_ring_store_high) s_ring_store_high = s_tc.prev_alloc.high;
+    if (kind == OPTC_RING_NOTE_UNITS || kind == OPTC_RING_NOTE_DEPTH)
+        s_ring_cnt[kind] = n > s_ring_cnt[kind] ? n : s_ring_cnt[kind];
+    else
+        s_ring_cnt[kind] += n;
+}
+
 void openpete_tercache_prev_write(uint32_t first, const uint32_t *words, int count)
 {
     if (!s_tc.ready || count <= 0 || !s_tc.prev_shadow) return;
@@ -3281,10 +3313,20 @@ void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
             s_tc.build_target[slot].gp[c] = grade6[c];
             s_tc.build_target[slot].gq[c] = grade6[3 + c];
         }
-        s_tc.build_target[slot].gq[3] = 0.0f;
     }
+    w.u = OPTC_PREV_REC_NONE;   /* no position ring until openpete_tercache_sector_ring */
+    s_tc.build_target[slot].gq[3] = w.f;
     w.u = coltab;   /* the colour table's first unit, read as the bits of gp.w */
     s_tc.build_target[slot].gp[3] = w.f;
+}
+
+void openpete_tercache_sector_ring(int slot, uint32_t first)
+{
+    if (!s_tc.build_target || slot < 0 || slot >= OPTC_SLOTS || slot == (int)OPTC_SLOT_DEAD)
+        return;
+    union { float f; uint32_t u; } w;
+    w.u = first;   /* the ring entry's first unit, read as the bits of gq.w */
+    s_tc.build_target[slot].gq[3] = w.f;
 }
 
 void openpete_tercache_frame_commit(void)
@@ -4151,6 +4193,17 @@ void openpete_tercache_print_exit_row(void)
             st.retire_old_touches, st.exhaust_warnings, st.window_skips, st.sig_changes,
             st.budget_claims, st.budget_episodes, st.budget_walks_max, st.budget_open,
             st.budget_age_max, st.budget_starved);
+    fprintf(stderr, "tercache-ring: ring_writes=%llu ring_grow=%llu ring_fail=%llu "
+            "ring_rebakes=%llu ring_units_max=%llu ring_depth_max=%llu store_cap_max=%u "
+            "store_high_max=%u store_mib_max=%.2f\n",
+            (unsigned long long)s_ring_cnt[OPTC_RING_NOTE_WRITE],
+            (unsigned long long)s_ring_cnt[OPTC_RING_NOTE_GROW],
+            (unsigned long long)s_ring_cnt[OPTC_RING_NOTE_FAIL],
+            (unsigned long long)s_ring_cnt[OPTC_RING_NOTE_REBAKE],
+            (unsigned long long)s_ring_cnt[OPTC_RING_NOTE_UNITS],
+            (unsigned long long)s_ring_cnt[OPTC_RING_NOTE_DEPTH], s_ring_store_cap,
+            s_ring_store_high,
+            (double)s_ring_store_cap * OPTC_PREV_REC_WORDS * 4.0 / (1024.0 * 1024.0));
 }
 
 /* ---- one-image preview (openpete_tercache_preview_*) ---------------------- */

@@ -9890,6 +9890,10 @@ static double   s_rim_rowmax = 1.0;   /* max ||M row||/4096 - world->view scale 
  * provenance tags). The pack/selector claims are tier 1 of the
  * exclusion->claim->fold ladder. */
 
+/* Entries a slot's position ring can hold (openpete_tercache_posring_max
+ * is at most this). */
+#define TGPU_RING_CAP 64
+
 typedef struct {
     uint32_t s;                       /* sector vaddr chunks were built from (0 = none) */
     uint32_t decodeGen, texGen, vertGen, colHash;
@@ -9979,6 +9983,18 @@ typedef struct {
     uint32_t prevFirst;               /* previous-corner records of the near
                                        * chunks (openpete_tercache_prev_*)    */
     int      prevCount;               /* 0 = none */
+    uint8_t  bakeRing;                /* baked with ring faces: positions come
+                                       * from the position ring, so a roll
+                                       * writes an entry and re-bakes nothing */
+    uint32_t ringFirst;               /* the position ring's store units:
+                                       * ringDepth entries of ringEnt units   */
+    int      ringEnt, ringDepth;      /* 0 depth = no ring */
+    int      ringCur;                 /* the entry the sector state names */
+    uint64_t ringUsed;                /* entries written since allocation */
+    uint32_t ringSec, ringDecode;     /* the key: sector address, decodeGen */
+    uint32_t ringRoll;                /* SC->vrollPres of the written entry */
+    uint32_t ringStamp[TGPU_RING_CAP];/* per entry: the build serial at which
+                                       * the ring moved past it              */
 } tgpu_slot_t;
 static tgpu_slot_t s_tgpu[TSC_SLOTS];
 /** @brief Tests whether a decode slot holds a sector the GPU cache validated as owned this present.
@@ -10006,6 +10022,8 @@ static long s_tgcl_near_pa;      /* near claims of poly-anim sectors (census) */
 static long s_tgcl_near_ca;      /* near claims of env-anim colour sectors (census) */
 static int  s_tgpu_an_walk;      /* poly-anim sectors drawn from near chunks (census) */
 static int  s_tgpu_an_recs;      /* ... the previous-corner records they carry (census) */
+static int  s_tgpu_ring_secs;    /* sectors drawn with ring faces (census) */
+static int  s_tgpu_ring_mv;      /* ... their faces' triangles whose ring-entry corners move (census) */
 static int  s_tgpu_ca_walk;      /* env-anim colour sectors drawn from near chunks (census) */
 static int  s_tgpu_ca_tab;       /* env-anim colour sectors drawn with a colour table (census) */
 static int  s_tgpu_ca_units;     /* ... their tables' store units (census) */
@@ -10219,7 +10237,23 @@ static void tgpu_coltab_free(tgpu_slot_t* T) {
     T->tabUnits = 0;
 }
 
-/** @brief Gives every decode slot's chunks and colour-table ring back to the arenas and the store.
+static long s_ring_units_live;   /* store units every slot's position ring holds */
+
+/** @brief Releases a slot's position ring through the store's defer window.
+ *
+ * States built before the release may still name an entry of the ring;
+ * the store reuses the run only once none of them can be drawn.
+ * @param T The slot. */
+static void tgpu_ring_free(tgpu_slot_t* T) {
+    if (T->ringDepth > 0) {
+        openpete_tercache_prev_free(T->ringFirst, T->ringDepth * T->ringEnt);
+        s_ring_units_live -= (long)T->ringDepth * T->ringEnt;
+    }
+    T->ringDepth = 0;
+    T->ringUsed = 0;
+}
+
+/** @brief Gives every decode slot's chunks, colour-table ring and position ring back to the arenas and the store.
  *
  * A slot otherwise holds its chunks until another sector takes the slot, so
  * nothing else releases the outgoing level's geometry at a level load.
@@ -10231,6 +10265,7 @@ static long tgpu_free_all_slots(void) {
         if (s_tgpu[i].s) live++;
         tgpu_free_slot(&s_tgpu[i]);
         tgpu_coltab_free(&s_tgpu[i]);
+        tgpu_ring_free(&s_tgpu[i]);
     }
     return live;
 }
@@ -10534,7 +10569,7 @@ static void tgpu_content(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt, 
     }
 }
 
-/** @brief Returns the arena and store bytes a slot's chunks, records and colour-table ring hold.
+/** @brief Returns the arena and store bytes a slot's chunks, records and colour-table and position rings hold.
  * @param T The slot.
  * @return Bytes. */
 static uint64_t tgpu_slot_bytes(const tgpu_slot_t* T) {
@@ -10547,7 +10582,8 @@ static uint64_t tgpu_slot_bytes(const tgpu_slot_t* T) {
                          + (OPTC_ARENA_IS_NEAR(a) ? sizeof(rhi_terrain_nearctx) : 0u);
         b += (uint64_t)T->count[a] * e;
     }
-    return b + (uint64_t)(T->prevCount + T->tabUnits) * OPTC_PREV_REC_WORDS * 4u;
+    return b + (uint64_t)(T->prevCount + T->tabUnits + T->ringDepth * T->ringEnt)
+             * OPTC_PREV_REC_WORDS * 4u;
 }
 
 /** @brief Compares two sector addresses for qsort and bsearch.
@@ -10613,7 +10649,7 @@ static void tgpu_table_watch(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
     for (int i = 0; i < TSC_SLOTS; i++) {
         tgpu_slot_t* T = &s_tgpu[i];
         if (!T->s || bsearch(&T->s, addr, n, sizeof(uint32_t), tgpu_addr_cmp)) continue;
-        if (fr) { tgpu_free_slot(T); tgpu_coltab_free(T); }
+        if (fr) { tgpu_free_slot(T); tgpu_coltab_free(T); tgpu_ring_free(T); }
         else stale += tgpu_slot_bytes(T);
     }
     openpete_tercache_note_sig_change(stale);
@@ -11030,18 +11066,37 @@ typedef struct {
     uint32_t nearC[4];    /* HP: raw near colours, i0..i3 */
     uint32_t pnearC[4], pfarC[4];   /* HP: their previous-tick words (tgpu_prev_cols) */
     uint8_t  tjm;         /* HP: the face's marked-edge split marks (tj_face_edge_n) */
+    uint16_t ri[4];       /* OPTC_FACE_F_RING faces: corners i0..i3's bank indices */
 } tgpu_face_t;
 typedef struct { tgpu_p4 p, pp; uint32_t rgb_far, rgb_near;
                  uint32_t prgb_far, prgb_near;   /* anim arenas: previous-tick colours */
                  uint8_t uf, vf, un, vn, role;
-                 uint8_t ci;      /* colour-table index (OPTC_FACE_F_COLTAB faces) */ } tgpu_corner_t;
+                 uint8_t ci;      /* colour-table index (OPTC_FACE_F_COLTAB faces) */
+                 uint16_t ri;     /* bank index (OPTC_FACE_F_RING faces) */ } tgpu_corner_t;
+
+/** @brief Replaces a ring face vertex's positions with bank indices: its own in px, the corners' in c0x, c0y, c0z and c1x.
+ *
+ * Every other position field is zero, so the vertex holds no position and
+ * a roll leaves it valid. An HQ node (flags16 bit 0) has no bank vertex of
+ * its own and keeps px 0; the vertex stage derives it from the corners.
+ * @param v The vertex, filled by tgpu_fill_vert.
+ * @param F The face template.
+ * @param k The corner. */
+static void tgpu_ring_vert(rhi_terrain_vertex* v, const tgpu_face_t* F, const tgpu_corner_t* k) {
+    v->px = (v->flags16 & 1u) ? 0 : (int16_t)k->ri;
+    v->py = v->pz = 0;
+    v->c0x = (int16_t)F->ri[0]; v->c0y = (int16_t)F->ri[1];
+    v->c0z = (int16_t)F->ri[2]; v->c1x = (int16_t)F->ri[3];
+    v->c1y = v->c1z = v->c2x = v->c2y = v->c2z = v->c3x = v->c3y = v->c3z = 0;
+}
 
 /** @brief Fills one retained-cache vertex from a face template and one corner.
  *
  * Zeroes *v, then copies the corner's position, far and near UVs and colours
  * (alpha forced to 0xFF), and the face's material words, face_flags and four
  * parent corners. flags16 is the face's flags16, the corner's role shifted
- * to bit 3, bit 13 for tri2 and bit 15 for spare.
+ * to bit 3, bit 13 for tri2 and bit 15 for spare. A ring face's positions
+ * are bank indices (tgpu_ring_vert).
  * @param v Receives the vertex.
  * @param F The face template.
  * @param k The corner.
@@ -11065,6 +11120,7 @@ static void tgpu_fill_vert(rhi_terrain_vertex* v, const tgpu_face_t* F,
     v->c1x = F->c[1].x; v->c1y = F->c[1].y; v->c1z = F->c[1].z;
     v->c2x = F->c[2].x; v->c2y = F->c[2].y; v->c2z = F->c[2].z;
     v->c3x = F->c[3].x; v->c3y = F->c[3].y; v->c3z = F->c[3].z;
+    if (F->rf & OPTC_FACE_F_RING) tgpu_ring_vert(v, F, k);
 }
 
 /** @brief Appends one triangle's three vertices to a retained-cache buffer.
@@ -11072,7 +11128,8 @@ static void tgpu_fill_vert(rhi_terrain_vertex* v, const tgpu_face_t* F,
  * Each vertex is built by tgpu_fill_vert with the spare bit clear. In an
  * animated buffer (b->anim) the vertex's previous-tick record is filled from
  * the corner's pp and prgb words and the face's pc corners, and a corner of
- * a colour-table face names its table index in pad.
+ * a colour-table face names its table index in pad; a ring face's record
+ * keeps only its colours and pad, with OPTC_PREV_PAD_RING set.
  * @param b The destination buffer.
  * @param F The face template.
  * @param a The first corner.
@@ -11099,6 +11156,13 @@ static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
              * table; an HQ node (a midpoint) keeps the baked words. */
             if ((F->rf & OPTC_FACE_F_COLTAB) && !(F->flags16 & 1u))
                 pr.pad = (int16_t)(OPTC_PREV_PAD_COLTAB | cs[k].ci);
+            /* A ring face's previous positions come from the ring entry. */
+            if (F->rf & OPTC_FACE_F_RING) {
+                const uint32_t pad = (uint16_t)pr.pad | OPTC_PREV_PAD_RING;
+                const uint32_t pf = pr.rgb_far, pn = pr.rgb_near;
+                memset(&pr, 0, sizeof(pr));
+                pr.pad = (int16_t)pad; pr.rgb_far = pf; pr.rgb_near = pn;
+            }
         }
         rhi_terrain_vertex v;
         tgpu_fill_vert(&v, F, &cs[k], tri2, 0);
@@ -11423,6 +11487,9 @@ static int tgpu_cell_tile(CPUState* cpu, uint32_t e, int abe, int hp_bucket,
 }
 
 /** @brief Fills a cell record's face context: parent corners, previous-tick corners, face flags, raw near and far colours and the HQ ladder-fade words.
+ *
+ * A ring face's record carries the corners' bank indices in c0x, c0y, c0z
+ * and c1x and no positions, current or previous.
  * @param R The record; zeroed first.
  * @param T The face template, the source of the current and previous-tick
  *        corners, the face flags, the far colours and the fade words.
@@ -11438,6 +11505,12 @@ static void tgpu_cell_rec_init(rhi_terrain_cell_anim* R, const tgpu_face_t* T,
     R->p1x = T->pc[1].x; R->p1y = T->pc[1].y; R->p1z = T->pc[1].z;
     R->p2x = T->pc[2].x; R->p2y = T->pc[2].y; R->p2z = T->pc[2].z;
     R->p3x = T->pc[3].x; R->p3y = T->pc[3].y; R->p3z = T->pc[3].z;
+    if (T->rf & OPTC_FACE_F_RING) {   /* bank indices, no positions */
+        memset(&R->cur, 0, offsetof(rhi_terrain_cell, face_flags));
+        memset(&R->p0x, 0, sizeof(*R) - offsetof(rhi_terrain_cell_anim, p0x));
+        R->cur.c0x = (int16_t)T->ri[0]; R->cur.c0y = (int16_t)T->ri[1];
+        R->cur.c0z = (int16_t)T->ri[2]; R->cur.c1x = (int16_t)T->ri[3];
+    }
     for (int q = 0; q < 4; q++) {
         R->cur.near_rgb[q] = nearC[q] & 0xFFFFFFu;
         R->cur.far_rgb[q] = T->farC[q] & 0xFFFFFFu;
@@ -13110,6 +13183,7 @@ static int tgpu_bake_hp_flat(const tgpu_hpctx* X, tgpu_face_t* T, tgpu_corner_t 
  * words of each moving face's record in bake order (OPTC_PREV_REC_WORDS
  * per record). The builder bakes one sector at a time. */
 static int       s_prev_bake;
+static int       s_ring_face;     /* the faces being baked read the position ring */
 static int       s_prev_oom;      /* the list failed to grow: the bake fails at upload */
 static uint32_t* s_prev_w;
 static int       s_prev_n, s_prev_cap;
@@ -13126,6 +13200,57 @@ static void tgpu_prev_begin(int with_var, int polyanim, int vsnap) {
     s_prev_bake = with_var && polyanim && !vsnap;
     s_prev_oom = 0;
     s_prev_n = 0;
+}
+
+/* Set by the caller of tgpu_build_sector: bake the sector's own faces as
+ * ring faces when it qualifies (tgpu_ring_sector). */
+static int s_ring_bake;
+
+/** @brief Tests whether the position ring is on: OPENPETE_TERRAIN_POSRING unset or not starting with '0'.
+ *
+ * Off, every poly-anim sector bakes its positions into the chunks and
+ * re-bakes on every roll. Latched on the first call.
+ * @return 1 when on. */
+static int tgpu_ring_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_POSRING"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/** @brief Tests whether a sector's own faces may read their positions from a position ring.
+ *
+ * A poly-anim sector of the scene (not an imported one), outside a preview
+ * bake, with the ring on.
+ * @param SC The decoded sector.
+ * @return 1 when it may. */
+static int tgpu_ring_sector(const tscache_t* SC) {
+    return tgpu_ring_on() && SC->polyanim && !SC->virt && !s_tpv_sink;
+}
+
+/** @brief Tests whether a poly-anim sector's previous banks snap to the current ones: a bank missing its previous copy, or a keyframe jump (tsc_vanim_jump).
+ *
+ * The sub-tick fill skips the lerp on the same test and draws the current
+ * bank.
+ * @param SC The decoded sector.
+ * @return 1 to take the current banks as the previous ones. */
+static int tgpu_vsnap(const tscache_t* SC) {
+    const int nLp = (SC->lpV && SC->lpVprev) ? SC->nLpV : 0;
+    const int nHp = (SC->hpV && SC->hpVprev) ? SC->nHpV : 0;
+    const int havePrev = (!SC->lpV || SC->lpVprev) && (!SC->hpV || SC->hpVprev);
+    return !havePrev || (nLp && tsc_vanim_jump(SC->lpVprev, SC->lpV, nLp)) ||
+           (nHp && tsc_vanim_jump(SC->hpVprev, SC->hpV, nHp));
+}
+
+/** @brief Marks a face of a ring bake as reading the position ring and records its corners' bank indices.
+ *
+ * Does nothing outside a ring bake's own faces (s_ring_face).
+ * @param T The face template; receives ri and OPTC_FACE_F_RING in rf.
+ * @param k The corners; each receives its bank index.
+ * @param vi The corners' indices into the face's bank, i0..i3. */
+static void tgpu_ring_face(tgpu_face_t* T, tgpu_corner_t k[4], const int vi[4]) {
+    if (!s_ring_face) return;
+    for (int q = 0; q < 4; q++) { T->ri[q] = (uint16_t)vi[q]; k[q].ri = (uint16_t)vi[q]; }
+    T->rf |= OPTC_FACE_F_RING;
 }
 
 /** @brief Returns a face's previous-corner record, appending one to the bake's list when its corners moved.
@@ -13311,8 +13436,10 @@ static void tgpu_split_rebase(tgpu_buf* buf, uint32_t first) {
  * compared with a host copy of the bytes the cache holds for that sector:
  * the chunk vertices and their previous-tick and near-context twins, the
  * cell records, the previous-corner and split records (captured at the
- * upload, tgpu_upload_sector), and the colour-table entry the sector state
- * names (captured at its write, tgpu_coltab_refresh). The fresh bake's
+ * upload, tgpu_upload_sector), the colour-table entry the sector state
+ * names (captured at its write, tgpu_coltab_refresh), and the position-ring
+ * entry it names, against an entry encoded from the banks now
+ * (taud_ring_check). The fresh bake's
  * record references are rebased onto the slot's store run first
  * (tgpu_prev_rebase), so equal state compares equal byte for byte.
  *
@@ -13327,7 +13454,8 @@ static void tgpu_split_rebase(tgpu_buf* buf, uint32_t first) {
  * Controls (test only): OPENPETE_TERRAIN_AUDIT_POISON=<sector index> adds
  * one unit to the first corner x of the first vertex (or cell record) of
  * that sector's every bake before its upload; OPENPETE_TERRAIN_AUDIT_SKIP=
- * tex|anim drops the texture-generation or poly-anim-roll re-bake trigger.
+ * tex|anim|ring drops the texture-generation or poly-anim-roll re-bake
+ * trigger, or every position-ring write after a ring's first.
  * Off (unset or 0), the cost is one latched test per bake, per baked face
  * and per owned sector. */
 #define TAUD_LOG_MAX 24
@@ -13396,6 +13524,7 @@ typedef struct {
     int fcap[OPTC_ARENA_COUNT], marked[OPTC_ARENA_COUNT], cap[OPTC_ARENA_COUNT];
     uint32_t* pw; int pn, pcap;        /* previous-corner and split records */
     uint32_t* tw; int tn, tcap;        /* colour-table entry words */
+    uint32_t* rw; int rn, rcap;        /* position-ring entry words */
     int faces;                         /* faces that baked at least one element */
 } taud_bake;
 typedef struct {
@@ -13407,7 +13536,8 @@ typedef struct {
 
 static int s_taud = -1;                /* audit period in ticks, 0 = off */
 static int s_taud_poison = -2;         /* sector index the poison control perturbs, -1 = none */
-static int s_taud_skip_tex, s_taud_skip_anim;
+static int s_taud_skip_tex, s_taud_skip_anim, s_taud_skip_ring;
+static uint64_t s_taud_rwords, s_taud_rmis;   /* ring-entry words compared, entries that differed */
 static taud_shadow* s_taud_sh;         /* TSC_SLOTS entries, allocated when on */
 static taud_bake* s_taud_sink;         /* set while the audit's fresh bake runs */
 static uint64_t s_taud_audits, s_taud_rebaked, s_taud_elems, s_taud_faces, s_taud_pwords,
@@ -13428,14 +13558,16 @@ static void taud_report(void) {
     for (int i = 0; i < (int)sizeof s_taud_secset; i++) secs += __builtin_popcount(s_taud_secset[i]);
     fprintf(stderr, "[ter-audit] summary period=%d audits=%llu sectors=%d rebaked=%llu elems=%llu "
             "faces=%llu prev_words=%llu tab_words=%llu tab_masked=%llu mismatches=%llu mismatch_audits=%llu "
-            "subtick_skips=%llu noshadow=%llu bakefail=%llu sample_sec=%d first=%s\n",
+            "subtick_skips=%llu noshadow=%llu bakefail=%llu ring_words=%llu ring_mismatches=%llu "
+            "sample_sec=%d first=%s\n",
             s_taud, (unsigned long long)s_taud_audits, secs, (unsigned long long)s_taud_rebaked,
             (unsigned long long)s_taud_elems, (unsigned long long)s_taud_faces,
             (unsigned long long)s_taud_pwords, (unsigned long long)s_taud_twords,
             (unsigned long long)s_taud_masked,
             (unsigned long long)s_taud_mis, (unsigned long long)s_taud_missec,
             (unsigned long long)s_taud_sub, (unsigned long long)s_taud_noshadow,
-            (unsigned long long)s_taud_fail, s_taud_sample, s_taud_first[0] ? s_taud_first : "none");
+            (unsigned long long)s_taud_fail, (unsigned long long)s_taud_rwords,
+            (unsigned long long)s_taud_rmis, s_taud_sample, s_taud_first[0] ? s_taud_first : "none");
 }
 
 /** @brief Latches OPENPETE_TERRAIN_AUDIT and its controls on first use and returns the period.
@@ -13453,6 +13585,7 @@ static int taud_on(void) {
     const char* k = getenv("OPENPETE_TERRAIN_AUDIT_SKIP");
     s_taud_skip_tex = k && strstr(k, "tex") != NULL;
     s_taud_skip_anim = k && strstr(k, "anim") != NULL;
+    s_taud_skip_ring = k && strstr(k, "ring") != NULL;
     fprintf(stderr, "[ter-audit] on: period=%d poison=%d skip_tex=%d skip_anim=%d\n",
             s_taud, s_taud_poison, s_taud_skip_tex, s_taud_skip_anim);
     atexit(taud_report);
@@ -13531,6 +13664,17 @@ static void taud_shadow_capture(const tgpu_slot_t* T, const tgpu_buf* buf) {
     H->bakes = (H->valid && H->s == T->s) ? H->bakes + 1u : 1u;
     H->valid = taud_take(&H->b, buf) == 0;
     H->s = T->s; H->gen = T->gen;
+}
+
+/** @brief Records the position-ring entry just written for a slot as its audit shadow.
+ * @param T The slot.
+ * @param w The entry's words.
+ * @param ent The entry's units. */
+static void taud_ring_capture(const tgpu_slot_t* T, const uint32_t* w, int ent) {
+    if (!taud_on()) return;
+    taud_shadow* H = &s_taud_sh[T - s_tgpu];
+    H->b.rn = ent * (int)OPTC_PREV_REC_WORDS;
+    if (taud_copy((void**)&H->b.rw, &H->b.rcap, w, H->b.rn, sizeof(uint32_t)) != 0) H->b.rn = 0;
 }
 
 /** @brief Records the colour-table entry just written for a slot as its audit shadow.
@@ -13838,7 +13982,9 @@ static int taud_fresh(CPUState* cpu, const tscache_t* SC, uint32_t hqTable, int 
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) { K->buf[a].n = 0; K->marked[a] = 0; }
     K->faces = 0; K->pn = 0; K->tn = 0;
     s_taud_sink = K;
+    s_ring_bake = T->bakeRing;
     const int r = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index, T->bakeVar);
+    s_ring_bake = 0;
     s_taud_sink = NULL;
     if (r != 0) return -1;
     if (K->pn > 0) tgpu_prev_rebase(K->buf, T->prevFirst);
@@ -13881,6 +14027,42 @@ static int taud_compare(const taud_shadow* H, const taud_bake* K, const tgpu_slo
     return m;
 }
 
+static int tgpu_ring_ent(const tscache_t* SC);
+static void tgpu_ring_fill(const tscache_t* SC, uint32_t* w, int ent);
+static uint32_t tgpu_slot_ring(const tgpu_slot_t* T);
+
+/** @brief Compares the position-ring entry a slot's state names with an entry encoded from the sector's banks now.
+ *
+ * The named entry is the copy taud_ring_capture took at its write. A
+ * difference is an entry that no longer matches the banks: a roll that
+ * wrote no entry. The skip-ring control (OPENPETE_TERRAIN_AUDIT_SKIP=ring)
+ * drops the writes after a ring's first, so the audit must report it.
+ * @param H The slot's shadow.
+ * @param T The slot.
+ * @param SC The decoded sector.
+ * @param sec_index The level sector index, for the first-mismatch text.
+ * @return 1 when the entries differ, else 0 (also for a slot with no entry). */
+static int taud_ring_check(taud_shadow* H, const tgpu_slot_t* T, const tscache_t* SC, int sec_index) {
+    static uint32_t* w;
+    static int wcap;
+    if (tgpu_slot_ring(T) == OPTC_PREV_REC_NONE) return 0;
+    const int ent = tgpu_ring_ent(SC), n = ent * (int)OPTC_PREV_REC_WORDS;
+    if (n > wcap) {
+        uint32_t* nw = (uint32_t*)realloc(w, sizeof(*w) * (size_t)n);
+        if (!nw) return 0;
+        w = nw; wcap = n;
+    }
+    tgpu_ring_fill(SC, w, ent);
+    s_taud_rwords += (uint64_t)n;
+    if (H->b.rn == n && memcmp(H->b.rw, w, sizeof(*w) * (size_t)n) == 0) return 0;
+    s_taud_rmis++;
+    s_taud_mis++;
+    if (!s_taud_first[0])
+        snprintf(s_taud_first, sizeof s_taud_first, "sec=%d slot=%d ring-entry words=%d/%d",
+                 sec_index, (int)(T - s_tgpu), H->b.rn, n);
+    return 1;
+}
+
 /** @brief Re-bakes one owned sector into the audit's sink and compares it with the slot's resident copy.
  *
  * Called after tgpu_ensure validated the slot; taud_due decides whether
@@ -13903,7 +14085,8 @@ static void taud_sector(CPUState* cpu, const tscache_t* SC, uint32_t hqTable, in
     if (s_taud_sample < 0) s_taud_sample = sec_index;
     if (sec_index >= 0 && sec_index < 4096) s_taud_secset[sec_index >> 3] |= (uint8_t)(1u << (sec_index & 7));
     const taud_where W = { sec_index, slot, 0, NULL, NULL, 0, NULL, 0, NULL, NULL };
-    s_taud_missec += taud_compare(H, &K, &s_tgpu[slot], W) > 0;
+    const int mis = taud_compare(H, &K, &s_tgpu[slot], W) > 0;
+    s_taud_missec += (mis || taud_ring_check(H, &s_tgpu[slot], SC, sec_index)) ? 1 : 0;
 }
 
 /** @brief Hands a finished bake to the audit's sink when the audit's fresh bake is running.
@@ -14143,6 +14326,7 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
         k[q].prgb_near = T.pnearC[q]; k[q].prgb_far = T.pfarC[q];
         k[q].ci = T.ci[q];
     }
+    tgpu_ring_face(&T, k, vi);
     T.prec = tgpu_prev_rec(&T);
     if (tgpu_bake_hp_flat(X, &T, k, F, tgpu_arena_of(&F->mat), fail) != 0) return -1;
     if (!hq_elig || (X->canim_only && !X->with_var)) return 0;
@@ -14234,6 +14418,7 @@ static int tgpu_bake_lp_face(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
         k[q].prgb_far = k[q].prgb_near = prc[q];
         k[q].ci = T.ci[q];
     }
+    tgpu_ring_face(&T, k, vi);
     T.prec = tgpu_prev_rec(&T);
     int da = F->mat.blend ? tgpu_arena_of(&F->mat) : (int)OPTC_ARENA_LP;
     /* LP quad: strip diagonal i1-i2 (no i2/i3 swap - see the LP emit) */
@@ -14364,7 +14549,10 @@ static void tgpu_bake_note_misses(int slot) {
  * Bakes the LP tier (the sector's own faces, then its borrowed LP faces)
  * and the HP tier's flat variant, then each HQ-eligible HP face's near
  * variants (tgpu_bake_near), into per-arena buffers, and uploads them with
- * tgpu_upload_chunks.
+ * tgpu_upload_chunks. With s_ring_bake set on a sector tgpu_ring_sector
+ * admits, the sector's own faces are ring faces (tgpu_ring_face): their
+ * vertices and cell records name bank indices and carry no position, and
+ * no previous-corner record is written.
  * @param cpu The guest CPU state.
  * @param slot The sector's decode slot index.
  * @param SC The decoded sector.
@@ -14403,17 +14591,12 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     for (int a = OPTC_ARENA_CELL_NEAR_BASE; a < OPTC_ARENA_COUNT; a++)
         buf[a].rsz = OPTC_ARENA_IS_CELL_ANIM(a) ? sizeof(rhi_terrain_cell_anim)
                                                 : sizeof(rhi_terrain_cell);
-    int vsnap = 1;
+    const int vsnap = !SC->polyanim || tgpu_vsnap(SC);
     tgpu_buf_anim(buf, anim);
-    if (SC->polyanim) {
-        const int nLp = (SC->lpV && SC->lpVprev) ? SC->nLpV : 0;
-        const int nHp = (SC->hpV && SC->hpVprev) ? SC->nHpV : 0;
-        const int havePrev = (!SC->lpV || SC->lpVprev) && (!SC->hpV || SC->hpVprev);
-        const int jump = (nLp && tsc_vanim_jump(SC->lpVprev, SC->lpV, nLp)) ||
-                         (nHp && tsc_vanim_jump(SC->hpVprev, SC->hpV, nHp));
-        vsnap = !havePrev || jump;
-    }
-    tgpu_prev_begin(with_var, SC->polyanim, vsnap);
+    /* A ring bake names bank indices and keeps no previous-corner records:
+     * the ring entry carries both banks. */
+    const int ring = s_ring_bake && tgpu_ring_sector(SC);
+    tgpu_prev_begin(with_var, SC->polyanim && !ring, vsnap);
     s_coltab_bake = tgpu_coltab_mode(SC);
     s_coltab_miss = 0;
 
@@ -14426,6 +14609,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     const uint32_t own_sec = tgpu_envm_sec(SC, sec_index);
     const tgpu_lpset own_lp = { tgpu_lp_bank(SC, 0), (anim && !vsnap) ? SC->lpVprev : NULL, SC->nLpV,
                                 SC->lpColBase, CA, sec_index };
+    s_ring_face = ring;
     for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++) {
         if (tgpu_bake_lp_face(cpu, buf, ab, with_var, base_ff,
                               lp_buckets[tface_envm(&SC->lpF[f], own_sec, 1, 0) != 0],
@@ -14433,6 +14617,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             goto done;
         taud_face_mark(buf, 0, f);
     }
+    s_ring_face = 0;
     if (SC->imp && SC->imp->lpV && SC->imp->lpF) {
         /* Borrowed LP faces: the source LP colours through the host window,
          * no previous-tick state, no authored correction. */
@@ -14453,10 +14638,12 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     tgpu_hpset own = { SC->hpV, SC->hpVprev, SC->nHpV, NULL, NULL, SC->nearBase, SC->farBase, CA, 0u, SC,
                        SC->hpF, tgpu_tj_marks(SC, 1, SC->nHpF) };
     tgpu_own_bank(SC, &X, &own);
+    s_ring_face = ring;
     for (int f = 0; SC->hpV && SC->hpF && f < SC->nHpF; f++) {
         if (tgpu_bake_hp_face(&X, &own, &SC->hpF[f], &fail) != 0) goto done;
         taud_face_mark(buf, 2, f);
     }
+    s_ring_face = 0;
     s_hq_bank = 0;
     if (SC->imp) {
         const tsimp_t* I = SC->imp;
@@ -14482,6 +14669,7 @@ done:
     tgpu_bake_note_misses(slot);
     s_hq_bank = 0;
     s_prev_bake = 0;
+    s_ring_face = 0;
     s_coltab_bake = 0;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         free(buf[a].v); free(buf[a].pv); free(buf[a].cx); free(buf[a].rec);
@@ -14623,6 +14811,178 @@ static int tgpu_coltab_refresh(tgpu_slot_t* T, const tscache_t* SC) {
     return 0;
 }
 
+/** @brief Returns the store units one position-ring entry of a sector takes: a header word and three words per LP and HP vertex.
+ * @param SC The decoded sector.
+ * @return The units. */
+static int tgpu_ring_ent(const tscache_t* SC) {
+    const uint32_t n = (uint32_t)(SC->lpV ? SC->nLpV : 0) + (uint32_t)(SC->hpV ? SC->nHpV : 0);
+    return (int)((1u + 3u * n + OPTC_PREV_REC_WORDS - 1u) / OPTC_PREV_REC_WORDS);
+}
+
+/** @brief Encodes a poly-anim sector's current and previous banks as one position-ring entry.
+ *
+ * The layout is openpete_terrain_cache.h's (position rings), the LP bank
+ * first; positions take the chunks' x4 fixed point (tgpu_p4_of). The
+ * previous positions are the current ones when the banks snap
+ * (tgpu_vsnap), as a whole bake takes them; the rest is zero.
+ * @param SC The decoded sector.
+ * @param w Receives ent x OPTC_PREV_REC_WORDS words.
+ * @param ent The entry's units. */
+static void tgpu_ring_fill(const tscache_t* SC, uint32_t* w, int ent) {
+    memset(w, 0, sizeof(*w) * OPTC_PREV_REC_WORDS * (size_t)ent);
+    const int snap = tgpu_vsnap(SC);
+    const int n[2] = { SC->lpV ? SC->nLpV : 0, SC->hpV ? SC->nHpV : 0 };
+    const tsvert_t* V[2] = { SC->lpV, SC->hpV };
+    const tsvert_t* P[2] = { snap ? SC->lpV : SC->lpVprev, snap ? SC->hpV : SC->hpVprev };
+    w[0] = (uint32_t)n[0] | (uint32_t)n[1] << 16;
+    uint32_t at = 1u;
+    for (int b = 0; b < 2; b++)
+        for (int i = 0; i < n[b]; i++, at += 3u) {
+            const tgpu_p4 c = tgpu_p4_of(&V[b][i]), p = tgpu_p4_of(&P[b][i]);
+            w[at]      = (uint16_t)c.x | (uint32_t)(uint16_t)c.y << 16;
+            w[at + 1u] = (uint16_t)p.x | (uint32_t)(uint16_t)p.y << 16;
+            w[at + 2u] = (uint16_t)c.z | (uint32_t)(uint16_t)p.z << 16;
+        }
+}
+
+/** @brief Returns the depth a slot's position ring starts at: OPENPETE_TC_RING_INITIAL, else OPTC_COLTAB_RING.
+ *
+ * A harness squeezes it to 1 so every roll deepens the ring until the
+ * states that can be drawn at once fit. Clamped to 1..posring_max; latched
+ * on the first call.
+ * @return The depth in entries. */
+static int tgpu_ring_initial(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("OPENPETE_TC_RING_INITIAL");
+        v = (e && *e) ? atoi(e) : (int)OPTC_COLTAB_RING;
+        const int mx = (int)openpete_tercache_posring_max();
+        v = v < 1 ? 1 : (v > mx ? mx : v);
+    }
+    return v;
+}
+
+/** @brief Gives a slot a fresh position-ring run of a given depth, releasing the run it held.
+ * @param T The slot; ringEnt is the entry size.
+ * @param depth The new depth in entries.
+ * @return 0, or -1 when the run is refused (the old run is released either way). */
+static int tgpu_ring_run(tgpu_slot_t* T, int depth) {
+    tgpu_ring_free(T);
+    uint32_t first;
+    if (openpete_tercache_ring_alloc(depth * T->ringEnt, &first) != 0) {
+        openpete_tercache_ring_note(OPTC_RING_NOTE_FAIL, 1u);
+        return -1;
+    }
+    T->ringFirst = first;
+    T->ringDepth = depth;
+    T->ringCur = depth - 1;
+    T->ringUsed = 0;
+    s_ring_units_live += (long)depth * T->ringEnt;
+    openpete_tercache_ring_note(OPTC_RING_NOTE_UNITS, (uint64_t)s_ring_units_live);
+    openpete_tercache_ring_note(OPTC_RING_NOTE_DEPTH, (uint64_t)depth);
+    return 0;
+}
+
+/** @brief Writes a ring sector's latest roll into the next entry of its slot's position ring, deepening the ring when that entry is still read.
+ *
+ * The ring is keyed by (sector address, entry size, decodeGen); a slot
+ * whose key moved takes a fresh run at the initial depth
+ * (tgpu_ring_initial). An entry is rewritten only once the build at which
+ * the ring moved past it is released (openpete_tercache_serial_released);
+ * the entry the sector state names now is never rewritten. When the next
+ * entry is still read, the ring moves to a fresh run of twice the depth,
+ * at most openpete_tercache_posring_max, and the old run is released
+ * through the store's defer window, which keeps it while a state built
+ * before the move can be drawn. A slot whose entry already holds this roll
+ * keeps it. So no entry a drawn state names is ever rewritten and the ring
+ * never claims.
+ * @param T The slot.
+ * @param SC The decoded sector.
+ * @return 0, or -1 when a run is refused; the slot then holds no ring. */
+static int tgpu_ring_refresh(tgpu_slot_t* T, const tscache_t* SC) {
+    static uint32_t* w;
+    static int wcap;
+    const int ent = tgpu_ring_ent(SC);
+    if (T->ringDepth > 0 && (T->ringSec != SC->s || T->ringEnt != ent || T->ringDecode != SC->decodeGen))
+        tgpu_ring_free(T);
+    if (T->ringDepth > 0 && (T->ringUsed >> T->ringCur & 1u) &&
+        (T->ringRoll == SC->vrollPres || s_taud_skip_ring)) return 0;
+    T->ringSec = SC->s; T->ringEnt = ent; T->ringDecode = SC->decodeGen;
+    if (T->ringDepth == 0 && tgpu_ring_run(T, tgpu_ring_initial()) != 0) return -1;
+    int nx = (T->ringCur + 1) % T->ringDepth;
+    if ((T->ringUsed >> nx & 1u) &&
+        (nx == T->ringCur || !openpete_tercache_serial_released(T->ringStamp[nx]))) {
+        const int mx = (int)openpete_tercache_posring_max();
+        if (T->ringDepth >= mx) {
+            openpete_tercache_ring_note(OPTC_RING_NOTE_FAIL, 1u);
+            tgpu_ring_free(T);
+            return -1;
+        }
+        const int d = T->ringDepth * 2 < mx ? T->ringDepth * 2 : mx;
+        if (tgpu_ring_run(T, d) != 0) return -1;
+        openpete_tercache_ring_note(OPTC_RING_NOTE_GROW, 1u);
+        nx = 0;
+    }
+    if (ent * (int)OPTC_PREV_REC_WORDS > wcap) {
+        uint32_t* nw = (uint32_t*)realloc(w, sizeof(*w) * OPTC_PREV_REC_WORDS * (size_t)ent);
+        if (!nw) { tgpu_ring_free(T); return -1; }
+        w = nw; wcap = ent * (int)OPTC_PREV_REC_WORDS;
+    }
+    tgpu_ring_fill(SC, w, ent);
+    openpete_tercache_prev_write(T->ringFirst + (uint32_t)(nx * ent), w, ent);
+    taud_ring_capture(T, w, ent);
+    T->ringStamp[T->ringCur] = openpete_tercache_build_serial();
+    T->ringCur = nx;
+    T->ringUsed |= (uint64_t)1u << nx;
+    T->ringRoll = SC->vrollPres;
+    openpete_tercache_ring_note(OPTC_RING_NOTE_WRITE, 1u);
+    return 0;
+}
+
+/** @brief Returns the position-ring entry a slot's sector state names this present.
+ * @param T The slot.
+ * @return The entry's first unit, or OPTC_PREV_REC_NONE for a slot not baked with ring faces. */
+static uint32_t tgpu_slot_ring(const tgpu_slot_t* T) {
+    return (T->bakeRing && T->ringDepth > 0 && (T->ringUsed >> T->ringCur & 1u))
+         ? T->ringFirst + (uint32_t)(T->ringCur * T->ringEnt) : OPTC_PREV_REC_NONE;
+}
+
+/** @brief Returns the triangles of a face list whose corners differ between two banks.
+ * @param F The faces.
+ * @param nF The face count.
+ * @param V The current bank.
+ * @param P The previous bank.
+ * @param nV The banks' vertex count; a face indexing past it is skipped, as the bake skips it.
+ * @return The triangles: two per quad, one per triangle. */
+static int tgpu_ring_moved_tris(const tsface_t* F, int nF, const tsvert_t* V, const tsvert_t* P, int nV) {
+    int n = 0;
+    for (int f = 0; f < nF; f++) {
+        const int vi[4] = { F[f].i0, F[f].i1, F[f].i2, F[f].i3 };
+        if (vi[0] >= nV || vi[1] >= nV || vi[2] >= nV || vi[3] >= nV) continue;
+        int mv = 0;
+        for (int q = 0; q < 4 && !mv; q++)
+            mv = memcmp(&V[vi[q]], &P[vi[q]], sizeof(tsvert_t)) != 0;
+        n += mv ? (F[f].quad ? 2 : 1) : 0;
+    }
+    return n;
+}
+
+/** @brief Counts a GPU-owned sector drawn with ring faces, and the triangles of its own faces whose ring-entry corners move.
+ *
+ * The OPENPETE_TERRAIN_GPU_CENSUS counters s_tgpu_ring_secs and
+ * s_tgpu_ring_mv: the second is the engagement of the vertex stages'
+ * ring lerp (a snapped entry, tgpu_vsnap, moves nothing).
+ * @param T The slot.
+ * @param SC The decoded sector.
+ * @param on Nonzero while the census is enabled; zero counts nothing. */
+static void tgpu_ring_census(const tgpu_slot_t* T, const tscache_t* SC, int on) {
+    if (!on || tgpu_slot_ring(T) == OPTC_PREV_REC_NONE) return;
+    s_tgpu_ring_secs++;
+    if (tgpu_vsnap(SC)) return;
+    if (SC->lpV && SC->lpF) s_tgpu_ring_mv += tgpu_ring_moved_tris(SC->lpF, SC->nLpF, SC->lpV, SC->lpVprev, SC->nLpV);
+    if (SC->hpV && SC->hpF) s_tgpu_ring_mv += tgpu_ring_moved_tris(SC->hpF, SC->nHpF, SC->hpV, SC->hpVprev, SC->nHpV);
+}
+
 /** @brief Counts a GPU-owned sector on the colour lists, and whether its last roll moved a colour.
  *
  * The OPENPETE_TERRAIN_GPU_CENSUS counters s_tgpu_canim_walk and
@@ -14752,14 +15112,17 @@ enum {
  *
  * Reads the slot's latched values before the bake overwrites them. A bake
  * with none of the named terms (made dirty by the colour hash, a migration
- * or a term outside the named families) is TBK_TRIG_OTHER.
+ * or a term outside the named families) is TBK_TRIG_OTHER. A bake with
+ * ring faces carries no roll or vertGen term: neither makes such a slot
+ * dirty, since its roll writes a ring entry.
  * @param T The slot, not yet re-latched.
  * @param SC The decoded sector.
+ * @param ringBaked 1 when the bake makes ring faces.
  * @return An OR of TBK_TRIG_* bits, never 0. */
-static unsigned tbk_trigger_bits(const tgpu_slot_t* T, const tscache_t* SC) {
+static unsigned tbk_trigger_bits(const tgpu_slot_t* T, const tscache_t* SC, int ringBaked) {
     unsigned m = 0;
-    if (SC->polyanim && T->animRoll != SC->vrollPres) m |= TBK_TRIG_ROLL;
-    if (T->vertGen != SC->vertGen) m |= TBK_TRIG_VERT;
+    if (!ringBaked && SC->polyanim && T->animRoll != SC->vrollPres) m |= TBK_TRIG_ROLL;
+    if (!ringBaked && T->vertGen != SC->vertGen) m |= TBK_TRIG_VERT;
     if (T->texGen != SC->texGen) m |= TBK_TRIG_TEX;
     if (T->bakeTagGen != SC->tagGen) m |= TBK_TRIG_TAG;
     if (tgpu_canim_stale(T, SC)) m |= TBK_TRIG_COL;
@@ -14768,12 +15131,13 @@ static unsigned tbk_trigger_bits(const tgpu_slot_t* T, const tscache_t* SC) {
 
 /** @brief Counts one bake in the bake census by sector kind and trigger class while profiling is on.
  * @param T The slot about to re-bake, not yet re-latched.
- * @param SC The decoded sector. */
-static void tbk_note_bake(const tgpu_slot_t* T, const tscache_t* SC) {
+ * @param SC The decoded sector.
+ * @param ringBaked 1 when the bake makes ring faces (tbk_trigger_bits). */
+static void tbk_note_bake(const tgpu_slot_t* T, const tscache_t* SC, int ringBaked) {
     static const uint8_t col[6] = { TBK_T_ROLL, TBK_T_VERT, TBK_T_TEX, TBK_T_TAG, TBK_T_COL, TBK_T_OTHER };
     if (!op_prof_on()) return;
     const int poly = SC->polyanim != 0;
-    const unsigned bits = tbk_trigger_bits(T, SC);
+    const unsigned bits = tbk_trigger_bits(T, SC, ringBaked);
     s_tbk[TBK_N]++;
     s_tbk[TBK_PA] += poly != 0;
     for (int b = 0; b < 6; b++) s_tbk[col[b]] += (bits >> b) & 1u;
@@ -14804,7 +15168,12 @@ static void tgpu_dbg_rebuild(const tgpu_slot_t* T, const tscache_t* SC, int slot
  *
  * A slot without near-variant chunks rebuilds to add them when want_near
  * is set, and keeps them for the rest of the sector's residency. A valid
- * result stamps the slot's ownFrame.
+ * result stamps the slot's ownFrame. A poly-anim sector of the scene
+ * (tgpu_ring_sector) first writes its roll into its position ring
+ * (tgpu_ring_refresh); its chunks then name bank indices, and a roll or a
+ * vertGen step re-bakes nothing. A refused ring run re-bakes the sector
+ * with its positions in the chunks, and the next run that lands re-bakes
+ * it back to ring faces.
  * @param cpu The guest CPU state.
  * @param SC The decoded sector.
  * @param hqTable The HQ record table's guest address, or 0.
@@ -14871,15 +15240,26 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
      * a sector oscillating across the near threshold re-bakes at most once. */
     int with_var = want_near || (T->bakeVar && T->s == SC->s);
     const uint32_t pinKey = tgpu_pin_key();
+    /* Position ring: a ring sector's roll writes a ring entry; a refused
+     * run bakes the sector whole until a run lands. */
+    const int wantRing = tgpu_ring_sector(SC);
+    /* Inside a level-edge window no bake lands (tgpu_build_or_hold), so a
+     * slot not yet baked with ring faces takes no run there. */
+    const int ringIdle = wantRing && !(T->bakeRing && T->s == SC->s) && openpete_tercache_bake_held();
+    const int ring = wantRing && !ringIdle && tgpu_ring_refresh(T, SC) == 0;
+    if (!wantRing) tgpu_ring_free(T);
+    const int ringBaked = ring && T->bakeRing;
     int dirty = (with_var && !T->bakeVar)
              || (T->bakePinKey != pinKey)
              || (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
-             || taud_tex_moved(T, SC) || (T->vertGen != SC->vertGen)
+             || (ring != (T->bakeRing != 0))
+             || taud_tex_moved(T, SC) || (!ringBaked && T->vertGen != SC->vertGen)
              /* poly-anim: every canonical roll re-bakes (prev,cur) - the
               * content hash alone would leave a paused anim's chunk lerping
-              * its last step forever. Sub-tick builds don't roll, so this
-              * stays clean between ticks. */
-             || taud_anim_rolled(T, SC)
+              * its last step forever - unless the chunks read the position
+              * ring, whose entry the roll wrote. Sub-tick builds don't roll,
+              * so this stays clean between ticks. */
+             || (!ringBaked && taud_anim_rolled(T, SC))
              /* env-anim colour: joining or leaving the colour lists moves
               * the sector between arena families, and each roll re-bakes
               * its (prev, cur) colour pair for the same reason. */
@@ -14915,7 +15295,8 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         if (h != T->colHash) { dirty = 1; T->colHash = h; }
     }
     if (dirty) {
-        tbk_note_bake(T, SC);
+        tbk_note_bake(T, SC, ring);
+        if (wantRing && !ring && !ringIdle) openpete_tercache_ring_note(OPTC_RING_NOTE_REBAKE, 1u);
         tgpu_dbg_rebuild(T, SC, slot, with_var, mig);
         tgpu_free_slot(T);
         T->gen = (uint8_t)((T->gen + 1u) & 7u);
@@ -14934,10 +15315,13 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->colHash = tgpu_col_hash(cpu, SC);
         T->bakeVar = (uint8_t)(with_var != 0);
         T->bakePinKey = pinKey;
+        T->bakeRing = (uint8_t)ring;
+        s_ring_bake = ring;
         static int bid_[2] = { -1, -1 };
         static const char* const bname_[2] = { "ter.bake.static", "ter.bake.polyanim" };
         ter_prof_open(&bid_[SC->polyanim != 0], bname_[SC->polyanim != 0]);
         T->unbuildable = tgpu_build_or_hold(cpu, slot, SC, hqTable, sec_index, with_var, meter);
+        s_ring_bake = 0;
         ter_prof_close();
         s_tgpu_rebuilds++;
     }
@@ -16543,6 +16927,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                                          (float)originX, (float)originY,
                                          (float)originZ, sf, gr,
                                          tgpu_slot_coltab(&s_tgpu[(int)(SC - s_tsc)]));
+            openpete_tercache_sector_ring((int)(SC - s_tsc), tgpu_slot_ring(&s_tgpu[(int)(SC - s_tsc)]));
             return;
         }
 
@@ -18097,6 +18482,7 @@ static int tgpu_take_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable
     s_tgpu_ca_units += T->tabUnits;
     s_tgpu_secs++; s_tgpu_secs_walk++;
     tgpu_canim_census(SC, cen);
+    tgpu_ring_census(T, SC, cen);
     return 0;
 }
 
@@ -18722,7 +19108,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * serial retry replaces the aborted walk's numbers instead of summing
      * with them (summed lines inflated census rows exactly 2x). */
     s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0; s_tgpu_canim_walk = 0; s_tgpu_canim_mv = 0;
-    s_tgpu_an_walk = 0; s_tgpu_an_recs = 0; s_tgpu_ca_walk = 0; s_tgpu_ca_tab = 0; s_tgpu_ca_units = 0;
+    s_tgpu_an_walk = 0; s_tgpu_an_recs = 0; s_tgpu_ring_secs = 0; s_tgpu_ring_mv = 0; s_tgpu_ca_walk = 0; s_tgpu_ca_tab = 0; s_tgpu_ca_units = 0;
     const long near_pa0 = s_tgcl_near_pa, near_ca0 = s_tgcl_near_ca;
     if (s_cen) {
         cen0[0] = s_tgcl_near;   cen0[1] = s_tgcl_portal;
@@ -19107,7 +19493,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     "arena=%ld col=%ld slot=%ld tp=%ld nearb=%ld "
                     "nodraw=%ld prim=%ld pcov=%ld canim=%d canim_moved=%d "
                     "near_pa=%ld near_ca=%ld animnear=%d animrecs=%d "
-                    "canimnear=%d coltab=%d tabunits=%d\n",
+                    "canimnear=%d coltab=%d tabunits=%d ringsecs=%d ringmv=%d\n",
                     openpete_feed_key_now(), s_vanim_sub,
                     s_tgpu_secs_walk, s_tgpu_claims_walk,
                     s_tgcl_near - cen0[0], s_tgcl_portal - cen0[1],
@@ -19118,7 +19504,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgcl_nearb - cen0[9], s_tgcl_nodraw - cen0[10],
                     s_tgcl_prim - cen0[11], s_tgcl_pcov - cen0[12], s_tgpu_canim_walk, s_tgpu_canim_mv,
                     s_tgcl_near_pa - near_pa0, s_tgcl_near_ca - near_ca0, s_tgpu_an_walk,
-                    s_tgpu_an_recs, s_tgpu_ca_walk, s_tgpu_ca_tab, s_tgpu_ca_units);
+                    s_tgpu_an_recs, s_tgpu_ca_walk, s_tgpu_ca_tab, s_tgpu_ca_units,
+                    s_tgpu_ring_secs, s_tgpu_ring_mv);
         tgpu_census();
         if (op_prof_on()) {   /* the claim-ratchet metric, per present */
             static int id_secs = -1, id_claims = -1;

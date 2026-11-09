@@ -468,7 +468,8 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
  *        mean), or NULL when no pack grade applies; a non-NULL grade is
  *        paired with OPTC_SF_LPGRADE in @p sflags.
  * @param coltab The first unit of the sector's colour table in the
- *        previous-tick store, or OPTC_PREV_REC_NONE. */
+ *        previous-tick store, or OPTC_PREV_REC_NONE. The sector's position-ring
+ *        entry resets to OPTC_PREV_REC_NONE (openpete_tercache_sector_ring). */
 void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
                                   uint32_t sflags, const float *grade6, uint32_t coltab);
 /** @brief Close the open build: its sector flags are final, so its draw-range list is built from the chunk registry.
@@ -906,6 +907,52 @@ void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
  * @return 0, or -1 when the store has no room (the caller claims the sector
  *         back to the CPU walk, as on a full arena). */
 int  openpete_tercache_prev_alloc(int count, uint32_t *out_first);
+/* Position rings. A poly-anim sector baked with OPTC_FACE_F_RING faces
+ * reads its vertex positions from a ring of entries in this store, one
+ * entry per canonical roll, so a roll writes an entry instead of
+ * re-baking the chunks. An entry is a header word (LP vertex count | HP
+ * vertex count << 16), then per vertex, LP bank first, three words: the
+ * current x | y << 16, the previous x | y << 16, then current z | previous
+ * z << 16, each an int16 in the chunks' x4 fixed point. The entry the
+ * sector state names rides the sector params (openpete_tercache_sector_ring).
+ * A ring face names its four corners' bank indices in c0x, c0y, c0z and c1x
+ * (a vertex's own index in px), and marks itself with OPTC_FACE_F_RING in
+ * its flags or OPTC_PREV_PAD_RING in an anim vertex's pad. */
+#define OPTC_FACE_F_RING    4u        /* the face's corners come from the position ring */
+#define OPTC_PREV_PAD_RING  0x2000u   /* rhi_terrain_prev.pad: corners from the position ring */
+/* Position-ring census kinds (openpete_tercache_ring_note). */
+enum {
+    OPTC_RING_NOTE_WRITE = 0,   /* entries written */
+    OPTC_RING_NOTE_GROW,        /* rings deepened */
+    OPTC_RING_NOTE_FAIL,        /* ring runs refused (allocation or refusal knob) */
+    OPTC_RING_NOTE_REBAKE,      /* bakes with inline positions forced by a refused run */
+    OPTC_RING_NOTE_UNITS,       /* store units held by rings (maximum) */
+    OPTC_RING_NOTE_DEPTH,       /* deepest ring, in entries (maximum) */
+    OPTC_RING_NOTE_N
+};
+/** @brief Allocate a run of previous-tick store units for a position ring.
+ *
+ * openpete_tercache_prev_alloc, after the refusal knob's `ring` site
+ * (OPENPETE_TC_REFUSE), so a harness can refuse ring runs alone. Builder
+ * thread.
+ * @param count Unit count, at least 1.
+ * @param out_first Receives the first unit index.
+ * @return 0, or -1 when refused or the store has no room. */
+int  openpete_tercache_ring_alloc(int count, uint32_t *out_first);
+/** @brief Return the deepest a position ring may grow: one entry per state that can be drawn at once, plus the one being written.
+ * @return The scene-state ring depth plus OPENPETE_TERCACHE_HOLDS plus 1. */
+uint32_t openpete_tercache_posring_max(void);
+/** @brief Add to a position-ring census counter, or raise a maximum, for the tercache-ring exit row.
+ * @param kind An OPTC_RING_NOTE_* value.
+ * @param n The amount (a count, or a value for the maxima). */
+void openpete_tercache_ring_note(int kind, uint64_t n);
+/** @brief Name the position-ring entry a sector's state reads in the open build.
+ *
+ * Called after openpete_tercache_sector_set, which resets it to
+ * OPTC_PREV_REC_NONE. Same window and slot rules as sector_set.
+ * @param slot Sector slot.
+ * @param first The entry's first unit in the previous-tick store. */
+void openpete_tercache_sector_ring(int slot, uint32_t first);
 /** @brief Write previous-tick store units at an allocated index.
  * @param first First unit index from openpete_tercache_prev_alloc.
  * @param words count * OPTC_PREV_REC_WORDS words.
