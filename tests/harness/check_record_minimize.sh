@@ -19,7 +19,8 @@
 #   leg norec  the same run without recording: exit 0 and the deferral line.
 #
 # Usage: tests/harness/check_record_minimize.sh [--exe PATH] [--out DIR]
-# Exit 0 PASS, 1 FAIL, 2 VACUOUS, 64 SKIP (no exe, no powershell.exe or no disc).
+# Exit 0 PASS, 1 FAIL, 2 VACUOUS, 3 REFUSED (an openpete process already runs on
+# Windows), 64 SKIP (no exe, no powershell.exe or no disc).
 
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -44,7 +45,7 @@ rm -f "${OUT:?}"/rec.log "${OUT:?}"/norec.log "${OUT:?}"/clip-rec.mkv "${OUT:?}"
 
 cat > "$OUT/minwin.ps1" <<'EOF'
 Add-Type -Name W -Namespace U -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h,int c);'
-$p = Get-Process openpete | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+$p = Get-Process openpete | Where-Object { $_.MainWindowHandle -ne 0 } | Sort-Object StartTime -Descending | Select-Object -First 1
 if (-not $p) { "no-window"; exit 1 }
 [U.W]::ShowWindow($p.MainWindowHandle,6) | Out-Null; Start-Sleep 1
 [U.W]::ShowWindow($p.MainWindowHandle,9) | Out-Null; "minimized-restored"
@@ -71,6 +72,14 @@ run_leg() {
     wait "$pid"
     echo "exit=$?" >> "$OUT/$leg.min"
 }
+
+# Refuse while another openpete process runs on Windows: its window would be
+# a minimize target and the legs would race a session in use (exit 3).
+running=$(powershell.exe -NoProfile -Command "(Get-Process openpete -ErrorAction SilentlyContinue | Measure-Object).Count" 2>/dev/null | tr -d '\r')
+if [[ ${running:-0} -gt 0 ]]; then
+    echo "check_record_minimize: REFUSED: $running openpete process(es) already running on Windows"
+    exit 3
+fi
 
 verdict=0
 run_leg rec
