@@ -109,7 +109,10 @@ the-end-haunted-tomb-archway|20565|2||20567,20569,20570,20571|--skip-to-cutscene
 # 2329 (lod extended canonical): the terrain feed of the world draw used the
 # previous tick's portal openings while this tick's portal pass captured a
 # different set; a sliver shows through the arch edge. Blessed pre-fix.
-sunrise-spring-camera-swing|2073|100||2091,2092,2093,2113,2133,2329,2333,2573
+# 2400, 2440, 2480, 2540: the camera moves 38 units per tick on average here
+# (VBLs 2380-2569) past mobys resting on terrain, so the sub-tick tiles hold
+# moby-against-terrain contact under a moving camera.
+sunrise-spring-camera-swing|2073|100||2091,2092,2093,2113,2133,2329,2333,2400,2440,2480,2540,2573
 # sunrise-spring-camera-swing@glintdepth: the same movie under a fixed freecam
 # pose engaged at VBL 2100, a gem's near star close to the camera. The star
 # took its pool record's view-Z, which lies inside the gem, so the gem's own
