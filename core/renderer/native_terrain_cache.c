@@ -2777,12 +2777,12 @@ void openpete_tercache_set_content(int level_id, const openpete_tercache_content
     memset(e, 0, sizeof e);
     e[OPTC_ARENA_OPAQUE]    = c->hp_v;
     e[OPTC_ARENA_LP]        = c->lp_v;
-    e[OPTC_ARENA_A_OPAQUE]  = D * c->anim_hp_v;
-    e[OPTC_ARENA_A_LP]      = D * c->anim_lp_v;
+    e[OPTC_ARENA_A_OPAQUE]  = c->anim_hp_v + (D - 1u) * c->roll_hp_v;
+    e[OPTC_ARENA_A_LP]      = c->anim_lp_v + (D - 1u) * c->roll_lp_v;
     e[OPTC_ARENA_N_OPAQUE]  = 4u * (c->hp_v + (D - 1u) * c->animnear_hp_v) / N;
     e[OPTC_ARENA_N_LP]      = 4u * (c->lp_v + (D - 1u) * c->animnear_lp_v) / N;
     e[OPTC_ARENA_CN_OPAQUE] = 2u * c->cell_r / N;
-    e[OPTC_ARENA_CA_OPAQUE] = D * c->anim_cell_r;
+    e[OPTC_ARENA_CA_OPAQUE] = c->anim_cell_r + (D - 1u) * c->roll_cell_r;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         const uint32_t f = tc_floor_cap(a), v = tc_est_sat(e[a]);
         s_tc.est[a] = v > f ? v : f;

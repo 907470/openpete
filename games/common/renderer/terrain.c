@@ -10265,6 +10265,23 @@ static void tj_level_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t n, uint
 static uint32_t tj_sector_addv(uint32_t q);
 static uint32_t tj_sector_recs(uint32_t q);
 
+/** @brief Tests whether an animation-list member sector re-bakes on every roll.
+ *
+ * A poly-anim sector re-bakes at every vertex roll (its slot's animRoll
+ * against the sector's vrollPres). A colour-only sector re-bakes at every
+ * colour roll unless it bakes against a colour table (tgpu_coltab_mode,
+ * default under OPENPETE_TERRAIN_CANIMNEAR), whose roll rewrites the table
+ * and not the chunks (tgpu_roll_free). A colour-table bake with a face
+ * whose colour index is past the sector's colour array (tabMiss) still
+ * re-bakes on every roll; the header pass does not decode faces, so such a
+ * sector is counted roll-free and its extra copies take the watermark
+ * growth.
+ * @param m The sector's lists: bit 0 vertex, bit 1 colour.
+ * @return 1 for a sector that re-bakes on every roll, else 0. */
+static int tgpu_content_rolls(uint8_t m) {
+    return (m & 1u) || ((m & 2u) && !tgpu_canimnear_on());
+}
+
 /** @brief Adds one animation-list member sector to the anim, near-churn and store figures of a content bound.
  *
  * A poly-anim sector (vertex list) bakes the full plain cost, its near twins
@@ -10272,7 +10289,10 @@ static uint32_t tj_sector_recs(uint32_t q);
  * previous-corner record per face. A colour-only sector bakes the flat
  * variant alone (6 per HP face) under OPENPETE_TERRAIN_CANIMNEAR=0; by
  * default it bakes the HQ variants against a colour-table ring of
- * OPTC_COLTAB_RING entries of 1 + 2 x (LP + 2 x HP colours) words.
+ * OPTC_COLTAB_RING entries of 1 + 2 x (LP + 2 x HP colours) words. The
+ * sector's anim figures also go to the roll figures when it re-bakes on
+ * every roll (tgpu_content_rolls); a colour-table bake is roll-free
+ * (tgpu_roll_free) and is counted once.
  * @param c The bound being accumulated.
  * @param m The sector's lists: bit 0 vertex, bit 1 colour; 0 adds nothing.
  * @param hpf HP faces (own and borrowable).
@@ -10286,9 +10306,11 @@ static void tgpu_content_anim(openpete_tercache_content* c, uint8_t m, uint64_t 
     if (!m) return;
     const int coltab = tgpu_canimnear_on();
     const int hq = (m & 1u) || coltab;
-    c->anim_hp_v += (hq ? 30u : 6u) * hpf + addv;
-    c->anim_lp_v += 6u * lpf;
-    if (hq) c->anim_cell_r += cellK * hpf;
+    const uint64_t hv = (hq ? 30u : 6u) * hpf + addv, lv = 6u * lpf, cr = hq ? cellK * hpf : 0u;
+    c->anim_hp_v += hv;
+    c->anim_lp_v += lv;
+    c->anim_cell_r += cr;
+    if (tgpu_content_rolls(m)) { c->roll_hp_v += hv; c->roll_lp_v += lv; c->roll_cell_r += cr; }
     if (m & 1u) {
         c->prev_rec += hpf + lpf;
         if (tgpu_animnear_on()) { c->animnear_hp_v += 30u * hpf + addv; c->animnear_lp_v += 6u * lpf; }
@@ -10351,8 +10373,8 @@ static void tgpu_content(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt, 
         c->hp_v += 30u * hpf + tj_sector_addv(q);
         c->lp_v += 6u * lpf;
         c->cell_r += cellK * hpf;
-        if (mem) c->split_anim_units += 4u * (uint64_t)tj_sector_recs(q);
-        else     c->split_units += 2u * (uint64_t)tj_sector_recs(q);
+        if (tgpu_content_rolls(mem)) c->split_anim_units += 4u * (uint64_t)tj_sector_recs(q);
+        else c->split_units += (mem ? 4u : 2u) * (uint64_t)tj_sector_recs(q);
         tgpu_content_anim(c, mem, hpf, lpf, lpc, hpc, cellK, tj_sector_addv(q));
         c->sectors++;
     }

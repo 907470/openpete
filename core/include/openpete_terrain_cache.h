@@ -1229,10 +1229,16 @@ typedef struct {
      * faces x the HP face maximum, LP faces x the LP face maximum. */
     uint64_t hp_v, lp_v;
     /* The same over the sectors the animation lists name, which bake into
-     * the anim family and re-bake every roll: a poly-anim sector at the
-     * plain costs, a colour-only sector whose near chunks read no colour
-     * table at the flat costs (its HQ variants go to near chunks alone). */
+     * the anim family: a poly-anim sector, and a colour-only sector whose
+     * chunks read a colour table, at the plain costs; a colour-only sector
+     * without a table at the flat costs (its HQ variants go to near chunks
+     * alone). */
     uint64_t anim_hp_v, anim_lp_v;
+    /* The share of anim_hp_v, anim_lp_v and anim_cell_r whose sectors
+     * re-bake on every roll: the poly-anim sectors, and the colour-only
+     * sectors without a colour table. A colour-table sector's roll rewrites
+     * the table and not its chunks. */
+    uint64_t roll_hp_v, roll_lp_v, roll_cell_r;
     /* The plain bound of the poly-anim sectors, whose near twins also
      * re-bake every roll (0 under OPENPETE_TERRAIN_ANIMNEAR=0). */
     uint64_t animnear_hp_v, animnear_lp_v;
@@ -1244,9 +1250,10 @@ typedef struct {
      * colour-anim sectors (0 unless their near chunks read a table). */
     uint64_t prev_rec, coltab_units;
     /* The store units the marked-edge split's records take: split_units 2
-     * per record of a plain sector, split_anim_units 4 per record of an
-     * anim sector, which re-bakes every roll. hp_v and anim_hp_v already
-     * count the vertices the split adds. */
+     * per record of a plain sector and 4 per record of a roll-free anim
+     * sector, split_anim_units 4 per record of an anim sector that re-bakes
+     * every roll. hp_v and anim_hp_v already count the vertices the split
+     * adds. */
     uint64_t split_units, split_anim_units;
     uint32_t sectors;                 /* table entries read */
 } openpete_tercache_content;
@@ -1255,14 +1262,16 @@ typedef struct {
  * Builder thread, before openpete_tercache_request_resize at a latch, and
  * at a same-id signature
  * change. The estimate per arena: the plain family's OPAQUE and LP arenas
- * take hp_v and lp_v; the anim family's take the anim figures times
- * (2 + the defer window in builds), since an anim sector re-bakes at every
- * roll and each replaced chunk stays deferred for the window; the near
+ * take hp_v and lp_v; the anim family's OPAQUE, LP and cell arenas take
+ * the anim figure plus the roll figure times (1 + the defer window in
+ * builds), since a sector that re-bakes at every roll holds, besides its
+ * live chunks, each replaced chunk deferred for the window, and a
+ * roll-free sector holds its live chunks alone (the defer factor D is
+ * 2 + the window); the near
  * family takes twice the plain figure (each face's near twin), the
  * poly-anim near twins counted once per copy the defer window holds,
  * times 2 / N for N the buffer cap, so N buffers hold twice that near
- * content; the near cells cell_r x 2 / N and the anim cells
- * anim_cell_r x the defer factor; every other arena, and any estimate below
+ * content; the near cells cell_r x 2 / N; every other arena, and any estimate below
  * it, the floor (16,384 vertices, 1,024 records on a cell arena). The
  * store's estimate is (prev_rec + split_anim_units) x the defer factor +
  * coltab_units + split_units. Prints the outgoing figures' `[tc-est]` census line when the level changes.
