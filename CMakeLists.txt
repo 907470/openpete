@@ -587,9 +587,40 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_levelwarp.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(levelwarp PROPERTIES
-        LABELS "slow"
+        LABELS "slow;levelwarp"
         RESOURCE_LOCK openpete_game
         TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Level warp into every level of each game's table from gameplay in a
+    # start level, Cross tapped 2 VBLs in 40 to dismiss arrival speeches;
+    # each row must log the arrival and reach gameplay (state word 0) with
+    # the level word equal to the target. Fails on a dropped warp, a
+    # VACUOUS row, or zero engaged rows. Exit 64 = no binary or disc for
+    # any game.
+    add_test(NAME levelwarp_all
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_levelwarp_all.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(levelwarp_all PROPERTIES
+        LABELS "slow;levelwarp"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Spyro 3 Area warp pairs (games/spyro-3/corpus/areawarp.manifest,
+    # default set) with Cross tapped 2 VBLs in 40: each engaged row must
+    # arrive in the target sub-area with no black judged screenshot after
+    # the warp starts. Fails on a failing or VACUOUS row or zero engaged
+    # rows. Exit 64 = no Spyro 3 binary or disc.
+    add_test(NAME s3_areawarp
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_s3_areawarp.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(s3_areawarp PROPERTIES
+        LABELS "slow;levelwarp"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 3600
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
