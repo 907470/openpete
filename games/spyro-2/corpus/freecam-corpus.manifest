@@ -225,3 +225,7 @@ sunny_beach@pop | pos=(23777, 47772, 23999) yaw=-766 pitch=28 | 2433
 # rejects sector 89 by under one unit where the game's integer test admits it,
 # leaving a hole in the wall at the right edge. Blessed before the fix.
 glimmer@sphere4x3 | pos=(29329, 38785, 9174) yaw=1183 pitch=249 | | --aspect 4:3
+# skelos_badlands@wizardfx: the small particle mobys on the Fire Wizard's head
+# respawn at a new position each cycle; the intermediate leg lerps them back
+# from their previous position instead of placing them at the new one.
+skelos_badlands@wizardfx | pos=(95730, 55975, 28402) yaw=86 pitch=69
