@@ -961,7 +961,6 @@ typedef struct {
     int       valid;
     double    L[3][3], P[3];   /* the camera of the first store */
     int       cam_mixed;       /* a later store of the table ran under another camera */
-    int       isnap;           /* a store ran under integer vertex snap */
     mc_ent*   e;   int ne, cap_e;
     mc_wplane* w;  int npl, cap_p;
     openpete_snap_plane* c; int cap_c;   /* parallel to w: the plane as resolved */
@@ -1052,18 +1051,6 @@ static int mc_carry_on(void) {
     return s;
 }
 
-/** @brief Whether the integer vertex snap keeps the carry off: the snap is active and OPENPETE_MOBY_SNAP_CARRY_INTSNAP=1 is unset.
- *
- * Under the snap each walk corner is floored under the present camera, so a
- * carried plane is exact only for a bit-equal camera; the env var lets the
- * carry run under the snap anyway, to view that error.
- * @return 1 when the carry stays off, else 0. */
-static int mc_snap_blocks_carry(void) {
-    static int allow = -1;
-    if (allow < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY_INTSNAP"); allow = e && *e == '1'; }
-    return !allow && openpete_native_vertex_snap_active();
-}
-
 /** @brief The carry verify instrument's mode (OPENPETE_MOBY_SNAP_CARRY_VERIFY), read once.
  *
  * 0 off; 1 compares the carry against a fresh resolve on every sub-tick
@@ -1111,7 +1098,7 @@ static void mc_empty(mc_tab* t, uint32_t ep, unsigned scene) {
         s_mc_gen = 1;
     }
     t->hgen = s_mc_gen; t->ne = t->npl = t->nwc = 0; t->epoch = ep; t->scene = scene; t->valid = 1;
-    t->cam_mixed = -1; t->isnap = 0;
+    t->cam_mixed = -1;
     t->dup = t->full = 0;
 }
 
@@ -1138,13 +1125,10 @@ static mc_tab* mc_table_for(uint32_t ep, unsigned scene) {
 }
 
 /** @brief Note the camera a store into a table runs under: the first store's is kept, a different later one marks the table mixed.
- *
- * A store under integer vertex snap marks the table isnap (mc_snap_blocks_carry).
  * @param t The table.
  * @param L The walk camera's linear part.
  * @param P Its position. */
 static void mc_cam_note(mc_tab* t, const double L[3][3], const double P[3]) {
-    t->isnap |= mc_snap_blocks_carry();
     if (t->cam_mixed < 0) {
         memcpy(t->L, L, sizeof t->L); memcpy(t->P, P, sizeof t->P);
         t->cam_mixed = 0;
@@ -1909,7 +1893,7 @@ static int ms_carry_begin(ms_census* cs) {
         return s_q_nm;
     }
     const mc_tab* ep = mc_endpoint();
-    s_rs_ep = ep && !ep->isnap && !mc_snap_blocks_carry() ? ep : NULL;
+    s_rs_ep = ep;
     if (!mc_map(s_rs_ep, s_rs_L, s_rs_P)) return s_q_nm;
     s_vf_on = vm && mc_vf_begin();
     if (!carry) return s_q_nm;
