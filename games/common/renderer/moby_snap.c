@@ -948,10 +948,11 @@ static long ms_overlaps(const terrain_snap_box* box, const uint8_t* snapped, int
 /* One stored plane in world space, and the camera-space plane it came from. */
 typedef struct { double n[3], d; } mc_wplane;
 /* One stored moby: identity, first plane, plane count (0: resolved, no
- * contact), and, while the verify runs, the world box of its corners at
- * true depth (wb, valid when wb_ok) and the corners themselves (nwc from
- * wc0 in the table's wc, triangle by triangle). */
-typedef struct { uint32_t mid; int p0, np; float wb[6]; int wb_ok; int wc0, nwc; } mc_ent;
+ * contact), and, while the carry or the verify runs, the world box of its
+ * corners at true depth (wb, valid when wb_ok) and the corners themselves
+ * (nwc from wc0 in the table's wc, triangle by triangle), and a signature
+ * of its guest state at the store (sig, valid when sig_ok: mc_moby_sig). */
+typedef struct { uint32_t mid; int p0, np; float wb[6]; int wb_ok; int wc0, nwc; uint32_t sig; int sig_ok; } mc_ent;
 #define MC_HBITS 10
 #define MC_HSIZE (1 << MC_HBITS)
 typedef struct {
@@ -960,6 +961,7 @@ typedef struct {
     int       valid;
     double    L[3][3], P[3];   /* the camera of the first store */
     int       cam_mixed;       /* a later store of the table ran under another camera */
+    int       isnap;           /* a store ran under integer vertex snap */
     mc_ent*   e;   int ne, cap_e;
     mc_wplane* w;  int npl, cap_p;
     openpete_snap_plane* c; int cap_c;   /* parallel to w: the plane as resolved */
@@ -980,6 +982,7 @@ static long     s_mc_rebuilds; /* tables emptied by a second scene build within 
 static int      s_rex;
 static double   s_rex_alpha = 1.0;
 static long     s_pc_carried, s_pc_fresh;
+static long     s_pc_refreshed;  /* mobys mc_refresh refused in the present */
 
 /* The resolve under way: the table a canonical resolve stores into, and the
  * walk camera it stores under. */
@@ -1019,6 +1022,28 @@ static void ms_moby_wbox(const ms_moby* mb, float wb[6]) {
         }
 }
 
+static struct CPUState* s_vf_cpu;   /* the guest, for the verify's moby class and state signature */
+
+/** @brief A signature (FNV-1a) of the moby record's guest state its drawn pose is decoded from: position, angle word, animation-state word, and the rotation and screen-scale fields where the game has them.
+ * @param mid The moby's scene identity (record word index plus one).
+ * @param sig Receives the signature.
+ * @return 1 when read, 0 when the guest is unknown. */
+static int mc_moby_sig(uint32_t mid, uint32_t* sig) {
+    if (!s_vf_cpu || !mid) return 0;
+    const uint32_t a = 0x80000000u | ((mid - 1u) << 2);
+    uint32_t w[11], h = 2166136261u;
+    int n = 0;
+    for (int i = 0; i < 3; i++) w[n++] = s_vf_cpu->read_word(a + game_layout.moby.pos_off + 4u * (uint32_t)i);
+    w[n++] = s_vf_cpu->read_word(a + game_layout.moby.angle_off);
+    w[n++] = s_vf_cpu->read_word(a + game_layout.moby.anim_state_off);
+    if (game_layout.moby.rot_off)
+        for (int i = 0; i < 5; i++) w[n++] = s_vf_cpu->read_word(a + game_layout.moby.rot_off + 4u * (uint32_t)i);
+    if (game_layout.moby.size_off) w[n++] = s_vf_cpu->read_byte(a + game_layout.moby.size_off);
+    for (int i = 0; i < n; i++) h = (h ^ w[i]) * 16777619u;
+    *sig = h;
+    return 1;
+}
+
 /** @brief Whether the snap carry is on (OPENPETE_MOBY_SNAP_CARRY=1), read once.
  * @return 1 when on, else 0. */
 static int mc_carry_on(void) {
@@ -1044,7 +1069,7 @@ static int mc_verify_mode(void) {
 void moby_snap_present(int rex, double alpha) {
     s_rex = rex;
     s_rex_alpha = rex ? alpha : 1.0;
-    if (rex) s_pc_carried = s_pc_fresh = 0;
+    if (rex) s_pc_carried = s_pc_fresh = s_pc_refreshed = 0;
 }
 
 /** @brief Hash a moby identity to a table slot.
@@ -1074,7 +1099,7 @@ static void mc_empty(mc_tab* t, uint32_t ep, unsigned scene) {
         s_mc_gen = 1;
     }
     t->hgen = s_mc_gen; t->ne = t->npl = t->nwc = 0; t->epoch = ep; t->scene = scene; t->valid = 1;
-    t->cam_mixed = -1;
+    t->cam_mixed = -1; t->isnap = 0;
     t->dup = t->full = 0;
 }
 
@@ -1101,10 +1126,13 @@ static mc_tab* mc_table_for(uint32_t ep, unsigned scene) {
 }
 
 /** @brief Note the camera a store into a table runs under: the first store's is kept, a different later one marks the table mixed.
+ *
+ * A store under integer vertex snap marks the table isnap.
  * @param t The table.
  * @param L The walk camera's linear part.
  * @param P Its position. */
 static void mc_cam_note(mc_tab* t, const double L[3][3], const double P[3]) {
+    t->isnap |= openpete_native_vertex_snap_active();
     if (t->cam_mixed < 0) {
         memcpy(t->L, L, sizeof t->L); memcpy(t->P, P, sizeof t->P);
         t->cam_mixed = 0;
@@ -1116,8 +1144,9 @@ static void mc_cam_note(mc_tab* t, const double L[3][3], const double P[3]) {
 /** @brief Store one resolved moby's planes, mapped to world space under the resolve's camera, in the table.
  *
  * A moby stored twice in one table keeps the later planes (counted as dup).
- * While the verify runs the entry also keeps the moby's world box and
- * world corners.
+ * While the carry or the verify runs the entry also keeps the moby's world
+ * box and world corners (mc_corner_delta) and its guest state signature
+ * (mc_moby_sig), the carry's refresh test (mc_refresh).
  * @param t The table.
  * @param mb The moby.
  * @param out Its camera-space planes.
@@ -1138,6 +1167,7 @@ static void mc_store(mc_tab* t, const ms_moby* mb, const openpete_snap_plane* ou
     e->mid = mid; e->p0 = t->npl; e->np = np;
     e->wb_ok = s_rs_wb;
     e->wc0 = t->nwc; e->nwc = 0;
+    e->sig_ok = mc_moby_sig(mid, &e->sig);
     if (s_rs_wb) {
         ms_moby_wbox(mb, e->wb);
         if (ms_grow((void**)&t->wc, &t->cap_wc, t->nwc + 3 * mb->nt, sizeof *t->wc)) {
@@ -1218,12 +1248,116 @@ static int mc_map_plane(const mc_wplane* w, const openpete_snap_plane* src, cons
     return 1;
 }
 
+/** @brief The squared distance between two world points.
+ * @param a First point.
+ * @param b Second point.
+ * @return The squared distance. */
+static double mc_d2(const double a[3], const double b[3]) {
+    const double dx = (double)a[0] - b[0], dy = (double)a[1] - b[1], dz = (double)a[2] - b[2];
+    return dx * dx + dy * dy + dz * dz;
+}
+
+/** @brief The largest distance from a point of set a to its nearest point of set b.
+ * @param a The first set.
+ * @param na Its count.
+ * @param b The second set.
+ * @param nb Its count, > 0.
+ * @return The distance. */
+static double mc_subset_dist(const double (*a)[3], int na, const double (*b)[3], int nb) {
+    double worst = 0.0;
+    for (int i = 0; i < na; i++) {
+        double best = 1e300;
+        for (int j = 0; j < nb && best > 0.0; j++) best = ms_min(best, mc_d2(a[i], b[j]));
+        worst = ms_max(worst, best);
+    }
+    return sqrt(worst);
+}
+
+/** @brief How far a queued moby's projected triangle corners moved from a stored entry's, in world space at true depth under each leg's own camera.
+ *
+ * With equal triangle counts the corners correspond in walk order and the
+ * result is the largest distance between a corner and the same corner at
+ * the endpoint. With unequal counts (the camera culled or clipped other
+ * faces, or the animation changed the face set) it is the largest distance
+ * from a corner of the leg with fewer triangles to the nearest corner of
+ * the other: 0 when one face set's corners are a subset of the other's.
+ * @param ep The table holding the entry.
+ * @param e The moby's stored entry.
+ * @param mb The queued moby (its corners unprojected by ms_moby_wcorner).
+ * @param topo Set to 1 when the triangle counts differ, else 0.
+ * @return The distance in world units, or -1 when the entry kept no corners. */
+static double mc_corner_delta(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int* topo) {
+    static double (*s_pw)[3]; static int s_pwcap;
+    *topo = 0;
+    if (!e->nwc || !mb->nt || !ms_grow((void**)&s_pw, &s_pwcap, 3 * mb->nt, sizeof *s_pw)) return -1.0;
+    for (int q = 0; q < mb->nt; q++)
+        for (int k = 0; k < 3; k++) ms_moby_wcorner(mb, q, k, s_pw[3 * q + k]);
+    const double (*ew)[3] = (const double (*)[3])&ep->wc[e->wc0];
+    const int np = 3 * mb->nt;
+    if (e->nwc != np) {
+        *topo = 1;
+        return e->nwc < np ? mc_subset_dist(ew, e->nwc, (const double (*)[3])s_pw, np)
+                           : mc_subset_dist((const double (*)[3])s_pw, np, ew, e->nwc);
+    }
+    double d2 = 0.0;
+    for (int i = 0; i < np; i++) d2 = ms_max(d2, mc_d2(s_pw[i], ew[i]));
+    return sqrt(d2);
+}
+
 /* The carry's planes for the present's queue, per queued moby (qi): the
  * count (-1 when the endpoint did not resolve the moby) and first plane in
  * s_vc_pl. */
 static int* s_vc_np; static int* s_vc_p0; static int s_vc_cap, s_vc_cap0;
 static openpete_snap_plane* s_vc_pl; static int s_vc_plcap, s_vc_n;
 static ms_pid* s_vc_id; static int s_vc_idcap;   /* parallel to s_vc_pl: the source faces */
+static uint8_t* s_vc_ref; static int s_vc_refcap; /* per queued moby: 1 when mc_refresh refused its planes */
+
+/** @brief Whether the carry's refresh test runs (OPENPETE_MOBY_SNAP_CARRY_REFRESH, default on; 0 turns it off for an A/B of the verify), read once.
+ * @return 1 when on, else 0. */
+static int mc_refresh_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY_REFRESH"); s = !(e && *e == '0'); }
+    return s;
+}
+
+/** @brief Whether a moby's guest state signature (mc_moby_sig) is equal in the T-1 and T tables, adjacent ticks: its drawn pose is the same at either tick and at every phase between them.
+ * @param mid The moby's identity.
+ * @return 1 when equal, 0 when it differs, -1 when the tables are not adjacent or either lacks the moby or its signature. */
+static int mc_still(uint32_t mid) {
+    const mc_tab* lt = &s_mc[s_mc_cur];
+    const mc_tab* pv = &s_mc[s_mc_cur ^ 1];
+    if (!lt->valid || !pv->valid || pv->epoch + 1u != lt->epoch) return -1;
+    const int a = mc_find(lt, mid), b = mc_find(pv, mid);
+    if (a < 0 || b < 0 || !lt->e[a].sig_ok || !pv->e[b].sig_ok) return -1;
+    return lt->e[a].sig == pv->e[b].sig;
+}
+
+/** @brief Whether a queued moby must resolve fresh instead of taking the endpoint's planes.
+ *
+ * It must when its guest state changed between the T-1 and T stores
+ * (mc_still not 1): the present draws it at a phase between two poses, so
+ * its contacts may differ from either endpoint's. With the present camera
+ * bit-equal to the endpoint's its projected corners are also compared
+ * (mc_corner_delta), exactly: any difference, or a changed triangle count,
+ * refreshes it, which covers pose inputs the signature does not read. Under
+ * a moving camera the corners are not compared: the walk projects a moby
+ * through a Q12 model-to-view matrix composed with the camera
+ * (ngte_compose_euler), whose truncation moves an unchanged moby's corners
+ * from one camera to the next by more than the motions that change its
+ * contacts, so no corner bound separates motion from it.
+ * @param ep The endpoint.
+ * @param e The moby's entry in it.
+ * @param mb The queued moby.
+ * @param same 1 when the present camera equals the endpoint's bit for bit.
+ * @return 1 when it resolves fresh, else 0. */
+static int mc_refresh(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int same) {
+    if (!mc_refresh_on()) return 0;
+    if (mc_still(mb->mid) != 1) return 1;
+    if (!same) return 0;
+    int topo = 0;
+    const double d = s_rs_wb && e->wb_ok ? mc_corner_delta(ep, e, mb, &topo) : -1.0;
+    return topo || d != 0.0;
+}
 
 /** @brief Append one stored moby's planes for queue index k at s_vc_n: as resolved when the cameras are equal, else mapped into the present camera.
  *
@@ -1254,7 +1388,8 @@ static int mc_map_ent(const mc_tab* ep, const mc_ent* e, int same, const double 
 
 /** @brief Map the endpoint's planes of every queued moby into the present camera (s_vc_np, s_vc_p0, s_vc_pl).
  *
- * The planes are taken as resolved when the camera equals the endpoint's
+ * A moby mc_refresh refuses stays absent (s_vc_np -1, s_vc_ref 1) and
+ * resolves fresh. The planes are taken as resolved when the camera equals the endpoint's
  * and the verify mode is not 3; verify mode 2 maps under the endpoint's own
  * camera (the identity).
  * @param ep The endpoint, or NULL (every moby absent).
@@ -1263,19 +1398,22 @@ static int mc_map_ent(const mc_tab* ep, const mc_ent* e, int same, const double 
  * @return 0 on an allocation failure, else 1. */
 static int mc_map(const mc_tab* ep, const double L[3][3], const double P[3]) {
     if (!ms_grow((void**)&s_vc_np, &s_vc_cap, s_q_nm, sizeof *s_vc_np) ||
-        !ms_grow((void**)&s_vc_p0, &s_vc_cap0, s_q_nm, sizeof *s_vc_p0)) return 0;
+        !ms_grow((void**)&s_vc_p0, &s_vc_cap0, s_q_nm, sizeof *s_vc_p0) ||
+        !ms_grow((void**)&s_vc_ref, &s_vc_refcap, s_q_nm, 1)) return 0;
     s_vc_n = 0;
     const int vm = mc_verify_mode();
     const double (*Lm)[3] = vm == 2 && ep ? ep->L : L;
     const double* Pm = vm == 2 && ep ? ep->P : P;
     const int same = ep && !ep->cam_mixed && vm != 3 &&
                      !memcmp(ep->L, Lm, sizeof ep->L) && !memcmp(ep->P, Pm, 3 * sizeof *Pm);
+    const int same_cam = ep && !ep->cam_mixed && !memcmp(ep->L, L, sizeof ep->L) && !memcmp(ep->P, P, 3 * sizeof *P);
     double Q[3][3];
     const int inv = ep && mc_inv_t(Lm, Q);
     for (int k = 0; k < s_q_nm; k++) {
         const int x = inv || same ? mc_find(ep, s_q_mob[k].mid) : -1;
-        s_vc_np[k] = -1;
+        s_vc_np[k] = -1; s_vc_ref[k] = 0;
         if (x < 0) continue;
+        if (mc_refresh(ep, &ep->e[x], &s_q_mob[k], same_cam)) { s_vc_ref[k] = 1; s_pc_refreshed++; continue; }
         if (!mc_map_ent(ep, &ep->e[x], same, Q, Pm, k)) return 0;
     }
     return 1;
@@ -1317,12 +1455,12 @@ static ms_pid* s_vf_id; static int s_vf_idcap;       /* parallel to s_vf_pl: the
 static uint32_t* s_vq_mid; static int s_vq_cap, s_vq_n;
 static float (*s_vq_wb)[6]; static int s_vq_wbcap;   /* per queue index: the present's world box */
 static int s_vf_on;
-static struct CPUState* s_vf_cpu;                   /* the guest, for the detail lines' moby class */
 typedef struct {
     long resolves, presents, presents_anz, mobys, planes, absent, unresolved;
     long carry_only_m, fresh_only_m, carry_only_p, fresh_only_p, side, slab, dside;
     long mism_mobys, mism_cls[MC_NCLS], ovf, cam_moved;
     long moved_topo;      /* moved mobys whose triangle count changed */
+    long refreshed;       /* mobys mc_refresh resolved fresh (not compared) */
     long moved_box;       /* mismatching mobys whose world box moved over MC_MOVED */
     long static_box;      /* mismatching mobys the box delta would class static (grazing and
                            * vanim not holding, box at most MC_MOVED) */
@@ -1382,14 +1520,14 @@ static void mc_vf_print(void) {
                     "moved_topo=%ld moved_box=%ld static_box=%ld carry_only_mobys=%ld fresh_only_mobys=%ld carry_only_planes=%ld "
                     "fresh_only_planes=%ld side_flips=%ld slab_diff=%ld dside_diff=%ld absent=%ld unresolved=%ld "
                     "overflow=%ld cam_moved=%ld cam_dp_mean=%.3f cam_dp_max=%.3f cam_dl_max=%.6f dup=%ld full=%ld "
-                    "rebuilds=%ld cmov=%ld/%ld/%ld/%ld/%ld/%ld/%ld cmov_mism=%ld/%ld/%ld/%ld/%ld/%ld/%ld\n",
+                    "rebuilds=%ld refreshed=%ld cmov=%ld/%ld/%ld/%ld/%ld/%ld/%ld cmov_mism=%ld/%ld/%ld/%ld/%ld/%ld/%ld\n",
             mc_verify_mode(), mc_carry_on(), v->resolves, v->presents, v->presents_anz, v->mobys, v->planes,
             v->mism_mobys, v->mism_cls[MC_CLS_MOVED], v->mism_cls[MC_CLS_GRAZING], v->mism_cls[MC_CLS_STATIC],
             v->mism_cls[MC_CLS_VANIM], v->moved_topo, v->moved_box, v->static_box, v->carry_only_m, v->fresh_only_m,
             v->carry_only_p, v->fresh_only_p, v->side,
             v->slab, v->dside, v->absent, v->unresolved, v->ovf, v->cam_moved,
             v->resolves ? v->dp_sum / (double)v->resolves : 0.0, v->dp_max, v->dl_max,
-            s_mc[0].dup + s_mc[1].dup, s_mc[0].full + s_mc[1].full, s_mc_rebuilds,
+            s_mc[0].dup + s_mc[1].dup, s_mc[0].full + s_mc[1].full, s_mc_rebuilds, v->refreshed,
             v->cmov[0], v->cmov[1], v->cmov[2], v->cmov[3], v->cmov[4], v->cmov[5], v->cmov[6],
             v->cmov_m[0], v->cmov_m[1], v->cmov_m[2], v->cmov_m[3], v->cmov_m[4], v->cmov_m[5], v->cmov_m[6]);
 }
@@ -1433,60 +1571,15 @@ static double mc_vf_box_moved(int qi) {
     return d;
 }
 
-/** @brief The squared distance between two world points.
- * @param a First point.
- * @param b Second point.
- * @return The squared distance. */
-static double mc_d2(const double a[3], const double b[3]) {
-    const double dx = (double)a[0] - b[0], dy = (double)a[1] - b[1], dz = (double)a[2] - b[2];
-    return dx * dx + dy * dy + dz * dz;
-}
 
-/** @brief The largest distance from a point of set a to its nearest point of set b.
- * @param a The first set.
- * @param na Its count.
- * @param b The second set.
- * @param nb Its count, > 0.
- * @return The distance. */
-static double mc_vf_subset_dist(const double (*a)[3], int na, const double (*b)[3], int nb) {
-    double worst = 0.0;
-    for (int i = 0; i < na; i++) {
-        double best = 1e300;
-        for (int j = 0; j < nb && best > 0.0; j++) best = ms_min(best, mc_d2(a[i], b[j]));
-        worst = ms_max(worst, best);
-    }
-    return sqrt(worst);
-}
-
-/** @brief How far a queued moby's projected triangle corners moved from the endpoint's, in world space at true depth.
- *
- * With equal triangle counts the corners correspond in walk order and the
- * result is the largest distance between a corner and the same corner at
- * the endpoint. With unequal counts (the camera culled or clipped other
- * faces, or the animation changed the face set) it is the largest distance
- * from a corner of the leg with fewer triangles to the nearest corner of
- * the other: 0 when one face set's corners are a subset of the other's.
+/** @brief How far a queued moby's projected triangle corners moved from the endpoint's (mc_corner_delta).
  * @param qi The moby's queue index.
  * @param topo Set to 1 when the triangle counts differ, else 0.
  * @return The distance in world units, or -1 when the endpoint kept no corners. */
 static double mc_vf_moved(int qi, int* topo) {
-    static double (*s_pw)[3]; static int s_pwcap;
     const mc_ent* e = mc_vf_ent(qi);
-    const ms_moby* mb = &s_q_mob[qi];
     *topo = 0;
-    if (!e || !e->nwc || !mb->nt || !ms_grow((void**)&s_pw, &s_pwcap, 3 * mb->nt, sizeof *s_pw)) return -1.0;
-    for (int q = 0; q < mb->nt; q++)
-        for (int k = 0; k < 3; k++) ms_moby_wcorner(mb, q, k, s_pw[3 * q + k]);
-    const double (*ew)[3] = (const double (*)[3])&s_rs_ep->wc[e->wc0];
-    const int np = 3 * mb->nt;
-    if (e->nwc != np) {
-        *topo = 1;
-        return e->nwc < np ? mc_vf_subset_dist(ew, e->nwc, (const double (*)[3])s_pw, np)
-                           : mc_vf_subset_dist((const double (*)[3])s_pw, np, ew, e->nwc);
-    }
-    double d2 = 0.0;
-    for (int i = 0; i < np; i++) d2 = ms_max(d2, mc_d2(s_pw[i], ew[i]));
-    return sqrt(d2);
+    return e ? mc_corner_delta(s_rs_ep, e, &s_q_mob[qi], topo) : -1.0;
 }
 
 /* Bucket bounds of the corner-displacement census (mc_vstat.cmov): every
@@ -1531,32 +1624,42 @@ static int mc_vf_moby_class(uint32_t mid, int32_t pos[3]) {
     return s_vf_cpu->read_half(a + game_layout.moby.class_off);
 }
 
-/** @brief Print one compared moby's corner displacement under OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV=1, the first 50000 of the run.
+static double s_vf_dp, s_vf_dl;   /* the compared resolve's present-to-endpoint camera position and matrix deltas */
+
+/** @brief Print one compared or refreshed moby's corner displacement under OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV=1, the first 200000 of the run, with its still verdict (mc_still) and the camera delta.
  * @param qi The moby's queue index.
  * @param mv Its corner displacement (mc_vf_moved).
  * @param topo 1 when its triangle count changed. */
 static void mc_vf_cmov_line(int qi, double mv, int topo) {
     static int s_on = -1, s_n;
     if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV"); s_on = e && *e == '1'; }
-    if (!s_on || s_n >= 50000) return;
+    if (!s_on || s_n >= 200000) return;
     s_n++;
     int32_t pos[3];
     const int mcls = mc_vf_moby_class(s_vq_mid[qi], pos);
-    fprintf(stderr, "[snap-carry-cmov] key=%u alpha=%.3f mid=%u mclass=%d nt=%d topo=%d moved=%.4f box=%.4f np=%d/%d\n",
+    fprintf(stderr, "[snap-carry-cmov] key=%u alpha=%.3f mid=%u mclass=%d nt=%d topo=%d moved=%.6f box=%.4f np=%d/%d "
+                    "still=%d dp=%.3f dl=%.6f ref=%d\n",
             openpete_feed_key_now(), s_rex_alpha, s_vq_mid[qi], mcls, s_q_mob[qi].nt, topo, mv,
-            mc_vf_box_moved(qi), s_vc_np[qi], s_vf_np[qi]);
+            mc_vf_box_moved(qi), s_vc_np[qi], s_vf_np[qi], mc_still(s_vq_mid[qi]), s_vf_dp, s_vf_dl, s_vc_ref[qi]);
 }
 
-/** @brief Print one plane of a mismatch detail: its geometry, source face, mark and partner.
+/** @brief Print one plane of a mismatch detail: its geometry, source face, mark, partner, and the eye's signed distance to it under the endpoint camera (eye_ep; the present's is -d, so a sign change means the eye crossed the plane).
  * @param leg "carry" or "fresh".
  * @param j The plane's index on its leg.
  * @param p The plane.
  * @param id Its source face.
  * @param m Its partner on the other leg, or -1 when unmatched. */
 static void mc_vf_detail_plane(const char* leg, int j, const openpete_snap_plane* p, const ms_pid* id, int m) {
-    fprintf(stderr, "  %s[%d] n=%.6f,%.6f,%.6f d=%.3f side=%.0f slab=%.0f dside=%d sec=%d face=%d tier=%d vanim=%d match=%d\n",
+    double de = 0.0;   /* the eye's signed distance under the endpoint camera (present: -d) */
+    if (s_rs_ep) {
+        double nw[3], dw = p->d;
+        for (int i = 0; i < 3; i++) { nw[i] = s_rs_L[0][i] * p->n[0] + s_rs_L[1][i] * p->n[1] + s_rs_L[2][i] * p->n[2]; dw += nw[i] * s_rs_P[i]; }
+        de = nw[0] * s_rs_ep->P[0] + nw[1] * s_rs_ep->P[1] + nw[2] * s_rs_ep->P[2] - dw;
+    }
+    fprintf(stderr, "  %s[%d] n=%.6f,%.6f,%.6f d=%.3f side=%.0f slab=%.0f dside=%d sec=%d face=%d tier=%d vanim=%d match=%d "
+                    "eye_ep=%.3f\n",
             leg, j, p->n[0], p->n[1], p->n[2], p->d, p->side, p->slab, p->dside, id->sec, id->face, id->tier,
-            id->vanim, m);
+            id->vanim, m, de);
 }
 
 /** @brief Print one mismatching moby: a header line for each of the first 2048 of the run, and its carried and fresh planes with their source faces and partners for the first 256 static or vanim ones (every class outside mode 1).
@@ -1674,17 +1777,23 @@ static void mc_vf_explain_all(int qi, const openpete_snap_plane* pl, const ms_pi
 
 /** @brief Compare one moby's carried planes against its fresh ones and count the classes.
  *
- * A mismatching moby takes the first class that holds: moved (mc_vf_moved
+ * A moby mc_refresh refused counts as refreshed and is not compared. A
+ * mismatching moby takes the first class that holds: moved (mc_vf_moved
  * over MC_MOVED), grazing (every unmatched plane a grazing contact), vanim
  * (every mismatching plane in a sector the vertex animation moves), static.
  * @param qi The moby's queue index.
  * @return 1 when any class other than absent or unresolved holds, else 0. */
 static int mc_vf_moby(int qi) {
     const int nc = s_vc_np[qi], nf = s_vf_np[qi];
+    int topo = 0;
+    if (s_vc_ref[qi]) {
+        s_vs.refreshed++;
+        mc_vf_cmov_line(qi, mc_vf_moved(qi, &topo), topo);
+        return 0;
+    }
     if (nc < 0) { s_vs.absent++; return 0; }
     if (nf < 0) { s_vs.unresolved++; return 0; }
     s_vs.mobys++;
-    int topo = 0;
     const double mv = mc_vf_moved(qi, &topo);
     mc_vf_cmov_add(mv, s_vs.cmov);
     mc_vf_cmov_line(qi, mv, topo);
@@ -1714,6 +1823,7 @@ static int mc_vf_moby(int qi) {
 static void mc_vf_compare(const mc_tab* ep, const double L[3][3], const double P[3]) {
     mc_vstat* v = &s_vs;
     v->resolves++;
+    s_vf_dp = s_vf_dl = 0.0;
     const unsigned ep_scene = openpete_native_scene_epoch();
     if (ep_scene != v->last_epoch) { v->last_epoch = ep_scene; v->presents++; v->presents_anz += s_rex_alpha != 0.0; }
     if (ep) {
@@ -1723,6 +1833,7 @@ static void mc_vf_compare(const mc_tab* ep, const double L[3][3], const double P
             for (int j = 0; j < 3; j++) dl = ms_max(dl, fabs(L[i][j] - ep->L[i][j]));
         }
         dp = sqrt(dp);
+        s_vf_dp = dp; s_vf_dl = dl;
         v->cam_moved += dp > 0.0 || dl > 0.0;
         v->dp_sum += dp; v->dp_max = ms_max(v->dp_max, dp); v->dl_max = ms_max(v->dl_max, dl);
     }
@@ -1762,8 +1873,11 @@ static void ms_carry_add(ms_census* cs) {
  * A canonical resolve (carry or verify on) stores into its epoch's table
  * and resolves the whole queue. A sub-tick resolve maps the endpoint's
  * planes (mc_map); with the carry on it adds them and resolves only the
- * mobys the endpoint did not, moved to the front of the queue, unless the
- * verify runs, which resolves the whole queue and adds only those.
+ * mobys the endpoint did not or mc_refresh refused, moved to the front of
+ * the queue, unless the verify runs, which resolves the whole queue and adds
+ * only those. Under integer vertex snap, now or at the endpoint's store, no
+ * plane carries: the walk floors each corner's screen position under the
+ * present camera, so a carried plane is exact only for a bit-equal camera.
  * @param cs The census.
  * @return The count of queued mobys, from the front, the contact pass resolves. */
 static int ms_carry_begin(ms_census* cs) {
@@ -1773,7 +1887,7 @@ static int ms_carry_begin(ms_census* cs) {
     if (!carry && !vm) return s_q_nm;
     if (!terrain_snap_camera(s_rs_L, s_rs_P)) return s_q_nm;
     double Q[3][3];
-    if (vm && mc_inv_t(s_rs_L, Q)) {
+    if (mc_inv_t(s_rs_L, Q)) {
         for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) s_rs_Li[r][c] = Q[c][r];
         s_rs_wb = 1;
     }
@@ -1782,7 +1896,8 @@ static int ms_carry_begin(ms_census* cs) {
         mc_cam_note(s_store, s_rs_L, s_rs_P);
         return s_q_nm;
     }
-    s_rs_ep = mc_endpoint();
+    const mc_tab* ep = mc_endpoint();
+    s_rs_ep = ep && !ep->isnap && !openpete_native_vertex_snap_active() ? ep : NULL;
     if (!mc_map(s_rs_ep, s_rs_L, s_rs_P)) return s_q_nm;
     s_vf_on = vm && mc_vf_begin();
     if (!carry) return s_q_nm;
@@ -1791,16 +1906,19 @@ static int ms_carry_begin(ms_census* cs) {
     return s_vf_on ? s_q_nm : ms_compact();
 }
 
-/** @brief Finish the carry of the resolve under way: the verify comparison, and the per-present counts for the profiler.
+/** @brief Finish the carry of the resolve under way: the verify comparison, and the per-present counts for the profiler (carried, fresh, and refreshed: the fresh ones mc_refresh refused).
  * @param cs The resolve's census; its overflow counts into the verify's. */
 static void ms_carry_end(const ms_census* cs) {
     if (s_vf_on) { s_vs.ovf += cs->ovf; mc_vf_compare(s_rs_ep, s_rs_L, s_rs_P); }
     s_store = NULL; s_vf_on = 0;
     if (s_rex && mc_carry_on() && op_prof_on()) {
         static int id_c = -1, id_f = -1;
-        if (id_c < 0) { id_c = op_prof_intern("mrexn.snap_carried"); id_f = op_prof_intern("mrexn.snap_fresh"); }
+        static int id_r = -1;
+        if (id_c < 0) { id_c = op_prof_intern("mrexn.snap_carried"); id_f = op_prof_intern("mrexn.snap_fresh");
+                        id_r = op_prof_intern("mrexn.snap_refreshed"); }
         op_prof_count(id_c, (uint64_t)s_pc_carried);
         op_prof_count(id_f, (uint64_t)s_pc_fresh);
+        op_prof_count(id_r, (uint64_t)s_pc_refreshed);
     }
 }
 
