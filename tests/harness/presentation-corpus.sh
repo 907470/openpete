@@ -157,6 +157,14 @@ fi
 # independently-regressable surface the depth work is most likely to disturb.
 lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 
+# Succeed when a leg's log records the mod loader loading mod <id> with its
+# entry run ("mods: loaded <id> v<version> (<object>)"); a mod disabled for
+# a missing SDK, a failed compile or a refused object logs no such line.
+# args: log id
+pg_mod_loaded() {
+  grep -aE " mods: loaded $2 v[^ ]+ \(" "$1" | grep -qv 'disabled)\|entry deferred'
+}
+
 # Build a leg's mods directory for a PRESENTATION_MOD spec: a copy of
 # mods/<id> without its compile cache, enabled.txt naming it, and config.toml
 # holding the spec's keys grouped by table. args: dir spec
@@ -247,11 +255,20 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   op_own_run "${cmd[@]}" >"$log" 2>&1
   local rc=$?
   pg_note_device "$log" "$OUTDIR"
-  # Assert every requested target produced a -vk PNG (fail loudly, never silently
-  # capture a partial corpus that would read as "all clean" downstream).
   local miss=0 t
   IFS=',' read -ra TS <<<"$targets"
-  for t in "${TS[@]}"; do
+  # A row's mod must have loaded: without it the leg captures the unmodded
+  # scene, which is a different picture, not this row. Its tiles are deleted
+  # and the leg fails and is kept.
+  if [[ -n "$mod_spec" ]] && ! pg_mod_loaded "$log" "${mod_spec%%:*}"; then
+    echo "  VACUOUS ${name}__${tag}${leg}: PRESENTATION_MOD ${mod_spec%%:*} did not load (no 'mods: loaded ${mod_spec%%:*} v' line); its mods: lines:"
+    grep -a ' mods: ' "$log" | head -8 | sed 's/^/    /'
+    for t in "${TS[@]}"; do rm -f -- "$OUTDIR/${name}__${tag}${leg}__${t}-vk.png"; done
+    miss=1
+  fi
+  # Assert every requested target produced a -vk PNG (fail loudly, never silently
+  # capture a partial corpus that would read as "all clean" downstream).
+  (( miss )) || for t in "${TS[@]}"; do
     if [[ ! -f "$OUTDIR/${name}__${tag}${leg}__${t}-vk.png" ]]; then
       echo "  MISSING ${name}__${tag}${leg}__${t}-vk.png (rc=$rc)"; miss=1; fi
   done

@@ -197,8 +197,11 @@ const int ${_tag}_game_structs_checked = 1;
         # Staged by openpete_sdk_stage with every other game's.
         set_property(GLOBAL APPEND PROPERTY OPENPETE_SDK_GAMES ${GAME_ID})
         set_property(GLOBAL PROPERTY OPENPETE_SDK_FILES_${GAME_ID} ${_game_files})
+        # The game's target (openpete-<tag>) builds its SDK, so a build of
+        # only the game targets compiles source mods like a build of ALL.
         add_custom_target(${_tag}_sdk_stage ALL)
         add_dependencies(${_tag}_sdk_stage openpete_sdk_stage)
+        add_dependencies(${_exe} ${_tag}_sdk_stage)
     else()
         # The directory is removed first: a file dropped from these lists
         # would otherwise survive in the build tree and ship with the
