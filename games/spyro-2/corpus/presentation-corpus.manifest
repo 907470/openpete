@@ -225,7 +225,10 @@ idol-springs-level-entry|3000|200||3060,3120
 # Summer Forest entry with that entry's counts, and on the return sector 76
 # (0x800AF9AC) drew those banks as triangles stretched across the view at
 # 5800 and 8000.
-summer-forest-polygon-explosion|5800|2200||5800,8000|PRESENTATION_LEG_TIMEOUT=900
+# 1935: Glimmer, before the first level change; the sub-tick present draws
+# tracer ribbon triangles over the wall at the lower left (1461 px, the whole
+# tracer path at that present) at a depth that passes the wall's.
+summer-forest-polygon-explosion|5800|2200||1935,5800,8000|PRESENTATION_LEG_TIMEOUT=900
 
 # idol-springs-puzzle-1: Idol Springs with two Zoe zap records live and near
 # floor triangles under Spyro (openpete_frame 2000 = VBL 2573; fast boot ends
