@@ -38,6 +38,10 @@ attract-demo@sparx-bubble|3880|1000||3880,3881,3920,4040
 # second capture under that key in one tick would hold the moby at its tick
 # pose on sub-tick presents.
 attract-demo@meshwarp|15440|1000||15440,15460,15500,15560|OPENPETE_LEVELWARP_TEST=14600:mystic_marsh PRESENTATION_LEG_TIMEOUT=900
+# attract-demo@tracerdepth: on sub-tick presents the Metropolis tracer mesh
+# was depth-tested at the tick's depth while the camera closed in, drawing it
+# in front of terrain (about 221 px at VBL 14581, alpha 0.5).
+attract-demo@tracerdepth|14580|2||14581
 #
 # autumn-plains-skelos-badlands-portal-entry: a portal entry from the home
 # world, the in-gameplay level change. 1723 is the portal transition, 1823 and
