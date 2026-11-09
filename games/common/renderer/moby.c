@@ -234,7 +234,7 @@ static struct {
     int       cam_ok;
     int16_t   cam_M[9];
     int32_t   cam_pos[3];
-} s_rec_prev = { s_rec_snap_buf[1] };
+} s_rec_prev = { .snap = s_rec_snap_buf[1] };
 
 /* While a held cut replays the previous queue: the records show the state the
  * objects had when that queue's cull ran, which is the snapshot pair's prev
@@ -446,7 +446,7 @@ static uint32_t s_canon_spec_prev_epoch = 0;
 static int     s_canon_spec_valid = 0;
 static int     s_held_scratch = 0;        /* the game staged tick N-1's scratch (moby_native_held_scratch) */
 /** @brief Copies the specular scratch window at the canonical moby hook for the sub-tick SPEC bracket. */
-static void moby_native_capture_spec_scratch(CPUState* cpu) {
+static void moby_native_capture_spec_scratch(void) {
     /* Runahead: a speculative fire must not stamp or overwrite the canonical
      * SPEC capture - the stamp would be the uncommitted epoch and the SPEC
      * pass would skip on every intermediate present, strobing specular
@@ -2078,7 +2078,7 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                                     * (moby_present_wbase); 0: the cull
                                     * record's own */
                } rec_meta;
-                 /* spec_solo (trailing, set after the positional literal) =
+                 /* spec_solo (zero in the record literal, set after it) =
                  * reveal-built record whose moby is in NO .s queue this tick
                  * (beyond canonical range under --lod extended, or off-4:3)
                  * and whose renderer byte selects the specular pass
@@ -2872,19 +2872,20 @@ static int project_all_records_inner(CPUState* cpu) {
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
             uint32_t header = R.header;
-            s_recs[nrec] = (rec_meta){ rec, off, got, header, R.header_b,
+            s_recs[nrec] = (rec_meta){ .addr = rec, .proj_off = off, .proj_n = got,
+                .header = header, .header_b = R.header_b,
                 /* face stream per the record's tier (HP or LP, --no-lod-aware) */
-                moby_tier_faceblock(cpu, header, dzsf4), w0,
+                .faceblock = moby_tier_faceblock(cpu, header, dzsf4), .w0 = w0,
                 /* env metal flag = high byte of the record's material word (the
                  * cull pass copies it; read @8002176C srl 24, bnez .L800226F8) */
-                (int)((R.material >> 24) & 0xFFu),
+                .metal = (int)((R.material >> 24) & 0xFFu),
                 /* the full material word: the highlight back-colour (.L80021DB4) +
                  * byte2 spec-intensity. Carries the per-moby tint (flamed chest -> red). */
-                R.material,
-                R.moby,
-                dzsf4,
-                atan2f((float)R.TR_raw[2], (float)R.TR_raw[0]),
-                R.frame_a, 0u, 0u, 0.f };
+                .mscol = R.material,
+                .moby = R.moby,
+                .zsf4 = dzsf4,
+                .env_az = atan2f((float)R.TR_raw[2], (float)R.TR_raw[0]),
+                .frameA = R.frame_a };
             memcpy(s_recs[nrec].M, R.M, sizeof s_recs[nrec].M);
             s_recs[nrec].heat = moby_game.spec_colour_off
                 ? (uint8_t)moby_heat_scalar(
@@ -3111,10 +3112,12 @@ static void moby_build_validate(CPUState* cpu) {
         if ((f.w0 & 0xFF00u) == (S.w0 & 0xFF00u)) okBl++;
         int sM[3][3]; memcpy(sM, S.M, sizeof sM);
         int dM=0; for(int i=0;i<3;i++)for(int j=0;j<3;j++){int d=f.M[i][j]-sM[i][j]; if(d<0)d=-d; if(d>dM)dM=d;}
-        if (dM<=2) okM++; if (dM>worstM) worstM=dM;
+        if (dM<=2) okM++;
+        if (dM>worstM) worstM=dM;
         int sTR[3]={S.TR_raw[0],S.TR_raw[1],S.TR_raw[2]};
         int dT=0; for(int i=0;i<3;i++){int d=f.TR_raw[i]-sTR[i]; if(d<0)d=-d; if(d>dT)dT=d;}
-        if (dT<=2) okTR++; if (dT>worstTR) worstTR=dT;
+        if (dT<=2) okTR++;
+        if (dT>worstTR) worstTR=dT;
         if (r < 6) fprintf(stderr,
             "  [build r%d moby=%08X] hdr %08X/%08X A %08X/%08X B %08X/%08X bl %04X/%04X dM=%d dTR=%d\n",
             r, moby, f.header, S.header, f.frameA, S.frame_a,
@@ -3340,11 +3343,13 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
     if (ver_check) occl_verify_end(m, s_proj + off, got);
     else occl_cache_update(cpu, m, s_proj + off, got, f->TR_frac, f->header);
     for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
-    s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f->header, f->header_b,
-        moby_tier_faceblock(cpu, f->header, dzsf4), f->w0,
-        f->metal, f->mscol, m, dzsf4,
-        atan2f((float)f->TR_raw[2], (float)f->TR_raw[0]), f->frameA,
-        pd.prev.frame_a, pd.prev.header, (float)pd.clr_alpha };
+    s_recs[s_nrecs] = (rec_meta){ .addr = 0u, .proj_off = off, .proj_n = got,
+        .header = f->header, .header_b = f->header_b,
+        .faceblock = moby_tier_faceblock(cpu, f->header, dzsf4), .w0 = f->w0,
+        .metal = f->metal, .mscol = f->mscol, .moby = m, .zsf4 = dzsf4,
+        .env_az = atan2f((float)f->TR_raw[2], (float)f->TR_raw[0]), .frameA = f->frameA,
+        .frameA_p = pd.prev.frame_a, .header_p = pd.prev.header,
+        .clr_alpha = (float)pd.clr_alpha };
     s_recs[s_nrecs].model_held = pd.model_held;
     s_recs[s_nrecs].clr_flags = (uint8_t)pd.clr_flags;
     memcpy(s_recs[s_nrecs].M, f->M, sizeof s_recs[s_nrecs].M);
@@ -3407,7 +3412,6 @@ static int append_revealed_regular_inner(CPUState* cpu) {
                                  s_rdbg = e ? (unsigned)strtoul(e, NULL, 0) : 0xFFFFFFFEu; }
     int rdbg = (openpete_frame >= s_rdbg && openpete_frame <= s_rdbg + 1u);
     static uint32_t revlist[MAX_RECORDS];   /* this call's reveals (hysteresis publish) */
-    static float revsx[MAX_RECORDS], revsy[MAX_RECORDS]; static int revnv[MAX_RECORDS];
     static uint32_t occl_rev[MAX_RECORDS]; int occl_rev_n = 0;   /* admitted but occlusion-culled */
     int revealed = 0;
     uint32_t m = moby_array_head(cpu);
@@ -3573,20 +3577,11 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         }
         s_occl_seen++;
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
-        int off = s_proj_n;
         int rzsf4 = 0;
         int got = reveal_emit_record(cpu, m, &f, ver_check, &rzsf4);
         if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += game_layout.moby.array_stride; continue; }
         TRC("REVEALED got=%d zsf4=%d spec_solo=%d", got, rzsf4, (int)s_recs[s_nrecs - 1].spec_solo);
         if (revealed < MAX_RECORDS) revlist[revealed] = pub;
-        /* census diag: projected screen centroid + vert count of this reveal */
-        if (revealed < MAX_RECORDS) {
-            float cxm = 0.f, cym = 0.f;
-            for (int j = 0; j < got; j++) { cxm += s_proj[off + j].sx; cym += s_proj[off + j].sy; }
-            revsx[revealed] = got ? cxm / (float)got : -1.f;
-            revsy[revealed] = got ? cym / (float)got : -1.f;
-            revnv[revealed] = got;
-        }
         revealed++;
         NGTE_CENSUS_HIT(reveal_admitted);
         m += game_layout.moby.array_stride;
@@ -4688,10 +4683,14 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
      * PSX screen by design) never enters the regime and never sees this test. */
     if (a->unr || b->unr || c->unr) {
         float xlo = a->sx, xhi = a->sx, ylo = a->sy, yhi = a->sy;
-        if (b->sx < xlo) xlo = b->sx; if (b->sx > xhi) xhi = b->sx;
-        if (c->sx < xlo) xlo = c->sx; if (c->sx > xhi) xhi = c->sx;
-        if (b->sy < ylo) ylo = b->sy; if (b->sy > yhi) yhi = b->sy;
-        if (c->sy < ylo) ylo = c->sy; if (c->sy > yhi) yhi = c->sy;
+        if (b->sx < xlo) xlo = b->sx;
+        if (b->sx > xhi) xhi = b->sx;
+        if (c->sx < xlo) xlo = c->sx;
+        if (c->sx > xhi) xhi = c->sx;
+        if (b->sy < ylo) ylo = b->sy;
+        if (b->sy > yhi) yhi = b->sy;
+        if (c->sy < ylo) ylo = c->sy;
+        if (c->sy > yhi) yhi = c->sy;
         if (xhi - xlo > 1023.0f || yhi - ylo > 511.0f) { t_diag->nearstraddle++; return; }
     }
     O->ui[O->n] = (uint8_t)s_cur_ui;       /* HUD/UI tag for this tri (current record) */
@@ -6424,7 +6423,9 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 for (int q = 0; q < 4; q++) {
                     uint32_t c = *cc[q];
                     int r=(int)(c&0xFF)+heat, g=(int)((c>>8)&0xFF)-heat, b=(int)((c>>16)&0xFF)-heat;
-                    if (r>255) r=255; if (g<0) g=0; if (b<0) b=0;
+                    if (r>255) r=255;
+                    if (g<0) g=0;
+                    if (b<0) b=0;
                     *cc[q] = (uint32_t)(r | (g<<8) | (b<<16)) | (c & 0xFF000000u);
                 }
             }
@@ -6498,7 +6499,9 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                     uint32_t* cc[4]={&c0,&c1,&c2,&c3};
                     for (int q=0;q<4;q++){ uint32_t c=*cc[q];
                         int r=(int)(c&0xFF)+heat, g=(int)((c>>8)&0xFF)-heat, b=(int)((c>>16)&0xFF)-heat;
-                        if(r>255)r=255; if(g<0)g=0; if(b<0)b=0;
+                        if(r>255)r=255;
+                        if(g<0)g=0;
+                        if(b<0)b=0;
                         *cc[q]=(uint32_t)(r|(g<<8)|(b<<16)); }
                 }
               } else {
@@ -6524,8 +6527,12 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                     float NL=(nx*s_specL[0]+ny*s_specL[1]+nz*s_specL[2])/(nl*s_specLlen);
                     int add=(int)(-1.19f * (float)spec * NL);
                     int rr=RBK+add, gg=GBK+add, bb2=BBK+add;
-                    if(rr<0)rr=0; if(rr>255)rr=255; if(gg<0)gg=0; if(gg>255)gg=255;
-                    if(bb2<0)bb2=0; if(bb2>255)bb2=255;
+                    if(rr<0)rr=0;
+                    if(rr>255)rr=255;
+                    if(gg<0)gg=0;
+                    if(gg>255)gg=255;
+                    if(bb2<0)bb2=0;
+                    if(bb2>255)bb2=255;
                     c0=c1=c2=c3=(uint32_t)(rr|(gg<<8)|(bb2<<16));   /* flat per face */
                 }
               }
@@ -7548,8 +7555,10 @@ static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv) {
      * shield sampling 75 texels off = dark noise). */
     int u = (int)lrintf(wrap128(env_c2() - (128.0f / (2.0f*PI_F)) * (az + env_azsign()*s_cur_env_az) + s_camHead / 32.0f));
     int v = (int)lrintf(64.0f + (128.0f / PI_F) * el);
-    if (u < 0) u = 0; if (u > 255) u = 255;
-    if (v < 0) v = 0; if (v > 255) v = 255;
+    if (u < 0) u = 0;
+    if (u > 255) u = 255;
+    if (v < 0) v = 0;
+    if (v > 255) v = 255;
     *pu = u; *pv = v;
 }
 /** @brief Print the metal faces' native environment UV beside their matched prim's UV.
@@ -7597,7 +7606,8 @@ static void specular_env_calibrate(CPUState* cpu) {
             int dv = nv2 - pv;
             if (pu || pv) {  /* skip the (0,0) untextured-prim matches */
                 nv++; sumu += fabs((double)du); sumv += fabs((double)dv); sgnu += du;
-                if (abs(du) > maxu) maxu = abs(du); if (abs(dv) > maxv) maxv = abs(dv);
+                if (abs(du) > maxu) maxu = abs(du);
+                if (abs(dv) > maxv) maxv = abs(dv);
             }
             fprintf(stderr, "  refl(%.0f %.0f %.0f) -> uv(%d,%d) prim(%d,%d) d(%d,%d) clut=%04X\n",
                 r[0],r[1],r[2], nu,nv2, pu,pv, du,dv, P->clut);
@@ -10858,7 +10868,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
                      * this frame; if it doesn't, the re-extract correctly skips SPEC. */
                     s_canon_spec_valid = 0;
                 } else {
-                    moby_native_capture_spec_scratch(cpu);
+                    moby_native_capture_spec_scratch();
                 }
             }
         }
@@ -12562,7 +12572,8 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             uint32_t p=vbase+(uint32_t)i*3u;
             uint32_t w=cpu->read_byte(p)|(cpu->read_byte(p+1)<<8)|(cpu->read_byte(p+2)<<16);
             int VZ=((int32_t)(w<<24))>>23, VX=((int32_t)(w<<16))>>23, VY=((int32_t)(w<<8))>>23;
-            if (VZ<vzmin) vzmin=VZ; if (VZ>vzmax) vzmax=VZ;
+            if (VZ<vzmin) vzmin=VZ;
+            if (VZ>vzmax) vzmax=VZ;
             double sx,sy; int sat;
             /* TRUE per-vertex view-Z (project returns mac3). Stamping the
              * moby-constant TR[2] on every vertex would collapse within-moby
@@ -15834,11 +15845,13 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * hangs off the record needs it to find one, and a zero here would send
          * the provider reading at address 0. Host-built records have none and
          * the reveal path passes 0 for that reason. */
-        s_recs[s_nrecs] = (rec_meta){ recs[i], off, got, f.header, f.header_b,
-            moby_tier_faceblock(cpu, f.header, zsf4),
-            f.w0, f.metal, f.mscol, mobys[i], zsf4,
-            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
-            prev->frame_a, prev->header, (float)pd.clr_alpha };
+        s_recs[s_nrecs] = (rec_meta){ .addr = recs[i], .proj_off = off, .proj_n = got,
+            .header = f.header, .header_b = f.header_b,
+            .faceblock = moby_tier_faceblock(cpu, f.header, zsf4),
+            .w0 = f.w0, .metal = f.metal, .mscol = f.mscol, .moby = mobys[i], .zsf4 = zsf4,
+            .env_az = atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), .frameA = f.frameA,
+            .frameA_p = prev->frame_a, .header_p = prev->header,
+            .clr_alpha = (float)pd.clr_alpha };
         s_recs[s_nrecs].clr_flags = (uint8_t)pd.clr_flags;
         s_recs[s_nrecs].wbase_p1 = moby_present_wbase(cpu, mobys[i]);
         moby_wbase_trace(cpu, recs[i], mobys[i], s_recs[s_nrecs].wbase_p1);

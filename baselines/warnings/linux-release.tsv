@@ -3,13 +3,6 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 3e34f9abd4a11b1f7e170e52f4790ed52e1875a6
+# head: 779cccec20ed3a4276e340d90bfe207d57c1c8ea
 file	option	kind	detail	count	accepted
-games/common/renderer/moby.c	-Wmisleading-indentation	fe	this 'if' clause does not guard...	14	
-games/common/renderer/moby.c	-Wmissing-field-initializers	fe	missing initializer for field 'base' of 'struct <anonymous>'	1	
-games/common/renderer/moby.c	-Wmissing-field-initializers	fe	missing initializer for field 'spec_solo' of 'rec_meta'	3	
-games/common/renderer/moby.c	-Wunused-but-set-variable	fe	variable 'revnv' set but not used	1	
-games/common/renderer/moby.c	-Wunused-but-set-variable	fe	variable 'revsx' set but not used	1	
-games/common/renderer/moby.c	-Wunused-but-set-variable	fe	variable 'revsy' set but not used	1	
-games/common/renderer/moby.c	-Wunused-parameter	fe	unused parameter 'cpu'	1	
 third_party/PsyCross/include/psx/libcd.h	-Wparentheses	fe	unnecessary parentheses in declaration of 'CdDataCallback'	1	
