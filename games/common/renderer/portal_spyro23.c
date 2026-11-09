@@ -63,6 +63,7 @@
 #include "renderer/portal_spyro23.h"
 #include "renderer/portal_plane.h"     /* openpete_portal_plane_margin */
 #include "renderer/terrain.h"          /* terrain_native_flush_deferred */
+#include "openpete_profile.h"          /* OP_PROF_ACCUM_SCOPE */
 #include "renderer/portal_sky_s23.h"   /* portal_sky_s23_extension */
 #include "no_lod.h"                    /* openpete_no_lod */
 #include "game_layout.h"
@@ -1906,7 +1907,8 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
         p3_band_admit(cpu, &s_curr);
         p3_feed(cpu, &s_curr);
     }
-    terrain_native_flush_deferred();          /* a world draw that ran first this tick */
+    { OP_PROF_ACCUM_SCOPE("portal.defer.terrain");  /* timed as terrain_native's */
+      terrain_native_flush_deferred(); }      /* a world draw that ran first this tick */
     if (p3_dbg()) {
         static unsigned s_reports = 0, s_passes = 0;
         s_passes++;

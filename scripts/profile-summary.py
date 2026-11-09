@@ -24,7 +24,9 @@ Notes:
     (hook.<feature>), the guest renderer it calls (<feature>.srend), and the
     remainder - openpete's own extraction on the game fiber. The bottom
     "unattributed" row is sim_tick minus every hook, i.e. guest game logic plus
-    whatever fiber-side work is still uninstrumented.
+    whatever fiber-side work is still uninstrumented. A scope "<a>.defer.<b>"
+    (hook <a> running work held by hook <b>) is moved from <a>'s total to <b>'s
+    and shown as <b>'s part "deferred_from_<a>".
 """
 import argparse
 import json
@@ -276,13 +278,26 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
         return tot.get(name, 0) / nc
 
     hooks = sorted(n for n in tot if n.startswith("hook."))
+    # "<a>.defer.<b>" times work hook <a> runs on behalf of hook <b> (a held
+    # build flushed at the end of another hook): moved from <a>'s total to <b>'s.
+    moved = {}
+    for n in tot:
+        parts = n.split(".")
+        if len(parts) == 3 and parts[1] == "defer":
+            moved[parts[0]] = moved.get(parts[0], 0.0) - per_tick(n)
+            moved[parts[2]] = moved.get(parts[2], 0.0) + per_tick(n)
     rows = []
     accounted = 0.0
     for h in hooks:
         feat = h[len("hook."):]
         prefix = feat[:-len("_native")] if feat.endswith("_native") else feat
-        subs = {n: tot[n] / nc for n in tot if n.startswith(prefix + ".")}
-        total = per_tick(h)
+        subs = {n: tot[n] / nc for n in tot
+                if n.startswith(prefix + ".") and not n.startswith(prefix + ".defer.")}
+        for n in tot:
+            p = n.split(".")
+            if len(p) == 3 and p[1] == "defer" and p[2] == prefix:
+                subs[prefix + ".deferred_from_" + p[0]] = per_tick(n)
+        total = per_tick(h) + moved.pop(prefix, 0.0)
         accounted += total
         rows.append({
             "hook": feat,
@@ -300,6 +315,8 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
             rows.append({"hook": n, "total_us": round(per_tick(n), 1),
                          "srend_us": 0.0, "openpete_us": round(per_tick(n), 1),
                          "parts": {}})
+    if any(abs(v) >= 0.05 for v in moved.values()):
+        sys.stderr.write("profile-summary: defer scope with no matching hook: %r\n" % moved)
     rows.sort(key=lambda r: -r["total_us"])
     sim = per_tick("sim_tick")
     out["sim_split"] = {

@@ -3367,7 +3367,8 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     s_camang_curr[1] = (double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) >> 16);
     s_camang_curr[2] = (double)(int16_t)(cpu->read_word(G_CAMERA + 0x50u) & 0xFFFFu);
     s_spin_curr_valid = 1;
-    terrain_native_flush_deferred();          /* a world draw that ran first this tick */
+    { OP_PROF_ACCUM_SCOPE("portal.defer.terrain");  /* timed as terrain_native's */
+      terrain_native_flush_deferred(); }      /* a world draw that ran first this tick */
     s_rp_in = 0;
     return 1;
 }
