@@ -4,8 +4,8 @@
 #
 # Minimizing the window gives the surface a zero extent. A recording must keep
 # rendering and encoding through it at the size it started at, and after the
-# restore, when the window manager may hand the window back at another size
-# (a 3840x2160 window is clamped to the screen's work area). The Windows exe
+# restore. The window opens at the exe's default size, so it stays on one
+# monitor. The Windows exe
 # is the only build where a scripted minimize reaches the swapchain (WSLg and
 # xvfb ignore the request), so this runs the windows-mingw exe through WSL
 # interop and minimizes it with PowerShell ShowWindow.
@@ -59,7 +59,7 @@ run_leg() {
     [[ $leg == rec ]] && extra=(--record-cfr 60 --record "$(wslpath -w "$OUT")\\clip-rec.mkv")
     : > "$log"
     env "${WSLENV_ARGS[@]}" "$EXE" --game spyro-2 --no-config --disc "$(wslpath -w "$DISC")" \
-        --renderer vk --window 3840x2160 --no-card --mute 1 --skip-to-level glimmer \
+        --renderer vk --no-card --mute 1 --skip-to-level glimmer \
         --frame-limit 1700 --input-lock --vibration 0 --background 1 "${extra[@]}" > "$log" 2>&1 &
     pid=$!
     for ((i = 0; i < 120; i++)); do
