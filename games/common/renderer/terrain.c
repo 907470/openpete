@@ -18189,14 +18189,6 @@ static void tn_bgrid_cand(const tn_bgrid* g, const double lo[2], const double hi
         for (int x = cx[0]; x <= cx[1]; x++) { cand[0] |= g->c[y][x][0]; cand[1] |= g->c[y][x][1]; }
 }
 
-/** @brief Whether two boxes (x0, y0, z0, x1, y1, z1) meet.
- * @param a The first box.
- * @param b The second box.
- * @return 1 when they do, else 0. */
-static int tn_box_box(const float a[6], const float b[6]) {
-    return a[0] <= b[3] && b[0] <= a[3] && a[1] <= b[4] && b[1] <= a[4] && a[2] <= b[5] && b[2] <= a[5];
-}
-
 /** @brief The boxes of a grid a sector's bounding sphere, widened by 32 walk units for vertex animation, meets.
  * @param g The grid.
  * @param wb The boxes it was built from.
@@ -18369,20 +18361,28 @@ static int tn_face_wbox(const tscache_t* SC, const tn_passsrc* P, const tsface_t
     return 1;
 }
 
-/* Per decode slot and walk pass (0, 1, 3, 4): each face's corner box in the
- * sector's local decode units, int16 x0, y0, z0, x1, y1, z1, with x0 > x1 for
- * a face whose corner index is out of range, and the union of each run of
- * TN_FBOX_RUN faces' boxes. An entry holds while the slot's decodeGen and
- * vertGen, the weld build (s_tj.gen) and the pass's vertex and face arrays
- * and counts equal its stamps: a re-decode, a vertex-animation roll that
- * moved a vertex, and a weld rebuild each refill it. A pass reading the
- * sub-tick lerp bank (vF) moves every build and is not cached. */
+/* Per decode slot and walk pass (0, 1, 3, 4): each face's corner box in
+ * full-world units as tn_face_wbox computes them, float x0, y0, z0, x1, y1,
+ * z1, with x0 > x1 for a face whose corner index is out of range; the union
+ * of each run of TN_FBOX_RUN faces' boxes; and each face's corner indices,
+ * so a refill after a vertex move reads 5 bytes per face instead of its
+ * tsface_t record. The indices hold while the slot's decodeGen, the weld
+ * build (s_tj.gen) and the pass's face array, face count and vertex count
+ * equal their stamps; the boxes hold while those and the slot's vertGen and
+ * the pass's vertex array also do. A re-decode or a weld rebuild refills
+ * both, a vertex-animation roll that moved a vertex refills the boxes from
+ * the indices. A pass reading the sub-tick lerp bank (vF) moves every build
+ * and is not cached. */
 #define TN_FBOX_RUN 16
+typedef struct { uint8_t i[4], ok; } tn_fidx;   /* corner indices (a triangle repeats i2); ok 0: one is out of range */
 typedef struct {
-    uint32_t dgen, vgen, tgen;
+    uint32_t dgen, vgen, tgen;         /* box stamps */
     const tsvert_t* V; const tsface_t* F;
     int nv, nf, cap;
-    int16_t (*b)[6];                   /* nf face boxes, then the run boxes */
+    uint32_t idgen, itgen;             /* index stamps */
+    const tsface_t* iF; int inv, inf, icap;
+    float (*b)[6];                     /* nf face boxes, then the run boxes */
+    tn_fidx* ix;                       /* nf faces' corner indices */
 } tn_fbox;
 static tn_fbox s_fbox[TSC_SLOTS][4];
 
@@ -18391,42 +18391,79 @@ static tn_fbox s_fbox[TSC_SLOTS][4];
  * @return The run count. */
 static int tn_fbox_runs(int nf) { return (nf + TN_FBOX_RUN - 1) / TN_FBOX_RUN; }
 
-/** @brief The local corner box of one face, int16 x0, y0, z0, x1, y1, z1; x0 > x1 when a corner index is out of range.
- * @param P The pass's source, read from its decoded bank.
- * @param F The face.
- * @param b Receives the box. */
-static void tn_fbox_face(const tn_passsrc* P, const tsface_t* F, int16_t b[6]) {
-    const int ci[4] = { F->i0, F->i1, F->i2, F->i3 };
-    b[0] = b[1] = b[2] = INT16_MAX; b[3] = b[4] = b[5] = INT16_MIN;
-    for (int q = 0; q < (F->quad ? 4 : 3); q++) {
-        if (ci[q] >= P->nv) { b[0] = 1; b[3] = 0; return; }
-        const int16_t v[3] = { P->V[ci[q]].x, P->V[ci[q]].y, P->V[ci[q]].z };
-        for (int a = 0; a < 3; a++) {
-            if (v[a] < b[a]) b[a] = v[a];
-            if (v[a] > b[a + 3]) b[a + 3] = v[a];
-        }
+/** @brief Map a local box to full-world units, as tn_face_wbox computes them.
+ *
+ * (origin + v) * 16 is exact in double and its rounding to float is
+ * monotone, so a local box's corners map to the same floats the corner
+ * loop takes as its minimum and maximum.
+ * @param SC The sector.
+ * @param l The local box, int x0, y0, z0, x1, y1, z1.
+ * @param b Receives the world box. */
+static void tn_fbox_world(const tscache_t* SC, const int l[6], float b[6]) {
+    const int o[3] = { SC->originX, SC->originY, SC->originZ };
+    for (int a = 0; a < 3; a++) {
+        b[a]     = (float)((o[a] + (double)l[a]) * 16.0);
+        b[a + 3] = (float)((o[a] + (double)l[a + 3]) * 16.0);
     }
 }
 
-/** @brief Fill a face-box cache entry with the local corner box of each face of a pass (tn_fbox_face) and the union of each run of faces.
- * @param E The entry, its array sized for P->nf faces and their runs.
- * @param P The pass's source, read from its decoded bank (P->vF NULL). */
-static void tn_fbox_fill(tn_fbox* E, const tn_passsrc* P) {
-    int16_t (*run)[6] = E->b + P->nf;
+/** @brief Record each face's corner indices of a pass, marking a face with a corner index at or past the vertex count.
+ * @param E The entry, its index array sized for P->nf faces.
+ * @param P The pass's source. */
+static void tn_fbox_index(tn_fbox* E, const tn_passsrc* P) {
     for (int f = 0; f < P->nf; f++) {
-        const int16_t* b = E->b[f];
-        int16_t* r = run[f / TN_FBOX_RUN];
-        tn_fbox_face(P, &P->F[f], E->b[f]);
-        if (f % TN_FBOX_RUN == 0) { r[0] = r[1] = r[2] = INT16_MAX; r[3] = r[4] = r[5] = INT16_MIN; }
-        if (b[0] > b[3]) continue;
-        for (int a = 0; a < 3; a++) {
-            if (b[a] < r[a]) r[a] = b[a];
-            if (b[a + 3] > r[a + 3]) r[a + 3] = b[a + 3];
-        }
+        const tsface_t* F = &P->F[f];
+        tn_fidx* x = &E->ix[f];
+        x->i[0] = F->i0; x->i[1] = F->i1; x->i[2] = F->i2; x->i[3] = F->quad ? F->i3 : F->i2;
+        x->ok = x->i[0] < P->nv && x->i[1] < P->nv && x->i[2] < P->nv && x->i[3] < P->nv;
     }
 }
 
-/** @brief The face-box cache entry of a pass, refilled when the decode, the vertex animation or the weld build changed its faces' corners.
+/** @brief Fill a face-box cache entry's world boxes from its corner indices: each face's, and the union of each run of faces.
+ *
+ * Each face's local minimum and maximum map to world units once
+ * (tn_fbox_world); a run's union is the minimum and maximum of its faces'
+ * world boxes, which the monotone map makes equal to the map of the local
+ * union.
+ * @param E The entry, its indices current and its box array sized for P->nf faces and their runs.
+ * @param SC The sector.
+ * @param P The pass's source, read from its decoded bank (P->vF NULL). */
+static void tn_fbox_fill(tn_fbox* E, const tscache_t* SC, const tn_passsrc* P) {
+    float (*run)[6] = E->b + P->nf;
+    for (int f = 0; f < P->nf; f++) {
+        float* b = E->b[f];
+        float* r = run[f / TN_FBOX_RUN];
+        if (f % TN_FBOX_RUN == 0) { r[0] = r[1] = r[2] = 1e30f; r[3] = r[4] = r[5] = -1e30f; }
+        const tn_fidx* x = &E->ix[f];
+        if (!x->ok) { b[0] = 1.0f; b[3] = 0.0f; continue; }
+        int l[6] = { INT32_MAX, INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN, INT32_MIN };
+        for (int q = 0; q < 4; q++) {
+            const tsvert_t* v = &P->V[x->i[q]];
+            const int c[3] = { v->x, v->y, v->z };
+            for (int a = 0; a < 3; a++) { l[a] = c[a] < l[a] ? c[a] : l[a]; l[a + 3] = c[a] > l[a + 3] ? c[a] : l[a + 3]; }
+        }
+        tn_fbox_world(SC, l, b);
+        for (int a = 0; a < 3; a++) { r[a] = tn_minf(r[a], b[a]); r[a + 3] = tn_maxf(r[a + 3], b[a + 3]); }
+    }
+    for (int r = 0, nr = tn_fbox_runs(P->nf); r < nr; r++)
+        if (run[r][0] > run[r][3]) { run[r][0] = 1.0f; run[r][3] = 0.0f; }
+}
+
+/** @brief Grow an array to hold need elements.
+ * @param p The array pointer.
+ * @param cap Its capacity, updated.
+ * @param need Elements wanted.
+ * @param esz Element size.
+ * @return 1 when it holds them, 0 on an allocation failure. */
+static int tn_fbox_grow(void** p, int* cap, int need, size_t esz) {
+    if (need <= *cap) return 1;
+    void* nb = realloc(*p, esz * (size_t)need);
+    if (!nb) return 0;
+    *p = nb; *cap = need;
+    return 1;
+}
+
+/** @brief The face-box cache entry of a pass, its indices refilled when the decode or the weld build changed its faces and its boxes when those or the vertex animation moved their corners.
  * @param SC The sector, a decode-cache slot.
  * @param pass The walk pass: 0, 1, 3 or 4.
  * @param P The pass's source.
@@ -18434,54 +18471,43 @@ static void tn_fbox_fill(tn_fbox* E, const tn_passsrc* P) {
 static const tn_fbox* tn_fbox_get(const tscache_t* SC, int pass, const tn_passsrc* P) {
     if (P->vF || SC < s_tsc || SC >= s_tsc + TSC_SLOTS || pass == 2 || pass > 4) return NULL;
     tn_fbox* E = &s_fbox[SC - s_tsc][pass < 3 ? pass : pass - 1];
-    if (E->dgen == SC->decodeGen && E->vgen == SC->vertGen && E->tgen == s_tj.gen && E->V == P->V
+    const int idx_ok = E->idgen == SC->decodeGen && E->itgen == s_tj.gen && E->iF == P->F
+                       && E->inv == P->nv && E->inf == P->nf && E->ix;
+    if (idx_ok && E->dgen == SC->decodeGen && E->vgen == SC->vertGen && E->tgen == s_tj.gen && E->V == P->V
         && E->F == P->F && E->nv == P->nv && E->nf == P->nf)
         return E;
-    const int need = P->nf + tn_fbox_runs(P->nf);
-    if (need > E->cap) {
-        void* nb = realloc(E->b, sizeof *E->b * (size_t)need);
-        if (!nb) return NULL;
-        E->b = (int16_t (*)[6])nb; E->cap = need;
+    if (!idx_ok) {
+        E->iF = NULL; E->dgen = ~SC->decodeGen;
+        if (!tn_fbox_grow((void**)&E->ix, &E->icap, P->nf, sizeof *E->ix)) return NULL;
+        tn_fbox_index(E, P);
+        E->idgen = SC->decodeGen; E->itgen = s_tj.gen; E->iF = P->F; E->inv = P->nv; E->inf = P->nf;
     }
-    tn_fbox_fill(E, P);
+    if (!tn_fbox_grow((void**)&E->b, &E->cap, P->nf + tn_fbox_runs(P->nf), sizeof *E->b)) return NULL;
+    tn_fbox_fill(E, SC, P);
     E->dgen = SC->decodeGen; E->vgen = SC->vertGen; E->tgen = s_tj.gen;
     E->V = P->V; E->F = P->F; E->nv = P->nv; E->nf = P->nf;
     return E;
 }
 
-/** @brief Map a cached local box to full-world units, as tn_face_wbox computes them.
- *
- * (origin + v) * 16 is exact in double and its rounding to float is
- * monotone, so a local box's corners map to the same floats the corner
- * loop takes as its minimum and maximum.
- * @param SC The sector.
- * @param l The local box.
- * @param b Receives x0, y0, z0, x1, y1, z1.
- * @return 0 for an empty box (a face with a corner index out of range, or a run of such faces), else 1. */
-static int tn_fbox_world(const tscache_t* SC, const int16_t l[6], float b[6]) {
-    if (l[0] > l[3]) return 0;
-    const int o[3] = { SC->originX, SC->originY, SC->originZ };
-    for (int a = 0; a < 3; a++) {
-        b[a]     = (float)((o[a] + (double)l[a]) * 16.0);
-        b[a + 3] = (float)((o[a] + (double)l[a + 3]) * 16.0);
-    }
-    return 1;
-}
-
-/** @brief The boxes of a set that a world box meets.
+/** @brief The boxes of a set that a world box meets, each tested without a branch per axis.
  * @param b The world box.
  * @param set The boxes to test, as bits.
  * @param fh Receives the boxes it meets, as bits. */
 static void tn_snap_box_hits(const float b[6], const uint64_t set[2], uint64_t fh[2]) {
-    fh[0] = fh[1] = 0;
-    for (int w = 0; w < 2; w++)
+    for (int w = 0; w < 2; w++) {
+        uint64_t h = 0;
         for (uint64_t m = set[w]; m; m &= m - 1) {
             const int k = w * 64 + __builtin_ctzll(m);
-            if (tn_box_box(b, s_snap_wb[k])) fh[w] |= 1ull << (k & 63);
+            const float* o = s_snap_wb[k];
+            const unsigned in = (unsigned)(b[0] <= o[3]) & (unsigned)(o[0] <= b[3]) & (unsigned)(b[1] <= o[4])
+                              & (unsigned)(o[1] <= b[4]) & (unsigned)(b[2] <= o[5]) & (unsigned)(o[2] <= b[5]);
+            h |= (uint64_t)in << (k & 63);
         }
+        fh[w] = h;
+    }
 }
 
-/** @brief Test one face's world box against the grid's union and a box set, and append it with its verdict when it meets a box.
+/** @brief Append one face with its verdict when its world box meets a box of a set.
  * @param vi The sector's visible index.
  * @param pass The pass.
  * @param f The face index.
@@ -18489,7 +18515,6 @@ static void tn_snap_box_hits(const float b[6], const uint64_t set[2], uint64_t f
  * @param set The boxes to test, as bits. */
 static void tn_snap_face_add(int vi, int pass, int f, const float b[6], const uint64_t set[2]) {
     uint64_t fh[2];
-    if (!tn_box_box(b, s_snap_bg.u)) return;
     tn_snap_box_hits(b, set, fh);
     if (!(fh[0] | fh[1]) || mod_fvec_reserve_noted(&s_snap_facev, s_snap_facev.count + 1) != 0) return;
     terrain_snap_face* o = (terrain_snap_face*)s_snap_facev.data + s_snap_facev.count++;
@@ -18504,6 +18529,8 @@ static void tn_snap_face_add(int vi, int pass, int f, const float b[6], const ui
  * union box meets none of the sector's boxes is skipped whole, and each
  * face of a run is tested against the boxes the run meets: a face box lies
  * inside its run's box, so the faces and hit sets equal the per-face test.
+ * Every box of the set lies inside the grid's union, so a box that meets
+ * one of them meets the union and no separate union test is made.
  * @param vi The sector's visible index.
  * @param pass The pass.
  * @param hit The boxes the sector's sphere meets, as bits. */
@@ -18512,21 +18539,21 @@ static void tn_snap_pass_faces(int vi, int pass, const uint64_t hit[2]) {
     tn_passsrc P;
     if (!tn_pass_source(SC, pass, NULL, &P)) return;
     const tn_fbox* E = tn_fbox_get(SC, pass, &P);
-    float b[6];
     if (!E) {
+        float b[6];
         for (int f = 0; f < P.nf; f++)
             if (tn_face_wbox(SC, &P, &P.F[f], b)) tn_snap_face_add(vi, pass, f, b, hit);
         return;
     }
-    const int16_t (*run)[6] = (const int16_t (*)[6])E->b + P.nf;
+    const float (*run)[6] = (const float (*)[6])E->b + P.nf;
     for (int r = 0, nr = tn_fbox_runs(P.nf); r < nr; r++) {
         uint64_t rh[2];
-        if (!tn_fbox_world(SC, run[r], b) || !tn_box_box(b, s_snap_bg.u)) continue;
-        tn_snap_box_hits(b, hit, rh);
+        if (run[r][0] > run[r][3]) continue;
+        tn_snap_box_hits(run[r], hit, rh);
         if (!(rh[0] | rh[1])) continue;
         const int f1 = (r + 1) * TN_FBOX_RUN < P.nf ? (r + 1) * TN_FBOX_RUN : P.nf;
         for (int f = r * TN_FBOX_RUN; f < f1; f++)
-            if (tn_fbox_world(SC, E->b[f], b)) tn_snap_face_add(vi, pass, f, b, rh);
+            if (E->b[f][0] <= E->b[f][3]) tn_snap_face_add(vi, pass, f, E->b[f], rh);
     }
 }
 

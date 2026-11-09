@@ -1037,23 +1037,34 @@ static void ms_moby_wbox(const ms_moby* mb, float wb[6]) {
  *
  * It contains every corner (ms_moby_wcorner), and costs one camera-space
  * bound per corner where the exact world box costs one world transform per
- * corner.
+ * corner. The x and y bounds are taken over (v - of) * z and scaled by 1/H
+ * once: multiplying by a positive constant rounds monotonically, so the
+ * scaled minimum and maximum equal the per-corner ones. Two interleaved
+ * accumulators split the dependency chain; minimum and maximum are
+ * order-independent.
  * @param mb The moby.
  * @param wb Receives x0, y0, z0, x1, y1, z1; inverted (x0 > x1) for a moby without triangles. */
 static void ms_moby_cbox(const ms_moby* mb, float wb[6]) {
     const double iH = 1.0 / s_rs_view[0], ofx = s_rs_view[1], ofy = s_rs_view[2];
-    double lo[3] = { 1e300, 1e300, 1e300 }, hi[3] = { -1e300, -1e300, -1e300 };
-    for (int t = 0; t < mb->nt; t++)
-        for (int k = 0; k < 3; k++) {
-            const float* v = s_q_tri[mb->t0 + t][k];
-            const double z = (double)v[2] - mb->off;
-            const double c[3] = { ((double)v[0] - ofx) * z * iH, ((double)v[1] - ofy) * z * iH, z };
-            for (int i = 0; i < 3; i++) { lo[i] = ms_min(lo[i], c[i]); hi[i] = ms_max(hi[i], c[i]); }
-        }
+    double lo[2][3] = { { 1e300, 1e300, 1e300 }, { 1e300, 1e300, 1e300 } };
+    double hi[2][3] = { { -1e300, -1e300, -1e300 }, { -1e300, -1e300, -1e300 } };
     for (int i = 0; i < 3; i++) { wb[i] = 1e30f; wb[i + 3] = -1e30f; }
     if (!mb->nt) return;
+    const float (*v)[3] = (const float (*)[3])s_q_tri[mb->t0];
+    for (int j = 0, n = mb->nt * 3; j < n; j++) {
+        const int s = j & 1;
+        const double z = (double)v[j][2] - mb->off;
+        const double c[3] = { ((double)v[j][0] - ofx) * z, ((double)v[j][1] - ofy) * z, z };
+        for (int i = 0; i < 3; i++) { lo[s][i] = ms_min(lo[s][i], c[i]); hi[s][i] = ms_max(hi[s][i], c[i]); }
+    }
+    const double sc[3] = { iH, iH, 1.0 };
+    double L[3], U[3];
+    for (int i = 0; i < 3; i++) {
+        L[i] = ms_min(lo[0][i], lo[1][i]) * sc[i];
+        U[i] = ms_max(hi[0][i], hi[1][i]) * sc[i];
+    }
     for (int q = 0; q < 8; q++) {
-        const double c[3] = { (q & 1) ? hi[0] : lo[0], (q & 2) ? hi[1] : lo[1], (q & 4) ? hi[2] : lo[2] };
+        const double c[3] = { (q & 1) ? U[0] : L[0], (q & 2) ? U[1] : L[1], (q & 4) ? U[2] : L[2] };
         for (int i = 0; i < 3; i++) {
             const double w = s_rs_Li[i][0] * c[0] + s_rs_Li[i][1] * c[1] + s_rs_Li[i][2] * c[2] + s_rs_P[i];
             wb[i] = ms_minf(wb[i], (float)w); wb[i + 3] = ms_maxf(wb[i + 3], (float)w);
