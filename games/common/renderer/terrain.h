@@ -174,11 +174,16 @@ typedef struct { float x0, y0, x1, y1, z0, z1; } terrain_snap_box;
 /* One drawn opaque terrain triangle a search box reaches: its corners as
  * drawn (PSX screen sx, sy and full-world view-Z), whether its face is
  * double-sided, how many triangles its face drew (2 flat, 8 the 2x2
- * quadrants, 16 a split triangle, 32 the 4x4 cells), and the boxes whose
+ * quadrants, 16 a split triangle, 32 the 4x4 cells), its face's identity
+ * (sector index, face index, tier: 1 LP, 0 HP), whether its sector moves
+ * within the tick by its vertex animation (vanim: the build drew it from the
+ * sub-tick lerp banks, or rolled banks that differ), and the boxes whose
  * rectangle and depth range it meets (bit k of hit[k >> 6]). */
 typedef struct {
     float    sx[3], sy[3], vz[3];
     uint8_t  dside, ftris;
+    int16_t  sec, face;
+    uint8_t  tier, vanim;
     uint64_t hit[2];
 } terrain_snap_tri;
 /* What one capture cost: candidate faces, the triangles they drew, and the

@@ -3769,6 +3769,7 @@ typedef struct {
     tsvert_t* lpVprev; tsvert_t* hpVprev;
     float* lpVf; float* hpVf;
     uint32_t vrollPres, vfracPres;
+    uint8_t vanimMoved; /* the roll stamped vrollPres moved a vertex with no keyframe jump */
     int polyanim;   /* named by an env poly-anim descriptor (vert banks animate) */
     uint8_t envModel; /* HP bank from the walker model this tick (tsc_envm_apply) */
     uint32_t vhash; /* LP+HP packed vertex words: catches an in-place rewrite */
@@ -7804,19 +7805,22 @@ static int tsc_vanim_jump(const tsvert_t* p, const tsvert_t* c, int n) {
  * distance to a triangle moves by at most the largest move of the
  * triangle's corners, so one roll moves a sample-to-HP distance by at
  * most their sum. A missing previous bank (failed allocation) or a
- * keyframe jump (tsc_vanim_jump) forces every face to re-test.
+ * keyframe jump (tsc_vanim_jump) forces every face to re-test. vanimMoved
+ * records whether the roll moved a vertex without such a reset: the sub-tick
+ * lerp between the two banks then moves the sector's geometry.
  * @param C The sector, rolled and re-decoded.
  * @param nLp Its LP vertex count, 0 without an LP bank.
  * @param nHp Its HP vertex count, 0 without an HP bank. */
 static void tsc_rt_roll(tscache_t* C, int nLp, int nHp) {
     const int lpOk = !nLp || C->lpVprev, hpOk = !nHp || C->hpVprev;
-    if (!lpOk || !hpOk || (nLp && tsc_vanim_jump(C->lpVprev, C->lpV, nLp)) ||
-        (nHp && tsc_vanim_jump(C->hpVprev, C->hpV, nHp)))
-        tsc_rt_force(C);
+    const int reset = !lpOk || !hpOk || (nLp && tsc_vanim_jump(C->lpVprev, C->lpV, nLp)) ||
+                      (nHp && tsc_vanim_jump(C->hpVprev, C->hpV, nHp));
+    if (reset) tsc_rt_force(C);
     const double mLp = (nLp && lpOk) ? tsc_bank_move(C->lpVprev, C->lpV, nLp) : 0.0;
     const double mHp = (nHp && hpOk) ? tsc_bank_move(C->hpVprev, C->hpV, nHp) : 0.0;
     C->rtD += mLp + mHp;
     C->rtDhp += mHp;
+    C->vanimMoved = !reset && mLp + mHp > 0.0;
 }
 
 /** @brief Writes the linear interpolation of two vertex banks to a float array.
@@ -17430,13 +17434,30 @@ static void tn_snap_bounds(const ttri* T, float b[6]) {
     }
 }
 
+/** @brief Whether a visible sector of the last build moves within the tick by its vertex animation.
+ *
+ * On a sub-tick build: the build filled the sector's lerp banks (vfracPres),
+ * so the walk drew it at the previous-to-current lerp. On a canonical build:
+ * the build's roll moved a vertex with no keyframe reset (vanimMoved), so the
+ * sub-tick builds of the tick lerp it. Both stamps name the latched build
+ * (s_vanim_pres steps once per terrain_build).
+ * @param vi The sector's index in the visible list.
+ * @return 1 when it does, else 0. */
+static int tn_snap_vanim(int vi) {
+    const tscache_t* SC = s_snap_G.SC[vi];
+    if (!SC) return 0;
+    return SC->vfracPres == s_vanim_pres || (SC->vrollPres == s_vanim_pres && SC->vanimMoved);
+}
+
 /** @brief Append one face's drawn opaque triangles that meet a search box of a set to the capture's result.
  * @param t The run.
  * @param i The face's first triangle.
  * @param k One past its last.
  * @param set The boxes its sector may reach, as bits.
+ * @param vanim The sector's vertex-animation mark (tn_snap_vanim), copied to each triangle taken.
  * @param cen Counts the face (once) and the triangles taken. */
-static void tn_snap_take_face(const ttri* t, int i, int k, const uint64_t set[2], terrain_snap_census* cen) {
+static void tn_snap_take_face(const ttri* t, int i, int k, const uint64_t set[2], int vanim,
+                              terrain_snap_census* cen) {
     int taken = 0;
     for (int j = i; j < k; j++) {
         const ttri* T = &t[j];
@@ -17450,6 +17471,8 @@ static void tn_snap_take_face(const ttri* t, int i, int k, const uint64_t set[2]
         for (int c = 0; c < 3; c++) { o->sx[c] = T->sx[c]; o->sy[c] = T->sy[c]; o->vz[c] = (float)(T->vz[c] * 16.0); }
         o->dside = T->dside;
         o->ftris = (uint8_t)(k - i > 255 ? 255 : k - i);
+        o->sec = T->sec; o->face = T->face;
+        o->tier = (uint8_t)T->tier; o->vanim = (uint8_t)vanim;
         o->hit[0] = hit[0]; o->hit[1] = hit[1];
         cen->tris++;
         taken = 1;
@@ -17465,14 +17488,15 @@ static void tn_snap_take_face(const ttri* t, int i, int k, const uint64_t set[2]
  * @param t The run's triangles.
  * @param n Their count.
  * @param set The boxes the run's sector may reach, as bits.
+ * @param vanim The run's sector's vertex-animation mark (tn_snap_vanim).
  * @param cen Counts the faces and triangles taken. */
-static void tn_snap_take(const ttri* t, int n, const uint64_t set[2], terrain_snap_census* cen) {
+static void tn_snap_take(const ttri* t, int n, const uint64_t set[2], int vanim, terrain_snap_census* cen) {
     for (int i = 0; i < n; ) {
         const int k = i + tn_face_run(t, n, i);
         float b[6] = { 1e30f, 1e30f, -1e30f, -1e30f, 1e30f, -1e30f };
         for (int j = i; j < k; j++) tn_snap_bounds(&t[j], b);
         if (tn_snapset_hit(&s_snap_grid, set, b, NULL))
-            tn_snap_take_face(t, i, k, set, cen);
+            tn_snap_take_face(t, i, k, set, vanim, cen);
         i = k;
     }
 }
@@ -17499,7 +17523,7 @@ static void tn_snap_take_recs(const tn_snapgrid* g, int nv, terrain_snap_census*
             const tn_facerec* R = &r[k];
             uint64_t bits[2];
             if (R->off + R->n > s_vrun_n[vi] || !tn_snapset_hit(g, set, R->b, bits)) continue;
-            tn_snap_take_face(&s_tri[s_vrun0[vi] + R->off], 0, R->n, bits, cen);
+            tn_snap_take_face(&s_tri[s_vrun0[vi] + R->off], 0, R->n, bits, tn_snap_vanim(vi), cen);
         }
     }
 }
@@ -17552,7 +17576,7 @@ static void tn_snap_walk_owned(int vi, const uint64_t set[2], terrain_snap_censu
     G.own = NULL;                 /* walk the faces the cache would draw */
     walk_sector(W, &G, vi);
     cen->sectors++;
-    tn_snap_take(W->tri, W->tri_n, set, cen);
+    tn_snap_take(W->tri, W->tri_n, set, tn_snap_vanim(vi), cen);
 }
 
 int terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_tri** out,
