@@ -31,6 +31,14 @@
 #   powerup gate's permanent-superflame case sets. The flame button fires
 #   the superflame shot while it is nonzero (func_8002FC20); the card
 #   record keeps it.
+# - Spyro 2, "Glimmer gem lamps lit (both big gems emit)": Glimmer's two
+#   gem-lamp puzzles, each a big gem (class 0x40C) and six gem lamps
+#   (class 0x21C). The row writes 0x3F to each waiting gem's lamp-bit byte
+#   (moby +0x49) and the flame-hit bit 0x10000 to moby +0x18 of each unlit
+#   lamp; the gem's update then completes the puzzle itself (camera
+#   sequence, the gem cutter's dialogue, orbiting and emitted mobys) and
+#   each lamp lights when it next updates. Queued outside Glimmer, it
+#   applies once Glimmer is in play.
 # - Spyro 3, "Permanent superflame": the byte 0x8006FB93 = 1
 #   (g_CheatFlags + 3), set by the same powerup-gate case and read by the
 #   flame code (func_80045D70) the same way.
@@ -45,7 +53,7 @@
 # uses: `api->base` - each hook is a pre-hook and runs the game update after the writes
 # uses: `op_read_u8` / `op_read_u16` / `op_write_u8` / `op_write_u16` - reads each flag for the panel and writes queued ones
 # uses: `api->game_id` - selects the running game's rows
-# uses: `api->config_int` - the headless test trigger
+# uses: `api->config_int` / `api->config_str` - the headless test trigger
 # uses: `api->log` - one line per write
 
 [mod]

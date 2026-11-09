@@ -1,0 +1,3 @@
+# Cross every 20 VBLs from 1700 to 2400 (scripts/make_bk2.py), closing the
+# gem cutter's dialogue the debug-flags Glimmer row opens
+--skip-to-level glimmer

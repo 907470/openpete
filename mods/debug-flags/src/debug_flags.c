@@ -20,9 +20,15 @@
  * before also adds that game to mod.toml; every game already has its tick
  * binding below.
  *
+ * A routine row (apply set) makes several stores found by walking the
+ * running level's mobys instead of one fixed store; it stays queued while
+ * the level it serves is not in play, and clears once its stores read back.
+ *
  * Test trigger: the config.toml key `test.apply_tick = N` (no `[[config]]`
  * row, so the panel never shows it) queues every row at the N-th tick the
- * hook sees, which is how a headless run presses "Apply all".
+ * hook sees, which is how a headless run presses "Apply all". With
+ * `test.apply_only = "<prefix>"` it queues only the rows whose name starts
+ * with the prefix.
  */
 
 #include <openpete_mod_api.h>
@@ -39,7 +45,15 @@ typedef struct {
     uint32_t    width;  /**< Access width in bytes: 1, 2 or 4. */
     uint32_t    value;  /**< Value written; the row reads as applied when the address holds it. */
     const char* note;   /**< Tooltip: what the game does with the value. */
+    /** Routine row, when non-NULL: replaces the single store. Called with
+     *  write 0 it returns 1 when the effect is in place, 0 when it is not,
+     *  -1 when the running game state cannot take it (another level, a
+     *  load); called with write 1 it also makes its stores and returns the
+     *  number made. addr, width and value are unused. */
+    int (*apply)(int write);
 } action_t;
+
+static int glimmer_gem_lamps(int write);
 
 /* Spyro 2 0x800646AE: the halfword of entry 15 of the progress table at
  * 0x80064670. Ripto's Arena (level_66 moby_update, sh at 0x8007F740)
@@ -85,26 +99,31 @@ static const action_t k_actions[] = {
       0x800646AEu, 2u, 1u,
       "Spyro 2 0x800646AE = 1: Ripto's Arena sets it when Ripto is beaten; "
       "Winter Tundra's portal gate opens the Dragon Shores portal while it "
-      "is nonzero. A save written afterwards keeps it." },
+      "is nonzero. A save written afterwards keeps it.", NULL },
     { "Swim (dive underwater)", "spyro-2", 0x80064682u, 2u, 1u,
       "Spyro 2 0x80064682 = 1: the paid flag of Moneybags' swim lesson. "
       "While it is nonzero Square at the water's surface dives; at zero "
-      "Spyro stays at the surface." },
+      "Spyro stays at the surface.", NULL },
     { "Climb (ladders)", "spyro-2", 0x80064686u, 2u, 1u,
       "Spyro 2 0x80064686 = 1: the paid flag of Moneybags' climb lesson. "
-      "The ladder test returns at once while it is zero." },
+      "The ladder test returns at once while it is zero.", NULL },
     { "Headbash (triangle in the air)", "spyro-2", 0x8006468Au, 2u, 1u,
       "Spyro 2 0x8006468A = 1: the paid flag of Moneybags' headbash "
       "lesson. Triangle in the air starts the headbash while it is "
-      "nonzero." },
+      "nonzero.", NULL },
     { "Permanent superflame", "spyro-2", 0x800698BBu, 1u, 1u,
       "Spyro 2 0x800698BB = 1: the powerup gate's permanent-superflame "
       "case sets it; the flame button fires the superflame shot while it "
-      "is nonzero. The card record keeps it." },
+      "is nonzero. The card record keeps it.", NULL },
     { "Permanent superflame", "spyro-3", 0x8006FB93u, 1u, 1u,
       "Spyro 3 0x8006FB93 = 1 (g_CheatFlags + 3): the powerup gate's "
       "permanent-superflame case sets it; the flame button fires the "
-      "superflame shot while it is nonzero." },
+      "superflame shot while it is nonzero.", NULL },
+    { "Glimmer gem lamps lit (both big gems emit)", "spyro-2", 0u, 0u, 1u,
+      "Spyro 2 Glimmer: sets both big gems' six lamp bits and a flame hit "
+      "on every unlit gem lamp; each gem then runs its own completion and "
+      "the gem cutter's dialogue opens. Waits for Glimmer to be in play "
+      "when pressed elsewhere.", glimmer_gem_lamps },
 };
 
 #define N_ACTIONS ((int)(sizeof k_actions / sizeof k_actions[0]))
@@ -121,6 +140,76 @@ static uint32_t s_value[N_ACTIONS]; /**< Value s_rows[i]'s address held at the l
 static unsigned s_seen;             /**< Nonzero once the tick hook has filled s_value. */
 static int64_t  s_ticks;            /**< Ticks the hook has seen. */
 static int64_t  s_test_tick;        /**< Tick at which every row is queued; 0 = never. */
+static unsigned s_test_mask;        /**< Rows the test tick queues; 0 = every row. */
+
+#define S2_MOBY_ARRAY   0x80066F14u /* pointer to the 0x58-byte moby records */
+#define S2_MOBY_STRIDE  0x58u
+#define S2_LEVEL_ID     0x80066F90u /* level number, 11 = Glimmer */
+#define S2_LEVEL_TICK   0x80067008u /* ticks since the level began running */
+#define S2_GLIMMER      11u
+#define GL_LAMP_CLASS   0x21Cu      /* gem lamp holder */
+#define GL_GEM_CLASS    0x40Cu      /* big gem */
+#define GL_HIT_BIT      0x10000u    /* moby +0x18: flame hit */
+
+/** @brief Completes both Glimmer gem-lamp puzzles through the game's own lamp and gem updates.
+ *
+ * Glimmer holds two copies of the puzzle, each one big gem (class 0x40C)
+ * and six gem lamps (class 0x21C); on the stock layout gem moby 25 owns
+ * lamps 16-21 and gem 28 (32236, 103178, 12902) owns lamps 29-34. A lamp's
+ * data block (moby +0x00) holds its bit number at +0x00 and its gem's moby
+ * index at +0x04. The lamp's update (level_11 moby_update 0x80079A94-
+ * 0x80079B50) tests the flame-hit bit 0x10000 of its moby +0x18 while its
+ * state (+0x48) is below 3, and on a hit ORs 1 << bit into the gem's +0x49
+ * byte (sb at 0x80079AF4) and goes from state 0 to state 1, lit (sb at
+ * 0x80079B1C). A lit lamp whose gem is still in state 0 goes dark when its
+ * timer runs out, clearing its bit and returning to state 0
+ * (0x8007A060-0x8007A168). The gem in state 0 compares +0x49 with 0x3F
+ * and on a match starts its camera sequence and enters state 1
+ * (0x8007AA48-0x8007AAA8); once the sequence word 0x80067ED4 reads 2 it
+ * spawns its six orbiting mobys (class 0x230) and enters state 2, and from
+ * states 2 and 3 it emits class 0x231 mobys (0x8007AAF0-0x8007AD90). Lit
+ * lamps of a completed gem enter state 3 while the sequence word
+ * 0x80067ED0 reads 11 and stay lit (0x80079F44-0x80079FB4).
+ *
+ * The update loop runs a moby only while it is drawn or inside its update
+ * radius (func_80040E94), so a lamp or gem away from the camera updates
+ * later than the tick of the write. The routine therefore writes the gem's
+ * end value 0x3F rather than relying on six lamps updating together, and
+ * sets the hit bit of every lamp still in state 0, each store only when the
+ * value is not already there. The game's own code then makes every other
+ * store of the completion, including the camera sequence and the gem
+ * cutter's dialogue, which takes Cross presses to close.
+ * @param write Nonzero: make the stores.
+ * @return With write 0: 1 when no gem and no lamp is in state 0, 0 when
+ *         one is, -1 outside Glimmer play; with write 1: the stores made. */
+static int glimmer_gem_lamps(int write) {
+    uint32_t head, m;
+    int i, todo = 0, stores = 0;
+
+    if (op_read_u16(g_api, S2_LEVEL_ID) != S2_GLIMMER ||
+        op_read_u32(g_api, S2_LEVEL_TICK) == 0u)
+        return -1;
+    head = op_read_u32(g_api, S2_MOBY_ARRAY);
+    for (i = 0, m = head; i < 4096 && op_read_u8(g_api, m + 0x48u) != 0xFFu;
+         i++, m += S2_MOBY_STRIDE) {
+        uint32_t cls = op_read_u16(g_api, m + 0x36u);
+        if (cls == GL_GEM_CLASS && op_read_u8(g_api, m + 0x48u) == 0u) {
+            todo++;
+            if (write && op_read_u8(g_api, m + 0x49u) != 0x3Fu) {
+                op_write_u8(g_api, m + 0x49u, 0x3Fu);
+                stores++;
+            }
+        } else if (cls == GL_LAMP_CLASS && op_read_u8(g_api, m + 0x48u) == 0u) {
+            uint32_t hit = op_read_u32(g_api, m + 0x18u);
+            todo++;
+            if (write && !(hit & GL_HIT_BIT)) {
+                op_write_u32(g_api, m + 0x18u, hit | GL_HIT_BIT);
+                stores++;
+            }
+        }
+    }
+    return write ? stores : (todo == 0);
+}
 
 /** @brief Reads an action's address at its width.
  *
@@ -160,11 +249,26 @@ static void on_tick(CPUState* cpu) {
     int i;
 
     if (++s_ticks == s_test_tick)
-        queue_rows((1u << s_n) - 1u);
+        queue_rows(s_test_mask ? s_test_mask : (1u << s_n) - 1u);
     pend = __atomic_load_n(&s_pending, __ATOMIC_ACQUIRE);
     for (i = 0; i < s_n; i++) {
         const action_t* a = &k_actions[s_rows[i]];
-        uint32_t cur = action_read(a);
+        uint32_t cur;
+        if (a->apply) {
+            int st = a->apply(0);
+            if ((pend & (1u << i)) && st == 1) {
+                __atomic_fetch_and(&s_pending, ~(1u << i), __ATOMIC_RELAXED);
+            } else if ((pend & (1u << i)) && st == 0) {
+                int n = a->apply(1);
+                if (n > 0)
+                    g_api->log(g_self, OP_MOD_LOG_INFO,
+                               "%s: %d store(s), tick %lld", a->name, n,
+                               (long long)s_ticks);
+            }
+            __atomic_store_n(&s_value[i], (uint32_t)st, __ATOMIC_RELAXED);
+            continue;
+        }
+        cur = action_read(a);
         if (pend & (1u << i)) {
             if (cur == a->value) {
                 __atomic_fetch_and(&s_pending, ~(1u << i), __ATOMIC_RELAXED);
@@ -206,6 +310,8 @@ static void ui_draw(const openpete_mod_ui_t* ui) {
             ui->text("queued");
         else if (!seen)
             ui->text_disabled("no tick yet");
+        else if (a->apply)
+            ui->text(v == 1u ? "set" : v == 0u ? "not set" : "not in play here");
         else if (v == a->value)
             ui->text("set (0x%08X = %u)", a->addr, v);
         else
@@ -228,6 +334,7 @@ OPENPETE_MOD_UI_SECTION(ui_draw)
  */
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     const char* game = api->game_id(self);
+    char only[96];
     int i;
 
     g_api = api; g_self = self;
@@ -235,6 +342,10 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
         if (!strcmp(k_actions[i].game, game))
             s_rows[s_n++] = i;
     s_test_tick = api->config_int(self, "test.apply_tick", 0);
+    if (api->config_str(self, "test.apply_only", "", only, (int)sizeof only))
+        for (i = 0; i < s_n; i++)
+            if (!strncmp(k_actions[s_rows[i]].name, only, strlen(only)))
+                s_test_mask |= 1u << i;
     api->log(self, OP_MOD_LOG_INFO, "debug-flags: %d action(s) for %s", s_n,
              game);
 #if OPENPETE_GAME_SPYRO1

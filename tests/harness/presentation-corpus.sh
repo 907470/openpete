@@ -43,6 +43,14 @@
 #                             token PRESENTATION_LEG_TIMEOUT=N, which the harness
 #                             consumes and does not pass to the binary.
 #
+# A row runs one in-tree mod with the launch token
+# PRESENTATION_MOD=<id>[:<table>.<key>=<value>[,...]], which the harness
+# consumes: each leg copies mods/<id> (without its .build/) into its own
+# directory, writes enabled.txt and the given keys as the copy's config.toml,
+# and passes --mods-dir and --mods <id>. A value is written as given (a TOML
+# integer, float or boolean) unless it holds a character outside [0-9.+-],
+# which is written as a quoted string.
+#
 # Exit: 0 = all captures produced, 1 = a capture is missing (hard failure) or
 #           the corpus manifest is missing (the message names the path),
 #       64 = SKIP (binary / disc / Vulkan loader missing),
@@ -149,6 +157,26 @@ fi
 # independently-regressable surface the depth work is most likely to disturb.
 lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 
+# Build a leg's mods directory for a PRESENTATION_MOD spec: a copy of
+# mods/<id> without its compile cache, enabled.txt naming it, and config.toml
+# holding the spec's keys grouped by table. args: dir spec
+pg_leg_mod() {
+  local dir="$1" spec="$2" id="${2%%:*}" kv k v tbl last=""
+  [[ -f "mods/$id/mod.toml" ]] || { echo "  PRESENTATION_MOD: no mod mods/$id"; return 1; }
+  mkdir -p "$dir" && cp -r "mods/$id" "$dir/$id" || return 1
+  rm -rf -- "${dir:?}/$id/.build" "${dir:?}/$id/config.toml"
+  echo "$id" >"$dir/enabled.txt"
+  : >"$dir/$id/config.toml"
+  [[ "$spec" == *:* ]] || return 0
+  local -a kvs; IFS=',' read -ra kvs <<<"${spec#*:}"
+  for kv in "${kvs[@]}"; do
+    k="${kv%%=*}"; v="${kv#*=}"; tbl="${k%.*}"; k="${k##*.}"
+    [[ "$v" =~ ^[0-9.+-]+$ || "$v" == true || "$v" == false ]] || v="\"$v\""
+    [[ "$tbl" != "$last" ]] && { echo "[$tbl]" >>"$dir/$id/config.toml"; last="$tbl"; }
+    echo "$k = $v" >>"$dir/$id/config.toml"
+  done
+}
+
 # A row name is the bk2 basename optionally followed by `@<variant>`. The whole
 # name is the file key, so the variant's tiles carry it and never collide with
 # the plain row's; the bk2 is everything before the first `@`.
@@ -163,10 +191,11 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   # A launch token PRESENTATION_LEG_TIMEOUT=N is the harness's, not the run's:
   # it raises this row's leg bound to N seconds (never lowers it) and is not
   # passed to the binary.
-  local leg_timeout="$LEG_TIMEOUT" e; local -a run_env=()
+  local leg_timeout="$LEG_TIMEOUT" e mod_spec=""; local -a run_env=()
   for e in "${ROW_ENV[@]}"; do
     if [[ "$e" =~ ^PRESENTATION_LEG_TIMEOUT=([0-9]+)$ ]]; then
       (( BASH_REMATCH[1] > leg_timeout )) && leg_timeout="${BASH_REMATCH[1]}"
+    elif [[ "$e" == PRESENTATION_MOD=* ]]; then mod_spec="${e#PRESENTATION_MOD=}"
     else run_env+=("$e"); fi
   done
   local tag; tag="$(lod_tag "$lod")"
@@ -179,6 +208,11 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   # absent on every leg and no two legs share it. A row giving --card1 runs
   # with that card in slot 1: the game's --no-card boot flag is dropped for
   # the leg, and the row says --no-card2 itself when slot 2 stays empty.
+  local -a mod_args=()
+  if [[ -n "$mod_spec" ]]; then
+    pg_leg_mod "$legdir/mods" "$mod_spec" || { rm -rf -- "${legdir:?}"; return 1; }
+    mod_args=(--mods-dir "$legdir/mods" --mods "${mod_spec%%:*}")
+  fi
   local -a run_args=() row_args=(); local ra card1=0
   for ra in "${ROW_ARGS[@]}"; do
     row_args+=("${ra//\{legdir\}/$legdir}"); [[ "$ra" == --card1 ]] && card1=1
@@ -207,7 +241,7 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   # a variant row differs from its plain twin by exactly that field.
   local -a cmd=(env "${leg_env[@]}" "${run_env[@]}" timeout -k 10 "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${run_args[@]}"
-    "${bk2_arg[@]}" --screenshot-native-only
+    "${mod_args[@]}" "${bk2_arg[@]}" --screenshot-native-only
     "$flag" "$targets" --screenshot-output "$out"
     --frame-limit "$flim" --max-runtime-seconds "$((leg_timeout - 20))" "${row_args[@]}")
   op_own_run "${cmd[@]}" >"$log" 2>&1

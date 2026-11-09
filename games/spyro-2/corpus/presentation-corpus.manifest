@@ -202,6 +202,16 @@ attract-demo-spawn-jump|14612|2||14614,14615,14616,14617,14618
 # box too small off-axis and culled sector 69 at the left edge (pink
 # background). Blessed on the headless-occlusion build, before the fix.
 glimmer-32x9-leftedge|2471|2||2473|--skip-to-level glimmer --aspect 32:9 OPENPETE_FREECAM_POSE=30338,87973,7965,-194,52
+# glimmer-gem-lamps: Glimmer with both gem-lamp puzzles completed by the
+# debug-flags mod's Glimmer row at the first Glimmer tick (the lamps lit with
+# their glow, each big gem emitting its orbiting and emitted mobys); the
+# movie's Cross presses close the gem cutter's dialogue the completion opens.
+# A freecam path (engaged at VBL 2500, one pose per tick) closes on the lamp
+# at (31427, 78080) from +X and from 225 degrees at 1000 units a tick, then
+# passes the big gem at (32236, 103178). The pins are sub-tick presents where
+# the tick depth (OPENPETE_SUBTICK_TICK_DEPTH) moves pixels: 2503 the lamp's
+# glow, 2571 and 2579 the gem's tracers.
+glimmer-gem-lamps|2500|80||2503,2571,2579|PRESENTATION_MOD=debug-flags:test.apply_tick=1,test.apply_only=Glimmer OPENPETE_FREECAM_AT_VBL=2500 --freecam-path @games/spyro-2/corpus/paths/glimmer-gem-lamps.path
 #
 # s2-create-save: a new game on a blank card in slot 1 (provisioned formatted
 # by the binary in the leg's directory) creates and writes its save. 1022
