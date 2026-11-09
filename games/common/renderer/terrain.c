@@ -10282,71 +10282,226 @@ static int tgpu_content_rolls(uint8_t m) {
     return (m & 1u) || ((m & 2u) && !tgpu_canimnear_on());
 }
 
-/** @brief Adds one animation-list member sector to the anim, near-churn and store figures of a content bound.
+/* One sector's content figures. Per draw class (OPTC_ARENA_OPAQUE .. LP):
+ * full, the plain bake (flat + HQ 2x2 of every HP face, every LP face);
+ * flat, the flat variant alone (6 per HP face, every LP face). hpf and lpf
+ * count the HP and LP faces, own and borrowable; hpc and lpc the HP (one
+ * of the near and far arrays) and LP colours; ca the records the bake
+ * writes to the CA family (tgpu_content_face_cells); texanim is set when a
+ * texture swap or scroll re-bakes the sector (tgpu_face_texanim). */
+typedef struct {
+    uint64_t full[OPTC_CLASS_COUNT], flat[OPTC_CLASS_COUNT];
+    uint64_t hpf, lpf, hpc, lpc;
+    uint64_t ca[OPTC_CLASS_COUNT - 1];   /* anim-cell records per HP draw class */
+    int texanim;                         /* an HP face is on an animated tile */
+} tgpu_sec_cls;
+
+/** @brief Adds one sector to the plain, anim, near-churn, cell and store figures of a content bound.
  *
- * A poly-anim sector (vertex list) bakes the full plain cost, its near twins
- * re-bake every roll under OPENPETE_TERRAIN_ANIMNEAR, and it takes one
- * previous-corner record per face. A colour-only sector bakes the flat
- * variant alone (6 per HP face) under OPENPETE_TERRAIN_CANIMNEAR=0; by
- * default it bakes the HQ variants against a colour-table ring of
- * OPTC_COLTAB_RING entries of 1 + 2 x (LP + 2 x HP colours) words. The
- * sector's anim figures also go to the roll figures when it re-bakes on
- * every roll (tgpu_content_rolls); a colour-table bake is roll-free
- * (tgpu_roll_free) and is counted once.
+ * A sector the animation lists do not name adds its full per-class figures
+ * to the plain bound, and to the tile-step figures when an animated tile
+ * re-bakes it (texanim). A poly-anim sector (vertex list) bakes the full
+ * plain cost into the anim family, its near twins re-bake every roll under
+ * OPENPETE_TERRAIN_ANIMNEAR, and it takes one previous-corner record per
+ * face. A colour-only sector bakes the flat variant alone under
+ * OPENPETE_TERRAIN_CANIMNEAR=0; by default it bakes the HQ variants against
+ * a colour-table ring of OPTC_COLTAB_RING entries of 1 + 2 x (LP + 2 x HP
+ * colours) words. A member's anim figures also go to the roll figures when
+ * it re-bakes on every roll (tgpu_content_rolls) or tile step; a
+ * colour-table bake is otherwise roll-free (tgpu_roll_free) and is counted
+ * once. The sector's anim-cell records go to ca_r, and to ca_roll_r when
+ * the sector re-bakes on every roll or tile step.
  * @param c The bound being accumulated.
- * @param m The sector's lists: bit 0 vertex, bit 1 colour; 0 adds nothing.
- * @param hpf HP faces (own and borrowable).
- * @param lpf LP faces (own and borrowable).
- * @param lpc LP colours.
- * @param hpc HP colours (one of the near and far arrays).
- * @param cellK Cell records per HP face.
- * @param addv The plain vertices the marked-edge split adds to the sector. */
-static void tgpu_content_anim(openpete_tercache_content* c, uint8_t m, uint64_t hpf, uint64_t lpf,
-                              uint64_t lpc, uint64_t hpc, uint64_t cellK, uint64_t addv) {
-    if (!m) return;
-    const int coltab = tgpu_canimnear_on();
-    const int hq = (m & 1u) || coltab;
-    const uint64_t hv = (hq ? 30u : 6u) * hpf + addv, lv = 6u * lpf, cr = hq ? cellK * hpf : 0u;
-    c->anim_hp_v += hv;
-    c->anim_lp_v += lv;
-    c->anim_cell_r += cr;
-    if (tgpu_content_rolls(m)) { c->roll_hp_v += hv; c->roll_lp_v += lv; c->roll_cell_r += cr; }
-    if (m & 1u) {
-        c->prev_rec += hpf + lpf;
-        if (tgpu_animnear_on()) { c->animnear_hp_v += 30u * hpf + addv; c->animnear_lp_v += 6u * lpf; }
+ * @param m The sector's lists: bit 0 vertex, bit 1 colour.
+ * @param v The sector's figures.
+ * @param cellK Cell records per HP face. */
+static void tgpu_content_add(openpete_tercache_content* c, uint8_t m, const tgpu_sec_cls* v,
+                             uint64_t cellK) {
+    c->cell_r += cellK * v->hpf;
+    const int rolls = tgpu_content_rolls(m) || v->texanim;
+    for (int k = 0; k < OPTC_CLASS_COUNT - 1; k++) {
+        c->ca_r[k] += v->ca[k];
+        c->ca_roll_r[k] += rolls ? v->ca[k] : 0u;
     }
+    if (!m) {
+        for (int k = 0; k < OPTC_CLASS_COUNT; k++) {
+            c->plain_v[k] += v->full[k];
+            c->texroll_v[k] += v->texanim ? v->full[k] : 0u;
+        }
+        return;
+    }
+    const int coltab = tgpu_canimnear_on();
+    const uint64_t* sv = ((m & 1u) || coltab) ? v->full : v->flat;
+    const int near = (m & 1u) && tgpu_animnear_on();
+    for (int k = 0; k < OPTC_CLASS_COUNT; k++) {
+        c->anim_v[k] += sv[k];
+        c->roll_v[k] += rolls ? sv[k] : 0u;
+        c->animnear_v[k] += near ? v->full[k] : 0u;
+    }
+    if (m & 1u) c->prev_rec += v->hpf + v->lpf;
     if ((m & 2u) && coltab)
         c->coltab_units += OPTC_COLTAB_RING *
-            ((1u + 2u * (lpc + 2u * hpc) + OPTC_PREV_REC_WORDS - 1u) / OPTC_PREV_REC_WORDS);
+            ((1u + 2u * (v->lpc + 2u * v->hpc) + OPTC_PREV_REC_WORDS - 1u) / OPTC_PREV_REC_WORDS);
 }
 
-/** @brief Reads the bake's content bound for a sector table from the sector headers alone.
+static int tgpu_arena_of(const tmat* m);
+static void tgpu_hq_quadrant(CPUState* cpu, uint32_t hqBase, int abe, int q,
+                             tmat* m, float u[4], float v[4]);
+static int tgpu_hq_elig(const tsface_t* F, uint32_t hqTable);
+static int tface_fine_ok(const tsface_t* F);
+
+/** @brief Tests whether a texture swap or scroll steps an HP face's material and so re-bakes its sector.
  *
- * One pass over the table (no decode). Per sector, the header words +0x10
- * and +0x14 give the LP and HP face counts (bits 16-23) and colour counts
- * (bits 8-15), the counts tsc_decode_body decodes. A scene sector whose LP
- * faces match an HP source sector (s_tsv.borHp, borLp) adds that source
- * sector's faces, the most tsimp_attach borrows onto it. The plain bound is
- * HP faces x 30 (the 6 flat vertices of tgpu_bake_hp_flat plus the HQ 2x2,
- * 4 sub-quads x 2 triangles, of tgpu_bake_hq2) and LP faces x 6 (two
- * triangles). The anim figures cover the sectors the animation lists name
- * (env_anim_iter, listed members, vertex and colour lists); a colour-only
- * sector without a colour table bakes the flat variant alone
- * (tgpu_bake_hp_face), 6 per HP face. The poly-anim sectors' plain bound is
- * also reported for their near twins under OPENPETE_TERRAIN_ANIMNEAR. Cell records
- * are 8 per HP quad (2 halves x 4 classes) and 12 per HP triangle where the
- * game locates triangle cells, 0 on a game with no cell table. The store
- * takes one previous-corner record per face of each poly-anim sector, and
- * under OPENPETE_TERRAIN_CANIMNEAR=1 one colour-table ring (OPTC_COLTAB_RING
- * entries of 1 + 2 x (LP + 2 x HP colours) words) per colour-anim sector.
- * The marked-edge split adds its exact per-sector vertices to the plain and
- * anim bounds and its records' units to the store.
+ * The test tsc_refresh_faces makes against the tile generations: the face's
+ * tile, or for a quad the near path may draw (tface_near_excl clear) its HQ
+ * record, is one a swap or scroll descriptor names (s_envm_tile, refreshed
+ * by the walk before the content pass).
+ * @param F The face.
+ * @return 1 when an animated tile re-bakes the face, else 0. */
+static int tgpu_face_texanim(const tsface_t* F) {
+    if (F->tb != -1 && s_envm_tile[F->tb & 0x7F]) return 1;
+    return F->quad && !tface_near_excl(F->w3) && s_envm_tile[F->hq_idx & 0x7F];
+}
+
+/** @brief Adds the cell records an HP face's bake writes to the CA family, per draw class.
+ *
+ * The bake's own conditions, under the texture mapping in force: only an
+ * HQ-eligible face (tgpu_hq_elig) bakes cells. A quad on a game with the
+ * 4x4 cells and near_flag_tier2 clear takes them when tface_cells_ok
+ * passes and the sector is poly-anim (@p ab) or the pin routes the face to
+ * the cells (tface_cells_pin); each half then writes one record per draw
+ * class its 8 cell tiles use (tgpu_push_cell_halves). A triangle writes the
+ * tier-4 split's 2 records when near_flag_tier2 is clear, tface_fine_ok
+ * passes and @p ab or the pin holds, and the tier-2 split's record on a
+ * game with hq_tri2_tiles in every sector (tgpu_bake_tris); both take the
+ * face material's class.
+ * @param cpu The guest CPU state.
+ * @param F The decoded face.
+ * @param hqTable The HQ record table.
+ * @param ab 1 for a poly-anim sector.
+ * @param ca The per-class record counts to add to. */
+static void tgpu_content_face_cells(CPUState* cpu, const tsface_t* F, uint32_t hqTable, int ab,
+                                    uint64_t ca[OPTC_CLASS_COUNT - 1]) {
+    if (!tgpu_hq_elig(F, hqTable)) return;
+    const int fam = ab || tface_cells_pin(F->hq_idx);
+    const int t2 = tface_near_tier2(F->w3);
+    if (!F->quad) {
+        const int fc = tgpu_arena_of(&F->mat);
+        if (!t2 && fam && tface_fine_ok(F)) ca[fc] += 2u;
+        if (game_layout.terrain.hq_tri2_tiles) ca[fc] += 1u;
+        return;
+    }
+    if (!game_layout.terrain.hq_cells4 || t2 || !fam || !tface_cells_ok(F->hq_idx)) return;
+    const uint32_t cells = hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride
+                         + game_layout.terrain.hq_cells4;
+    for (int h = 0; h < 2; h++) {
+        unsigned seen = 0;
+        for (int j = 0; j < 8; j++) {
+            tmat m; float u[4], v[4];
+            memset(&m, 0, sizeof m); m.bpp = 16;
+            decode_tiledef(cpu, cells + (uint32_t)(h * 8 + j) * 8u, F->abe, &m, u, v);
+            seen |= 1u << tgpu_arena_of(&m);
+        }
+        for (int k = 0; k < OPTC_CLASS_COUNT - 1; k++) ca[k] += (seen >> k) & 1u;
+    }
+}
+
+/** @brief Reads one sector's content figures, splitting its plain vertex bound over the draw classes from its decoded faces.
+ *
+ * The header words +0x10 and +0x14 give the LP and HP face counts (bits
+ * 16-23) and colour counts (bits 8-15). A scene sector whose LP faces
+ * match an HP source sector (s_tsv.borHp, borLp) adds that source sector's
+ * faces, the most tsimp_attach borrows onto it. The sector's HP and LP
+ * faces are decoded with tsc_decode_faces, the decode the bake reads. An
+ * HP face's 6 flat vertices take the class of its material (tgpu_arena_of,
+ * as tgpu_bake_hp_flat), and each HQ 2x2 quadrant's 6 the class of that
+ * quadrant's tile (tgpu_hq_quadrant, as tgpu_bake_hq2); an LP face's 6
+ * take its blend class when it is semi-transparent, else the LP class (as
+ * tgpu_bake_lp_face). An imported sector reads its tiles from the source
+ * table (tsv_is_virtual). The borrowable faces and the marked-edge split's
+ * vertices (tj_sector_addv), which carry no decoded material here, go to
+ * the opaque and LP classes. Each HP face also adds its anim-cell records
+ * (tgpu_content_face_cells), except in a colour-only sector, whose HQ
+ * variants go to its near chunks alone, and sets texanim when an animated
+ * tile re-bakes it (tgpu_face_texanim; an imported sector carries no
+ * animation).
+ * @param cpu The guest CPU state.
+ * @param s The sector record's address.
+ * @param q The sector's index in the walk's table.
+ * @param guestCnt The scene's own sector count.
+ * @param mem The sector's lists: bit 0 vertex, bit 1 colour.
+ * @param lqTable The LQ Tiledef table.
+ * @param hqTable The HQ record table.
+ * @param texTblMode The texture-table mode the walk decodes with.
+ * @param out Receives the sector's figures. */
+static void tgpu_content_classes(CPUState* cpu, uint32_t s, uint32_t q, uint32_t guestCnt,
+                                 uint8_t mem, uint32_t lqTable, uint32_t hqTable, int texTblMode,
+                                 tgpu_sec_cls* out) {
+    static tsface_t F[256];
+    memset(out, 0, sizeof(*out));
+    const int virt = tsv_is_virtual(s);
+    if (virt) lqTable = hqTable = TSRC_TEX_BASE;
+    const twsrc_t src = { cpu, NULL, 0u };
+    const uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
+    const int nLpF = (int)((g3 >> 16) & 0xFFu), nHpF = (int)((g4 >> 16) & 0xFFu);
+    const uint32_t nLpC = (g3 >> 8) & 0xFFu, nHpC = (g4 >> 8) & 0xFFu;
+    const int bor = q < s_tsv.bor_n && q < guestCnt;
+    const uint64_t borHp = bor ? s_tsv.borHp[q] : 0u, borLp = bor ? s_tsv.borLp[q] : 0u;
+    const uint64_t addv = tj_sector_addv(q);
+    out->hpf = (uint64_t)nHpF + borHp; out->lpf = (uint64_t)nLpF + borLp;
+    out->hpc = nHpC; out->lpc = nLpC;
+    const uint32_t lpFaces = s + 0x1C + ((g3 & 0xFFu) + nLpC) * 4u;
+    const uint32_t hpFaces = s + 0x1C + ((g4 >> 24) & 0xFFu) * 4u + ((g4 & 0xFFu) + nHpC * 2u) * 4u;
+    tsc_decode_faces(&src, hpFaces, nHpF, 16, lqTable, hqTable, texTblMode, 0, F);
+    for (int f = 0; f < nHpF; f++) {
+        const int fc = tgpu_arena_of(&F[f].mat);
+        out->full[fc] += 6u;
+        out->flat[fc] += 6u;
+        const uint32_t hqBase = hqTable + (uint32_t)F[f].hq_idx * game_layout.terrain.hq_stride;
+        for (int h = 0; h < 4; h++) {
+            tmat m; float u[4], v[4];
+            tgpu_hq_quadrant(cpu, hqBase, F[f].abe, h, &m, u, v);
+            out->full[tgpu_arena_of(&m)] += 6u;
+        }
+        out->texanim |= !virt && tgpu_face_texanim(&F[f]);
+        if (!(mem & 2u) || (mem & 1u)) tgpu_content_face_cells(cpu, &F[f], hqTable, mem & 1u, out->ca);
+    }
+    tsc_decode_faces(&src, lpFaces, nLpF, 8, lqTable, hqTable, texTblMode, 0, F);
+    for (int f = 0; f < nLpF; f++) {
+        const int lc = F[f].mat.blend ? tgpu_arena_of(&F[f].mat) : (int)OPTC_ARENA_LP;
+        out->full[lc] += 6u;
+        out->flat[lc] += 6u;
+    }
+    out->full[OPTC_ARENA_OPAQUE] += 30u * borHp + addv;
+    out->flat[OPTC_ARENA_OPAQUE] += 6u * borHp + addv;
+    out->full[OPTC_ARENA_LP] += 6u * borLp;
+    out->flat[OPTC_ARENA_LP] += 6u * borLp;
+}
+
+/** @brief Reads the bake's content bound for a sector table from the sector headers and faces.
+ *
+ * One pass over the table; tgpu_content_classes reads each sector's
+ * figures and tgpu_content_add accumulates them by the sector's list
+ * membership (env_anim_iter, listed members, vertex and colour lists).
+ * The plain bound is HP faces x 30 (the 6 flat vertices of
+ * tgpu_bake_hp_flat plus the HQ 2x2, 4 sub-quads x 2 triangles, of
+ * tgpu_bake_hq2) and LP faces x 6 (two triangles), per draw class. The
+ * near-cell bound is 8 records per HP face (2 halves x 4 classes), 12 where
+ * the game locates triangle cells, 0 on a game with no cell table; the
+ * anim-cell records are counted per face (tgpu_content_face_cells).
+ * The marked-edge split's records add 2 store units each in a plain
+ * sector, 4 in an anim sector (split_anim_units when it re-bakes every
+ * roll, else split_units).
  * @param cpu The guest CPU state.
  * @param sectorPtr The walk's sector table (extended).
  * @param sectorCnt The walk's sector count (extended), at most 1024.
  * @param guestCnt The scene's own sector count.
+ * @param lqTable The LQ Tiledef table.
+ * @param hqTable The HQ record table.
+ * @param texTblMode The texture-table mode the walk decodes with.
  * @param c Receives the bound. */
 static void tgpu_content(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt, uint32_t guestCnt,
+                         uint32_t lqTable, uint32_t hqTable, int texTblMode,
                          openpete_tercache_content* c) {
     memset(c, 0, sizeof(*c));
     static uint8_t member[1024];   /* 1 vertex list, 2 colour list */
@@ -10365,17 +10520,12 @@ static void tgpu_content(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt, 
     for (uint32_t q = 0; q < sectorCnt; q++) {
         const uint32_t s = rd(cpu, sectorPtr + q * 4u);
         if (!s) continue;
-        const uint32_t w3 = rd(cpu, s + 0x10), w4 = rd(cpu, s + 0x14);
-        uint64_t lpf = (w3 >> 16) & 0xFFu, hpf = (w4 >> 16) & 0xFFu;
-        const uint64_t lpc = (w3 >> 8) & 0xFFu, hpc = (w4 >> 8) & 0xFFu;
-        if (q < s_tsv.bor_n && q < guestCnt) { hpf += s_tsv.borHp[q]; lpf += s_tsv.borLp[q]; }
         const uint8_t mem = q < 1024u ? member[q] : 0u;
-        c->hp_v += 30u * hpf + tj_sector_addv(q);
-        c->lp_v += 6u * lpf;
-        c->cell_r += cellK * hpf;
+        tgpu_sec_cls v;
+        tgpu_content_classes(cpu, s, q, guestCnt, mem, lqTable, hqTable, texTblMode, &v);
+        tgpu_content_add(c, mem, &v, cellK);
         if (tgpu_content_rolls(mem)) c->split_anim_units += 4u * (uint64_t)tj_sector_recs(q);
         else c->split_units += (mem ? 4u : 2u) * (uint64_t)tj_sector_recs(q);
-        tgpu_content_anim(c, mem, hpf, lpf, lpc, hpc, cellK, tj_sector_addv(q));
         c->sectors++;
     }
 }
@@ -10443,7 +10593,7 @@ static void tgpu_table_watch(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
     tj_level_refresh(cpu, sectorPtr, n, lqTable, hqTable, texTblMode, sig);
     openpete_tercache_content c;
     if (edge) {
-        tgpu_content(cpu, sectorPtr, n, guestCnt, &c);
+        tgpu_content(cpu, sectorPtr, n, guestCnt, lqTable, hqTable, texTblMode, &c);
         openpete_tercache_set_content(lvl, &c);
         tgpu_level_edge(prev, lvl);
         s_sig = sig;
@@ -10463,7 +10613,7 @@ static void tgpu_table_watch(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
         else stale += tgpu_slot_bytes(T);
     }
     openpete_tercache_note_sig_change(stale);
-    tgpu_content(cpu, sectorPtr, n, guestCnt, &c);
+    tgpu_content(cpu, sectorPtr, n, guestCnt, lqTable, hqTable, texTblMode, &c);
     openpete_tercache_set_content(lvl, &c);
 }
 
@@ -14626,6 +14776,7 @@ static void tbk_note_bake(const tgpu_slot_t* T, const tscache_t* SC) {
     s_tbk[TBK_STATIC_TEX] += !poly && (bits & TBK_TRIG_TEX);
     s_tbk[TBK_ROLLVERT_ONLY] += (bits & ~(unsigned)(TBK_TRIG_ROLL | TBK_TRIG_VERT)) == 0;
 }
+
 
 /** @brief Prints one [tcf] line describing a slot about to re-bake, under OPENPETE_TC_DBG.
  * @param T The slot, not yet re-latched.

@@ -1224,27 +1224,44 @@ void openpete_tercache_note_bake(void);
  * bound from the sector headers alone; the cache turns it into one
  * capacity per arena. Those capacities size the arenas: the level-edge
  * replacement, growth and consolidation steps (init allocates the floor). */
+/* Draw classes of a vertex family: OPTC_ARENA_OPAQUE through OPTC_ARENA_LP,
+ * the offset of a class arena from its family base. */
+#define OPTC_CLASS_COUNT OPTC_ARENA_ANIM_BASE
 typedef struct {
-    /* Vertex bound of the plain bake over every sector of the table: HP
-     * faces x the HP face maximum, LP faces x the LP face maximum. */
-    uint64_t hp_v, lp_v;
+    /* Vertex bound of the plain bake over every sector of the table the
+     * animation lists do not name (those bake into the anim family), per
+     * draw class (OPTC_ARENA_OPAQUE .. OPTC_ARENA_LP): an HP face's 6 flat
+     * vertices go to its material's class and each of its 4 HQ 2x2
+     * quadrants' 6 to that quadrant tile's class; an LP face's 6 go to the
+     * LP class, or to its blend class when semi-transparent. */
+    uint64_t plain_v[OPTC_CLASS_COUNT];
     /* The same over the sectors the animation lists name, which bake into
      * the anim family: a poly-anim sector, and a colour-only sector whose
      * chunks read a colour table, at the plain costs; a colour-only sector
      * without a table at the flat costs (its HQ variants go to near chunks
      * alone). */
-    uint64_t anim_hp_v, anim_lp_v;
-    /* The share of anim_hp_v, anim_lp_v and anim_cell_r whose sectors
-     * re-bake on every roll: the poly-anim sectors, and the colour-only
-     * sectors without a colour table. A colour-table sector's roll rewrites
-     * the table and not its chunks. */
-    uint64_t roll_hp_v, roll_lp_v, roll_cell_r;
+    uint64_t anim_v[OPTC_CLASS_COUNT];
+    /* The share of anim_v whose sectors re-bake on every roll: the
+     * poly-anim sectors, the colour-only sectors without a colour table,
+     * and every member sector with a face on an animated tile (a texture
+     * swap or scroll steps its tile generation and re-bakes the sector). A
+     * colour-table sector's roll rewrites the table and not its chunks. */
+    uint64_t roll_v[OPTC_CLASS_COUNT];
+    /* The share of plain_v whose sectors re-bake when an animated tile
+     * steps: a sector with an HP face whose tile, or whose quad's HQ
+     * record, a texture swap or scroll descriptor names. */
+    uint64_t texroll_v[OPTC_CLASS_COUNT];
     /* The plain bound of the poly-anim sectors, whose near twins also
      * re-bake every roll (0 under OPENPETE_TERRAIN_ANIMNEAR=0). */
-    uint64_t animnear_hp_v, animnear_lp_v;
-    /* Cell-record bound: HP faces x the records one face can take, over
-     * every sector and over the anim sectors. */
-    uint64_t cell_r, anim_cell_r;
+    uint64_t animnear_v[OPTC_CLASS_COUNT];
+    /* Near-cell bound: HP faces x the records one face can take, over every
+     * sector. */
+    uint64_t cell_r;
+    /* Anim-cell records per HP draw class (OPTC_ARENA_OPAQUE .. SUB): the
+     * records the bake writes to the CA family under the texture mapping in
+     * force (tgpu_content_face_cells), and the share of them whose sectors
+     * re-bake on every roll or tile step. */
+    uint64_t ca_r[OPTC_CLASS_COUNT - 1], ca_roll_r[OPTC_CLASS_COUNT - 1];
     /* Previous-tick store units: one previous-corner record per HP and LP
      * face of each poly-anim sector, and the colour-table rings of the
      * colour-anim sectors (0 unless their near chunks read a table). */
@@ -1252,7 +1269,7 @@ typedef struct {
     /* The store units the marked-edge split's records take: split_units 2
      * per record of a plain sector and 4 per record of a roll-free anim
      * sector, split_anim_units 4 per record of an anim sector that re-bakes
-     * every roll. hp_v and anim_hp_v already count the vertices the split
+     * every roll. plain_v and anim_v already count the vertices the split
      * adds. */
     uint64_t split_units, split_anim_units;
     uint32_t sectors;                 /* table entries read */
@@ -1261,18 +1278,19 @@ typedef struct {
  *
  * Builder thread, before openpete_tercache_request_resize at a latch, and
  * at a same-id signature
- * change. The estimate per arena: the plain family's OPAQUE and LP arenas
- * take hp_v and lp_v; the anim family's OPAQUE, LP and cell arenas take
- * the anim figure plus the roll figure times (1 + the defer window in
- * builds), since a sector that re-bakes at every roll holds, besides its
- * live chunks, each replaced chunk deferred for the window, and a
- * roll-free sector holds its live chunks alone (the defer factor D is
- * 2 + the window); the near
- * family takes twice the plain figure (each face's near twin), the
- * poly-anim near twins counted once per copy the defer window holds,
- * times 2 / N for N the buffer cap, so N buffers hold twice that near
- * content; the near cells cell_r x 2 / N; every other arena, and any estimate below
- * it, the floor (16,384 vertices, 1,024 records on a cell arena). The
+ * change. The estimate per arena, each vertex family per draw class: a
+ * plain-family arena takes plain_v plus texroll_v times (1 + the defer
+ * window in builds); an anim-family arena takes anim_v plus roll_v times
+ * the same, since a sector that re-bakes at every roll or tile step holds,
+ * besides its live chunks, each replaced chunk deferred for the window,
+ * and a roll-free sector holds its live chunks alone (the defer factor D
+ * is 2 + the window); an anim-cell arena takes ca_r plus ca_roll_r times
+ * (D - 1); a near-family arena takes twice its class's plain and anim
+ * figures (each face's near twin), the poly-anim and tile-stepping near
+ * twins counted once per copy the defer window holds, times 2 / N for N
+ * the buffer cap, so N buffers hold twice that near content; the near
+ * cells cell_r x 2 / N; every other arena, and any estimate below it, the
+ * floor (16,384 vertices, 1,024 records on a cell arena). The
  * store's estimate is (prev_rec + split_anim_units) x the defer factor +
  * coltab_units + split_units. Prints the outgoing figures' `[tc-est]` census line when the level changes.
  * @param level_id The level the table belongs to.

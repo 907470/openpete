@@ -1582,12 +1582,13 @@ static uint64_t tc_arena_capacity(int arena)
  * Builder thread, from a chunk every buffer of the arena refused (@p demand
  * > 0) or from an allocation into the last buffer the allocator tries
  * (tc_newest_buf) that left it under 25% of its capacity allocatable
- * (tc_buf_room) (@p demand 0). A growth buffer holds max(demand, primary
- * size, the capacity of the arena's allocating buffers), the primary size
- * being tc_initial_cap (the arena's estimate, or OPENPETE_TC_INITIAL_CAP): each step doubles the arena, so tc_buf_max()
- * buffers hold 2^(tc_buf_max() - 1) primary sizes, and a primary size that
- * undercounts the content by up to that factor grows without a
- * consolidation. At that cap a refusal asks for a consolidation instead; the
+ * (tc_buf_room) (@p demand 0). A growth buffer takes the arena's capacity
+ * over its allocating buffers to max(primary size, 1.5 x that capacity),
+ * and holds at least @p demand, the primary size being tc_initial_cap (the
+ * arena's estimate, or OPENPETE_TC_INITIAL_CAP): from the primary size,
+ * tc_buf_max() buffers hold 1.5^(tc_buf_max() - 1) primary sizes, and a
+ * primary size that undercounts the content by up to that factor grows
+ * without a consolidation. At that cap a refusal asks for a consolidation instead; the
  * watermark asks for nothing. Dropped while a request is outstanding or a
  * refusal's backoff runs. Every request is logged with the newest buffer's
  * high-water mark, live count and room.
@@ -1608,10 +1609,13 @@ static void tc_request_grow(int arena, uint32_t demand)
         if (demand && !tc_request_consolidation(arena, demand)) tc_exhaust(arena, a->cons_why);
         return;
     }
-    uint32_t want = tc_initial_cap(arena, s_tc.est_have ? s_tc.est : NULL);
+    const uint64_t prim = tc_initial_cap(arena, s_tc.est_have ? s_tc.est : NULL);
     const uint64_t held = tc_arena_capacity(arena);
-    if (held > want) want = held > 0x7FFFFFFFu ? 0x7FFFFFFFu : (uint32_t)held;
-    if (demand > want) want = demand;
+    uint64_t step = held / 2u;                       /* to 1.5 x the capacity */
+    if (prim > held + step) step = prim - held;      /* or to the primary size */
+    if (demand > step) step = demand;
+    if (step == 0u) step = 1u;
+    const uint32_t want = step > 0x7FFFFFFFu ? 0x7FFFFFFFu : (uint32_t)step;
     const int nb = tc_newest_buf(arena);
     const tc_buf *top = nb >= 0 ? &a->buf[nb] : NULL;
     fprintf(stderr, "[ter-gpu] arena %d grow request: %s demand=%u want=%u buffers=%d "
@@ -2775,14 +2779,15 @@ void openpete_tercache_set_content(int level_id, const openpete_tercache_content
     const uint64_t D = 2u + TC_DEFER_PRESENTS, N = TC_BUF_MAX;
     uint64_t e[OPTC_ARENA_COUNT];
     memset(e, 0, sizeof e);
-    e[OPTC_ARENA_OPAQUE]    = c->hp_v;
-    e[OPTC_ARENA_LP]        = c->lp_v;
-    e[OPTC_ARENA_A_OPAQUE]  = c->anim_hp_v + (D - 1u) * c->roll_hp_v;
-    e[OPTC_ARENA_A_LP]      = c->anim_lp_v + (D - 1u) * c->roll_lp_v;
-    e[OPTC_ARENA_N_OPAQUE]  = 4u * (c->hp_v + (D - 1u) * c->animnear_hp_v) / N;
-    e[OPTC_ARENA_N_LP]      = 4u * (c->lp_v + (D - 1u) * c->animnear_lp_v) / N;
+    for (int k = 0; k < OPTC_CLASS_COUNT; k++) {
+        e[k] = c->plain_v[k] + (D - 1u) * c->texroll_v[k];
+        e[OPTC_ARENA_ANIM_BASE + k] = c->anim_v[k] + (D - 1u) * c->roll_v[k];
+        e[OPTC_ARENA_NEAR_BASE + k] = 4u * (c->plain_v[k] + c->anim_v[k]
+            + (D - 1u) * (c->animnear_v[k] + c->texroll_v[k])) / N;
+    }
+    for (int k = 0; k < OPTC_CLASS_COUNT - 1; k++)
+        e[OPTC_ARENA_CELL_ANIM_BASE + k] = c->ca_r[k] + (D - 1u) * c->ca_roll_r[k];
     e[OPTC_ARENA_CN_OPAQUE] = 2u * c->cell_r / N;
-    e[OPTC_ARENA_CA_OPAQUE] = c->anim_cell_r + (D - 1u) * c->roll_cell_r;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         const uint32_t f = tc_floor_cap(a), v = tc_est_sat(e[a]);
         s_tc.est[a] = v > f ? v : f;
