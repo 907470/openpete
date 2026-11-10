@@ -450,11 +450,12 @@ const game_layout_t spyro1_game_layout = {
      * class is in WAD.WAD entry 8 (g_WadHeader.m_PETE), the shared-model
      * file func_8005B7D8 loads at boot and on the title and installs into
      * g_Models[class]; the producer reads that entry. Glyphs span
-     * y -76..76. The game lights them with a dark back-colour plus a white
-     * directional term added on top: measured on the Artisans HUD, back
-     * colour (96,96,0) on unlit edges up to (214,214,118) at full facing, so
-     * the add is 118 on every channel and there is no highlight term. The
-     * period model sits at y 24..77, which the colon recentres. */
+     * y -76..76. The game's menu-text draw (func_80022A2C) lights them with
+     * the base word 0x0A006060: back colour (96,96,0) and IR0 = (word >> 23)
+     * & 0x1E = 20, so a unit light along a face normal of length 127 adds
+     * 20 * 127 / 16 * 255 / 256 = 158.1 on every channel; there is no
+     * highlight term. The period model sits at y 24..77, which the colon
+     * recentres. */
     .font = {
         .form        = GAME_FONT_CLASS_PER_GLYPH,
         .wad_entry   = 8,          /* g_WadHeader.m_PETE */
@@ -464,10 +465,11 @@ const game_layout_t spyro1_game_layout = {
                          {'^', 321, 0}, {'.', 327, 0}, {'\'', 76, 0} },
         .colon_recenter = -50.0f, .colon_spread = 44.0f, .colon_scale = 0.72f,
         .model_h     = 152.0f,
-        .light_add   = { 118.0f, 118.0f, 118.0f },
-        .hi_threshold = 2.0f, .hi_gain = 0.0f,      /* t <= 1: never opens */
+        .light_add   = { 158.1f, 158.1f, 158.1f },
+        .hi_threshold = 2.0f, .hi_gain = 0.0f,      /* gain 0: no highlight */
         .fixed_light = { -0.34f, 0.50f, 0.80f },    /* unit, front-dominant */
         .fixed_tint  = 0x606000u,
+        .menu_light_turns = 1,     /* SpecularUpdate's vector, func_80022A2C */
     },
     /* The credits letter roll (func_credits_8007BFD0): while g_Gamestate
      * (0x800757D8) is GS_Credits and g_CreditsStage (0x80075704) is below 99,

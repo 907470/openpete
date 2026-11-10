@@ -101,12 +101,11 @@ typedef struct {
  * The scale is the one at which the glyphs' unyawed widths plus a gap after
  * each but the last span fit->width, and each glyph's left edge follows the
  * previous one's by its width and the gap; the cap height is that scale
- * times the font's model_h. Each glyph is posed and lit by the function the
- * producer's emission uses: the per-glyph wobble at fit->tick, lit as Spyro
- * 2's and Spyro 3's performance readout (GAME_FONT_CREDITS_LIGHT: those
- * fonts' light terms and highlight under their fixed light, unsigned N.L,
- * their base colour) whichever game's glyphs the set holds, so the wobble
- * sweeps each glyph's faces through the highlight. A character that is no letter or
+ * times the font's model_h. Each glyph is posed and lit by the functions the
+ * settings menu uses: the per-glyph wobble at fit->tick, the font's fixed_tint
+ * and light terms under the light the font's game draws its menu text with at
+ * phase fit->tick (glyph_light_menu: Spyro 1's turning vector with signed
+ * shading, Spyro 2's and Spyro 3's fixed light). A character that is no letter or
  * digit, or whose glyph the set lacks, is skipped without an advance. Reads
  * no global state.
  * @param G The glyph set.

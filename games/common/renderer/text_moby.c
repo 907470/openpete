@@ -95,19 +95,20 @@ static float txt_depth_vz(float d)
  * ≈ ±0.589 rad. Phase advances 8/frame, +12 per letter (a ripple along the row). */
 #define TXT_WOBBLE_AMP 0.589f
 
-/* Glyph lighting direction is per-emission so the FPS counter keeps its
- * fixed front light while the settings menu and the OSD use a rotating
- * specular light (the metallic shimmer); the launcher's title keeps the fixed
- * light of Spyro 2's and Spyro 3's credits font. glyph_pose dots the
- * face normal with this unit vector. text_moby_native_emit installs the fixed
- * model; the menu and OSD builders install the rotating ellipse.
+/* Glyph lighting direction is per-emission: the FPS counter keeps the font's
+ * fixed front light, and the settings menu, the OSD and the launcher's title
+ * take the light the font's game draws its menu text with (glyph_light_menu).
+ * glyph_pose dots the face normal, its y scaled by ny_scale, with dir.
  *
- * signed_nl: 0 (FPS) = add-only, faces range base..base+add. 1 (menu/OSD) =
- * signed - faces turned away darken below base, giving metal contrast. */
+ * signed_nl: 0 (fixed light) = N.L clamped to 0..1, faces range
+ * base..base+add. 1 (turning light) = N.L unclamped, as the GTE's colour
+ * chain takes it: faces turned away darken below base, and the channels
+ * clamp at 0 and 255. */
 typedef struct {
     float add[3];               /* the font's light_add                 */
     float hi_threshold, hi_gain;/* the font's highlight terms           */
-    float dir[3];               /* unit light direction (N.L)           */
+    float dir[3];               /* light direction; unit for the fixed light */
+    float ny_scale;             /* the normal's y factor before the dot */
     int   signed_nl;            /* see the note above                   */
 } glyph_light_t;
 
@@ -724,14 +725,15 @@ static void glyph_light_init(glyph_light_t* lt, const struct game_font* font) {
     }
     lt->hi_threshold = font->hi_threshold;
     lt->hi_gain = font->hi_gain;
+    lt->ny_scale = 1.0f;
     lt->signed_nl = 0;
 }
 
 /** @brief Starts an emission into a vertex buffer, lit by the font's fixed front light.
  *
  * Counters are zeroed and the light is FONT.fixed_light with unsigned N.L
- * shading. Callers wanting the rotating specular install it afterwards
- * (install_specular_light).
+ * shading. Callers wanting the game's menu-text light install it afterwards
+ * (glyph_light_menu).
  * @param cx The emission context.
  * @param out The vertex buffer, or NULL to emit nothing.
  * @param cap The buffer's capacity, in vertices. */
@@ -810,8 +812,9 @@ typedef struct {
  * turns left and right in place; yaw 0 leaves it front-facing. Vertex i
  * lands at (cursor_x + (x - xmin) * scale, center_y + y * scale) with its
  * view-Z on the depth band (front nearer). Face f's colour is lit_colour of
- * the base against N.L, the yawed normal dotted with the light, clamped to
- * -1..1 for signed shading and 0..1 otherwise. Reads only its arguments, so
+ * the base against N.L, the yawed normal (its y times lt->ny_scale) dotted
+ * with the light over the normal's length, unclamped for signed shading and
+ * clamped to 0..1 otherwise. Reads only its arguments, so
  * the settings menu, the OSD, the readout and the launcher's title share it.
  * @param g The glyph's geometry.
  * @param lt The font's light terms and the light.
@@ -859,9 +862,8 @@ static int glyph_pose(const glyph_cache_t* g, const glyph_light_t* lt, int wob_t
         float nx = nx0 * cs + nz0 * sn;                    /* yaw the normal with the glyph */
         float nz = -nx0 * sn + nz0 * cs;
         float nl = sqrtf(nx * nx + ny * ny + nz * nz); if (nl < 1e-3f) nl = 1.0f;
-        float t = (nx * lt->dir[0] + ny * lt->dir[1] + nz * lt->dir[2]) / nl; /* N·L (unit L) */
-        if (lt->signed_nl) { if (t >  1.0f) t =  1.0f; else if (t < -1.0f) t = -1.0f; }
-        else               { if (t <  0.0f) t =  0.0f; else if (t >  1.0f) t =  1.0f; }
+        float t = (nx * lt->dir[0] + ny * lt->ny_scale * lt->dir[1] + nz * lt->dir[2]) / nl;
+        if (!lt->signed_nl) { if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f; }
         frgba[f] = lit_colour(lt, baseR, baseG, baseB, t);
     }
     return vcount;
@@ -1197,32 +1199,37 @@ void text_moby_native_layers_tick(void) {
     text_moby_native_version();
 }
 
-/** @brief Writes SpecularUpdate's rotating light direction at a phase: (cos a * 0.968, sin a * 1.549, -0.25) normalized, a = 3 * phase / 256 turn.
+/** @brief Fills a light with a font's colour terms under the light its game's 3D menu text is drawn with at a phase.
  *
- * Reads only its arguments.
- * @param phase The phase, in game ticks.
- * @param dir Receives the unit direction. */
-static void glyph_specular_dir(unsigned phase, float dir[3]) {
-    const unsigned sp = (phase * 3u) & 0xFFu;
-    const float sth = (float)sp * (6.2831853f / 256.0f);
-    float Lx = cosf(sth) * 0.968f;   /* COSINE_8 * 1983 >> 11 */
-    float Ly = sinf(sth) * 1.549f;   /* SINE_8   * 6345 >> 12 */
-    float Lz = -0.25f;               /* -1024 / 4096 (small fixed into-screen) */
-    float Ll = sqrtf(Lx*Lx + Ly*Ly + Lz*Lz); if (Ll < 1e-3f) Ll = 1.0f;
-    dir[0] = Lx/Ll; dir[1] = Ly/Ll; dir[2] = Lz/Ll;
-}
-
-/** @brief Installs SpecularUpdate's rotating light as the emission's light, with signed shading.
+ * A font whose game draws its text under a fixed light (menu_light_turns
+ * zero: the Spyro 2 and Spyro 3 static draw loads one constant vector into
+ * the light colour matrix) keeps the font's fixed_light with N.L clamped to
+ * 0..1, as glyph_light_init sets it, and the phase is unused.
  *
- * The light direction is (cos a * 0.968, sin a * 1.549, -0.25) normalized,
- * a = 3 * phase / 256 turn: the ellipse of SpecularUpdate(3), which steps
- * its angle by 3 per game tick. Signed shading darkens faces turned away
- * from the light below the base colour.
- * @param cx The emission context.
- * @param phase The shimmer phase (text_moby_native_shimmer_phase). */
-static void install_specular_light(emit_ctx_t* cx, unsigned phase) {
-    glyph_specular_dir(phase, cx->lt.dir);
-    cx->lt.signed_nl = 1;   /* metal contrast: shadowed faces darken below base */
+ * A font whose game turns the light (menu_light_turns nonzero) takes
+ * SpecularUpdate's vector, not normalized: x = COSINE_8(a) * 1983 >> 11,
+ * y = SINE_8(a) * 6345 >> 12, z = -1024, over 4096, with a = 3 * phase (mod
+ * 256) of a 256-step turn, the game's step of 3 per tick. The menu-text draw
+ * (Spyro 1 func_80022A2C) loads that vector into every row of the light
+ * colour matrix, so each channel adds light_add times the dot of the vector
+ * with the face normal as the text's billboard matrix (rows 4096, 2560, 4096)
+ * turns it: the normal's y is scaled by 2560 / 4096. The dot is signed and
+ * unclamped; the channel clamps at 0 and 255. The game's camera looks along
+ * view +z, so the cap it draws has a view normal toward -z; glyph_pose draws
+ * the +z cap nearer, so the producer's z is the view's negated and the
+ * light's z term enters as +1024.
+ * @param lt The light.
+ * @param font The font descriptor: its light terms and menu_light_turns.
+ * @param phase The phase, in game ticks. */
+static void glyph_light_menu(glyph_light_t* lt, const struct game_font* font, unsigned phase) {
+    glyph_light_init(lt, font);
+    if (!font->menu_light_turns) return;
+    const float a = (float)((phase * 3u) & 0xFFu) * (6.2831853f / 256.0f);
+    lt->dir[0] = cosf(a) * (1983.0f / 2048.0f);
+    lt->dir[1] = sinf(a) * (6345.0f / 4096.0f);
+    lt->dir[2] = 1024.0f / 4096.0f;
+    lt->ny_scale = 2560.0f / 4096.0f;
+    lt->signed_nl = 1;
 }
 
 /** @brief Prints the FNV-1a hash of a published vertex buffer to stderr, under OPENPETE_TEXT_GLYPH_CENSUS=2 or above.
@@ -1263,12 +1270,9 @@ static void glyph_hash_probe(void) {
 
 /* ---- in-game settings menu text (labels / values / title) --------------- */
 #define MENU_TXT_MAX    OPENPETE_MENU_GLYPH_MAX
-/* Mid-tone gold BASE - the signed light swings faces both ways around it (lit ->
- * white-gold, shadowed -> dark), so base is the average, not the floor. The game's
- * HUD/menu gold is R==G with a low B (measured (96,96,0)->(214,214,118)); R>G is
- * what read as ORANGE, so keep R==G. The uniform white light add preserves R==G. */
-#define MENU_TXT_TINT   0x96962Au   /* mid yellow-gold (R150,G150,B42) */
-#define MENU_TITLE_TINT 0xB4B43Eu   /* brighter for the title (R180,G180,B62) */
+/* The menu text's base colour is the font's fixed_tint, the base colour of
+ * the game's 3D text draw (Spyro 1 0x606000, Spyro 2 and 3 0x404000), lit by
+ * glyph_light_menu. */
 
 static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
 
@@ -1426,7 +1430,7 @@ static float measure_string(const char* str, float cap_h) {
 static void menu_close_anchor(emit_ctx_t* cx, int v0,
                               const openpete_menu_layout_t* L, int wob_phase) {
     emit_string(cx, "X", L->close_x, L->close_y, L->close_cap_h,
-                MENU_TXT_TINT, -1);
+                FONT.fixed_tint, -1);
     if (cx->n <= v0) return;
     float x0 = cx->out[v0].x, x1 = x0;
     float y0 = cx->out[v0].y, y1 = y0;
@@ -1441,7 +1445,7 @@ static void menu_close_anchor(emit_ctx_t* cx, int v0,
     if (wob_phase >= 0) {
         cx->n = v0;
         emit_string(cx, "X", L->close_x + dx, L->close_y, L->close_cap_h,
-                    MENU_TXT_TINT, wob_phase);
+                    FONT.fixed_tint, wob_phase);
     } else {
         for (int i = v0; i < cx->n; i++) cx->out[i].x += dx;
     }
@@ -1503,13 +1507,13 @@ void text_moby_native_menu(void) {
      * outgrows the buffer loses its own tail and never the frame. */
     emit_ctx_init(&cx, s_menu_buf, MENU_TXT_MAX - MENU_BORDER_VERTS);
 
-    install_specular_light(&cx, text_moby_native_shimmer_phase());
+    glyph_light_menu(&cx.lt, &FONT, text_moby_native_shimmer_phase());
 
     /* Pause-menu alignment: title centred; labels RIGHT-aligned to L.label_x;
      * values LEFT-aligned at L.value_x (the two columns meet at a central split). */
     const float pcx = 0.5f * (L.panel_x0 + L.panel_x1);   /* panel centre x */
     emit_centred(&cx, openpete_menu_title(), pcx, L.title_y, L.title_cap_h,
-                 MENU_TITLE_TINT, -1);
+                 FONT.fixed_tint, -1);
     /* Uniform row font: shrink EVERY row (labels + values; the SETTINGS title
      * keeps its own cap) to the size the widest value needs to fit its column
      * - "FULLSCREEN" - so no single row reads smaller than its neighbours.
@@ -1532,24 +1536,24 @@ void text_moby_native_menu(void) {
          * missing. Shrunk if the armed text outgrows the panel width. */
         if (openpete_menu_row_centered(r)) {
             emit_centred(&cx, label, pcx, L.row_y[r],
-                         fit_cap(label, row_cap, cavail), MENU_TXT_TINT, wob);
+                         fit_cap(label, row_cap, cavail), FONT.fixed_tint, wob);
             continue;
         }
         const float lw = measure_string(label, row_cap);
         emit_string(&cx, label, L.label_x - lw,
-                    L.row_y[r] - row_cap * 0.5f, row_cap, MENU_TXT_TINT, wob);
+                    L.row_y[r] - row_cap * 0.5f, row_cap, FONT.fixed_tint, wob);
         /* Safety net for any future value wider than the reference: shrink
          * that one value further so it still ends before the panel border. */
         const char* value = openpete_menu_row_value(r, vb, sizeof vb);
         const float vcap = fit_cap(value, row_cap, vavail);
         emit_string(&cx, value, L.value_x, L.row_y[r] - vcap * 0.5f, vcap,
-                    MENU_TXT_TINT, wob);
+                    FONT.fixed_tint, wob);
     }
     /* Hint line: what the cursor row changes, centred, shrunk to the panel
      * width, without the wobble so it reads as a caption of the row. */
     const char* hint = openpete_menu_row_hint(cursor);
     emit_centred(&cx, hint, pcx, L.hint_y, fit_cap(hint, L.hint_cap_h, cavail),
-                 MENU_TXT_TINT, -1);
+                 FONT.fixed_tint, -1);
     /* Close glyph: not a row, so the keyboard cursor never reaches it; the
      * pointer resting on it wobbles it like the row under the cursor. */
     menu_close_anchor(&cx, cx.n, &L,
@@ -1810,7 +1814,7 @@ void text_moby_native_osd(void) {
 
     emit_ctx_t cx;
     emit_ctx_init(&cx, s_osd_buf, OPENPETE_OSD_GLYPH_MAX);
-    install_specular_light(&cx, text_moby_native_shimmer_phase());
+    glyph_light_menu(&cx.lt, &FONT, text_moby_native_shimmer_phase());
 
     openpete_osd_slot_t slots[OPENPETE_OSD_MAX];
     int ns = 0;
@@ -1853,11 +1857,6 @@ void text_moby_native_osd(void) {
 }
 
 /* ---- a fitted title from a glyph set read from the launcher cache ------- */
-
-/* The title's light: the credits font's terms of Spyro 2 and Spyro 3 under
- * their fixed light with unsigned N.L, on their base colour, as the
- * performance readout draws in those games (text_moby_native_emit). */
-static const struct game_font k_title_light = { GAME_FONT_CREDITS_LIGHT };
 
 /** @brief Maps a letter or digit to its glyph slot, independent of any font's punctuation list.
  *
@@ -1934,7 +1933,7 @@ int text_glyph_set_emit_title(const text_glyph_set* G, const struct game_font* f
     memset(&cx, 0, sizeof cx);
     cx.out = out;
     cx.cap = cap;
-    glyph_light_init(&cx.lt, &k_title_light);
+    glyph_light_menu(&cx.lt, font, fit->tick > 0 ? (unsigned)fit->tick : 0u);
     float cursor = fit->x0;
     int gi = 0;
     for (const char* c = str; *c; c++) {
@@ -1942,7 +1941,7 @@ int text_glyph_set_emit_title(const text_glyph_set* G, const struct game_font* f
         if (slot < 0) continue;
         const glyph_cache_t* g = &G->glyph[slot];
         const glyph_place_t at = { cursor, fit->cy, scale, 0.0f };
-        const int vcount = glyph_pose(g, &cx.lt, fit->tick, gi, &at, k_title_light.fixed_tint, cx.gx, cx.gy, cx.gz, cx.frgba);
+        const int vcount = glyph_pose(g, &cx.lt, fit->tick, gi, &at, font->fixed_tint, cx.gx, cx.gy, cx.gz, cx.frgba);
         if (posed && gi < posed_cap) title_posed(&cx, g, vcount, &posed[gi]);
         push_glyph(&cx, g, vcount);
         cursor += (float)(g->vxmax - g->vxmin) * scale + fit->gap;

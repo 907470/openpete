@@ -1292,7 +1292,11 @@ typedef struct game_layout {
      * `light_add` * t + max(0, t - `hi_threshold`) * `hi_gain`, t the unit
      * N.L. `fixed_light` is the unit light of the performance readout (x
      * right, y down, z toward the reader) and `fixed_tint` its 0xRRGGBB
-     * base colour. */
+     * base colour. `menu_light_turns` is nonzero when the game lights its
+     * 3D menu text with SpecularUpdate's turning vector (Spyro 1
+     * func_80022A2C); zero when its text draw loads a fixed light (Spyro 2
+     * func_80046FD8, Spyro 3 func_80033C5C), so the settings menu and the
+     * launcher's title keep `fixed_light`. */
     struct game_font {
         int      form;
         int      wad_entry, wad_subfile;
@@ -1305,6 +1309,7 @@ typedef struct game_layout {
         float    hi_threshold, hi_gain;
         float    fixed_light[3];
         unsigned fixed_tint;
+        int      menu_light_turns;
     } font;
 
     /* The credits letter roll (renderer/credits_key.h): `gamestate` is the
@@ -1468,9 +1473,7 @@ typedef struct game_layout {
 /* The light terms of Spyro 2's and Spyro 3's credits font, as designated
  * initializers of struct game_font: light_add (92, 92, 0), the highlight
  * opening at N.L 0.6256 with gain 1176.5, the draw's fixed light and the
- * base (64, 64, 0). Both layouts initialize their font with it, and the
- * launcher's title lights every game's glyph models with it
- * (text_glyph_set_emit_title). */
+ * base (64, 64, 0). Both layouts initialize their font with it. */
 #define GAME_FONT_CREDITS_LIGHT                                   \
     .light_add    = { 92.0f, 92.0f, 0.0f },                       \
     .hi_threshold = 0.6256f, .hi_gain = 1176.5f,                  \

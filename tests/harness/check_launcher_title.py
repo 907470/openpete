@@ -17,11 +17,14 @@ Cases:
             Per preset: the manifest's title.moby rect against the reference layout's within
             1 px on every edge, and no pixel title; in the shot, the rect holds drawn pixels and
             no pixel of the pixel title's orange. At 1280x800 the dump is checked against a model
-            of the emitter written here from glyphs.txt, the font's model height in
-            games/spyro-1/renderer/layout.c and the title's light, GAME_FONT_CREDITS_LIGHT in
-            core/include/game_layout.h (the layout, the wobble yaw, the fixed light with unsigned
-            N.L and the lit colour of each glyph's front face): each glyph's posed rect within
-            RECT_TOL px and its front face colour within COLOUR_TOL per channel; a second run
+            of the emitter written here from glyphs.txt and the font block of
+            games/spyro-1/renderer/layout.c (its model height, light_add, highlight terms and
+            fixed_tint, and menu_light_turns, which the row must set; the layout, the wobble
+            yaw, the game's turning menu light at the tick with signed N.L, and the lit colour
+            of each glyph's front face): each glyph's posed
+            rect within RECT_TOL px and its front face colour within COLOUR_TOL per channel. A
+            run at TICK2, the same wobble phase at another light phase, gives the same rects,
+            front face colours that differ from TICK's, and matches the model too. A second run
             of the same build writes an identical dump (the tolerance's calibration: the
             emitter is deterministic, so the bound covers only the model's double precision
             against the emitter's float).
@@ -49,6 +52,9 @@ import check_launcher_flow as fl  # noqa: E402
 
 ROOT = cl.ROOT
 TICK = 37
+# The wobble steps 8 of 256 per tick (period 32 ticks) and the light 3 of 256: TICK2 poses every
+# glyph as TICK does under a light 96/256 of a turn further on.
+TICK2 = TICK + 32
 # A posed glyph's rect edge against the model's, in pixels: float32 vertices of magnitude up to
 # ~2600 px carry ~2e-4 px of rounding; the bound is fifty times that.
 RECT_TOL = 0.01
@@ -78,22 +84,29 @@ def reference_title(preset):
 
 
 def font_terms(game):
-    """A game font's model height (its layout.c) and the title's light (GAME_FONT_CREDITS_LIGHT in game_layout.h):
-    (model_h, light_add, hi_threshold, hi_gain, fixed_light, base)."""
+    """A game font's terms from the font block of its layout.c:
+    (model_h, light_add, hi_threshold, hi_gain, base, fixed_light, menu_light_turns)."""
     num = r"(-?[\d.]+)f?"
     vec = r"\{\s*" + num + r",\s*" + num + r",\s*" + num
     with open(os.path.join(ROOT, "games", game, "renderer", "layout.c")) as f:
         src = f.read()
-    model_h = float(re.search(r"\.model_h\s*=\s*" + num, src[src.index(".font = {"):]).group(1))
-    with open(os.path.join(ROOT, "core", "include", "game_layout.h")) as f:
-        src = f.read()
-    blk = src[src.index("#define GAME_FONT_CREDITS_LIGHT"):]
+    blk = src[src.index(".font = {"):]
+    model_h = float(re.search(r"\.model_h\s*=\s*" + num, blk).group(1))
     add = [float(x) for x in re.search(r"\.light_add\s*=\s*" + vec, blk).groups()]
     hi_t = float(re.search(r"\.hi_threshold\s*=\s*" + num, blk).group(1))
     hi_g = float(re.search(r"\.hi_gain\s*=\s*" + num, blk).group(1))
-    light = tuple(float(x) for x in re.search(r"\.fixed_light\s*=\s*" + vec, blk).groups())
     tint = int(re.search(r"\.fixed_tint\s*=\s*0x([0-9A-Fa-f]+)", blk).group(1), 16)
-    return model_h, add, hi_t, hi_g, light, ((tint >> 16) & 0xFF, (tint >> 8) & 0xFF, tint & 0xFF)
+    fixed = tuple(float(x) for x in re.search(r"\.fixed_light\s*=\s*" + vec, blk).groups())
+    turns = re.search(r"\.menu_light_turns\s*=\s*([0-9]+)", blk[:blk.index("\n    },")])
+    return (model_h, add, hi_t, hi_g, ((tint >> 16) & 0xFF, (tint >> 8) & 0xFF, tint & 0xFF), fixed,
+            bool(turns and int(turns.group(1))))
+
+
+def turning_light(tick):
+    """The game's turning menu light at a tick in the emitter's frame: SpecularUpdate's vector over 4096,
+    the angle 3/256 of a turn per tick, z mirrored to +1024 (glyph_light_menu)."""
+    a = ((tick * 3) & 0xFF) * (2 * math.pi / 256)
+    return (math.cos(a) * 1983 / 2048, math.sin(a) * 6345 / 4096, 0.25)
 
 
 def read_glyphs(path):
@@ -116,11 +129,12 @@ def read_glyphs(path):
 
 def model_title(glyphs, terms, dump):
     """The emitter's title as modelled here: per glyph (rect, front face, (r, g, b))."""
-    model_h, add, hi_t, hi_g, light, base = terms
+    model_h, add, hi_t, hi_g, base, fixed, turns = terms
     slots = [10 + ord(c) - ord("A") for c in TITLE]
     widths = [max(v[0] for v in glyphs[s][0]) - min(v[0] for v in glyphs[s][0]) for s in slots]
     scale = (dump["width"] - (len(slots) - 1) * dump["gap"]) / sum(widths)
     tick = dump["tick"]
+    light = turning_light(tick) if turns else fixed
     cursor, out = dump["x0"], []
     for gi, s in enumerate(slots):
         verts, faces = glyphs[s]
@@ -141,7 +155,10 @@ def model_title(glyphs, terms, dump):
         nx0, ny, nz0 = faces[best][1]
         nx, nz = nx0 * cs + nz0 * sn, -nx0 * sn + nz0 * cs
         nl = math.sqrt(nx * nx + ny * ny + nz * nz)
-        t = max(0.0, min(1.0, (nx * light[0] + ny * light[1] + nz * light[2]) / nl))
+        if turns:
+            t = (nx * light[0] + ny * 0.625 * light[1] + nz * light[2]) / nl
+        else:
+            t = max(0.0, min(1.0, (nx * light[0] + ny * light[1] + nz * light[2]) / nl))
         hi = int((t - hi_t) * hi_g) if t > hi_t else 0
         rgb = tuple(max(0, min(255, base[c] + int(add[c] * t) + hi)) for c in range(3))
         out.append(((min(xs), min(ys), max(xs), max(ys)), best, rgb))
@@ -183,7 +200,7 @@ def shot_title(png, rect):
     return drawn, orange
 
 
-def title_run(a, d, tag, preset, extra=None):
+def title_run(a, d, tag, preset, extra=None, tick=TICK):
     """One windowed launch over the case's library at a preset with the title's tick pinned; returns (rc, log, manifest, dump, shot)."""
     base = os.path.join(d, tag)
     dump = base + ".title.json"
@@ -191,7 +208,7 @@ def title_run(a, d, tag, preset, extra=None):
         if os.path.exists(p):
             os.remove(p)
     env = {"OPENPETE_LAUNCHER_MANIFEST": base, "OPENPETE_LAUNCHER_SHOT": base,
-           "OPENPETE_LAUNCHER_TITLE_TICK": str(TICK), "OPENPETE_LAUNCHER_TITLE_DUMP": dump,
+           "OPENPETE_LAUNCHER_TITLE_TICK": str(tick), "OPENPETE_LAUNCHER_TITLE_DUMP": dump,
            "OPENPETE_LAUNCHER_INPUT": "2500:quit"}
     env.update(extra or {})
     rc, log = cl.launch(a.binary, d, tag, ["--launcher-window", preset], env, timeout=300)
@@ -209,6 +226,8 @@ def case_title_cache(a):
     shutil.rmtree(os.path.join(e, "modules"), ignore_errors=True)
     bad, rows = [], []
     glyphs, terms = read_glyphs(glyphs_txt), font_terms("spyro-1")
+    if not terms[6]:
+        return fl.verdict("title-cache", ["spyro-1's font row does not set menu_light_turns"])
     for preset in cl.PRESETS:
         rc, log, man, dump, png = title_run(a, d, "p-" + preset, preset)
         tag = preset
@@ -246,11 +265,23 @@ def case_title_cache(a):
                 continue
             mb, dr, dc = check_model(dump, glyphs, terms)
             bad += [f"{tag}: {x}" for x in mb]
+            _, _, _, dump3, _ = title_run(a, d, "turn-" + preset, preset, tick=TICK2)
+            if not dump3:
+                bad.append(f"{tag}: no title dump at tick {TICK2}")
+            else:
+                mb3, dr3, dc3 = check_model(dump3, glyphs, terms)
+                bad += [f"{tag} tick {TICK2}: {x}" for x in mb3]
+                dr, dc = max(dr, dr3), max(dc, dc3)
+                if [g["rect"] for g in dump3["glyphs"]] != [g["rect"] for g in dump["glyphs"]]:
+                    bad.append(f"{tag}: ticks {TICK} and {TICK2} pose the glyphs differently")
+                same = sum(g3["rgba"] == g["rgba"] for g3, g in zip(dump3["glyphs"], dump["glyphs"]))
+                if same:
+                    bad.append(f"{tag}: {same} front faces keep their colour from tick {TICK} to {TICK2}")
             _, _, _, dump2, _ = title_run(a, d, "again-" + preset, preset)
             if dump2 != dump:
                 bad.append(f"{tag}: a second run's dump differs")
             rows.append(f"model: {len(dump['glyphs'])} glyphs, rect dev {dr:.5f} px, colour dev {dc}, "
-                        f"cap {dump['cap']:.2f} px, {dump['verts']} vertices, tick {dump['tick']}")
+                        f"cap {dump['cap']:.2f} px, {dump['verts']} vertices, ticks {dump['tick']} and {TICK2}")
     for r in rows:
         print(f"[launcher-title] {r}")
     return fl.verdict("title-cache", bad)
