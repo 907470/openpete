@@ -87,6 +87,20 @@ endif()
 set_target_properties(line_quad_test PROPERTIES C_STANDARD 99)
 add_test(NAME line_quad_test COMMAND line_quad_test)
 
+# live_latch_test - header-only. A setting latched once per present reads one
+# value through the present while another thread keeps setting it; the
+# pre-latch read pattern is the negative control. POSIX threads, so not
+# built for Windows.
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    add_executable(live_latch_test live_latch_test.c)
+    target_include_directories(live_latch_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include)
+    set_target_properties(live_latch_test PROPERTIES C_STANDARD 11)
+    target_link_libraries(live_latch_test PRIVATE Threads::Threads)
+    add_test(NAME live_latch_test COMMAND live_latch_test)
+endif()
+
 # openpete_time_test - verifies the high-resolution monotonic clock +
 # hybrid sleep+spin waiter.
 # Compiles openpete_time.c directly to stay SDL-free. The Win32 path

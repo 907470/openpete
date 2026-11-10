@@ -48,6 +48,7 @@
 #include "openpete_record.h" /* native --record capture seam */
 #include "openpete_bugthumbs.h" /* bug-report thumbnail ring */
 #include "openpete_view_rect.h" /* the view layout and its pixel rect */
+#include "openpete_live_latch.h" /* live settings latched once per present */
 #include "rhi.h"
 #include "launcher_title_pass.h" /* the launcher's 3D title */
 #include "launcher_shape_pass.h" /* the launcher's panels, chips and bar */
@@ -1909,6 +1910,15 @@ static int s_cur_presnap = 0;
  * hardware rasterizer produced. */
 static int s_raster_mult = 0;
 static int s_dither = 0;       /* --dither: PS1 15-bit colour + 4x4 hardware dither (engine SCENE pass) */
+/* The live setters' wanted values of the present-read settings, latched into
+ * s_raster_mult, s_dither, s_nr.ssaa, s_nr.aspect_wh, s_perf_stats and the
+ * device's vsync preference by present_knobs_latch (openpete_live_latch.h). */
+static _Atomic(int) s_raster_mult_want = OP_LIVE_NONE;
+static _Atomic(int) s_dither_want      = OP_LIVE_NONE;
+static _Atomic(int) s_ssaa_want        = OP_LIVE_NONE;
+static _Atomic(int) s_aspect_want      = OP_LIVE_NONE;   /* float bits */
+static _Atomic(int) s_perf_stats_want  = OP_LIVE_NONE;
+static _Atomic(int) s_vsync_want       = OP_LIVE_NONE;
 static int s_hide_player = 0;  /* --hide-player: the feeders drop the player's draws */
 static int s_hide_hud = 0;     /* --hide-hud: the compose skips the HUD layers */
 static uint32_t s_hide_hud_layers;  /* HUD layer draws skipped under --hide-hud */
@@ -1935,6 +1945,11 @@ static int s_notex_pending  = 0;
 static int s_texmap_pending = 0;
 static int s_wireframe         = 0;   /* line-mode scene pipelines + NOTEX colour */
 static int s_wireframe_pending = 0;
+/* The setters' wanted values of the three queued fields above, latched into
+ * the *_pending fields by present_knobs_latch. */
+static _Atomic(int) s_texmap_want    = OP_LIVE_NONE;
+static _Atomic(int) s_notex_want     = OP_LIVE_NONE;
+static _Atomic(int) s_wireframe_want = OP_LIVE_NONE;
 
 /** @brief Return whether a draw layer takes the PSX integer-grid vertex snap of --vertex-precision integer.
  *
@@ -17985,15 +18000,15 @@ void openpete_native_set_fps_in_record(int pref) {
 void openpete_native_set_perf_stats(int level) {
     if (level < OPENPETE_PERF_OFF) level = OPENPETE_PERF_OFF;
     if (level >= OPENPETE_PERF_LEVELS) level = OPENPETE_PERF_LEVELS - 1;
-    s_perf_stats = level;
+    op_live_set(&s_perf_stats_want, level);
     if (level != OPENPETE_PERF_OFF) s_perf_stats_last = level;
 }
-int  openpete_native_perf_stats_level(void) { return s_perf_stats; }
+int  openpete_native_perf_stats_level(void) { return op_live_wanted(&s_perf_stats_want, s_perf_stats); }
 
 void openpete_native_set_fps_overlay(int on) {
     openpete_native_set_perf_stats(on ? s_perf_stats_last : OPENPETE_PERF_OFF);
 }
-int  openpete_native_fps_overlay_enabled(void) { return s_perf_stats != OPENPETE_PERF_OFF; }
+int  openpete_native_fps_overlay_enabled(void) { return openpete_native_perf_stats_level() != OPENPETE_PERF_OFF; }
 int  openpete_native_fps_value(void)
 {
     /* A headless run makes no presents to count; it composes one scene per
@@ -18066,7 +18081,8 @@ double openpete_native_fov_horizontal_deg(double H_canon, double y_row) {
 }
 
 void openpete_native_set_aspect(float w_over_h) {
-    s_nr.aspect_wh = (w_over_h > 0.0f) ? w_over_h : 0.0f;
+    const float wh = (w_over_h > 0.0f) ? w_over_h : 0.0f;
+    op_live_set_f(&s_aspect_want, wh);
     /* Fixed aspect picked live (O menu): resize the window width to match,
      * like --aspect does at launch - the render rect then fills the window
      * exactly, no bars. Skipped when fullscreen (can't resize - the fixed
@@ -18076,9 +18092,9 @@ void openpete_native_set_aspect(float w_over_h) {
      * target window shape is rect = wf × ref shape - the same rect
      * update_layout fits, making the fit exact. Logical window units on both
      * sides of the resize so HiDPI scales cancel. */
-    if (s_nr.aspect_wh > 0.0f && s_nr.window &&
+    if (wh > 0.0f && s_nr.window &&
         !(SDL_GetWindowFlags(s_nr.window) & SDL_WINDOW_FULLSCREEN)) {
-        float wf = s_nr.aspect_wh / (4.0f / 3.0f);
+        float wf = wh / (4.0f / 3.0f);
         if (wf < 1.0f) wf = 1.0f;
         float rect_wh = (s_nr.ref_w > 0 && s_nr.ref_h > 0)
             ? wf * (float)s_nr.ref_w / (float)s_nr.ref_h
@@ -18089,31 +18105,31 @@ void openpete_native_set_aspect(float w_over_h) {
         if (lh > 0 && new_w > 0 && new_w != lw)
             SDL_SetWindowSize(s_nr.window, new_w, lh);
     }
-    /* update_layout()'s change-cache keys on window/ref/disp sizes, NOT aspect,
-     * so force it to recompute the fitted panel rect on the next present. */
-    s_nr.layout_win_w = -1;
-    OPL_INFO_F("native", "aspect -> %.4f (%s)", s_nr.aspect_wh,
-               s_nr.aspect_wh > 0.0f ? "Hor+ widen (fixed)" : "AUTO (follow window)");
+    OPL_INFO_F("native", "aspect -> %.4f (%s)", wh,
+               wh > 0.0f ? "Hor+ widen (fixed)" : "AUTO (follow window)");
 }
 
-float openpete_native_get_aspect(void) { return s_nr.aspect_wh; }
+float openpete_native_get_aspect(void) { return op_live_wanted_f(&s_aspect_want, s_nr.aspect_wh); }
 
 void openpete_native_set_ssaa(int factor) {
     if (factor < 1) factor = 1;
     else if (factor > OPENPETE_SSAA_MAX) factor = OPENPETE_SSAA_MAX;
-    s_nr.ssaa = factor;   /* ensure_ss_rtt() reallocs the scene RT on the next present */
+    op_live_set(&s_ssaa_want, factor);   /* ensure_ss_rtt() reallocs the scene RT on the next present */
     OPL_INFO_F("native", "ssaa -> %dx (effective factor capped to GPU max next present)", factor);
 }
 
-int openpete_native_get_ssaa(void) { return (s_nr.ssaa > 0) ? s_nr.ssaa : 1; }
+int openpete_native_get_ssaa(void) {
+    const int f = op_live_wanted(&s_ssaa_want, s_nr.ssaa);
+    return (f > 0) ? f : 1;
+}
 
 void openpete_native_set_vsync(int on) {
-    if (s_nr.dev) rhi_set_vsync(s_nr.dev, on ? 1 : 0);   /* swapchain rebuilds next frame */
+    if (s_nr.dev) op_live_set(&s_vsync_want, on ? 1 : 0);   /* the swapchain rebuilds after the next latch */
     OPL_INFO_F("native", "vsync -> %s", on ? "ON (FIFO)" : "OFF (immediate/mailbox)");
 }
 
 int openpete_native_get_vsync(void) {
-    return s_nr.dev ? rhi_get_vsync(s_nr.dev) : -1;
+    return s_nr.dev ? op_live_wanted(&s_vsync_want, rhi_get_vsync(s_nr.dev)) : -1;
 }
 
 int openpete_native_vertex_snap_active(void) {
@@ -18131,25 +18147,25 @@ void openpete_native_set_vertex_precision(int integer_snap) {
 }
 
 void openpete_native_set_raster_quantize(int mult) {
-    s_raster_mult = mult > 0 ? mult : 0;     /* consumed at the next SCENE split */
-    if (s_raster_mult)
+    const int m = mult > 0 ? mult : 0;
+    op_live_set(&s_raster_mult_want, m);     /* consumed at the next SCENE split after the latch */
+    if (m)
         OPL_INFO_F("native", "raster-quantize -> %dx (%dx%d grid, %d visible lines)",
-                   s_raster_mult, 512 * s_raster_mult, 240 * s_raster_mult,
-                   224 * s_raster_mult);
+                   m, 512 * m, 240 * m, 224 * m);
     else
         OPL_INFO_F("native", "raster-quantize -> off");
 }
 
-int openpete_native_get_raster_quantize(void) { return s_raster_mult; }
+int openpete_native_get_raster_quantize(void) { return op_live_wanted(&s_raster_mult_want, s_raster_mult); }
 
-/* Checked per present at the scene postfx split; no pipeline rebuild. */
+/* Latched per present, read at the scene postfx split; no pipeline rebuild. */
 void openpete_native_set_dither(int on) {
-    s_dither = on ? 1 : 0;
+    op_live_set(&s_dither_want, on ? 1 : 0);
     OPL_INFO_F("native", "dither -> %s",
-               s_dither ? "on (PS1 15-bit colour + 4x4 dither)" : "off");
+               on ? "on (PS1 15-bit colour + 4x4 dither)" : "off");
 }
 
-int openpete_native_get_dither(void) { return s_dither; }
+int openpete_native_get_dither(void) { return op_live_wanted(&s_dither_want, s_dither); }
 
 void openpete_native_set_hide_player(int on) {
     s_hide_player = on ? 1 : 0;
@@ -18185,7 +18201,7 @@ int openpete_native_get_terrain_visibility(void) { return s_terrain_vis; }
 
 /* Queued; variant_apply_pending requests the rebuild at the next present. */
 void openpete_native_set_texture_mapping(int affine) {
-    s_texmap_pending = affine ? 1 : 0;
+    op_live_set(&s_texmap_want, affine ? 1 : 0);
 }
 
 int openpete_native_get_texture_mapping(void) { return s_texmap_affine; }
@@ -18218,14 +18234,14 @@ static int truescope_wanted(void) {
 
 /* Untextured lighting view - same queued-rebuild shape as texture-mapping. */
 void openpete_native_set_notex(int on) {
-    s_notex_pending = on ? 1 : 0;
+    op_live_set(&s_notex_want, on ? 1 : 0);
 }
 
 int openpete_native_get_notex(void) { return s_notex; }
 
 /* Wireframe view - the same queued-rebuild shape as notex. */
 void openpete_native_set_wireframe(int on) {
-    s_wireframe_pending = on ? 1 : 0;
+    op_live_set(&s_wireframe_want, on ? 1 : 0);
 }
 
 int openpete_native_get_wireframe(void) { return s_wireframe; }
@@ -18295,6 +18311,30 @@ static void variant_request(rhi_pipe_variant want, bool sync) {
     if (rhi_rebuild_poll(s_nr.dev, &st)) variant_shown(&st);
 }
 
+/** @brief Latch every present-read live setting from its wanted value, once per present, before the present's first reader.
+ *
+ * The live setters store wanted values (openpete_live_latch.h) and may run
+ * on any thread; this copies them into the values the present reads, on the
+ * thread composing the present: variant_apply_pending and
+ * truescope_apply_pending call it first, at every live present and every
+ * dump compose. A changed aspect resets update_layout's change cache, which
+ * keys on sizes only; a changed vsync preference reaches the device here,
+ * which rebuilds the swapchain at its next frame; the queued texture-mapping,
+ * notex and wireframe values become the variant the caller then requests. A
+ * new present-read setter stores a wanted value and adds its latch here. */
+static void present_knobs_latch(void) {
+    (void)op_live_latch(&s_raster_mult_want, &s_raster_mult);
+    (void)op_live_latch(&s_dither_want, &s_dither);
+    (void)op_live_latch(&s_ssaa_want, &s_nr.ssaa);
+    (void)op_live_latch(&s_perf_stats_want, &s_perf_stats);
+    (void)op_live_latch(&s_texmap_want, &s_texmap_pending);
+    (void)op_live_latch(&s_notex_want, &s_notex_pending);
+    (void)op_live_latch(&s_wireframe_want, &s_wireframe_pending);
+    if (op_live_latch_f(&s_aspect_want, &s_nr.aspect_wh)) s_nr.layout_win_w = -1;
+    const int vsync = atomic_load_explicit(&s_vsync_want, memory_order_acquire);
+    if (vsync != OP_LIVE_NONE && s_nr.dev) rhi_set_vsync(s_nr.dev, vsync);
+}
+
 /** @brief Request a rebuild for a changed queued variant and install a finished one.
  *
  * Runs between frames, before any command buffer records. The queued
@@ -18311,6 +18351,7 @@ static void variant_request(rhi_pipe_variant want, bool sync) {
  * step (rhi_pipeline_lto_step), synchronously under a deterministic
  * capture. */
 static void variant_apply_pending(void) {
+    present_knobs_latch();
     if (!s_nr.dev) return;
     const rhi_pipe_variant want = { .affine = s_texmap_pending != 0, .notex = s_notex_pending != 0,
                                     .wireframe = s_wireframe_pending != 0,
@@ -18327,6 +18368,7 @@ static void variant_apply_pending(void) {
  * OPENPETE_MOBY_TRUESCOPE value) applies here. A windowed run applies only
  * an OPENPETE_MOBY_TRUESCOPE change; its live presents apply the rest. */
 static void truescope_apply_pending(void) {
+    present_knobs_latch();
     if (!s_nr.dev) return;
     if (s_nr.headless) {
         const rhi_pipe_variant want = { .affine = s_texmap_pending != 0,
