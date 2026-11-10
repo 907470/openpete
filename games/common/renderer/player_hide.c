@@ -25,7 +25,7 @@
 
 #include "renderer/env_knob.h"
 #include "game_layout.h"
-#include "openpete_native_render.h"   /* openpete_native_get_hide_player, openpete_native_hide_class */
+#include "openpete_native_render.h"   /* openpete_native_hide_player_active, openpete_native_hide_class */
 #include "renderer/particles.h"       /* particles_slot: the pool slot index */
 #include "psx_runtime_internal.h"
 
@@ -66,7 +66,7 @@ int player_hide_census_on(void) {
     return v;
 }
 
-int player_hide_active(void) { return openpete_native_get_hide_player(); }
+int player_hide_active(void) { return openpete_native_hide_player_active(); }
 
 int player_hide_tracking(void) {
     return OW.part_alloc != 0u && (player_hide_active() || player_hide_census_on());

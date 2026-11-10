@@ -658,19 +658,31 @@ int openpete_native_get_vsync(void);
  * floored to the 512x240 PSX pixel grid, the GTE's SXY truncation that
  * produces the polygon wobble; depth and UVs are untouched. HUD, OVERLAY and
  * HUD_PANEL triangles and triangles fed while the presnap state is set keep
- * their coordinates. Logs the new setting. Renderer state only.
+ * their coordinates. Stores a wanted value from any thread; the feeds take
+ * it at the next openpete_native_producer_knobs_latch and the retained
+ * terrain at the next present. Logs the new setting. Renderer state only.
  * @param integer_snap Non-zero for the integer grid, zero for sub-pixel. */
 void openpete_native_set_vertex_precision(int integer_snap);
 
-/** @brief Return whether integer vertex snap is active.
+/** @brief Return the vertex precision the next latch applies, for the settings rows and the settings save.
+ * @return 1 for the integer grid, 0 for sub-pixel. */
+int openpete_native_get_vertex_precision(void);
+
+/** @brief Return whether integer vertex snap is active for the feeds, as latched on the sim thread.
  *
  * Feeders that synthesize vertices on another primitive's edge (the terrain
- * subdivision midpoints, the shadow and retained-terrain feeds) read it to
- * emit snap-consistent screen coordinates, so their T-vertices stay
- * watertight against snapped neighbour edges. The O menu and the knob
- * registry read it back as the setting's value.
+ * subdivision midpoints, the shadow feed) read it to emit snap-consistent
+ * screen coordinates, so their T-vertices stay watertight against snapped
+ * neighbour edges.
  * @return 1 when integer snap is active, else 0. */
 int openpete_native_vertex_snap_active(void);
+
+/** @brief Return whether integer vertex snap is active for the present, as latched once per present.
+ *
+ * The retained terrain cache reads it for the push constant every arena
+ * draw of one present shares.
+ * @return 1 when integer snap is active, else 0. */
+int openpete_native_vertex_snap_present(void);
 
 /** @brief Mark the triangles added next as already snap-consistent.
  *
@@ -721,16 +733,21 @@ int  openpete_native_get_dither(void);
 /** @brief Turn hiding the player on or off.
  *
  * On, the native feeders drop the avatar, its fire breath, its ground
- * shadow, the companion and the particles their updates spawn. Read per
- * feed, so a change applies at the next present; particles spawned while
+ * shadow, the companion and the particles their updates spawn. The setter
+ * stores a wanted value from any thread; the feeds take it at the next
+ * openpete_native_producer_knobs_latch; particles spawned while
  * both this and the ownership census were off stay drawn until they expire.
  * Renderer state only.
  * @param on Non-zero for on. */
 void openpete_native_set_hide_player(int on);
-/** @brief Return whether the player's draws are hidden.
+/** @brief Return whether hiding the player is chosen: the value the next latch applies, for the settings rows.
  *
  * @return 1 when hidden, else 0. */
 int  openpete_native_get_hide_player(void);
+/** @brief Return whether the feeders drop the player's draws, as latched on the sim thread.
+ *
+ * @return 1 when hidden, else 0. */
+int  openpete_native_hide_player_active(void);
 
 /** @brief Turn hiding the HUD on or off.
  *
@@ -761,12 +778,18 @@ int  openpete_native_hide_class(uint32_t cls);
  * previous mode. Renderer state only.
  * @param affine Non-zero for affine (screen-linear), zero for perspective. */
 void openpete_native_set_texture_mapping(int affine);
-/** @brief Return the applied texture-mapping mode.
+/** @brief Return the chosen texture-mapping mode: the boot mode or the last value queued by openpete_native_set_texture_mapping.
  *
- * A change queued by openpete_native_set_texture_mapping reads as the old
- * mode until the next present boundary applies it.
+ * For the settings rows and the settings save; the pipelines change at a
+ * later present (openpete_native_texture_mapping_drawn).
  * @return 1 for PSX affine, 0 for perspective-correct. */
 int  openpete_native_get_texture_mapping(void);
+/** @brief Return the texture-mapping mode the pipelines draw with, as latched on the sim thread.
+ *
+ * The present publishes the mode when a rebuild installs it; the terrain
+ * producer reads this value so every feed of one tick bakes for one mode.
+ * @return 1 for PSX affine, 0 for perspective-correct. */
+int  openpete_native_texture_mapping_drawn(void);
 
 /** @brief Queue the untextured lighting view on or off.
  *
@@ -807,15 +830,19 @@ int  openpete_native_get_wireframe(void);
  * other value selects OPENPETE_TERRAIN_VIS_FRUSTUM, which admits every
  * sector whose bounding sphere is inside the displayed frame and does not
  * read the game's flags. Seeded from --terrain-visibility at init; the
- * terrain feeder reads the mode at the top of every sector walk, so a change
- * applies on the next present. Renderer state only; the game's flags are
- * never written.
+ * setter stores a wanted value from any thread, which the next
+ * openpete_native_producer_knobs_latch applies to the terrain feeder's
+ * sector walks. Renderer state only; the game's flags are never written.
  * @param mode An openpete_terrain_visibility_t value. */
 void openpete_native_set_terrain_visibility(int mode);
-/** @brief Return the terrain candidate-set mode in force.
+/** @brief Return the chosen terrain candidate-set mode: the value the next latch applies, for the settings rows.
  *
  * @return An openpete_terrain_visibility_t value. */
 int  openpete_native_get_terrain_visibility(void);
+/** @brief Return the terrain candidate-set mode the sector walks use, as latched on the sim thread.
+ *
+ * @return An openpete_terrain_visibility_t value. */
+int  openpete_native_terrain_visibility_active(void);
 
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
@@ -1694,7 +1721,8 @@ void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f);
  *
  * Called by each game's re-extract before its body feeds. Clears the
  * triangle list and the per-scene background, fade, freeze and flags,
- * latches the FOV tangent, bumps the scene epoch and resets the per-present
+ * latches the producer-read live settings
+ * (openpete_native_producer_knobs_latch), bumps the scene epoch and resets the per-present
  * material slots. The first re-extract of a tick first records the game
  * render's blended-world key order from the scene it is about to clear; a
  * later re-extract of the same tick keeps that record. It then stamps the
@@ -1704,6 +1732,20 @@ void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f);
  * game render's own accumulation begins with
  * openpete_native_scene_begin_frame. */
 void openpete_native_scene_begin(void);
+/** @brief Latch the live settings the producers read, on the sim thread, at a point no tick's render is in progress.
+ *
+ * The live setters (settings menu, dev overlay, LOD hotkey) store wanted
+ * values (openpete_live_latch.h) from whichever thread runs them; the dev
+ * overlay runs on the present thread under eager production. This copies
+ * them into the values the feeders and the guest render hooks read: vertex
+ * precision, the FOV and its tangent, hide player, terrain visibility, the
+ * LOD mode, fog multiplier and fog pin (openpete_no_lod_latch), the drawn
+ * texture-mapping mode and the Hor+ factor the present published. A changed
+ * FOV suspends the occlusion grid for two presents. Called by
+ * game_on_frame_pre before every guest resume and by
+ * openpete_native_scene_begin before a re-extract feeds; the guest renders a
+ * tick inside one resume, so every reader of one tick sees one value. */
+void openpete_native_producer_knobs_latch(void);
 /** @brief Mark the scene now accumulating as a sub-tick or lag re-extract's rebuild.
  *
  * Called by the re-extract wrapper after the game's body has fed, so the
@@ -2510,7 +2552,9 @@ void openpete_native_scene_set_actor_front(int front);
  * (aspect / (4/3)) or, under AUTO, from the panel cell's shape against the
  * crop-corrected 4:3 display, clamped to at least 1 (about 1.33 at 16:9).
  * Headless runs have no window, so a fixed --aspect is applied here
- * directly. Feeders that pre-cull to the 4:3 screen-X rect widen their
+ * directly. The layout runs on the present thread and publishes the factor;
+ * this returns the copy openpete_native_producer_knobs_latch took on the sim
+ * thread. Feeders that pre-cull to the 4:3 screen-X rect widen their
  * horizontal bounds by this factor (openpete_native_widescreen_x_bounds);
  * vertical bounds do not change.
  * @return The widen factor, 1.0 when the rect is not wider than 4:3. */
@@ -2544,22 +2588,24 @@ void  openpete_native_visible_y_bounds(float *ylo, float *yhi);
  * / (y_row · H_canon)), where H_canon is the GTE's H and y_row the game's
  * camera-matrix Y scale (the feeder passes both). At deg <= 0 the scale is
  * the literal 1.0 and H_eff == H_canon bit-for-bit. A positive value is
- * clamped to [1, 179]. The tangent is latched once per present (scene
- * begin), so a live change cannot split one present across two H values.
- * A change suspends the occlusion grid for two presents, since its cached
- * rects were built at the old H. Renderer state only; the game's own
+ * clamped to [1, 179]. The setter stores a wanted value from any thread;
+ * openpete_native_producer_knobs_latch applies it on the sim thread, so a
+ * live change cannot split one tick's feeds across two H values. The latch
+ * that applies a change suspends the occlusion grid for two presents, since
+ * its cached rects were built at the old H. Renderer state only; the game's own
  * projection keeps the canonical H.
  * @param deg Vertical FOV in degrees; <= 0 for the default. */
 void   openpete_native_set_fov(float deg);
-/** @brief Return the vertical FOV set by openpete_native_set_fov.
+/** @brief Return the vertical FOV set by openpete_native_set_fov: the value the next latch applies.
  *
  * @return The clamped setting in degrees; 0 for the game's default. */
 float  openpete_native_fov_deg(void);
 /** @brief Return the factor that widens or narrows the canonical projection H to the FOV setting.
  *
  * The factor is the canonical vertical half-tangent, (visible rows / 2) /
- * (y_row * H_canon), divided by the tangent latched at scene begin. The
- * effective H is H_canon times the factor.
+ * (y_row * H_canon), divided by the tangent latched by
+ * openpete_native_producer_knobs_latch. The effective H is H_canon times the
+ * factor.
  * @param H_canon The GTE's canonical H.
  * @param y_row The camera matrix's Y-row scale.
  * @return The factor; 1 at the default FOV or when H_canon or y_row is not

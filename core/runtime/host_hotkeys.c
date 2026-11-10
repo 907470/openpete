@@ -384,14 +384,15 @@ void host_hotkeys_toggles(bool split)
      * so openpete_fog_scale follows the mode - a raw openpete_no_lod
      * poke would leave the terrain fog latched. The setter logs the
      * new state. Native-renderer display policy; inert under
-     * PsyCross. The menu re-syncs its LOD row from openpete_no_lod
-     * when next opened. */
+     * PsyCross. The toggle flips the wanted mode, which the next latch
+     * applies; the menu re-syncs its LOD row from it when next opened. */
     if (openpete_key_pressed(OPK_LOD_TOGGLE)) {
-        openpete_no_lod_set(!openpete_no_lod, -1.0f);
+        const int on = !openpete_no_lod_wanted();
+        openpete_no_lod_set(on, -1.0f);
         /* Same key the O menu's LOD row uses, so a player who toggles
          * both ways sees one toast repaint rather than two stack. */
         openpete_osd_notify("host", "menu.lod", 0, "LOD: %s",
-                            openpete_no_lod ? "EXTENDED" : "ORIGINAL");
+                            on ? "EXTENDED" : "ORIGINAL");
     }
 
     /* Alt+Enter (either Alt), the `fullscreen` binding, or a window

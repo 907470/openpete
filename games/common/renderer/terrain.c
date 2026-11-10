@@ -1567,7 +1567,7 @@ static int tj_split_topo(const int n[3], uint8_t T[TJ_MAX_TRIS][3]) {
  * @return The weight of the second corner. */
 static double tj_lerp_t(int k, double za, double zb) {
     const double s = 0.25 * k;
-    if (!openpete_native_get_texture_mapping() || za <= 0.0 || zb <= 0.0) return s;
+    if (!openpete_native_texture_mapping_drawn() || za <= 0.0 || zb <= 0.0) return s;
     return s * zb / ((1.0 - s) * za + s * zb);
 }
 
@@ -1634,7 +1634,7 @@ static double tj_snap_node(ngte_cvert* n, const ngte_cvert* a, const ngte_cvert*
     float tt = L2 > 0.0f ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0.5f;
     tt = tt < 0.0f ? 0.0f : (tt > 1.0f ? 1.0f : tt);
     n->osx = ax + tt * dx; n->osy = ay + tt * dy; n->oflag = 1;
-    if (openpete_native_get_texture_mapping()) return tt;
+    if (openpete_native_texture_mapping_drawn()) return tt;
     const double s = tt, za = a->m3, zb = b->m3;
     return s * za / ((1.0 - s) * zb + s * za);
 }
@@ -2639,7 +2639,7 @@ static int tface_pin_cells(int hq_idx) {
  * @return Nonzero when the face may take the cells. */
 static int tface_cells_ok(int hq_idx) {
     if (!game_layout.terrain.hq_cells4) return 0;
-    return openpete_native_get_texture_mapping() || (s_hq_bank ? s_hq_hires_src : s_hq_hires)[hq_idx & 0x7F];
+    return openpete_native_texture_mapping_drawn() || (s_hq_bank ? s_hq_hires_src : s_hq_hires)[hq_idx & 0x7F];
 }
 /** @brief Tests whether a face with HQ record hq_idx takes the cells at every near distance.
  *
@@ -2652,7 +2652,7 @@ static int tface_cells_ok(int hq_idx) {
  * @return Nonzero when the face is routed to the cells. */
 static int tface_cells_pin(int hq_idx) {
     if (!hq_pin_active() || !game_layout.terrain.hq_cells4) return 0;
-    return openpete_native_get_texture_mapping() ? tface_pin_cells(hq_idx)
+    return openpete_native_texture_mapping_drawn() ? tface_pin_cells(hq_idx)
                                                  : (s_hq_bank ? s_hq_hires_src : s_hq_hires)[hq_idx & 0x7F];
 }
 
@@ -2666,7 +2666,7 @@ static int tface_cells_pin(int hq_idx) {
  * @param hq_idx The face's HQ record index; the low 7 bits are used.
  * @return Nonzero when the triangle may take the tier-4 split. */
 static int tface_tri4_ok(int hq_idx) {
-    if (game_layout.terrain.hq_tri4_sub) return openpete_native_get_texture_mapping();
+    if (game_layout.terrain.hq_tri4_sub) return openpete_native_texture_mapping_drawn();
     return tface_cells_ok(hq_idx);
 }
 
@@ -3200,7 +3200,7 @@ static void terrain_near_emit_face(tn_wctx* W, CPUState* cpu, const tn_nearface*
     ngte_cvert G[5][5];
     nc4_grid(G, TL, TR, BL, BR);
     if (openpete_native_vertex_snap_active()) nc4_snap(G);
-    int affine_texturing = openpete_native_get_texture_mapping();
+    int affine_texturing = openpete_native_texture_mapping_drawn();
     if (affine_texturing) nc4_morph(G);
     nc4_emit_cells(W, cpu, nf, G);
 }
@@ -9264,7 +9264,7 @@ static int tsec_game_out_y(int32_t y, int32_t z, int32_t r) {
  * @return Nonzero when the sphere is rejected. */
 static int tsec_sphere_cull(const int M[3][3], const double cam[3], const int c[3], int r,
                             double wx, double wy) {
-    const int game = openpete_native_get_terrain_visibility() != OPENPETE_TERRAIN_VIS_FRUSTUM;
+    const int game = openpete_native_terrain_visibility_active() != OPENPETE_TERRAIN_VIS_FRUSTUM;
     int32_t ir[3] = { 0, 0, 0 };
     if (game) {
         tsec_game_ir(M, cam, c, ir);
@@ -9506,7 +9506,7 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
      * exactly as any other sector (per-sector tier verdicts, the retained GPU
      * cache, the native occlusion pre-pass). `--terrain-visibility game` is
      * the faithful path. */
-    if (S && openpete_native_get_terrain_visibility() == OPENPETE_TERRAIN_VIS_FRUSTUM) {
+    if (S && openpete_native_terrain_visibility_active() == OPENPETE_TERRAIN_VIS_FRUSTUM) {
         int n = 0;
         for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) {
             if (tvis_sphere_in(cpu, S, i)) out[n++] = (uint16_t)i;
@@ -10100,7 +10100,7 @@ static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
 static uint32_t tgpu_pin_key(void) {
     if (!game_layout.terrain.hq_cells4) return 0;
     return 4u + (s_hq_differ_gen << 2) + (hq_pin_active() ? 2u : 0u)
-         + (openpete_native_get_texture_mapping() ? 1u : 0u);
+         + (openpete_native_texture_mapping_drawn() ? 1u : 0u);
 }
 
 
@@ -12377,7 +12377,7 @@ static void tj_use_at_exit(void) {
 static void tj_level_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t n, uint32_t lqTable,
                              uint32_t hqTable, int texTblMode, uint64_t sig) {
     const uint64_t key = sig ^ ((uint64_t)hqTable * 0x9E3779B97F4A7C15ull)
-                       ^ (uint64_t)openpete_native_get_texture_mapping();
+                       ^ (uint64_t)openpete_native_texture_mapping_drawn();
     if (s_tj.gen && key == s_tj.key) return;
     if (!s_tj.gen) atexit(tj_use_at_exit);
     s_tj.key = key;

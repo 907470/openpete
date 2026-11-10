@@ -276,12 +276,12 @@ static int perfstats_set(knob_desc_t *k, double v) {
 
 static const char *const k_vprec_names[] = { "subpixel", "integer" };
 static const char *const k_texmap_names[] = { "perspective", "affine" };
-/** @brief 1 when the renderer snaps vertices to the integer grid, 0 when it keeps subpixel positions.
+/** @brief 1 when integer-grid vertex precision is chosen, 0 for subpixel positions.
  *
  * Returns the stored value until the native renderer is up. */
 static double vprec_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
-    return openpete_native_vertex_snap_active() ? 1.0 : 0.0;
+    return openpete_native_get_vertex_precision() ? 1.0 : 0.0;
 }
 /** @brief Select vertex precision from `v`: 1 is the integer grid, else subpixel.
  *
@@ -292,12 +292,12 @@ static int vprec_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-/** @brief The renderer's applied texture mapping: 0 perspective, 1 affine.
+/** @brief The chosen texture mapping: 0 perspective, 1 affine.
  *
  * Returns the stored value until the native renderer is up, the renderer's
- * state after that. The setter only queues the mode, which the renderer
- * applies with a pipeline rebuild at the next present, and the O menu moves
- * the same mode, so the row reads the renderer rather than stored_num. */
+ * chosen mode after that: the last queued mode, which the renderer applies
+ * with a pipeline rebuild at a later present. The O menu moves the same
+ * mode, so the row reads the renderer rather than stored_num. */
 static double texmap_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_texture_mapping();
@@ -442,8 +442,8 @@ static int tervis_set(knob_desc_t *k, double v) {
                                                     : OPENPETE_TERRAIN_VIS_GAME);
     return 0;
 }
-/** @brief 1 when the extended level-of-detail mode is on (openpete_no_lod), else 0. */
-static double lod_get(const knob_desc_t *k) { (void)k; return openpete_no_lod ? 1.0 : 0.0; }
+/** @brief 1 when the extended level-of-detail mode is chosen (openpete_no_lod_wanted), else 0. */
+static double lod_get(const knob_desc_t *k) { (void)k; return openpete_no_lod_wanted() ? 1.0 : 0.0; }
 /** @brief Switch level-of-detail mode: nonzero is extended, zero original.
  *
  * Passes no fog scale, so the fog scale follows the mode unless fog was set
@@ -468,7 +468,7 @@ static double fog_get(const knob_desc_t *k) {
     (void)k;
     static const char *const names[] = { "original", "per-pixel", "off" };
     snprintf(s_fog_auto_label, sizeof s_fog_auto_label, "follow LOD (%s)",
-             names[openpete_no_lod ? OPENPETE_FOG_PER_PIXEL : OPENPETE_FOG_ORIGINAL]);
+             names[openpete_no_lod_wanted() ? OPENPETE_FOG_PER_PIXEL : OPENPETE_FOG_ORIGINAL]);
     return (double)(openpete_fog_mode_pinned() + 1);
 }
 /** @brief Pin the fog form to entry `v` - 1, or return it to following the LOD mode for entry 0. */
@@ -480,8 +480,8 @@ static int fog_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-/** @brief The fog-distance multiplier, read from openpete_fog_scale. */
-static double fogscale_get(const knob_desc_t *k) { (void)k; return openpete_fog_scale; }
+/** @brief The fog-distance multiplier the next latch applies (openpete_fog_scale_wanted). */
+static double fogscale_get(const knob_desc_t *k) { (void)k; return openpete_fog_scale_wanted(); }
 /** @brief Set the fog-distance multiplier from the fog-scale row; a non-finite value is refused. */
 static int fogscale_set(knob_desc_t *k, double v) {
     (void)k;

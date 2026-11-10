@@ -28,6 +28,8 @@ int    openpete_fog_mode_pinned(void)          { return -1; }
 void   openpete_fog_mode_set(int mode)         { (void)mode; }
 void   openpete_fog_scale_set(float v)         { (void)v; }
 void   openpete_no_lod_set(int on)             { (void)on; }
+int    openpete_no_lod_wanted(void)            { return openpete_no_lod; }
+float  openpete_fog_scale_wanted(void)         { return openpete_fog_scale; }
 int    openpete_freecam_active(void)           { return 0; }
 void   openpete_freecam_toggle(void)           { }
 unsigned openpete_state_active_slot(void)        { return 0u; }
@@ -113,7 +115,7 @@ void   openpete_native_set_fps_overlay(int on)   { s_native_showfps = on ? OPENP
 int    openpete_native_fps_overlay_enabled(void) { return s_native_showfps != OPENPETE_PERF_OFF; }
 void   openpete_native_set_fps_in_record(int on) { (void)on; }
 void   openpete_native_set_vertex_precision(int m) { s_native_vsnap = m ? 1 : 0; }
-int    openpete_native_vertex_snap_active(void)    { return s_native_vsnap; }
+int    openpete_native_get_vertex_precision(void)  { return s_native_vsnap; }
 void   openpete_native_set_raster_quantize(int n)  { s_native_rquant = n; }
 int    openpete_native_get_raster_quantize(void)   { return s_native_rquant; }
 int    openpete_workpool_threads(void)             { return 1; }

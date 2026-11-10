@@ -212,12 +212,12 @@ static int nearest_idx(const int* vals, int n, int want) {
     return best;
 }
 
-/** @brief Read the WOBBLE row's index from the live vertex-snap state.
+/** @brief Read the WOBBLE row's index from the chosen vertex precision.
  *
  * Each row re-seeds from its own live setting when the menu opens.
- * @return 1 while vertex snap is active, else 0. */
+ * @return 1 while integer vertex precision is chosen, else 0. */
 static int wobble_idx_from_live(void) {
-    return openpete_native_vertex_snap_active() ? 1 : 0;
+    return openpete_native_get_vertex_precision() ? 1 : 0;
 }
 
 /** @brief Read the PIXELATION row's index from the live raster quantize multiplier.
@@ -380,9 +380,9 @@ static void apply_row(int row) {
     case ROW_SSAA:     openpete_native_set_ssaa(s_ssaa_vals[s_ssaa_idx]);      break;
     case ROW_WOBBLE:   openpete_native_set_vertex_precision(s_wobble_idx);    break;
     case ROW_PIXEL:    openpete_native_set_raster_quantize(s_pix_vals[s_pixel_idx]); break;
-    /* Queued: the renderer re-bakes its pipelines at the next present
-     * (a one-time device-idle hitch), so the value string reads the local
-     * index, not the not-yet-applied live getter. */
+    /* Queued: the renderer re-bakes its pipelines at a later present
+     * (a one-time device-idle hitch); the value string reads the local
+     * index. */
     case ROW_TEXMAP:   openpete_native_set_texture_mapping(s_texmap_idx);      break;
     case ROW_DITHER:   openpete_native_set_dither(s_dither_idx);               break;
     case ROW_LOD:
@@ -670,10 +670,10 @@ int openpete_menu_toggle(void) {
         /* Re-sync the rows a hotkey can change while the menu is closed, so the
          * menu never shows a stale value: SHOW FPS (--perf-stats / the M
          * overlay's Performance stats row), LOD (the "L" toggle flips
-         * openpete_no_lod directly), and FREECAM (the "F" key / left-stick
+         * the wanted LOD mode), and FREECAM (the "F" key / left-stick
          * click). FOG reads the live pin and needs no re-sync. */
         s_showfps_idx = openpete_native_fps_overlay_enabled();
-        s_lod_idx     = openpete_no_lod ? 1 : 0;
+        s_lod_idx     = openpete_no_lod_wanted() ? 1 : 0;
         s_freecam_idx = openpete_freecam_active() ? 1 : 0;
         s_wobble_idx  = wobble_idx_from_live();   /* M-overlay knob moves the snap */
         s_pixel_idx   = pixel_idx_from_live();    /* M-overlay knob moves the quantize */

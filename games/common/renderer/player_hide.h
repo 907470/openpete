@@ -1,6 +1,6 @@
 // games/common/renderer/player_hide.h - which native draws are the player's,
 // read from game state, for drawing a view without the player
-// (`--hide-player`, openpete_native_get_hide_player).
+// (`--hide-player`, openpete_native_hide_player_active).
 //
 // The avatar, its fire-breath ribbon and its ground shadow have feeders of
 // their own and skip their feed while the flag is on. The companion (Sparx)
@@ -46,7 +46,7 @@ enum {
     PH_CAT_N
 };
 
-/** @brief Whether the player's draws are skipped this present: the flag is on.
+/** @brief Whether the player's draws are skipped this tick: the flag latched on the sim thread is on.
  *
  * @return 1 when the flag is on, else 0. */
 int player_hide_active(void);

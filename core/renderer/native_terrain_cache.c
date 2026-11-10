@@ -3864,7 +3864,7 @@ static void tc_draw_material_passes(int which, const int *buckets, int bn,
  * mode every draw of the frame pushes. */
 static void tc_ubo_flush_frame(void)
 {
-    const int snap_now = openpete_native_vertex_snap_active();   /* 0 or 1 */
+    const int snap_now = openpete_native_vertex_snap_present();   /* 0 or 1 */
     const uint64_t fs = rhi_frame_serial(s_tc.dev);
     if (s_tc.ubo_flush_serial == fs) return;
     rhi_ubo_write(s_tc.ubo, 0, &s_tc.sel.g, sizeof(s_tc.sel.g));

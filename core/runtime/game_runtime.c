@@ -7,6 +7,7 @@
 #include "openpete_modsave.h"
 #include "game_layout.h"
 #include "openpete_fiber.h"
+#include "openpete_native_render.h"   /* openpete_native_producer_knobs_latch */
 #include "openpete_psx.h"
 #include "psx_runtime_internal.h"
 
@@ -74,6 +75,10 @@ void game_on_boot(CPUState* cpu) {
     if (s_rt->on_boot) s_rt->on_boot(cpu);
 }
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
+    /* The live settings the producers and the guest render hooks read take
+     * their wanted values here, before the game hook and the guest resume,
+     * so every reader inside the resume sees one value. */
+    openpete_native_producer_knobs_latch();
     if (s_rt->on_frame_pre) s_rt->on_frame_pre(cpu, frame_counter);
 }
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {

@@ -49,6 +49,7 @@
 #include "openpete_bugthumbs.h" /* bug-report thumbnail ring */
 #include "openpete_view_rect.h" /* the view layout and its pixel rect */
 #include "openpete_live_latch.h" /* live settings latched once per present */
+#include "no_lod.h" /* openpete_no_lod_latch */
 #include "rhi.h"
 #include "launcher_title_pass.h" /* the launcher's 3D title */
 #include "launcher_shape_pass.h" /* the launcher's panels, chips and bar */
@@ -1350,7 +1351,6 @@ void openpete_native_scene_sig_report(int canonical)
             s_eager_stamp ? s_eager_stamp : openpete_frame);
 }
 
-static void fov_latch(void);
 /* The blended-world classes composite in emission order, and the blend
  * equations do not commute once a channel clamps (additive over subtractive
  * saturates where subtractive over additive does not). The game render emits in
@@ -1437,7 +1437,7 @@ void openpete_native_scene_begin(void) {
      * overwrite either with its own (already reordered) scene. */
     if (!s_scene_replay) { bw_key_order_record(s_scene, s_scene_n); scene_game_retain(); }
     s_scene_clear_held = 0;
-    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; torder_note_clear(); memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); openpete_mods_material_frame_reset(0); /* per-present interned slots; the tick's refine outcomes replay */
+    s_scene_replay = 1; s_scene_moved = 0; openpete_native_producer_knobs_latch(); s_scene_epoch++; s_scene_n = 0; torder_note_clear(); memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); openpete_mods_material_frame_reset(0); /* per-present interned slots; the tick's refine outcomes replay */
     /* Stamp the rebuild with the VBL it is built on, the stamp the terrain
      * builder tags its build with outside an eager scene
      * (openpete_native_scene_build_stamp). The present's retained-terrain
@@ -1736,7 +1736,6 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             s_scene_frame_close_cb(s_scene_frame);
             s_scene_close_cb_in = 0;
         }
-        fov_latch();
         if (s_scene_frame != 0xFFFFFFFFu)   /* a completed frame is sitting in s_scene */
             scene_close_completed();
         s_scene_epoch++;
@@ -1894,7 +1893,8 @@ static int scene_hist_depth_max(void) { return s_scene_hist_count; }
  * classic PS1 polygon wobble. 0 = smooth sub-pixel (default). Depth (z) and UVs
  * are left alone, so the true Z-buffer + perspective-correct texturing survive.
  * A file-static (not an s_nr field) so the feed chokepoint above s_nr can read
- * it; seeded from opts->vertex_precision, mutated live by the setter below. */
+ * it; seeded from opts->vertex_precision, latched on the sim thread from the
+ * setter's wanted value (openpete_native_producer_knobs_latch). */
 static int s_vertex_snap = 0;
 /* Sticky feed state (set_presnap): the current feeder emits coordinates that
  * are ALREADY snap-consistent, so the chokepoint snap below must not touch
@@ -1910,15 +1910,17 @@ static int s_cur_presnap = 0;
  * hardware rasterizer produced. */
 static int s_raster_mult = 0;
 static int s_dither = 0;       /* --dither: PS1 15-bit colour + 4x4 hardware dither (engine SCENE pass) */
-/* The live setters' wanted values of the present-read settings, latched into
- * s_raster_mult, s_dither, s_nr.ssaa, s_nr.aspect_wh, s_perf_stats and the
- * device's vsync preference by present_knobs_latch (openpete_live_latch.h). */
-static _Atomic(int) s_raster_mult_want = OP_LIVE_NONE;
-static _Atomic(int) s_dither_want      = OP_LIVE_NONE;
-static _Atomic(int) s_ssaa_want        = OP_LIVE_NONE;
-static _Atomic(int) s_aspect_want      = OP_LIVE_NONE;   /* float bits */
-static _Atomic(int) s_perf_stats_want  = OP_LIVE_NONE;
-static _Atomic(int) s_vsync_want       = OP_LIVE_NONE;
+/* The wanted values of the present-read settings, latched into
+ * s_raster_mult, s_dither, s_nr.ssaa, s_nr.aspect_wh, s_perf_stats and
+ * s_vsync by present_knobs_latch (openpete_live_latch.h). Each starts at its
+ * latched value's initializer; init stores the options' values into both. */
+static _Atomic(int) s_raster_mult_want = 0;
+static _Atomic(int) s_dither_want      = 0;
+static _Atomic(int) s_ssaa_want        = 0;
+static _Atomic(int) s_aspect_want      = 0;   /* float bits */
+static _Atomic(int) s_perf_stats_want  = OPENPETE_PERF_FPS;
+static _Atomic(int) s_vsync_want       = 0;
+static int s_vsync = 0;   /* the device's vsync preference as last latched */
 static int s_hide_player = 0;  /* --hide-player: the feeders drop the player's draws */
 static int s_hide_hud = 0;     /* --hide-hud: the compose skips the HUD layers */
 static uint32_t s_hide_hud_layers;  /* HUD layer draws skipped under --hide-hud */
@@ -1929,7 +1931,8 @@ static uint32_t s_hide_hud_tris;    /* triangles those layers held */
 static uint32_t s_hide_cls[NR_HIDE_CLASSES_MAX];
 static int s_hide_cls_n;
 /* --terrain-visibility: the terrain feeder's candidate-set policy
- * (openpete_terrain_visibility_t), seeded at init and moved by the setter. */
+ * (openpete_terrain_visibility_t), seeded at init and latched on the sim
+ * thread from the setter's wanted value. */
 static int s_terrain_vis = OPENPETE_TERRAIN_VIS_FRUSTUM;
 /* --texture-mapping (0 = perspective, 1 = affine): the drawn mode plus the
  * queued one. The mode is a vertex spec constant baked into every scene
@@ -1947,9 +1950,31 @@ static int s_wireframe         = 0;   /* line-mode scene pipelines + NOTEX colou
 static int s_wireframe_pending = 0;
 /* The setters' wanted values of the three queued fields above, latched into
  * the *_pending fields by present_knobs_latch. */
-static _Atomic(int) s_texmap_want    = OP_LIVE_NONE;
-static _Atomic(int) s_notex_want     = OP_LIVE_NONE;
-static _Atomic(int) s_wireframe_want = OP_LIVE_NONE;
+static _Atomic(int) s_texmap_want    = 0;
+static _Atomic(int) s_notex_want     = 0;
+static _Atomic(int) s_wireframe_want = 0;
+/* The live setters' wanted values of the producer-read settings, latched on
+ * the sim thread into s_vertex_snap, s_hide_player and s_terrain_vis by
+ * openpete_native_producer_knobs_latch, so every feed of one tick reads one
+ * value whichever thread ran the setter. */
+static _Atomic(int) s_vertex_snap_want = 0;
+static _Atomic(int) s_hide_player_want = 0;
+static _Atomic(int) s_terrain_vis_want = OPENPETE_TERRAIN_VIS_FRUSTUM;
+/* s_vertex_snap as the present reads it (the retained terrain's push
+ * constant), latched by present_knobs_latch from s_vertex_snap_want. */
+static int s_vertex_snap_present = 0;
+/* The drawn texture-mapping mode, published by variant_shown on the thread
+ * that installs a rebuild and latched on the sim thread into
+ * s_texmap_affine_prod, the value the producers read. */
+static _Atomic(int) s_texmap_drawn_pub = 0;
+static int s_texmap_affine_prod = 0;
+/* The present-written Hor+ factor (s_nr.ws_factor), published by
+ * update_layout and latched on the sim thread into s_ws_factor_prod, the
+ * factor openpete_native_widescreen_factor gives the producers;
+ * ws_factor_present gives the present's own readers s_nr.ws_factor. */
+static _Atomic(int) s_ws_factor_pub = 0;   /* float bits */
+static float s_ws_factor_prod = 0.0f;
+static float ws_factor_present(void);
 
 /** @brief Return whether a draw layer takes the PSX integer-grid vertex snap of --vertex-precision integer.
  *
@@ -7864,8 +7889,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * boot values and before the pipelines below bake the constant. Live
      * changes queue via openpete_native_set_texture_mapping and re-bake all
      * pipelines at the next present. */
-    s_texmap_affine = s_texmap_pending =
+    s_texmap_affine = s_texmap_pending = s_texmap_affine_prod =
         (opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE);
+    op_live_set(&s_texmap_want, s_texmap_pending);
+    op_live_set(&s_texmap_drawn_pub, s_texmap_affine);
     rhi_set_affine_uv(s_texmap_affine);
     if (s_texmap_affine)
         OPL_INFO_F("native", "%s", "texture-mapping: affine (PSX screen-linear)");
@@ -7874,16 +7901,19 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * spec-constant 2): textured scene fragments output the raw gouraud
      * vertex colour. Live changes queue via openpete_native_set_notex. */
     s_notex = s_notex_pending = (opts->notex > 0);
+    op_live_set(&s_notex_want, s_notex_pending);
     rhi_set_notex(s_notex);
     if (s_notex)
         OPL_INFO_F("native", "%s", "notex: untextured lighting view ON");
     s_wireframe = s_wireframe_pending = (opts->wireframe != 0);
+    op_live_set(&s_wireframe_want, s_wireframe_pending);
     rhi_set_wireframe(s_wireframe);
 
     /* Render aspect from --aspect (W/H); 0 -> AUTO (follow the window shape,
      * filling it live on resize). >0 fixes the Hor+ amount + letterbox/
      * pillarbox. */
     s_nr.aspect_wh = (opts->aspect_w_over_h > 0.0f) ? opts->aspect_w_over_h : 0.0f;
+    op_live_set_f(&s_aspect_want, s_nr.aspect_wh);
 
     /* SDL_INIT_VIDEO is already up (PsyX_Initialise). Create a SECOND window
      * for the Vulkan surface: a single SDL window can't carry both PsyCross's
@@ -7924,9 +7954,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* Live-window supersampling (--ssaa N, default 1=no-op): the ss_rtt + resolve
      * pass are set up lazily (ensure_ss_rtt) once the window size is known. */
     s_nr.ssaa = (opts->ssaa > 0) ? opts->ssaa : 1;
+    op_live_set(&s_ssaa_want, s_nr.ssaa);
     /* Vertex-precision snap (--vertex-precision integer): re-introduce the PSX
      * integer-grid vertex snap in add_tri_grouped. Default smooth (subpixel). */
-    s_vertex_snap = (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER) ? 1 : 0;
+    s_vertex_snap = s_vertex_snap_present =
+        (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER) ? 1 : 0;
+    op_live_set(&s_vertex_snap_want, s_vertex_snap);
     /* Raster output quantize (--raster-quantize): -1 = auto-pair with the snap
      * (1x = the authentic 512x240 raster iff integer mode), so the wobble ships
      * with its seam treatment by default and each remains independently
@@ -7934,13 +7967,17 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_raster_mult = (opts->raster_quantize >= 0) ? opts->raster_quantize
                  : (s_vertex_snap ? 1 : 0);
     s_dither = opts->dither ? 1 : 0;   /* PS1 15-bit colour + hardware dither */
+    op_live_set(&s_raster_mult_want, s_raster_mult);
+    op_live_set(&s_dither_want, s_dither);
     s_hide_player = opts->hide_player != 0;
+    op_live_set(&s_hide_player_want, s_hide_player);
     s_hide_hud = opts->hide_hud > 0;
     hide_classes_parse(opts->hide_classes);
     /* --terrain-visibility: the terrain feeder's candidate set (frustum =
      * every sector inside the displayed frame, hidden or not). */
     s_terrain_vis = (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_GAME)
                     ? OPENPETE_TERRAIN_VIS_GAME : OPENPETE_TERRAIN_VIS_FRUSTUM;
+    op_live_set(&s_terrain_vis_want, s_terrain_vis);
 
     /* Key-contest granularity (SLOT_CONTEST, fragment spec-constant 4): a
      * game whose draw submits mobys and terrain through ONE ordering table
@@ -8035,6 +8072,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.window      = win;
     openpete_native_publish_fullscreen();
     s_nr.dev         = dev;
+    s_vsync = rhi_get_vsync(dev);   /* the device's preference, the vsync latch's base */
+    op_live_set(&s_vsync_want, s_vsync);
     s_nr.win_w       = w;
     s_nr.win_h       = h;
     s_nr.blit_pipe    = P.blit_pipe;
@@ -8968,6 +9007,7 @@ static void update_layout(void)
             openpete_view_layout(s_nr.win_w, s_nr.win_h, fit_w, fit_h, s_nr.aspect_wh);
         const float wf = vl.wf, cx = vl.cx, hx = vl.hx, hy = vl.hy;
         s_nr.ws_factor = wf;
+        op_live_set_f(&s_ws_factor_pub, wf);   /* the producers' factor, at their next latch */
         s_nr.p0_cx = cx; s_nr.p0_hx = hx / wf; s_nr.p0_hy = hy; /* 4:3 sub-rect for the scene map */
         /* VRAM fallback panel (loading screens / OT-empty): the canonical 4:3
          * framebuffer, shown at the 4:3 sub-rect (unstretched, pillarboxed within
@@ -9501,7 +9541,7 @@ static void native_depth_prepass(void)
     int prev_fe = s_render_full_extent;
     float prev_wf = s_render_freeze_wf;
     s_render_full_extent = 1;
-    s_render_freeze_wf = openpete_native_widescreen_factor();
+    s_render_freeze_wf = ws_factor_present();
     rhi_vertex *pbuf = (rhi_vertex *)s_cz_prepass.data;
     /* WORLD occluders first: untextured faces, then textured faces in
      * material runs (prepass_pack_world_runs). */
@@ -12307,10 +12347,15 @@ void openpete_native_occl_suspend(int presents)
     }
 }
 
-/* Hor+ widen factor; documented at the declaration. */
-float openpete_native_widescreen_factor(void)
+/** @brief Return the Hor+ widen factor a layout factor gives: the factor when above 1, else the headless --aspect factor, else 1.
+ *
+ * Headless has no window, so update_layout never derives the factor from a
+ * fixed --aspect; the aspect is honoured here instead.
+ * @param wf The layout's factor, 0 before the first layout.
+ * @return The factor, at least 1. */
+static float ws_factor_of(float wf)
 {
-    if (s_nr.ws_factor > 1.0f) return s_nr.ws_factor;
+    if (wf > 1.0f) return wf;
     /* Headless has no window, so update_layout never derives ws_factor from a
      * fixed --aspect. Honor the aspect here so native-only screenshot captures
      * extract the true Hor+ reveal (the edge geometry the feeders would
@@ -12318,11 +12363,18 @@ float openpete_native_widescreen_factor(void)
      * runs always have ws_factor set by update_layout, so this never fires
      * there. */
     if (!s_nr.window && s_nr.aspect_wh > 0.0f) {
-        float wf = s_nr.aspect_wh / (4.0f / 3.0f);
-        return wf > 1.0f ? wf : 1.0f;
+        float f = s_nr.aspect_wh / (4.0f / 3.0f);
+        return f > 1.0f ? f : 1.0f;
     }
     return 1.0f;
 }
+
+/* Hor+ widen factor; documented at the declaration. */
+float openpete_native_widescreen_factor(void) { return ws_factor_of(s_ws_factor_prod); }
+
+/** @brief Return the Hor+ widen factor of the layout the present draws with (s_nr.ws_factor); for the present thread's readers.
+ * @return The factor, at least 1. */
+static float ws_factor_present(void) { return ws_factor_of(s_nr.ws_factor); }
 /* Visible PSX screen-X range; documented at the declaration. */
 void openpete_native_widescreen_x_bounds(float *xlo, float *xhi)
 {
@@ -18003,7 +18055,7 @@ void openpete_native_set_perf_stats(int level) {
     op_live_set(&s_perf_stats_want, level);
     if (level != OPENPETE_PERF_OFF) s_perf_stats_last = level;
 }
-int  openpete_native_perf_stats_level(void) { return op_live_wanted(&s_perf_stats_want, s_perf_stats); }
+int  openpete_native_perf_stats_level(void) { return op_live_get(&s_perf_stats_want); }
 
 void openpete_native_set_fps_overlay(int on) {
     openpete_native_set_perf_stats(on ? s_perf_stats_last : OPENPETE_PERF_OFF);
@@ -18024,23 +18076,39 @@ int  openpete_native_fps_value(void)
 /* Live presentation setters (in-game settings menu). Display-only: they touch
  * only renderer state (s_nr and this file's statics), consumed by the next
  * native present; never gameplay RAM. */
-static float  s_fov_deg;          /* 0 = default */
-static double s_fov_tan_pending;  /* tan(fov/2), 0 at the default; set live */
-static double s_fov_tan;          /* latched at scene begin */
-/// @brief Latch the live tan(fov/2) setting for the scene now beginning.
-static void fov_latch(void) { s_fov_tan = s_fov_tan_pending; }
+static float  s_fov_deg;          /* latched on the sim thread; 0 = default */
+static double s_fov_tan;          /* tan(s_fov_deg / 2), 0 at the default */
+static _Atomic(int) s_fov_want = 0;   /* the setter's degrees, float bits */
+
+/** @brief Return tan(fov / 2) for a vertical FOV setting.
+ * @param deg The clamped setting in degrees; 0 or below for the default.
+ * @return The tangent; 0 at the default. */
+static double fov_tan_of(float deg) {
+    return deg > 0.0f ? tan((double)deg * 0.5 * 3.14159265358979323846 / 180.0) : 0.0;
+}
+
+void openpete_native_producer_knobs_latch(void) {
+    (void)op_live_latch(&s_vertex_snap_want, &s_vertex_snap);
+    (void)op_live_latch(&s_hide_player_want, &s_hide_player);
+    (void)op_live_latch(&s_terrain_vis_want, &s_terrain_vis);
+    (void)op_live_latch(&s_texmap_drawn_pub, &s_texmap_affine_prod);
+    (void)op_live_latch_f(&s_ws_factor_pub, &s_ws_factor_prod);
+    if (op_live_latch_f(&s_fov_want, &s_fov_deg)) {
+        s_fov_tan = fov_tan_of(s_fov_deg);
+        /* The occlusion grid was built at the old H: every cached rect is wrong. */
+        openpete_native_occl_suspend(2);
+    }
+    openpete_no_lod_latch();
+}
 
 void openpete_native_set_fov(float deg) {
     if (deg > 0.0f && deg < 1.0f) deg = 1.0f;
     if (deg > 179.0f) deg = 179.0f;
     if (deg <= 0.0f) deg = 0.0f;
-    if (deg == s_fov_deg) return;
-    s_fov_deg = deg;
-    s_fov_tan_pending = deg > 0.0f ? tan((double)deg * 0.5 * 3.14159265358979323846 / 180.0) : 0.0;
-    /* The occlusion grid was built at the old H: every cached rect is wrong. */
-    openpete_native_occl_suspend(2);
+    if (deg == openpete_native_fov_deg()) return;
+    op_live_set_f(&s_fov_want, deg);   /* applied at the next producer latch */
 }
-float openpete_native_fov_deg(void) { return s_fov_deg; }
+float openpete_native_fov_deg(void) { return op_live_get_f(&s_fov_want); }
 int   openpete_native_visible_rows(void) { return s_nr.clip_h > 0 ? s_nr.clip_h : 224; }
 /* The projection the feeders last built a view from: the label's inputs. */
 static double s_fov_lbl_H, s_fov_lbl_yrow;
@@ -18048,9 +18116,11 @@ void openpete_native_fov_note_canon(double H_canon, double y_row) { s_fov_lbl_H 
 int openpete_native_fov_angles(double* v_deg, double* h_deg) {
     const double H = s_fov_lbl_H > 0.0 ? s_fov_lbl_H : 341.0, yr = s_fov_lbl_yrow > 0.0 ? s_fov_lbl_yrow : 0.625;
     const double pi = 3.14159265358979323846;
-    double v = s_fov_deg > 0.0f ? (double)s_fov_deg
+    const float deg = openpete_native_fov_deg();
+    const double t = fov_tan_of(deg);
+    double v = deg > 0.0f ? (double)deg
              : 2.0 * atan((0.5 * (double)openpete_native_visible_rows()) / (yr * H)) * 180.0 / pi;
-    double s = s_fov_tan_pending > 0.0 ? ((0.5 * (double)openpete_native_visible_rows()) / (yr * H)) / s_fov_tan_pending : 1.0;
+    double s = t > 0.0 ? ((0.5 * (double)openpete_native_visible_rows()) / (yr * H)) / t : 1.0;
     double h = 2.0 * atan(256.0 * (double)openpete_native_widescreen_factor() / (H * s)) * 180.0 / pi;
     if (v_deg) *v_deg = v;
     if (h_deg) *h_deg = h;
@@ -18109,7 +18179,7 @@ void openpete_native_set_aspect(float w_over_h) {
                wh > 0.0f ? "Hor+ widen (fixed)" : "AUTO (follow window)");
 }
 
-float openpete_native_get_aspect(void) { return op_live_wanted_f(&s_aspect_want, s_nr.aspect_wh); }
+float openpete_native_get_aspect(void) { return op_live_get_f(&s_aspect_want); }
 
 void openpete_native_set_ssaa(int factor) {
     if (factor < 1) factor = 1;
@@ -18119,7 +18189,7 @@ void openpete_native_set_ssaa(int factor) {
 }
 
 int openpete_native_get_ssaa(void) {
-    const int f = op_live_wanted(&s_ssaa_want, s_nr.ssaa);
+    const int f = op_live_get(&s_ssaa_want);
     return (f > 0) ? f : 1;
 }
 
@@ -18129,21 +18199,25 @@ void openpete_native_set_vsync(int on) {
 }
 
 int openpete_native_get_vsync(void) {
-    return s_nr.dev ? op_live_wanted(&s_vsync_want, rhi_get_vsync(s_nr.dev)) : -1;
+    return s_nr.dev ? op_live_get(&s_vsync_want) : -1;
 }
 
 int openpete_native_vertex_snap_active(void) {
     return s_vertex_snap;   /* feeders branch on this for snap-consistent emits */
 }
 
+int openpete_native_vertex_snap_present(void) { return s_vertex_snap_present; }
+
+int openpete_native_get_vertex_precision(void) { return op_live_get(&s_vertex_snap_want); }
+
 void openpete_native_scene_set_presnap(int on) {
     s_cur_presnap = on ? 1 : 0;   /* sticky, like set_tag - clear after the feed */
 }
 
 void openpete_native_set_vertex_precision(int integer_snap) {
-    s_vertex_snap = integer_snap ? 1 : 0;   /* consumed by the next add_tri_grouped feed */
+    op_live_set(&s_vertex_snap_want, integer_snap ? 1 : 0);   /* fed from the next producer latch */
     OPL_INFO_F("native", "vertex-precision -> %s",
-               s_vertex_snap ? "integer (PSX wobble)" : "subpixel (smooth)");
+               integer_snap ? "integer (PSX wobble)" : "subpixel (smooth)");
 }
 
 void openpete_native_set_raster_quantize(int mult) {
@@ -18156,7 +18230,7 @@ void openpete_native_set_raster_quantize(int mult) {
         OPL_INFO_F("native", "raster-quantize -> off");
 }
 
-int openpete_native_get_raster_quantize(void) { return op_live_wanted(&s_raster_mult_want, s_raster_mult); }
+int openpete_native_get_raster_quantize(void) { return op_live_get(&s_raster_mult_want); }
 
 /* Latched per present, read at the scene postfx split; no pipeline rebuild. */
 void openpete_native_set_dither(int on) {
@@ -18165,14 +18239,16 @@ void openpete_native_set_dither(int on) {
                on ? "on (PS1 15-bit colour + 4x4 dither)" : "off");
 }
 
-int openpete_native_get_dither(void) { return op_live_wanted(&s_dither_want, s_dither); }
+int openpete_native_get_dither(void) { return op_live_get(&s_dither_want); }
 
 void openpete_native_set_hide_player(int on) {
-    s_hide_player = on ? 1 : 0;
-    OPL_INFO_F("native", "hide player -> %s", s_hide_player ? "on" : "off");
+    op_live_set(&s_hide_player_want, on ? 1 : 0);
+    OPL_INFO_F("native", "hide player -> %s", on ? "on" : "off");
 }
 
-int openpete_native_get_hide_player(void) { return s_hide_player; }
+int openpete_native_get_hide_player(void) { return op_live_get(&s_hide_player_want); }
+
+int openpete_native_hide_player_active(void) { return s_hide_player; }
 
 void openpete_native_set_hide_hud(int on) {
     s_hide_hud = on ? 1 : 0;
@@ -18187,24 +18263,29 @@ int openpete_native_hide_class(uint32_t cls) {
     return 0;
 }
 
-/* Read by the terrain feeder at the top of every sector walk. */
+/* Latched on the sim thread; the terrain feeder reads the latched mode. */
 void openpete_native_set_terrain_visibility(int mode) {
-    s_terrain_vis = (mode == OPENPETE_TERRAIN_VIS_GAME) ? OPENPETE_TERRAIN_VIS_GAME
-                                                        : OPENPETE_TERRAIN_VIS_FRUSTUM;
+    const int v = (mode == OPENPETE_TERRAIN_VIS_GAME) ? OPENPETE_TERRAIN_VIS_GAME
+                                                      : OPENPETE_TERRAIN_VIS_FRUSTUM;
+    op_live_set(&s_terrain_vis_want, v);
     OPL_INFO_F("native", "terrain-visibility -> %s",
-               s_terrain_vis == OPENPETE_TERRAIN_VIS_GAME
+               v == OPENPETE_TERRAIN_VIS_GAME
                ? "game (the game's visibility verdict)"
                : "frustum (every sector inside the displayed frame)");
 }
 
-int openpete_native_get_terrain_visibility(void) { return s_terrain_vis; }
+int openpete_native_get_terrain_visibility(void) { return op_live_get(&s_terrain_vis_want); }
+
+int openpete_native_terrain_visibility_active(void) { return s_terrain_vis; }
 
 /* Queued; variant_apply_pending requests the rebuild at the next present. */
 void openpete_native_set_texture_mapping(int affine) {
     op_live_set(&s_texmap_want, affine ? 1 : 0);
 }
 
-int openpete_native_get_texture_mapping(void) { return s_texmap_affine; }
+int openpete_native_get_texture_mapping(void) { return op_live_get(&s_texmap_want); }
+
+int openpete_native_texture_mapping_drawn(void) { return s_texmap_affine_prod; }
 
 /* Key-contest scoping (MOBY_TRUESCOPE, fragment spec-constant 3), DEFAULT ON:
  * a moby og key claims a pixel only when it also beats the covering
@@ -18276,6 +18357,7 @@ static void variant_shown(const rhi_rebuild_stats* st) {
                    v.truescope ? "true-depth scoped" : "og compound painter (A/B)");
     const bool wire_changed = (int)v.wireframe != s_wireframe;
     s_texmap_affine = v.affine;
+    op_live_set(&s_texmap_drawn_pub, s_texmap_affine);
     s_notex = v.notex;
     s_wireframe = v.wireframe;
     s_moby_truescope = v.truescope;
@@ -18320,8 +18402,10 @@ static void variant_request(rhi_pipe_variant want, bool sync) {
  * dump compose. A changed aspect resets update_layout's change cache, which
  * keys on sizes only; a changed vsync preference reaches the device here,
  * which rebuilds the swapchain at its next frame; the queued texture-mapping,
- * notex and wireframe values become the variant the caller then requests. A
- * new present-read setter stores a wanted value and adds its latch here. */
+ * notex and wireframe values become the variant the caller then requests;
+ * the vertex precision takes its present copy (openpete_native_vertex_snap_present),
+ * which the sim thread latches separately for the feeds. A new present-read
+ * setter stores a wanted value and adds its latch here. */
 static void present_knobs_latch(void) {
     (void)op_live_latch(&s_raster_mult_want, &s_raster_mult);
     (void)op_live_latch(&s_dither_want, &s_dither);
@@ -18330,9 +18414,9 @@ static void present_knobs_latch(void) {
     (void)op_live_latch(&s_texmap_want, &s_texmap_pending);
     (void)op_live_latch(&s_notex_want, &s_notex_pending);
     (void)op_live_latch(&s_wireframe_want, &s_wireframe_pending);
+    (void)op_live_latch(&s_vertex_snap_want, &s_vertex_snap_present);
     if (op_live_latch_f(&s_aspect_want, &s_nr.aspect_wh)) s_nr.layout_win_w = -1;
-    const int vsync = atomic_load_explicit(&s_vsync_want, memory_order_acquire);
-    if (vsync != OP_LIVE_NONE && s_nr.dev) rhi_set_vsync(s_nr.dev, vsync);
+    if (op_live_latch(&s_vsync_want, &s_vsync) && s_nr.dev) rhi_set_vsync(s_nr.dev, s_vsync);
 }
 
 /** @brief Request a rebuild for a changed queued variant and install a finished one.
@@ -24088,7 +24172,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
      * dedicated shot_rtt and write the single -vk image. The widen comes from a
      * fixed --aspect, surfaced headless by openpete_native_widescreen_factor. */
     if (!with_ref) {
-        float cap_wf = openpete_native_widescreen_factor();
+        float cap_wf = ws_factor_present();
         if (cap_wf > 1.0001f)
             return native_shot_widescreen(base, s_nr.ref_h, cap_wf, cap_out, cap_w, cap_h);
     }

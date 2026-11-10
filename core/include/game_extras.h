@@ -81,6 +81,8 @@ void game_on_boot(CPUState* cpu);
  * Implementations drive the skip targets, the level warp, the free camera's
  * scripted placement and engage, and the other per-tick feature hooks; the
  * Spyro 1 and 3 implementations also build the host-drawn text overlays.
+ * It first latches the live settings the producers read
+ * (openpete_native_producer_knobs_latch).
  * @param cpu Guest CPU state.
  * @param frame_counter The openpete_frame counter before the tick. */
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter);
