@@ -2564,7 +2564,7 @@ static const knob_desc_t g_builtin_debug[] = {
     ENVROW_LATCHED("TERRAIN_FILL_QUANT", "Debug", "1",
         "Floor-quantize fill verts (default 1)."),
     ENVROW_LIVE("TERRAIN_LP_ADMIT", "Debug", "1",
-        "Authored per-face LP admission (.s exact; 0 = legacy)."),
+        "Spyro 1 authored per-face LP admission (.s exact; 0 = legacy); Spyro 2/3 ignore it."),
     ENVROW_LIVE("TERRAIN_LP_FARCULL", "Debug", "1",
         "LP far cull at m_CullingDistance (.s exact; original LOD only)."),
     ENVROW_LIVE("TERRAIN_HP_DROP", "Debug", "1",

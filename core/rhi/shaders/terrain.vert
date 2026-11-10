@@ -2432,12 +2432,13 @@ void main()
             if (fcv >= pfloat(fclim)) { kill_vert(); return; }
         }
         pfloat thr = pfloat((sf >> SF_LPNEAR_SHIFT) & SF_LPNEAR_MASK);
-        if (!gapfill_face && (gf & GF_LPNEAROUT) != 0 && thr > 0.0) {
-            /* LP near outcode: every LP face of a sector whose HP draws
+        if (!gapfill_face && (gf & GF_LPNEAROUT) != 0) {
+            /* LP near outcode, the only near rule of a game that has one:
+             * every LP face of a sector whose HP draws or that has no HP
              * (nonzero bound) drops when its corners all sit under the
-             * sector's SZ3 bound, covered by that HP or not; every other
-             * face takes the authored admission below. */
-            if (m0.z < thr && m1.z < thr && m2.z < thr &&
+             * sector's SZ3 bound, covered by that HP or not; with a zero
+             * bound the face draws. */
+            if (thr > 0.0 && m0.z < thr && m1.z < thr && m2.z < thr &&
                 (!quad || m3c.z < thr)) { kill_vert(); return; }
         } else if (!gapfill_face) {
             /* Authored per-face admission: slot + 8*admit >= s3, deficit

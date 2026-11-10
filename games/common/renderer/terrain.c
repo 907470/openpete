@@ -15611,8 +15611,10 @@ static int sector_lp_near_thr(const tn_sechdr* H, double cbin) {
  * can land in both lists; otherwise the flags decide, with the tier-faithful
  * distance tests when enabled. A sector left LP-unlisted takes the LP
  * ride-along sector_lp_ride picks. fillLP marks an LP list kept for hole fill;
- * lpNearThr is the LP near-outcode bound (sector_lp_near_thr), kept only
- * while the sector's HP draws, since the dropped LP faces owe that cover. The rule
+ * lpNearThr is the LP near-outcode bound (sector_lp_near_thr), kept while the
+ * sector's HP draws, since the dropped LP faces owe that cover, and on a
+ * sector with no HP, where the game's walk drops the same faces with nothing
+ * in their place. The rule
  * comments sit beside each decision in the code and in walk_sector.
  * @param SC The sector's cache entry; the ride gate and an active fardbg
  *        trace bring its LP coverage tags current (tsc_tags_current).
@@ -15672,7 +15674,7 @@ static void sector_verdicts(tscache_t* SC, const tn_wcfg* G, tn_secverd* V) {
     V->lpGapOnly = (uint8_t)(ride == TN_RIDE_GAPONLY);
     V->lpUncovOnly = (uint8_t)(ride == TN_RIDE_UNCOVONLY);
     V->fillLP = (uint8_t)fillLP; V->secInLOD = (uint8_t)secInLOD;
-    V->lpNearThr = (uint16_t)(drawHP ? sector_lp_near_thr(&H, cbin) : 0);
+    V->lpNearThr = (uint16_t)((drawHP || !H.hasHP) ? sector_lp_near_thr(&H, cbin) : 0);
 }
 
 /** @brief Returns 1 when an LP face draws in the world pass under its sector's ride-along verdict.
@@ -15690,18 +15692,22 @@ static int tn_lp_face_rides(const tn_secverd* SV, const tsface_t* F) {
     return 1;
 }
 
-/** @brief Applies the draw's near rule for an LP face: the LP near outcode where it applies, else the authored admission.
+/** @brief Applies the draw's near rule for an LP face: the LP near outcode on a game that has one, else the authored admission.
  *
- * On a game with terrain.lp_near_sz the near outcode replaces the
- * admission for every LP face of a sector while the sector's HP draws (a
- * nonzero bound, sector_verdicts): the face drops when every corner's SZ3 is
- * under the bound, whether or not the HP mesh covers it, as the game's LP
- * walk tags each vertex and skips a face whose corners are all tagged (Spyro
- * 2 environment.s 80028BD8-80028E84). Every other face takes the authored
- * admission: with the admission on, slot = (four corner SZ3s summed, a triangle counting its
- * shared corner twice) >> 5 and s3 = (fogRefBase >> 5) - 0x20: the face
- * draws iff slot + 8*admit >= s3; a deficit of -31..-1 falls back to "draw
- * if any corner SZ3 >= (s3 - 8*admit)*8"; a deeper deficit drops.
+ * On a game with terrain.lp_near_sz the near outcode is the only near rule:
+ * the game's LP walk tags each vertex whose SZ3 is under the bound and skips
+ * a face whose corners are all tagged, and has no admission compare (Spyro 2
+ * environment.s 80028BD8-80028E84, Spyro 3 800273A4-80027648). The test runs
+ * only while the sector's HP draws or the sector has no HP (a nonzero bound,
+ * sector_verdicts): the walk admits sectors the game does not draw (side
+ * margins, extended LOD), and a dropped face of a sector with HP is owed the
+ * HP in its place. It does not test whether the HP mesh covers the face.
+ * With a zero bound the face draws. A Spyro
+ * 1 face takes the authored admission: with the admission on, slot = (four
+ * corner SZ3s summed, a triangle counting its shared corner twice) >> 5 and
+ * s3 = (fogRefBase >> 5) - 0x20: the face draws iff slot + 8*admit >= s3; a
+ * deficit of -31..-1 falls back to "draw if any corner SZ3 >= (s3 -
+ * 8*admit)*8"; a deeper deficit drops.
  * @param SV The sector's verdicts.
  * @param F The LP face.
  * @param cz The corners' view-Z (SZ3 scale) in i0..i3 order.
@@ -15713,7 +15719,8 @@ static const char* tn_lp_face_near_drop(const tn_secverd* SV, const tsface_t* F,
                                         const double cz[4], int quad, int admit,
                                         int fogRefBase) {
     const int nc = quad ? 4 : 3;
-    if (game_layout.terrain.lp_near_sz && SV->lpNearThr) {
+    if (game_layout.terrain.lp_near_sz) {
+        if (!SV->lpNearThr) return NULL;
         const double thr = (double)SV->lpNearThr;
         int under = 0;
         for (int k = 0; k < nc; k++) under += cz[k] < thr;
@@ -16954,7 +16961,7 @@ static const char* tn_face_gate(const tn_facectx* c, tn_facegate* g) {
      * knob keeps its contract in original mode too.
      * OPENPETE_TERRAIN_LP_ADMIT=0 restores the legacy fog-corner-only
      * behaviour (A/B). A game with the LP near outcode
-     * (terrain.lp_near_sz) takes that rule instead
+     * (terrain.lp_near_sz) takes that rule instead and ignores the knob
      * (tn_lp_face_near_drop). */
     if (passLP && !passFill) {
         const char* why = tn_lp_face_world_drop(G, SV, F, cz, quad);
