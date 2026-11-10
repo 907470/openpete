@@ -262,8 +262,11 @@ second-warning-held-particles|2372|264||2372,2562,2636|--skip-to-cutscene the_se
 # cloud-spires-game-over: the game-over reload. The game-over image is read
 # through the synchronous reader with loadStage already 2; deferring that
 # read's completion hangs the reader's no-VSync spin (watchdog exit at VBL
-# 5916). 5973 is the game-over screen, 7873 the reloaded level live.
-cloud-spires-game-over|5973|1000||5973,7873
+# 5916). 5973 is the game-over screen, 7873 the reloaded level live. 5940,
+# 6020 and 6100 follow the player across the game-over picture: entering
+# from the left, over the tower, and at rest on the wall ledge; the game
+# draws the picture under the player.
+cloud-spires-game-over|5973|1000||5940,5973,6020,6100,7873
 #
 # s3-create-save: a new game on a blank card in slot 1 (provisioned formatted
 # by the binary in the leg's directory) creates and writes its save. 1678 and
