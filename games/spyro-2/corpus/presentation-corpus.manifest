@@ -300,3 +300,9 @@ idol-springs-fish-swallow|3402|2||3402,3406,3408,3412,3418
 # 3051 show whether the sub-tick present blends the two ticks' colours or
 # holds one tick's. Blessed pre-fix.
 crushs-dungeon-idle-colour|3048|2||3048,3050,3052|--skip-to-level crushs_dungeon
+
+# scorch-far-dune-admit: a far dune's low-detail faces (sector 132, faces 0
+# and 2) are missing against the sky left of centre, where the PSX draws
+# them; the camera is a gameplay camera behind the player near the level's
+# checkerboard plaza. Blessed pre-fix.
+scorch-far-dune-admit|2471|2||2473|--skip-to-level scorch --aspect 4:3 OPENPETE_FREECAM_POSE=96403,61401,11991,2746,159
