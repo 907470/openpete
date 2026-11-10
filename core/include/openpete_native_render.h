@@ -1876,6 +1876,18 @@ uint32_t openpete_native_scene_fade_prim(void);
  *        fade) clears every mark. */
 void openpete_native_scene_mark_over_fade(uint32_t fade_rank);
 
+/** @brief Mark the current scene's flat 2D triangles the game draws before the player.
+ *
+ * Each HUD or HUD_PANEL triangle with a primitive address is marked when
+ * @p under answers 1 for that address and cleared otherwise; the compose
+ * draws the marked ones before the PLAYER group, the rest over the player.
+ * OVERLAY triangles are left unmarked. Renderer state only.
+ * @param under The predicate on a primitive address; NULL clears every mark.
+ * @param player_slot The player's ordering-table slot, kept for the
+ *        OPENPETE_UI_UNDER_CENSUS line.
+ * @return The count of triangles marked. */
+int openpete_native_scene_mark_under_player(int (*under)(uint32_t prim), int player_slot);
+
 /** @brief Collect the guest primitive addresses the current scene's 2D was decoded from.
  *
  * A feeder uses them to tell which of the VBL's ordering-table walks is the

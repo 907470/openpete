@@ -184,6 +184,15 @@ void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim);
  * @param slot The table slot it is appended to; -1 for the 2D entry. */
 void ui_sprite_link_note(uint32_t prim, int slot);
 
+/** @brief Records the avatar's ordering-table slot and the table it is linked into.
+ *
+ * The table is the current one, counted by ui_game.ot_stitch as for
+ * ui_sprite_link_note. A 2D primitive linked into an earlier table, or into
+ * the same table at a higher slot, draws under the avatar
+ * (openpete_native_scene_mark_under_player).
+ * @param slot The avatar's slot (player_game.ot_slot); -1 when its draw culls it. */
+void ui_sprite_player_link_note(int slot);
+
 /** @brief Returns the count of links ui_sprite_link_note has recorded since boot.
  *
  * A chain emitter compares it across its call to tell whether its chain was

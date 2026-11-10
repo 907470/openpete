@@ -768,10 +768,13 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
     s_fed_prims++;
 }
 
-/* The layer, blend class and vertex alpha of an untextured 2D primitive. An
- * opaque one draws on the HUD layer at class 0. A semi-transparent one (code
- * bit 1) blends at the ABR of the draw mode linked before it, on the panel
- * layer, as a dark panel's F4 does. */
+/* The layer, blend class and vertex alpha of an untextured 2D primitive. Both
+ * kinds draw on the panel layer, which interleaves with the textured HUD by
+ * the game's link order (draw_hud_panels_and_tex), so a textured primitive
+ * linked after a fill draws on it. An opaque one draws at class 0, alpha
+ * 0xFF, as a menu box's backing F4 does; a semi-transparent one (code bit 1)
+ * blends at the ABR of the draw mode linked before it, as a dark panel's F4
+ * does. */
 typedef struct { int category; int blend; uint32_t alpha; } ui_untex_t;
 /** @brief Returns the layer, blend class and alpha of an untextured 2D primitive.
  *
@@ -780,10 +783,10 @@ typedef struct { int category; int blend; uint32_t alpha; } ui_untex_t;
  * @param w1 The primitive's second word; bits 24-31 hold the command byte.
  * @param semi_cls The SEMI_* class counted when the primitive is
  *        semi-transparent.
- * @return HUD at class 0 when opaque, else HUD_PANEL at the ui_blend
- *         result. */
+ * @return HUD_PANEL at class 0 and alpha 0xFF when opaque, else HUD_PANEL
+ *         at the ui_blend result. */
 static ui_untex_t ui_untex_layer(uint32_t w1, int semi_cls) {
-    if (!((w1 >> 24) & 0x2u)) return (ui_untex_t){ OPENPETE_SCENE_HUD, 0, 0xFFu };
+    if (!((w1 >> 24) & 0x2u)) return (ui_untex_t){ OPENPETE_SCENE_HUD_PANEL, 0, 0xFFu };
     semi_note(semi_cls, (unsigned)s_last_abr, 0);
     const ui_blend_t b = ui_blend(1, (unsigned)s_last_abr);
     return (ui_untex_t){ OPENPETE_SCENE_HUD_PANEL, b.blend, b.alpha };
@@ -1347,6 +1350,7 @@ static int ui_ram_word(uint32_t a) { return a >= UI_RAM_LO && a <= UI_RAM_HI && 
 static uint32_t s_walk_addr[UI_OT_WALK_MAX];   /* sorted by address */
 static uint32_t s_walk_rank[UI_OT_WALK_MAX];   /* traversal position of that address */
 static uint64_t s_walk_period[UI_OT_WALK_MAX]; /* table period of that address's link (link rank only) */
+static int32_t  s_walk_slot[UI_OT_WALK_MAX];   /* slot of that address's link, -1 the 2D entry (link rank only) */
 static int      s_walk_n;
 static int      s_walk_hits;                   /* tris the map ranked at the last release:
                                                 * the engagement counter (0 = the walk found
@@ -1442,6 +1446,16 @@ void ui_sprite_link_note(uint32_t prim, int slot) {
 
 uint64_t ui_sprite_link_count(void) { return s_link_n; }
 
+/* The avatar's last link (ui_sprite_player_link_note): its slot, -1 while
+ * its draw culls it, and the table period it was linked in. */
+static int      s_player_slot = -1;
+static uint64_t s_player_period;
+
+void ui_sprite_player_link_note(int slot) {
+    s_player_slot = slot;
+    s_player_period = s_link_period;
+}
+
 /** @brief Reports whether the 2D is ranked by link (ui_game.rank_by_link) rather than by the DrawOTag walk.
  *
  * OPENPETE_UI_RANK_WALK, read once, forces the walk on a link-rank game:
@@ -1507,7 +1521,7 @@ static void build_link_rank_map(const uint32_t* known, int kn) {
     for (int i = 0; i < sn; i++) sorted[i].ord = (uint64_t)(i + 1);   /* the rank */
     qsort(sorted, (size_t)sn, sizeof sorted[0], link_addr_cmp);
     for (int i = 0; i < sn; i++) { s_walk_addr[i] = sorted[i].addr; s_walk_rank[i] = (uint32_t)sorted[i].ord;
-                                   s_walk_period[i] = sorted[i].period; }
+                                   s_walk_period[i] = sorted[i].period; s_walk_slot[i] = sorted[i].slot; }
     s_walk_n = sn;
 }
 
@@ -1653,6 +1667,53 @@ static int period_defer_on(void) {
     return !off;
 }
 
+/** @brief Report whether the 2D the game draws before the avatar is marked to draw under it.
+ *
+ * Only a link-rank game (rank_by_link_on) records the slots the order is
+ * read from. OPENPETE_UI_UNDER_PLAYER=0, read once, leaves every 2D over the
+ * avatar (the in-binary A/B of the order).
+ * @return 1 when marked, else 0. */
+static int under_player_on(void) {
+    static int off = -1;
+    if (off < 0) { const char* e = getenv("OPENPETE_UI_UNDER_PLAYER"); off = (e && *e == '0'); }
+    return rank_by_link_on() && !off;
+}
+
+/** @brief Prints a marking's under-player triangle count when nonzero, under OPENPETE_UI_UNDER_CENSUS.
+ *
+ * One line per marking that marks a triangle, with the avatar's slot: the
+ * per-VBL counterpart of the compose's per-present line.
+ * @param marked The triangles marked to draw under the avatar. */
+static void under_player_census(int marked) {
+    static int cen = -1;
+    ENV_FLAG_LATCH(cen, "OPENPETE_UI_UNDER_CENSUS");
+    if (cen && marked)
+        fprintf(stderr, "[census f=%u UI-UNDER-MARK] under=%d player_slot=%d\n",
+                openpete_frame, marked, s_player_slot);
+}
+
+/** @brief Report whether the game draws a 2D primitive before the avatar.
+ *
+ * Reads the link map build_link_rank_map left. The stitch draws the tables
+ * in period order and each table's slots highest first, the 2D entry last,
+ * so a primitive linked into an earlier table than the avatar, or into the
+ * avatar's table at a slot above the avatar's (ui_sprite_player_link_note),
+ * draws under it. Nothing draws under an avatar its draw culled.
+ * @param prim The primitive's guest address.
+ * @return 1 when the primitive draws under the avatar, else 0 (also when unlinked). */
+static int prim_under_player(uint32_t prim) {
+    if (s_player_slot < 0) return 0;
+    int lo = 0, hi = s_walk_n - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        if (s_walk_addr[mid] == prim)
+            return s_walk_period[mid] < s_player_period ||
+                   (s_walk_period[mid] == s_player_period && s_walk_slot[mid] > s_player_slot);
+        if (s_walk_addr[mid] < prim) lo = mid + 1; else hi = mid - 1;
+    }
+    return 0;
+}
+
 /** @brief Report whether a primitive was linked into the table the game is still building.
  *
  * Reads the link map build_link_rank_map left: the primitive's newest link
@@ -1722,6 +1783,34 @@ static void defer_open_period_2d(void) {
     openpete_native_scene_defer_2d(prim_in_open_period);
 }
 
+/** @brief Collects the scene's 2D primitive addresses, and one more address when given, sorted ascending.
+ *
+ * @param known Receives the addresses; holds UI_CLAIM_MAX * 2 + 1.
+ * @param extra An address ranked with them (the fade quad), or 0 for none.
+ * @return The count of addresses. */
+static int collect_scene_2d_sorted(uint32_t* known, uint32_t extra) {
+    int kn = openpete_native_scene_collect_2d_prims(known, UI_CLAIM_MAX * 2);
+    if (extra) known[kn++] = extra;
+    for (int i = 1; i < kn; i++) {
+        uint32_t a = known[i]; int j = i - 1;
+        while (j >= 0 && known[j] > a) { known[j+1] = known[j]; j--; }
+        known[j+1] = a; }
+    return kn;
+}
+
+/** @brief Marks the scene's 2D the game draws before the avatar when no claimed batch is released to rank it.
+ *
+ * A VBL whose 2D is fed at emission alone (the loading picture's SPRT chain)
+ * releases no batch, so rank_scene_2d does not run; the link map is built
+ * over the scene's 2D and the under-player marks are set from it
+ * (prim_under_player). Inert on a game ranked by the DrawOTag walk. */
+static void mark_unranked_under_player(void) {
+    if (!under_player_on()) return;
+    static uint32_t known[UI_CLAIM_MAX * 2 + 1];
+    build_link_rank_map(known, collect_scene_2d_sorted(known, 0u));
+    under_player_census(openpete_native_scene_mark_under_player(prim_under_player, s_player_slot));
+}
+
 /** @brief Ranks every 2D triangle of the scene by the draw order of the primitive it was decoded from.
  *
  * The scene's 2D primitive addresses, the released batch's and the glyphs
@@ -1733,7 +1822,9 @@ static void defer_open_period_2d(void) {
  * rest, and the hits are kept in s_ot_ranked. The frame's fade quad
  * (openpete_native_scene_fade_prim) is ranked with them, and every 2D
  * triangle ranked after it is marked to draw over the fade
- * (openpete_native_scene_mark_over_fade); OPENPETE_UI_FADE_CENSUS prints the
+ * (openpete_native_scene_mark_over_fade); on a link-rank game every 2D
+ * triangle the game draws before the avatar is marked to draw under it
+ * (prim_under_player). OPENPETE_UI_FADE_CENSUS prints the
  * fade's rank and the count of primitives after it. OPENPETE_OT_RING_PROBE prints
  * each unranked primitive, OPENPETE_UISPRITE_TRACE the map size and hits.
  * @param cpu The guest CPU state. */
@@ -1741,12 +1832,7 @@ static void rank_scene_2d(CPUState* cpu) {
     s_walk_hits = 0;
     const uint32_t fade_prim = openpete_native_scene_fade_prim();
     { static uint32_t known[UI_CLAIM_MAX * 2 + 1];
-      int kn = openpete_native_scene_collect_2d_prims(known, UI_CLAIM_MAX * 2);
-      if (fade_prim) known[kn++] = fade_prim;   /* ranked so the 2D after it is known */
-      for (int i = 1; i < kn; i++) {            /* sorted for the chain scoring */
-          uint32_t a = known[i]; int j = i - 1;
-          while (j >= 0 && known[j] > a) { known[j+1] = known[j]; j--; }
-          known[j+1] = a; }
+      const int kn = collect_scene_2d_sorted(known, fade_prim);   /* the fade ranked so the 2D after it is known */
       if (rank_by_link_on()) build_link_rank_map(known, kn);
       else build_ot_rank_map(cpu, known, kn); }
     defer_open_period_2d();
@@ -1754,6 +1840,8 @@ static void rank_scene_2d(CPUState* cpu) {
     s_ot_ranked = s_walk_hits;
     const uint32_t fade_rank = fade_prim ? ot_rank_of_quiet(fade_prim) : 0u;
     openpete_native_scene_mark_over_fade(fade_rank);
+    under_player_census(openpete_native_scene_mark_under_player(under_player_on() ? prim_under_player : NULL,
+                                                                s_player_slot));
     { static int fc = -1; ENV_FLAG_LATCH(fc, "OPENPETE_UI_FADE_CENSUS");
       if (fc && fade_prim) {
           static uint32_t kp[UI_CLAIM_MAX * 2];
@@ -1844,7 +1932,9 @@ static void on_scene_frame_close(unsigned frame) {
  * not composed yet, so the batch is final and still in its own scene. The
  * frame close and the ordering-table walk remain as later releases for a
  * VBL that composes no image. Each release here counts in
- * s_claim_at_capture. s_cap_frame becomes the released batch's build VBL,
+ * s_claim_at_capture. With no batch pending, the scene's 2D is still marked
+ * for the under-player order (mark_unranked_under_player). s_cap_frame
+ * becomes the released batch's build VBL,
  * or 0xFFFFFFFF when no batch was pending, from the claim count read before
  * the release zeroes it. s_presented_scene becomes the stamp of the live
  * scene, the one this capture takes. */
@@ -1857,6 +1947,7 @@ static void on_overlay_precapture(void) {
      * animates (the cutscene letterbox sliding in) is the next tick's position,
      * which puts the bar 2 PSX rows out on every tick of the slide. */
     if (s_claim_n) { s_claim_at_capture++; release_batch(); }
+    else if (openpete_native_scene_enabled() && render_path_enabled(RP_UI)) mark_unranked_under_player();
     s_cap_frame = pending ? built : 0xFFFFFFFFu;
     s_presented_scene = openpete_native_scene_frame();
 }

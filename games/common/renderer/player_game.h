@@ -192,6 +192,15 @@ typedef struct player_game {
      * the one-slot tie pull. */
     int sort_depth_front;
 
+    /* The ordering-table slot the draw links the avatar's model at,
+     * recomputed from gamestate (the avatar record and the camera) by the
+     * draw's own arithmetic: the view Z of the record's position, shifted
+     * down seven, less the record's ordering-bias byte, floored at 0. The 2D
+     * layer draws a 2D primitive the game links at a higher slot of the same
+     * table under the avatar. Returns -1 when the draw culls the avatar.
+     * NULL = the game draws no 2D under the avatar by slot. */
+    int (*ot_slot)(CPUState* cpu);
+
     /* Fill `pl` with this tick's water-plane split, or leave it inactive.
      * NULL = the game's draw has no such pass. */
     void (*plane_begin)(CPUState* cpu, player_plane_t* pl);

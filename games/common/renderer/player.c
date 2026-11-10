@@ -37,6 +37,7 @@
 #include "renderer/moby.h"           /* the shared NCLIP, emit tree and tiledef decode */
 #include "renderer/player.h"
 #include "renderer/player_game.h"
+#include "renderer/ui_game.h"         /* ui_sprite_player_link_note */
 
 #include <math.h>
 #include <stdint.h>
@@ -181,6 +182,19 @@ void player_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_se
     s_seg_valid = curr_seg ? (prev_seg ? 2 : 1) : 0;
 }
 void player_native_set_player_slot(int k) { s_player_slot = k < 0 ? 0 : k; }
+
+void player_view_mac(CPUState* cpu, int32_t d[3], int32_t mac[3]) {
+    const uint32_t rec = PL.base, cam = game_layout.cam.base;
+    d[0] = (int32_t)(cpu->read_word(rec)       - cpu->read_word(cam + 0x28u));
+    d[1] = (int32_t)(cpu->read_word(cam + 0x2Cu) - cpu->read_word(rec + 4u));
+    d[2] = (int32_t)(cpu->read_word(cam + 0x30u) - cpu->read_word(rec + 8u));
+    const int64_t ir[3] = { (int16_t)d[1], (int16_t)d[2], (int16_t)d[0] };
+    int16_t r[9];
+    for (int k = 0; k < 9; k++)
+        r[k] = (int16_t)cpu->read_half(cam + 2u * (uint32_t)k);
+    for (int row = 0; row < 3; row++)
+        mac[row] = (int32_t)((r[row*3] * ir[0] + r[row*3 + 1] * ir[1] + r[row*3 + 2] * ir[2]) >> 12);
+}
 
 /* The front-layer flatten (the sort-depth sentinel) pulls the model onto the
  * near plane, capped so the nearest vertex lands ON the near floor. With N
@@ -1279,6 +1293,9 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
     player_native_set_flat_key(openpete_frame << 1);
 
     int is_player = player_game.call_is_player ? player_game.call_is_player(cpu) : 1;
+    /* The avatar's ordering-table slot and table, for the 2D layer's
+     * under-player order. */
+    if (is_player && player_game.ot_slot) ui_sprite_player_link_note(player_game.ot_slot(cpu));
     /* The mirrored copy is a call of its own with its own record and tag slot:
      * latch it for the walk before anything reads the pose. */
     player_native_set_mirror(player_game.call_is_mirror

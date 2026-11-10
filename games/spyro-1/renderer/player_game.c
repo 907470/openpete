@@ -418,6 +418,25 @@ static int s1_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     return 1;
 }
 
+/** @brief The ordering-table slot the draw links the avatar at, recomputed from g_Spyro and g_Camera.
+ *
+ * The draw culls the avatar when the view Z is at least 0x4000 or the view
+ * position falls outside the four planes |x| < z + 0x800 and
+ * |y| < z + 0x800, and otherwise takes the slot
+ * max(0, (viewZ >> 7) - g_Spyro[0x27]), the byte unsigned
+ * (r_pete.s 80023EE0-80023FA0).
+ * @param cpu Reads g_Spyro and g_Camera.
+ * @return The slot, or -1 when the draw culls the avatar. */
+static int s1_ot_slot(CPUState* cpu) {
+    int32_t d[3], m[3];
+    player_view_mac(cpu, d, m);
+    if (m[2] - 0x4000 >= 0) return -1;
+    const int32_t z = m[2] + 0x800;
+    if (z - m[0] <= 0 || z + m[0] <= 0 || z - m[1] <= 0 || z + m[1] <= 0) return -1;
+    const int slot = (m[2] >> 7) - (int)cpu->read_byte(PL.base + 0x27u);
+    return slot < 0 ? 0 : slot;
+}
+
 const player_game_t spyro1_player_game = {
     .run_draw         = s1_run_draw,
     .part_count       = NULL,          /* the fixed three of game_layout.player */
@@ -430,6 +449,7 @@ const player_game_t spyro1_player_game = {
     /* The routine's own "ordering slot 0 - in front of everything" sentinel,
      * saturated during the level-transition flight (r_pete.s 80023F8C). */
     .sort_depth_front = 127,
+    .ot_slot          = s1_ot_slot,
     /* The strip face's flag bit exempts it from the back-face test, so a
      * flagged face draws at either winding. */
     .face_winding_flag = 1,

@@ -539,6 +539,24 @@ static int s23_call_is_mirror(CPUState* cpu) {
     return cpu->read_word(PL.base + SPYRO_MIRROR_GATE) != 0u;
 }
 
+/** @brief The ordering-table slot the draw links the avatar at, recomputed from g_Spyro and the camera.
+ *
+ * The draw culls the avatar when any camera-relative delta lies outside
+ * [-0x4000, 0x4000) or the view Z is at most -0x400, and otherwise takes
+ * the slot max(0, (viewZ >> 7) - (int8)g_Spyro[0x1E]) (spyrodraw.s:207-257);
+ * the faces link at that slot less one and below (spyrodraw.s:1732-1745).
+ * @param cpu Reads g_Spyro and the camera.
+ * @return The slot, or -1 when the draw culls the avatar. */
+static int s23_ot_slot(CPUState* cpu) {
+    int32_t d[3], mac[3];
+    player_view_mac(cpu, d, mac);
+    for (int i = 0; i < 3; i++)
+        if (d[i] < -0x4000 || d[i] >= 0x4000) return -1;
+    if (mac[2] + 0x400 <= 0) return -1;
+    const int slot = (mac[2] >> 7) - (int)(int8_t)cpu->read_byte(PL.base + 0x1Eu);
+    return slot < 0 ? 0 : slot;
+}
+
 const player_game_t player_game_spyro23 = {
     .run_draw         = s23_run_draw,
     .part_count       = NULL,            /* the fixed two of game_layout.player */
@@ -559,6 +577,7 @@ const player_game_t player_game_spyro23 = {
     .sort_depth_front = 0,               /* no full-front sentinel: the byte at
                                           * +0x1E is only ever an ordering bias
                                           * (spyrodraw.s:250-255) */
+    .ot_slot          = s23_ot_slot,
     .call_is_player   = s23_call_is_player,
     .call_is_mirror   = s23_call_is_mirror,
     .verify           = NULL,

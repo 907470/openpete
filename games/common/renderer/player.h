@@ -94,6 +94,17 @@ void player_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_se
  *
  * @param k The record index; a negative value (a refused append) is stored as 0. */
 void player_native_set_player_slot(int k);
+/** @brief Rotates the avatar record's camera-relative position into view space as the avatar draws' ordering MVMVA does.
+ *
+ * The deltas are (x - cam.x, cam.y - y, cam.z - z) from the record at
+ * game_layout.player.base and the camera position at cam.base+0x28; the
+ * draw loads them into IR3, IR1 and IR2 (16 bits each) and runs an sf = 1
+ * MVMVA by the camera matrix at cam.base+0x00 with no translation, so
+ * mac = (R . IR) >> 12 with IR = (d[1], d[2], d[0]) truncated to int16.
+ * @param cpu Reads the record and the camera.
+ * @param d Receives the three untruncated deltas in that order.
+ * @param mac Receives MAC1, MAC2 and MAC3. */
+void player_view_mac(struct CPUState* cpu, int32_t d[3], int32_t mac[3]);
 /** @brief Keys the group of calls that share the front-layer flatten cap.
  *
  * The cap is shared by the calls of one tick or present. A key different from
