@@ -306,3 +306,10 @@ crushs-dungeon-idle-colour|3048|2||3048,3050,3052|--skip-to-level crushs_dungeon
 # them; the camera is a gameplay camera behind the player near the level's
 # checkerboard plaza. Blessed pre-fix.
 scorch-far-dune-admit|2471|2||2473|--skip-to-level scorch --aspect 4:3 OPENPETE_FREECAM_POSE=96403,61401,11991,2746,159
+
+# game-over: the last life lost in Breeze Harbor and the game-over screen. The
+# game-over picture is four sprites linked behind the player's ordering-table
+# slot, so the player draws over it and the text over him. 2400 is the death
+# with the life counter, 3000 and 3600 the game-over screen with the player
+# on the ledge.
+game-over|2400|10000||2400,3000,3600
