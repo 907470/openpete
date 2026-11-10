@@ -610,14 +610,6 @@ int rhi_device_report(const rhi_device *dev, char *buf, size_t cap);
  * @param dev Device, or NULL.
  * @return true for a CPU device; false otherwise or for NULL. */
 bool        rhi_device_is_software(const rhi_device *dev);
-/** @brief Return whether shaderFloat64 is enabled on this device.
- *
- * The fp64 retained-terrain vertex stages need it to mirror the CPU walk's
- * double math bit-for-bit; without it the terrain cache runs only on the
- * TERRAIN_FP32 stages.
- * @param dev Device, or NULL.
- * @return true when enabled; false otherwise or for NULL. */
-bool        rhi_device_has_float64(const rhi_device *dev);
 /** @brief Return how many descriptor sets a pipeline layout may bind on this device (maxBoundDescriptorSets).
  *
  * A pipeline needing more is refused at creation; a caller with an
@@ -860,11 +852,10 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
 
 /* Anim chunks only (poly-anim and env-anim colour sectors): previous-tick
  * twin of the animated fields, a PARALLEL array in the anim arenas' prev
- * buffer (vertex binding 1). The vertex stage lerps prev->cur in fp64 at the
- * build's sub-tick alpha -
+ * buffer (vertex binding 1). The vertex stage lerps prev->cur at the
+ * build's sub-tick alpha on camera-relative integer differences -
  * position for flat/LP verts, parent corners for everything corner-derived
- * (HQ nodes, fog ladder, NCLIP) - mirroring tsc_vanim_lerp's
- * float(p + (c-p)*a) cast exactly. A sector whose banks jumped (keyframe
+ * (HQ nodes, fog ladder, NCLIP) - the mirror of tsc_vanim_lerp. A sector whose banks jumped (keyframe
  * reset) or has no prev bank yet bakes prev == cur (the CPU snap rule). */
 typedef struct rhi_terrain_prev {
     int16_t  px, py, pz, pad;   /* prev position, sector-local x4 fixed */

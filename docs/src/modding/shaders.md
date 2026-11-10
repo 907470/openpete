@@ -35,7 +35,11 @@ int frag = api->shader_register(self, "shaders/crt.frag");
 ```
 
 The path is relative to the mod and the extension selects the stage. The
-call returns `-1` for a missing file or a compile error.
+call returns `-1` for a missing file, a compile error, or a module that
+uses 64-bit floats (`double`, `dvec*`, `dmat*`: the SPIR-V `Float64`
+capability). The engine creates its device without 64-bit float support,
+so such a shader is refused at compile and at load, prebuilt `.spv`
+included, with a log line naming the mod and the file.
 
 Every shader includes the binding contract:
 

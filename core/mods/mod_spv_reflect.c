@@ -5,7 +5,7 @@
 #include <string.h>
 
 enum {
-    OP_NAME = 5, OP_LINE = 8, OP_ENTRY_POINT = 15, OP_TYPE_INT = 21, OP_TYPE_FLOAT = 22,
+    OP_NAME = 5, OP_LINE = 8, OP_ENTRY_POINT = 15, OP_CAPABILITY = 17, OP_TYPE_INT = 21, OP_TYPE_FLOAT = 22,
     OP_TYPE_VECTOR = 23, OP_TYPE_MATRIX = 24, OP_TYPE_ARRAY = 28, OP_TYPE_STRUCT = 30,
     OP_TYPE_POINTER = 32, OP_CONSTANT = 43, OP_FUNCTION = 54, OP_FUNCTION_PARAMETER = 55,
     OP_FUNCTION_END = 56, OP_FUNCTION_CALL = 57, OP_VARIABLE = 59, OP_LOAD = 61,
@@ -45,6 +45,15 @@ int openpete_mod_spv_has_name(const uint32_t* w, size_t n, const char* name, siz
         if ((w[i] & 0xFFFFu) == OP_NAME && wc >= 2u && (wc - 2u) * 4u >= len &&
             memcmp(&w[i + 2], name, len) == 0)
             return 1;
+    return 0;
+}
+
+int openpete_mod_spv_has_capability(const uint32_t* w, size_t n, uint32_t cap) {
+    if (!spv_ok(w, n)) return 0;
+    for (size_t i = 5, wc; (wc = ins_len(w, n, i)) != 0; i += wc) {
+        if ((w[i] & 0xFFFFu) != OP_CAPABILITY) return 0;
+        if (wc >= 2u && w[i + 1] == cap) return 1;
+    }
     return 0;
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU re-emulation of the TERRAIN_FP32 terrain position chain, and the
+"""CPU re-emulation of the terrain vertex stage's fp32 position chain, and the
 analytic ulp census, over an OPENPETE_TERRAIN_FP32_EMU dump.
 
 The dump (games/common/renderer/terrain.c tn_fp32emu_dump) holds one `C`
@@ -17,7 +17,7 @@ GTE screen plus --margin PSX px):
 
   exact  the camera-relative operand, mac_of and proj_of in float64 on the
          exact operands (the error of float64 here is below 1e-12 px).
-  fp32   the TERRAIN_FP32 chain in float32 in its operation order, with no
+  fp32   the stage's chain in float32 in its operation order, with no
          contraction: the camera split as tc_globals_f32 splits it (int32
          floor of cam x4 and the float32 fraction), cam_rel, mac_of with the
          /4096 as a multiply by its exact reciprocal, proj_of with a

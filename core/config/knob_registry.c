@@ -1229,16 +1229,15 @@ static const knob_desc_t g_builtin[] = {
       "world-space vertex chunks with the per-face verdicts mirrored in the "
       "vertex stage; claimed sectors (near / blended-over-portal / safety) "
       "stay on the CPU walk. Shows whether the cache came up (needs a "
-      "hardware GPU with fp64; software vk runs the CPU walk). 0 = kill "
-      "switch.",
+      "hardware GPU; software vk runs the CPU walk). 0 = kill switch.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       tercache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "1",
       .help_arg = "0|1", .help_order = 260,
       .help_text = "retained-terrain GPU cache: static sectors render from persistent\n"
           "GPU meshes with the per-face verdicts mirrored in the vertex\n"
-          "stage (default {def}; needs a hardware GPU with fp64,\n"
-          "else the CPU walk runs as before). 0 = kill switch." },
+          "stage (default {def}; needs a hardware GPU, else the CPU\n"
+          "walk runs as before). 0 = kill switch." },
 
     { "terrain_visibility", "Terrain visibility", "Display", "--terrain-visibility",
       "OPENPETE_TERRAIN_VISIBILITY",
@@ -2537,9 +2536,9 @@ static const knob_desc_t g_builtin_debug[] = {
         "clear of every opening (1 on, 0 off, 2 = classify live + audit the broadphase)."),
     ENVROW_LATCHED("PORTAL_NUDGE", "Debug", "",
         "Per-portal opening correction \"id:dh,dv[,sh[,sv]];...\" in world units."),
-    ENVROW_DEVICE("TERRAIN_FP32", "Debug", "0",
-        "Terrain-cache vertex stages: 1 = the fp32 build (runs without shaderFloat64), "
-        "0 = the fp64 build."),
+    ENVROW_DEVICE("TERRAIN_SECDELTA", "Debug", "0",
+        "Terrain-cache vertex stages: 1 = the per-sector rounding control of the "
+        "shared-vertex readback and the hole census, 0 = the shipped stages."),
     ENVROW_LIVE("TERRAIN_CULL", "Debug", "3",
         "bit0 HP NCLIP cull, bit1 LP cull (default 3 = both; each mirrors its walk's exact rule)."),
     ENVROW_LIVE("TERRAIN_FLAT", "Debug", "0",

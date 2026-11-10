@@ -46,8 +46,8 @@ set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
 # whole-value is promoted to an SSA value (spirv-opt's local single-block and
 # single-store elimination, then ssa-rewrite). glslangValidator -V emits each
 # local as a Function-storage variable with explicit loads and stores. For
-# the cell-record variant the NVIDIA driver compiles that memory form of this
-# large fp64 stage into code whose output differs between executions of the
+# the cell-record variant the NVIDIA driver compiled that memory form of this
+# large stage into code whose output differs between executions of the
 # same draw on the same inputs: a record's cells land at wrong positions or
 # not at all for one present. The passes replace each load with the value
 # last stored (a phi where control flow merges) and drop the stores; no
@@ -218,28 +218,25 @@ foreach(v near anim)
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/terrain_cells_${v}.vert.spv)
 endforeach()
-# <variant>_fp32.vert: the five terrain vertex stages above built with
-# TERRAIN_FP32 (the position chain and its verdicts in fp32, no Float64
-# capability), through the same SSA passes: the NVIDIA memory-form fault
-# is a property of the stage's form, not of its precision.
-# <variant>_fp32ctl.vert: the same five with TERRAIN_FP32_SECDELTA, the
-# positive control of the hole census (OPENPETE_TERRAIN_FP32=2): the camera
-# operand is rounded per sector, so a vertex shared by two sectors can
-# round apart. Diagnostic only; no shipped configuration selects it.
-# <variant>_fp32rb.vert / <variant>_fp32ctlrb.vert: the fp32 and control
-# stages with TERRAIN_READBACK, the shared-vertex position readback
-# (OPENPETE_TERRAIN_READBACK). Diagnostic only.
-foreach(vv plain anim near cells_near cells_anim plain:ctl anim:ctl near:ctl
-           cells_near:ctl cells_anim:ctl plain:rb anim:rb near:rb cells_near:rb
-           cells_anim:rb plain:ctl:rb anim:ctl:rb near:ctl:rb cells_near:ctl:rb
-           cells_anim:ctl:rb)
+# <variant>_ctl.vert: the five terrain vertex stages above with
+# TERRAIN_SECDELTA, the positive control of the shared-vertex readback and
+# the hole census (OPENPETE_TERRAIN_SECDELTA=1): the camera operand is
+# rounded per sector, so a vertex shared by two sectors can round apart.
+# <variant>_rb.vert / <variant>_ctlrb.vert: the stock and control stages
+# with TERRAIN_READBACK, the shared-vertex position readback
+# (OPENPETE_TERRAIN_READBACK). Diagnostic only; no shipped configuration
+# selects them. They go through the same SSA passes: the NVIDIA memory-form
+# fault is a property of the stage's form.
+foreach(vv plain:ctl anim:ctl near:ctl cells_near:ctl cells_anim:ctl
+           plain:rb anim:rb near:rb cells_near:rb cells_anim:rb
+           plain:ctl:rb anim:ctl:rb near:ctl:rb cells_near:ctl:rb cells_anim:ctl:rb)
     string(REPLACE ":" ";" vp "${vv}")
     list(GET vp 0 v)
-    set(defs --define-macro TERRAIN_FP32=1)
-    set(sfx fp32)
+    set(defs "")
+    set(sfx "")
     if(vv MATCHES ":ctl")
-        list(APPEND defs --define-macro TERRAIN_FP32_SECDELTA=1)
-        set(sfx fp32ctl)
+        list(APPEND defs --define-macro TERRAIN_SECDELTA=1)
+        set(sfx ctl)
     endif()
     if(vv MATCHES ":rb$")
         list(APPEND defs --define-macro TERRAIN_READBACK=1)
@@ -264,44 +261,14 @@ foreach(vv plain anim near cells_near cells_anim plain:ctl anim:ctl near:ctl
         COMMAND ${SPIRV_OPT} ${RHI_TERRAIN_SSA_ARGS}
                 ${RHI_SHADER_OUT_DIR}/${name}.vert.spv -o ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
         DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
-        COMMENT "glslangValidator terrain.vert (TERRAIN_FP32 ${vv}) -> ${name}.vert.spv"
+        COMMENT "glslangValidator terrain.vert (${vv}) -> ${name}.vert.spv"
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${name}.vert.spv)
 endforeach()
-# <variant>_arm2.vert: the five fp64 stages with TERRAIN_FP32_ARM2, the
-# second arm of the precision A/B (OPENPETE_TERRAIN_FP32=3): every verdict
-# and attribute of the fp64 build, the rasterised position from the fp32
-# chain. Diagnostic only; it needs shaderFloat64 as the fp64 stages do.
-foreach(v plain anim near cells_near cells_anim)
-    set(defs --define-macro TERRAIN_FP32_ARM2=1)
-    if(v STREQUAL "plain")
-        set(name terrain_arm2)
-    else()
-        set(name terrain_${v}_arm2)
-        if(v MATCHES "^cells_")
-            list(APPEND defs --define-macro TERRAIN_CELLS=1)
-        endif()
-        string(REGEX REPLACE "^cells_" "" base ${v})
-        string(TOUPPER ${base} V)
-        list(APPEND defs --define-macro TERRAIN_${V}=1)
-    endif()
-    add_custom_command(
-        OUTPUT ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
-        COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} ${defs}
-                ${RHI_SHADER_SRC_DIR}/terrain.vert
-                -o ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
-        COMMAND ${SPIRV_OPT} ${RHI_TERRAIN_SSA_ARGS}
-                ${RHI_SHADER_OUT_DIR}/${name}.vert.spv -o ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
-        DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
-        COMMENT "glslangValidator terrain.vert (TERRAIN_FP32_ARM2 ${v}) -> ${name}.vert.spv"
-        VERBATIM)
-    list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${name}.vert.spv)
-endforeach()
-# The fp32 build carries no fp64: no module but the five fp64 terrain stages
-# declares the Float64 capability (the primary check, on the compiled
-# output), and no source line of the fp32 build spells an fp64 type,
-# literal or extension (the secondary check, naming the line). The embed
-# depends on both stamps, so a violation fails the build that made it.
+# No shader carries fp64: no module declares the Float64 capability (the
+# primary check, on the compiled output), and no source line spells an fp64
+# type, literal or extension (the secondary check, naming the line). The
+# embed depends on both stamps, so a violation fails the build that made it.
 set(RHI_FP64_GUARD ${CMAKE_SOURCE_DIR}/scripts/fences/shader_fp64_guard.py)
 file(GLOB RHI_SHADER_SOURCES CONFIGURE_DEPENDS
      ${RHI_SHADER_SRC_DIR}/*.vert ${RHI_SHADER_SRC_DIR}/*.frag ${RHI_SHADER_SRC_DIR}/*.glsl)
@@ -310,14 +277,14 @@ add_custom_command(
     COMMAND python3 ${RHI_FP64_GUARD} capability ${RHI_SHADER_OUT_DIR}/fp64_capability.stamp
             ${RHI_SHADER_SPV}
     DEPENDS ${RHI_SHADER_SPV} ${RHI_FP64_GUARD}
-    COMMENT "shader fp64 fence: no Float64 capability in the fp32 build"
+    COMMENT "shader fp64 fence: no Float64 capability in any shader"
     VERBATIM)
 add_custom_command(
     OUTPUT ${RHI_SHADER_OUT_DIR}/fp64_source.stamp
-    COMMAND python3 ${RHI_FP64_GUARD} source ${GLSLANG_VALIDATOR} ${RHI_SHADER_SRC_DIR}
+    COMMAND python3 ${RHI_FP64_GUARD} source ${RHI_SHADER_SRC_DIR}
             ${RHI_SHADER_OUT_DIR}/fp64_source.stamp
     DEPENDS ${RHI_SHADER_SOURCES} ${RHI_FP64_GUARD}
-    COMMENT "shader fp64 fence: no fp64 spelling in the fp32 build's sources"
+    COMMENT "shader fp64 fence: no fp64 spelling in the shader sources"
     VERBATIM)
 # Embed the compiled .spv into the binary: a build-time step
 # (embed_shaders.py) turns the SPIR-V into a generated C source (byte arrays

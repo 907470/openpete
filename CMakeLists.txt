@@ -2323,23 +2323,26 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Retained-terrain GPU cache vs CPU terrain walk, pixel-exact, headless on
-    # llvmpipe. Per measured freecam row, two legs of one build at the same
-    # pose and pinned VBL differing only in the feed (--terrain-cache 0 against
-    # the cache forced on); the two feeds are one scene, so the pass criterion
-    # is 0 differing pixels. Refuses a verdict unless the cache leg reports
-    # retained sectors and the walk leg reports none and reports terrain
-    # triangles. Skips (exit 64) without a binary, a disc, PIL, or measured
-    # rows for the game.
+    # Retained-terrain GPU cache vs CPU terrain walk, headless on llvmpipe.
+    # Per measured freecam row, two legs of one build at the same pose and
+    # pinned VBL differing only in the feed (--terrain-cache 0 against the
+    # cache forced on); the fp32 cache differs from the double walk by its
+    # position rounding, so the pass criterion is the row's differing pixels
+    # at most its cap in tests/harness/cache_walk_ab.caps (a ratchet), with
+    # the edge/face split from two face-identity legs reported on a row that
+    # differs. Refuses a verdict unless the cache leg reports retained
+    # sectors and the walk leg reports none and reports terrain triangles.
+    # Skips (exit 64) without a binary, a disc, PIL, or measured rows for
+    # the game.
     add_test(NAME cache_walk_ab_spyro-1
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_cache_walk_ab.sh
                      --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(cache_walk_ab_spyro-1 PROPERTIES
         LABELS "slow;presentation;terrain"
         RESOURCE_LOCK openpete_game
-        # Four headless boots to a post-load VBL, each self-limited at
-        # --max-runtime-seconds 840.
-        TIMEOUT 3600
+        # Up to four headless boots per row to a post-load VBL, each
+        # self-limited at --max-runtime-seconds 840.
+        TIMEOUT 7200
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

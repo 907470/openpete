@@ -237,7 +237,7 @@ int openpete_mod_link_build_text(openpete_mod_link_ctx_t* ctx,
                                  int contract, int profile, int* case_of,
                                  openpete_mod_link_module_t* out);
 
-/** @brief Compile a module whose text openpete_mod_link_build_text generated, the second half of openpete_mod_link_build: the compile, the discard refusal and the constant-table move.
+/** @brief Compile a module whose text openpete_mod_link_build_text generated, the second half of openpete_mod_link_build: the compile, the Float64 and discard refusals and the constant-table move.
  *
  * Reads no member, so it may run on another thread than the text's
  * generation while the members change, given a non-NULL @p compile.

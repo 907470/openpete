@@ -1,50 +1,34 @@
 #!/usr/bin/env python3
-"""Refuse fp64 in the fp32 build of the RHI shaders.
+"""Refuse fp64 in the RHI shaders.
 
-The terrain cache's vertex stages exist in two builds: the fp64 stages
-(terrain*.vert.spv) and the TERRAIN_FP32 stages (terrain*_fp32.vert.spv). A
-device without shaderFloat64 runs the fp32 build, and a SPIR-V module that
-declares the Float64 capability is invalid on such a device. Every other RHI
-shader belongs to both builds.
+The terrain cache's vertex stages run in fp32 on every device, and the
+device is created without shaderFloat64, so a SPIR-V module that declares
+the Float64 capability is invalid on every device.
 
   capability STAMP SPV...
       Primary check, on the compiled output: parse each module's
-      OpCapability instructions and fail on Float64 in any module except the
-      five fp64 terrain stages and their five TERRAIN_FP32_ARM2 builds. A capability scan cannot match a comment or
-      miss a spelling. Writes STAMP on success.
+      OpCapability instructions and fail on Float64 in any module. A
+      capability scan cannot match a comment or miss a spelling. Writes
+      STAMP on success.
 
-  source GLSLANG SHADER_DIR STAMP
+  source SHADER_DIR STAMP
       Secondary check, on the source, naming the line for the author: every
-      .vert, .frag and .glsl under SHADER_DIR with comments stripped, and
-      terrain.vert preprocessed (glslangValidator -E) under each fp32 build's
-      defines, searched for the fp64 spellings. A source line carrying the
-      marker `fp64-fence: allow` is exempt; the reason is written beside it.
+      .vert, .frag and .glsl under SHADER_DIR with comments stripped,
+      searched for the fp64 spellings. A source line carrying the marker
+      `fp64-fence: allow` is exempt; the reason is written beside it.
       Writes STAMP on success.
 
 Both modes print their engagement (modules or lines scanned) and refuse to
-pass at zero.
+pass at zero or when the five terrain vertex stages were not all scanned.
 """
 import os
 import re
 import struct
-import subprocess
 import sys
 
-FP64_STAGES = {
+TERRAIN_STAGES = {
     "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
     "terrain_cells_anim.vert.spv", "terrain_cells_near.vert.spv",
-    # TERRAIN_FP32_ARM2: the fp64 build with the fp32 position chain beside
-    # it, the precision A/B's second arm; selected only where the fp64 stages
-    # are (OPENPETE_TERRAIN_FP32=3).
-    "terrain_arm2.vert.spv", "terrain_anim_arm2.vert.spv", "terrain_near_arm2.vert.spv",
-    "terrain_cells_anim_arm2.vert.spv", "terrain_cells_near_arm2.vert.spv",
-}
-FP32_STAGES = {
-    "terrain_fp32.vert.spv": [],
-    "terrain_anim_fp32.vert.spv": ["TERRAIN_ANIM"],
-    "terrain_near_fp32.vert.spv": ["TERRAIN_NEAR"],
-    "terrain_cells_anim_fp32.vert.spv": ["TERRAIN_CELLS", "TERRAIN_ANIM"],
-    "terrain_cells_near_fp32.vert.spv": ["TERRAIN_CELLS", "TERRAIN_NEAR"],
 }
 OP_CAPABILITY = 17
 CAP_FLOAT64 = 10
@@ -73,27 +57,25 @@ def capabilities(path):
 
 
 def check_capability(stamp, spvs):
-    """Fail on Float64 in any module of the fp32 build; return the exit code."""
-    bad, scanned, fp32_seen = [], 0, set()
+    """Fail on Float64 in any module; return the exit code."""
+    bad, scanned, terrain_seen = [], 0, set()
     for path in spvs:
         name = os.path.basename(path)
-        if name in FP64_STAGES:
-            continue
         scanned += 1
-        if name in FP32_STAGES:
-            fp32_seen.add(name)
+        if name in TERRAIN_STAGES:
+            terrain_seen.add(name)
         if CAP_FLOAT64 in capabilities(path):
             bad.append(name)
-    print(f"shader-fp64 capability: {scanned} modules of the fp32 build scanned, "
-          f"{len(fp32_seen)}/{len(FP32_STAGES)} fp32 terrain stages")
-    if scanned == 0 or fp32_seen != set(FP32_STAGES):
-        print("shader-fp64 capability: VACUOUS - the fp32 terrain stages were not all scanned",
+    print(f"shader-fp64 capability: {scanned} modules scanned, "
+          f"{len(terrain_seen)}/{len(TERRAIN_STAGES)} terrain vertex stages")
+    if scanned == 0 or terrain_seen != TERRAIN_STAGES:
+        print("shader-fp64 capability: VACUOUS - the terrain vertex stages were not all scanned",
               file=sys.stderr)
         return 1
     if bad:
         for name in bad:
             print(f"shader-fp64 capability: {name} declares OpCapability Float64, "
-                  f"which a device without shaderFloat64 rejects", file=sys.stderr)
+                  f"which no device enables (shaderFloat64 is never requested)", file=sys.stderr)
         return 1
     open(stamp, "w").write("ok\n")
     return 0
@@ -146,47 +128,22 @@ def scan_raw(path, hits):
     return len(lines)
 
 
-def scan_preprocessed(glslang, shader_dir, defines, hits):
-    """Scan terrain.vert as one fp32 build preprocesses it; return the lines scanned."""
-    src = os.path.join(shader_dir, "terrain.vert")
-    args = [glslang, "-E", f"-I{shader_dir}", "-DTERRAIN_FP32=1"]
-    args += [f"-D{d}=1" for d in defines] + [src]
-    text = subprocess.run(args, check=True, capture_output=True, text=True).stdout
-    cur, line = src, 0
-    directive = re.compile(r'^\s*#line\s+(\d+)(?:\s+"([^"]*)")?')
-    lines = text.split("\n")
-    for raw in lines:
-        m = directive.match(raw)
-        if m:
-            line = int(m.group(1)) - 1
-            if m.group(2):
-                cur = os.path.normpath(os.path.join(shader_dir, m.group(2)))
-            continue
-        line += 1
-        if PATTERN.search(raw) and not allowed(cur, line):
-            hits.append(f"{cur}:{line}: {raw.strip()} (fp32 build, -D{' -D'.join(defines or ['TERRAIN_FP32'])})")
-    return len(lines)
-
-
-def check_source(glslang, shader_dir, stamp):
-    """Fail on an fp64 spelling in the fp32 build's sources; return the exit code."""
+def check_source(shader_dir, stamp):
+    """Fail on an fp64 spelling in the shader sources; return the exit code."""
     hits, scanned, files = [], 0, 0
     for name in sorted(os.listdir(shader_dir)):
-        if not name.endswith((".vert", ".frag", ".glsl")) or name == "terrain.vert":
+        if not name.endswith((".vert", ".frag", ".glsl")):
             continue
         scanned += scan_raw(os.path.join(shader_dir, name), hits)
         files += 1
-    for defines in FP32_STAGES.values():
-        scanned += scan_preprocessed(glslang, shader_dir, defines, hits)
-        files += 1
     print(f"shader-fp64 source: {files} sources, {scanned} lines scanned")
-    if scanned == 0:
-        print("shader-fp64 source: VACUOUS - no lines scanned", file=sys.stderr)
+    if scanned == 0 or not os.path.isfile(os.path.join(shader_dir, "terrain.vert")):
+        print("shader-fp64 source: VACUOUS - terrain.vert not scanned", file=sys.stderr)
         return 1
     if hits:
         for h in hits:
             print(f"shader-fp64 source: {h}", file=sys.stderr)
-        print(f"shader-fp64 source: {len(hits)} fp64 spellings in the fp32 build; "
+        print(f"shader-fp64 source: {len(hits)} fp64 spellings; "
               f"mark a deliberate one `{MARKER}` with the reason", file=sys.stderr)
         return 1
     open(stamp, "w").write("ok\n")
@@ -196,8 +153,8 @@ def check_source(glslang, shader_dir, stamp):
 def main(argv):
     if len(argv) >= 3 and argv[1] == "capability":
         return check_capability(argv[2], argv[3:])
-    if len(argv) == 5 and argv[1] == "source":
-        return check_source(argv[2], argv[3], argv[4])
+    if len(argv) == 4 and argv[1] == "source":
+        return check_source(argv[2], argv[3])
     print(__doc__, file=sys.stderr)
     return 2
 

@@ -19,8 +19,8 @@ OpenPete downloads nothing and ships no game content.
 | Linux | glibc 2.31 or newer (Debian 11, Ubuntu 20.04, or later) |
 
 The retained terrain cache, which draws static level geometry from GPU
-memory, needs a hardware GPU with 64-bit float support. Without one, OpenPete
-draws terrain on the CPU instead; see [Performance](../graphics/performance.md).
+memory, needs a hardware GPU. On a software renderer, OpenPete draws terrain
+on the CPU instead; see [Performance](../graphics/performance.md).
 
 ## A C compiler, on first run only
 

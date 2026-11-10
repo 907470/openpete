@@ -17,6 +17,7 @@ member	unused-block/unused.frag	all	ok
 member	ext/ext.frag	all	ok
 member	decal-a/decal.frag	stock	ok
 member	decal-b/decal.frag	stock	ok
+member	fp64/fp64.frag	all	compile
 prebuilt	prebuilt/tint.frag.src	stock
 refuse	discard/discard.frag	12	0
 refuse	discard/discard.frag	13	1

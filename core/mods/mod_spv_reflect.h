@@ -31,6 +31,17 @@ extern "C" {
  * @return 1 on a match, 0 otherwise. */
 int openpete_mod_spv_has_name(const uint32_t* w, size_t n, const char* name, size_t len);
 
+/** @brief Return 1 when a SPIR-V module declares the given OpCapability.
+ *
+ * The walk reads the OpCapability instructions that open the module after
+ * its header and stops at the first other instruction: a valid module
+ * declares every capability before any other instruction.
+ * @param w The SPIR-V words, starting with the magic number.
+ * @param n The word count.
+ * @param cap The capability operand (SPIR-V Capability enumerant).
+ * @return 1 when declared, 0 otherwise or for a malformed module. */
+int openpete_mod_spv_has_capability(const uint32_t* w, size_t n, uint32_t cap);
+
 /** @brief Read the member offsets and the size of the uniform block at a descriptor set and binding.
  *
  * The block is the pointee struct of the first OpVariable decorated with

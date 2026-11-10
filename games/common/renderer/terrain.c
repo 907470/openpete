@@ -19175,7 +19175,8 @@ static uint32_t tn_gpu_tint_flags(void) {
  * as the retained globals carry it), the matrix rows, H, ofx, ofy and the
  * near plane. One `S` line per sector slot whose decode generation changed
  * (slot, generation, origin), then one `V` line per decoded vertex in x4
- * units (origin x4 + local x4: the integer the TERRAIN_FP32 combine forms).
+ * units (origin x4 + local x4: the integer the retained-terrain vertex
+ * stage's combine forms).
  * tools/terrain_fp32_emu.py re-runs the fp32 chain over the file.
  * Diagnostic; unregistered.
  * @param M The camera rotation matrix.

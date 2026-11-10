@@ -3999,9 +3999,9 @@
    "game": "core"
   },
   {
-   "id": "knob:TERRAIN_FP32",
+   "id": "knob:TERRAIN_SECDELTA",
    "flag": null,
-   "env": "OPENPETE_TERRAIN_FP32",
+   "env": "OPENPETE_TERRAIN_SECDELTA",
    "config_key": null,
    "schema_type": null,
    "vocab": [],

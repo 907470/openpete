@@ -443,6 +443,29 @@ static size_t cache_load(const char* build_dir, const char* flat, const char* su
 }
 
 
+/* SPIR-V Capability enumerant Float64: a module declaring it needs the
+ * shaderFloat64 device feature, which the device is never created with. */
+#define MOD_SPV_CAP_FLOAT64 10u
+
+/** @brief Refuse a module that declares the Float64 capability: log it naming the mod file and free the words.
+ *
+ * @param id The mod id.
+ * @param path The shader's mod-relative path.
+ * @param what The module's origin for the log line ("" for the stock profile, a profile suffix, or ".spv" for a prebuilt).
+ * @param words The module; freed and set to NULL on a refusal.
+ * @param n Its word count.
+ * @return 1 when refused, else 0. */
+static int shader_refuse_float64(const char* id, const char* path, const char* what,
+                                 uint32_t** words, size_t n) {
+    if (!openpete_mod_spv_has_capability(*words, n, MOD_SPV_CAP_FLOAT64)) return 0;
+    OPL_ERROR_F("mods", "%s: shader %s%s: declares OpCapability Float64 (a double, dvec or "
+                "dmat type) - refused: the device is created without shaderFloat64, so "
+                "no pipeline may use it", id, path, what);
+    free(*words);
+    *words = NULL;
+    return 1;
+}
+
 /** @brief Produce one profile of one shader source, from the cache when its build key matches, else by compiling it.
  *
  * The cache files are `<build_dir>/<flat><suffix>.spv` and its `.hash`
@@ -450,7 +473,8 @@ static size_t cache_load(const char* build_dir, const char* flat, const char* su
  * nonempty whole number of words; otherwise the source compiles, and
  * success writes the `.spv` and then the stamp. A failed compile removes
  * only the stamp and leaves any older `.spv` file in place, unused until a
- * compile rewrites both.
+ * compile rewrites both. A module, cached or compiled, that declares the
+ * Float64 capability is refused (shader_refuse_float64).
  * @param suffix Variant name in the cache files: "" for the stock profile,
  *        `.terrain` for the retained-terrain engine half.
  * @param preamble Text glslang injects after `#version`, or NULL.
@@ -466,7 +490,7 @@ static size_t compile_profile(const char* src, int stage,
     snprintf(spv_path, sizeof spv_path, "%s/%s%s.spv", build_dir, flat, suffix);
     snprintf(stamp_path, sizeof stamp_path, "%s/%s%s.hash", build_dir, flat, suffix);
     const size_t hit = cache_load(build_dir, flat, suffix, key, out_words);
-    if (hit) return hit;
+    if (hit) return shader_refuse_float64(id, path, suffix, out_words, hit) ? 0 : hit;
     size_t n = openpete_mod_glsl_compile(src, stage, ctx, preamble, log_path,
                                          out_words);
     if (n == 0) {
@@ -484,7 +508,7 @@ static size_t compile_profile(const char* src, int stage,
         remove(stamp_path);
     OPL_INFO_F("mods", "%s: shader %s%s compiled (%zu words)", id, path,
                suffix, n);
-    return n;
+    return shader_refuse_float64(id, path, suffix, out_words, n) ? 0 : n;
 }
 
 /** @brief Compile the extra profiles of a material fragment: the retained-terrain half, the portal profile and the actor profile.
@@ -744,7 +768,7 @@ static int shader_link_decide(mod_shader_t* sh) {
  * @param src_path The missing source's full path.
  * @param words Receives the malloc'd words.
  * @param n_words Receives their count.
- * @return 0, or -1 (logged) for a missing or stale sidecar or a missing or malformed module. */
+ * @return 0, or -1 (logged) for a missing or stale sidecar, a missing or malformed module, or one declaring the Float64 capability. */
 static int shader_load_prebuilt(const char* id, const char* path, const char* src_path,
                                 uint32_t** words, size_t* n_words) {
     char pre_path[MOD_SHADER_PATH_MAX * 2 + 8];
@@ -782,6 +806,7 @@ static int shader_load_prebuilt(const char* id, const char* path, const char* sr
     }
     *words = (uint32_t*)pre;
     *n_words = len / 4;
+    if (shader_refuse_float64(id, path, ".spv", words, *n_words)) return -1;
     OPL_INFO_F("mods", "%s: shader %s: prebuilt .spv accepted (%zu words)",
                id, path, *n_words);
     return 0;

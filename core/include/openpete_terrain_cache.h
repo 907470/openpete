@@ -207,10 +207,9 @@ enum {
  * ids carry the top bit so the two spaces never collide. */
 #define OPTC_STAMP_SCENE_BIT  (1u << 31)
 
-/* Camera/projection/fog inputs are DOUBLE on purpose: terrain.vert re-runs
- * the CPU walk's double-precision GTE chain (fp64, `precise`) so the emitted
- * float screen coordinates round identically - float32 inputs alone would
- * already break the pixel-identical gate at the last-ulp level. */
+/* Camera/projection/fog inputs are double, as the CPU walk's GTE chain
+ * computes them; the cache packs them into its float globals block, the
+ * camera split into an integer and a fractional part in x4 units. */
 typedef struct {
     float   mrow[3][3];   /* g_Camera+0x00 projection matrix, raw int16 values */
     double  ofx, ofy, H;  /* GTE screen offset + projection distance           */
@@ -244,7 +243,7 @@ typedef struct {
     float   scroll_dvc[128][4];
     /* Portal inner-rim cull mirror (portal_rim_classify in the vertex
      * stage): the per-plane frames rim_frames_derive builds once per feed,
-     * plus the classifier's knob values, all fp64. rim_n = 0 disables the
+     * plus the classifier's knob values, in double. rim_n = 0 disables the
      * test (no active portal, or the rim-claim lever routes rim-candidate
      * sectors to the CPU walk instead). Plane pi's outline lives at
      * rim_pv[pi*16 .. pi*16+vn-1]; vn rides rim_nrm[pi][3], the frame's
@@ -299,18 +298,6 @@ int  openpete_tercache_init(struct rhi_device *dev, void (*batch)(int open));
  * precompile). Display owner only.
  * @param dev Device in description mode; NULL does nothing. */
 void openpete_tercache_describe(struct rhi_device *dev);
-/** @brief Return whether the terrain cache's vertex stages are the TERRAIN_FP32 build.
- *
- * OPENPETE_TERRAIN_FP32 set and not "0" selects the fp32 stages (no
- * Float64 capability); "2" selects them with TERRAIN_FP32_SECDELTA, the
- * hole census's per-sector rounding control; "3" selects TERRAIN_FP32_ARM2,
- * the fp64 stages rasterising the fp32 position (an fp64 build, so 0 here);
- * unset, the fp64 stages. Read
- * through openpete_config_device_value at the first call and latched, so
- * the launcher's describe, bring-up's init and every material pipeline
- * take the same build.
- * @return 1 for an fp32 build, 0 for the fp64 build. */
-int  openpete_tercache_fp32(void);
 /** @brief Return whether OPENPETE_TERRAIN_FACEID selects the face-identity colour pipelines.
  *
  * Set and not "0": every retained colour pipeline paints the identity of
@@ -319,12 +306,6 @@ int  openpete_tercache_fp32(void);
  * getenv at the first call and latched. Diagnostic; unregistered.
  * @return 1 when on, else 0. */
 int  openpete_tercache_faceid(void);
-/** @brief Return whether a device can run the selected build of the terrain vertex stages.
- *
- * The fp32 build needs no device feature; the fp64 build needs shaderFloat64.
- * @param dev The device.
- * @return 1 when the selected stages may be created on @p dev. */
-int  openpete_tercache_device_precision_ok(const struct rhi_device *dev);
 /** @brief Destroy the terrain cache's device objects and zero its state, keeping the final stats.
  *
  * The stats are snapshotted first so a census printed after teardown
@@ -604,10 +585,7 @@ void openpete_tercache_frame_slots(char *out, int cap);
  * reference-compare scene delay is selected (the cache draws the live walk,
  * not the scene history ring), neither the tag-split nor the tag-tint
  * instrument nor the OPENPETE_SCENE_BOXDBG box instrument is armed (their
- * semantics live in the CPU batcher), the device can run the selected
- * terrain vertex stages (openpete_tercache_device_precision_ok: shaderFloat64
- * for the fp64 stages, which match the CPU walk's double math bit for bit;
- * nothing for the TERRAIN_FP32 stages), and the device
+ * semantics live in the CPU batcher), and the device
  * is a hardware GPU (terrain.vert runs slowly on llvmpipe) unless
  * OPENPETE_TERRAIN_CACHE_FORCE=1 waives that.
  *
@@ -1128,10 +1106,10 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
 /** @brief Record the shared-vertex position readback of the selected retained terrain state into its own target, under OPENPETE_TERRAIN_READBACK.
  *
  * Diagnostic; the variable is read with getenv at the first call and
- * latched, and is unregistered. With it set and not "0", and the fp32 stages
- * selected (OPENPETE_TERRAIN_FP32 1 or 2), every arena buffer's drawn
+ * latched, and is unregistered. With it set and not "0", every arena buffer's drawn
  * spans of the WORLD pass are drawn twice as points with the
- * TERRAIN_READBACK stage of their family into an RGBA32_UINT target:
+ * TERRAIN_READBACK stage of their family (the shipped stage's, or the
+ * per-sector control's under OPENPETE_TERRAIN_SECDELTA) into an RGBA32_UINT target:
  * element e of a buffer whose base is b owns pixels 2(b + e) (the bits of
  * its gl_Position) and 2(b + e) + 1 (its readback key, with the sector slot
  * in bits 8-16 of the fourth word); a killed vertex
@@ -1147,7 +1125,7 @@ int  openpete_tercache_readback_record(const openpete_tercache_clip *clip,
  *
  * Waits the device idle and reads the target back. The file holds the
  * magic "TCRB", the words version (1), target width, target height, entry
- * count and precision row (1 fp32, 2 the per-sector control), one entry of
+ * count and stage row (1 the shipped stage, 2 the per-sector control), one entry of
  * five words per drawn arena buffer (arena, buffer, element base, element
  * count, cell vertices per record or 0), then the texels of the first
  * 2 x (elements) pixels, four 32-bit words each, all little-endian.

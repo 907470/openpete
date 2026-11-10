@@ -8,8 +8,8 @@
 # captured twice (OPENPETE_TERRAIN_READBACK=1 writes <shot>-readback.bin
 # beside the screenshot; native_terrain_cache.c
 # openpete_tercache_readback_record):
-#   f32  the fp32 stages (OPENPETE_TERRAIN_FP32=1): expected 0 mismatches
-#   ctl  the per-sector rounding control (OPENPETE_TERRAIN_FP32=2): its
+#   f32  the shipped fp32 stages: expected 0 mismatches
+#   ctl  the per-sector rounding control (OPENPETE_TERRAIN_SECDELTA=1): its
 #        camera operand is rounded per sector, so a vertex two sectors share
 #        can round apart; expected nonzero, the proof the instrument sees a
 #        disagreement
@@ -106,13 +106,13 @@ DISC_ABS="$(cd "$(dirname "$PG_DISC")" && pwd -P)/$(basename "$PG_DISC")"
 source scripts/lib/wslenv.sh
 TOOL=tools/terrain_readback.py
 
-leg() {  # tag level pose start lod precision
+leg() {  # tag level pose start lod control(0|1)
     local tag="$1" level="$2" pose="$3" start="$4" lod="$5" prec="$6"
     local -a PG_SKIP_ARGS=()
     pg_skip_args "$level"
     rm -f "${OUT:?}/$tag.png" "${OUT:?}/$tag-vk.png" "${OUT:?}/$tag-readback.bin"
     local -a env=(OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TERRAIN_READBACK=1
-                  "OPENPETE_TERRAIN_FP32=$prec" "OPENPETE_TERRAIN_CAM_JITTER=$JITTER")
+                  "OPENPETE_TERRAIN_SECDELTA=$prec" "OPENPETE_TERRAIN_CAM_JITTER=$JITTER")
     local -a args=(--no-card --mute 1 --vibration 0 --mods "" --renderer vk --lod "$lod" --aspect 4:3
         --vertex-precision subpixel --texture-mapping perspective
         "${PG_SKIP_ARGS[@]}" --freecam-pose "$pose"
@@ -162,7 +162,7 @@ for i in "${!SLUGS[@]}"; do
     for lod in $LODS; do
         rows=$((rows + 1))
         for arm in f32 ctl; do
-            prec=1; [[ $arm == ctl ]] && prec=2
+            prec=0; [[ $arm == ctl ]] && prec=1
             base="${SLUGS[$i]}__${lod}__${arm}"
             ok=1
             for r in r1 r2; do

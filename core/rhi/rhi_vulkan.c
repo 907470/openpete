@@ -568,7 +568,6 @@ struct rhi_device {
     float          bias_pending[3];
     bool           bias_owed;      /* bias_pending awaits a depth_bias pipeline */
     bool           bias_bound;     /* the bound pipeline was created with depth_bias */
-    bool           has_shader_float64;   /* shaderFloat64 feature enabled  */
     bool           has_fill_non_solid;   /* fillModeNonSolid feature enabled */
     bool           has_creation_feedback; /* VK_EXT_pipeline_creation_feedback enabled */
     bool           has_cache_control;    /* pipelineCreationCacheControl enabled */
@@ -1820,7 +1819,7 @@ static int choose_physical_device(const rhi_device *dev, const VkPhysicalDevice 
  * follow from the chosen device (pick_depth_format, depth_convention_init).
  *
  * Optional device features are enabled only where supported and recorded as
- * dev->has_depth_bias_clamp, has_shader_float64 and has_fill_non_solid.
+ * dev->has_depth_bias_clamp and has_fill_non_solid.
  * VK_KHR_present_id and VK_KHR_present_wait are enabled, with the swapchain
  * extension, only on a windowed device that has both and whose
  * OPENPETE_PRESENT_TIMING, OPENPETE_PACE_FLIP_LOG or OPENPETE_EAGER_LATTICE
@@ -1877,12 +1876,6 @@ static bool pick_physical_and_device(rhi_device *dev)
     VkPhysicalDeviceFeatures enable = {0};
     enable.depthBiasClamp = supported.depthBiasClamp;
     dev->has_depth_bias_clamp = (supported.depthBiasClamp == VK_TRUE);
-    /* shaderFloat64: the fp64 retained-terrain vertex stages mirror the
-     * CPU walk's double-precision GTE math bit-for-bit. Without it the
-     * terrain cache runs only with the TERRAIN_FP32 stages selected
-     * (openpete_tercache_device_precision_ok). */
-    enable.shaderFloat64 = supported.shaderFloat64;
-    dev->has_shader_float64 = (supported.shaderFloat64 == VK_TRUE);
     /* geometryShader: only for the terrain face-identity diagnostic
      * (OPENPETE_TERRAIN_FACEID), whose fragment stage reads gl_PrimitiveID
      * and so declares the Geometry capability. No other stage needs it. */
@@ -5711,11 +5704,6 @@ const char *rhi_device_name(const rhi_device *dev)
 bool rhi_device_is_software(const rhi_device *dev)
 {
     return dev ? dev->device_software : false;
-}
-
-bool rhi_device_has_float64(const rhi_device *dev)
-{
-    return dev ? dev->has_shader_float64 : false;
 }
 
 uint32_t rhi_device_max_descriptor_sets(const rhi_device *dev)

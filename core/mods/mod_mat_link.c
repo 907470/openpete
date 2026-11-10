@@ -1049,6 +1049,11 @@ int openpete_mod_link_build_compile(openpete_mod_link_ctx_t* ctx, int contract, 
     out->words = module_compile(ctx, out->text, openpete_mod_link_profile_preamble(contract, profile),
                                 compile, user, log_path, &out->spv);
     if (out->words == 0) { out->spv = NULL; log_head(log_path, out->log, sizeof out->log); return -1; }
+    if (openpete_mod_spv_has_capability(out->spv, out->words, 10u /* Float64 */)) {
+        snprintf(out->log, sizeof out->log, "refused: declares OpCapability Float64, "
+                 "which the device is created without");
+        return -1;
+    }
     if (openpete_mod_spv_fn_kills(out->spv, out->words, "op_material(") == 1) {
         out->kills = 1;
         snprintf(out->log, sizeof out->log, "refused: op_material reaches a discard");

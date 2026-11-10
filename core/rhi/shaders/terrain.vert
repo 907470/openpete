@@ -1,71 +1,35 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-#ifndef TERRAIN_FP32
-#extension GL_ARB_gpu_shader_fp64 : require
-#endif
 #include "psx_unorm8.glsl"
 #include "psx_viewz.glsl"
 #include "psx_key_contest.glsl"
 
-/* Position-chain precision. The default build computes the camera-space
- * chain and every verdict on it in fp64 (pfloat = double). TERRAIN_FP32
- * builds the same source in fp32 with no Float64 capability: a corner's
- * world position is formed as an exact int32 (sector origin x4 + local x4),
- * the integer part of the camera is subtracted as an int32, the difference
- * (under 2^24, exact in float) is rounded to float once and the camera's
- * fractional part subtracted after it (cam_rel). A world vertex shared by
- * several sectors therefore reaches mac_of as the same float operands in
- * every sector, so its clip position is bit-identical across sectors and
- * pipelines without wide precision; `precise` (PREC32 on the chains the
- * fp64 build leaves unqualified) keeps the operation order identical in
- * every pipeline compiling the stage. Literals spelled without a suffix
- * are exact in float, so they convert to the same double in the fp64
- * build; PF_* are the three that are not. */
-#ifdef TERRAIN_FP32
-#define pfloat float
-#define pvec2 vec2
-#define pvec3 vec3
-#define pvec4 vec4
-#define PF_1E30 1e30
-#define PF_1EM9 1e-9
-#define PF_1EM6 1e-6
-#define PREC32 precise
+/* Position-chain precision. The camera-space chain and every verdict on it
+ * run in fp32 with no Float64 capability: a corner's world position is
+ * formed as an exact int32 (sector origin x4 + local x4), the integer part
+ * of the camera is subtracted as an int32, the difference (under 2^24,
+ * exact in float) is rounded to float once and the camera's fractional part
+ * subtracted after it (cam_rel). A world vertex shared by several sectors
+ * therefore reaches mac_of as the same float operands in every sector, so
+ * its clip position is bit-identical across sectors and pipelines without
+ * wide precision; `precise` on the position chain keeps the operation order
+ * identical in every pipeline compiling the stage. */
 /* x / k for a power-of-two constant k, as a multiply by its exact
  * reciprocal: fp32 OpFDiv is specified only to 2.5 ULP, the multiply is
  * exact. */
 #define PDIV(x, k) ((x) * (1.0 / (k)))
-#else
-#define pfloat double
-#define pvec2 dvec2
-#define pvec3 dvec3
-#define pvec4 dvec4
-#define PF_1E30 1e30lf
-#define PF_1EM9 1e-9lf
-#define PF_1EM6 1e-6lf
-#define PREC32
-#define PDIV(x, k) ((x) / (k))
-#endif
-/* TERRAIN_FP32_ARM2 (on the fp64 build): the second arm of the precision
- * A/B. Every verdict, attribute and varying is the fp64 build's; only the
- * rasterised position (gl_Position and the perspective q bound to its w) is
- * replaced by the TERRAIN_FP32 build's position chain, computed in parallel
- * from the same inputs (the *_f32 helpers and the f0..f3 corner shadows).
- * Every floor of a projection under the integer snap, every near-plane
- * guard and the nc4 morph weight stay fp64. Against the fp64 build it
- * isolates the position rounding (edge shifts); against TERRAIN_FP32 it
- * isolates the verdicts (faces that repaint or change identity).
+/* TERRAIN_SECDELTA: the per-sector rounding control of the shared-vertex
+ * readback and the hole census. The camera operand is rounded per sector
+ * (sdel_of), so a vertex shared by two sectors can round apart.
  * Diagnostic only. */
-#if defined(TERRAIN_FP32_ARM2) && defined(TERRAIN_FP32)
-#error "TERRAIN_FP32_ARM2 is a variant of the fp64 build"
-#endif
-/* TERRAIN_READBACK (on the TERRAIN_FP32 build): the shared-vertex position
- * readback, drawn as points into an RGBA32_UINT target (rb_emit); the
- * position chain is the TERRAIN_FP32 build's, unchanged. Diagnostic only. */
+/* TERRAIN_READBACK: the shared-vertex position readback, drawn as points
+ * into an RGBA32_UINT target (rb_emit); the position chain is the shipped
+ * stage's, unchanged. Diagnostic only. */
 
 /* Terrain sector-mesh vertex stage - the retained-terrain GPU path
  * (extraction rearchitecture, seam 2).
  *
- * Mirrors - bit-for-bit - what the CPU walk (terrain.c walk_sector +
+ * Mirrors what the CPU walk (terrain.c walk_sector +
  * terrain_feed_native) computes per present for an UNCLAIMED sector: the GTE
  * camera transform (ngte_mac + proj_screen), the per-face verdicts (NCLIP
  * two-half back-face cull with the UNR-overflow regime, the .s LP far-cull
@@ -76,13 +40,11 @@
  * are evaluated (redundantly but face-uniformly) per vertex; a culled face
  * collapses all of its vertices to a degenerate point.
  *
- * EXACTNESS CONTRACT (fp64 build): the CPU walk does this math in double and
- * rounds each screen coordinate to float ONCE. This stage re-runs the same
- * ops in the same order in fp64 (`precise` - no FMA contraction) and casts
- * at the same points, so the emitted float positions are identical and the
- * raster is pixel-identical. The TERRAIN_FP32 build keeps the op order but
- * not the width, so it matches the walk within the fp32 rounding of the
- * chain, not bit for bit. HQ sub-quad nodes are built by averaging the TRANSFORMED
+ * Precision against the walk: the CPU walk does this math in double and
+ * rounds each screen coordinate to float once. This stage runs the same
+ * ops in the same order (`precise` - no FMA contraction) in fp32, so it
+ * matches the walk within the fp32 rounding of the chain, not bit for bit.
+ * HQ sub-quad nodes are built by averaging the TRANSFORMED
  * corner values (cv_mid mirrors), never by transforming baked midpoints -
  * the CPU's float rounding differs between the two.
  *
@@ -125,10 +87,10 @@ layout(location = 8) in ivec4 inC2;       /* c2.z, c3.xyz                 */
 #endif
 #if defined(TERRAIN_ANIM) && !defined(TERRAIN_CELLS)
 /* Poly-anim chunks (binding 1, rhi_terrain_prev): previous-tick twin of the
- * position + parent corners. Every local coordinate is lerped prev->cur in
- * fp64 at the build's alpha and CAST TO FLOAT before the camera transform -
- * the exact mirror of tsc_vanim_lerp filling cvF (alpha = 1 on canonical
- * builds collapses to cur bit-exactly, ints casting to float losslessly). */
+ * position + parent corners. Every coordinate is lerped prev->cur at the
+ * build's alpha on camera-relative integer differences (cam_rel_lerp), the
+ * mirror of tsc_vanim_lerp filling cvF (alpha = 1 on canonical builds
+ * collapses to cur exactly). */
 layout(location = 9)  in ivec4 inPrevPosA; /* prev xyz (x4 fixed), pad    */
 layout(location = 10) in ivec4 inPrevC0A;
 layout(location = 11) in ivec4 inPrevC1A;
@@ -231,7 +193,6 @@ layout(push_constant) uniform TerrainPC {
 
 /* scene_to_clip mirror, term for term in float - a fitted affine loses ~5
  * subpixel LSBs at the screen edges and flips rasterized edge pixels. */
-#if defined(TERRAIN_FP32) || defined(TERRAIN_FP32_ARM2)
 /* The same terms with every operation `precise`: a shared vertex reaches
  * this from pipelines compiled separately, and contraction decided per
  * compilation would round the clip position differently in each. */
@@ -247,23 +208,11 @@ vec2 clip_of(vec2 sxy) {
 }
 /* The window depth and clip w reach gl_Position through the same rule. */
 precise gl_Position;
-#else
-vec2 clip_of(vec2 sxy) {
-    float nx = sxy.x / pc.cdims.x;
-    float ny = (sxy.y - pc.cdims.z) / pc.cdims.y;
-    if (pc.full_extent != 0)
-        return vec2((-1.0 + nx * 2.0) / pc.cdims.w, 1.0 - ny * 2.0);
-    return vec2(pc.cbase.x + nx * pc.cbase.y, pc.cbase.z - ny * pc.cbase.w);
-}
-#endif
 
 /* Mirrored by native_terrain_cache.c's tc_globals_ubo (C natural layout ==
- * std140 there, which the dvec4 runs' 32-byte alignment depends on) and, as a
- * prefix up to sdvc, by terrain_shade.glsl - a field added here must land in
- * both. The fp64 build's double fields form a tail after sdvc, which the
- * TERRAIN_FP32 build does not declare (a block may be declared shorter than
- * the buffer bound to it); the TERRAIN_FP32 build reads the float fields
- * ahead of it, which the fp64 build declares as padding. */
+ * std140 there: every member is a 16-byte vec4/ivec4 run) and, as a prefix
+ * up to sdvc, by terrain_shade.glsl - a field added here must land in
+ * both. */
 layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     vec4  mrow0;    /* xyz: M[0][*] (raw int16 values)                    */
     vec4  mrow1;    /* xyz: M[1][*]                                       */
@@ -285,12 +234,11 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     /* Portal inner-rim cull frames (portal_rim_classify mirror). rim_cnt.x
      * = active plane count; 0 disables the test (no portal, or
      * rim-candidate sectors claim to the CPU walk instead). Plane pi's
-     * outline lives at rim_pv[pi*16 .. pi*16+vn-1]. The float frames
-     * below are the double frames of the tail rounded to float. */
+     * outline lives at rim_pv[pi*16 .. pi*16+vn-1]. The frames are the
+     * CPU's double frames rounded to float. */
     ivec4 rim_cnt;
     ivec4 hp_drop;  /* x: HP drop sum bound, y: corner bound (x = 0: the
                      * sum against 4 * fogRefBase alone)                  */
-#ifdef TERRAIN_FP32
     vec4  rim_oxyH;      /* rim ofx, ofy, H, pad                          */
     vec4  rim_knobs;     /* eps, near, reach, cos(angle)                  */
     vec4  rim_abc[6];    /* screen inv-vz plane fit a,b,c; w = valid      */
@@ -301,9 +249,6 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     vec4  rim_nrm[6];    /* unit view normal; w = outline vn              */
     vec4  rim_bbox[6];   /* outline UV bbox pulo, puhi, pvlo, pvhi        */
     vec2  rim_pv[96];    /* outlines in (U,W), 16 slots per plane         */
-#else
-    vec4  rim_f32_[134]; /* the float rim frames (TERRAIN_FP32 build)     */
-#endif
     vec4  hd_lad;        /* HD fold: CONT-fog ramp ts, tb; count; enable  */
     vec4  hd_ent[1664];  /* 416 entries x 4 vec4 (rect/atlas/fogA/fogB)   */
     /* Portal cover planes, read by terrain.frag (portal_cover.glsl): active
@@ -316,30 +261,9 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     vec4  cov_bbox[6];   /* outline screen bbox x0, y0, x1, y1            */
     vec4  cov_poly[96];  /* outline points (px, py, 0, 0)                 */
     vec4  sdvc[128];     /* per-tile 4x4 near-cell row V offsets (rows 0-3) */
-#ifndef TERRAIN_FP32
-    /* fp64 tail, 32-byte aligned by f64_pad_ (std140 aligns a dvec2 to 16
-     * only). */
-    vec4  f64_pad_;
-    dvec2 dcam_xy;  /* camx, camy (fractional, world/16)                  */
-    dvec2 dcam_zf;  /* camz, s_fogscale                                   */
-    dvec2 dof_xy;   /* ofx, ofy                                           */
-    dvec2 dH;       /* H, poly-anim sub-tick alpha                        */
-    dvec2 dnear;    /* x: near-plane view-Z                               */
-    dvec2 dspare;   /* x: H_canon; y: env-anim colour alpha               */
-    dvec4 rim_oxyH;
-    dvec4 rim_knobs;
-    dvec4 rim_abc[6];
-    dvec4 rim_O[6];
-    dvec4 rim_U[6];
-    dvec4 rim_W[6];
-    dvec4 rim_nrm[6];
-    dvec4 rim_bbox[6];
-    dvec2 rim_pv[96];
-#endif
 } g;
 
 /* The block's scalars in the build's precision. */
-#ifdef TERRAIN_FP32
 #define G_OF   g.ofH.xy
 #define G_H    g.ofH.z
 #define G_VA   g.ofH.w
@@ -347,15 +271,6 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define G_HCAN g.aux.y
 #define G_CA   g.aux.z
 #define G_FOGS g.aux.w
-#else
-#define G_OF   g.dof_xy
-#define G_H    g.dH.x
-#define G_VA   g.dH.y
-#define G_NEAR g.dnear.x
-#define G_HCAN g.dspare.x
-#define G_CA   g.dspare.y
-#define G_FOGS g.dcam_zf.y
-#endif
 
 /* g.fog.y bits - keep in sync with openpete_terrain_cache.h OPTC_GF_* */
 #define GF_NEARHQ    1
@@ -463,18 +378,11 @@ layout(location = 15) flat out float vKcls;
 layout(location = 5) flat out uint  vHd;    /* HD-fold: entry id (bits 0-15, 0=none)
                                              * | ladder-face 1<<16 | fogbias 1<<17  */
 
-/* Double-precision select, emitted as OpSelect (mix with a bool), never as a
- * branch: t when c holds, else f, for every input including NaN. Every
- * double-valued clamp, min/max scan and guarded pick in this stage goes
- * through it. AMD's LLPC compiler (its RDNA4 / gfx12 backend) turns a
- * branch-and-merge of a double compare against one of its own operands
- * (`c ? x : k`, `if (x > k) x = k`) into the pre-gfx12 V_MAX_F64 / V_MIN_F64
- * opcodes, which have no gfx12 encoding, and faults while compiling the
- * pipeline; the same pick reaching it as OpSelect selects V_MAX_NUM_F64 /
- * V_MIN_NUM_F64. */
-pfloat dsel(bool c, pfloat t, pfloat f) { return mix(f, t, c); }
+/* Select emitted as OpSelect (mix with a bool), never as a branch: t when
+ * c holds, else f, for every input including NaN. The position chain's
+ * clamps, min/max scans and guarded picks go through it. */
+float dsel(bool c, float t, float f) { return mix(f, t, c); }
 
-#if defined(TERRAIN_FP32) || defined(TERRAIN_FP32_ARM2)
 /* The camera-relative operand of mac_of for a world position w in x4 units
  * (sector origin x4 + sector-local x4, an exact int32): the walk's
  * permuted operand (s5 - Y, s6 - Z, X + s4), each axis the exact integer
@@ -482,7 +390,7 @@ pfloat dsel(bool c, pfloat t, pfloat f) { return mix(f, t, c); }
  * magnitude, so the conversion is exact), then cam_frac_x4 applied, then
  * the exact * 0.25 to local units. The operands depend on w and the camera
  * alone, so a world vertex shared by two sectors yields the same float. */
-#ifdef TERRAIN_FP32_SECDELTA
+#ifdef TERRAIN_SECDELTA
 /* The hole census's positive control: the sector's camera operand (origin
  * against cam_int_x4, then cam_frac_x4) is rounded to float first and the
  * sector-local corner added after, so the result is rounded at
@@ -534,32 +442,15 @@ precise vec3 mac_of(vec3 v) {
     precise vec3 m = vec3(m1, m2, m3);
     return m;
 }
-#endif
-#ifndef TERRAIN_FP32
-/* ngte_mac mirror: camera-space MAC = (M*v)/4096 in DOUBLE, with the terrain
- * walk's axis permutation and per-sector camera deltas:
- *   s4 = originX - camx; s5 = camy - originY; s6 = camz - originZ;
- *   mac = M * (s5 - Y, s6 - Z, X + s4) / 4096
- * `precise` keeps mul+add separate (no FMA), matching the C compiler. */
-precise pvec3 mac_of(pvec3 lpos, pvec3 sdel) {
-    precise pfloat vx = sdel.y - lpos.y;      /* s5 - Yf */
-    precise pfloat vy = sdel.z - lpos.z;      /* s6 - Zf */
-    precise pfloat vz = lpos.x + sdel.x;      /* Xf + s4 */
-    precise pfloat m1 = (pfloat(g.mrow0.x)*vx + pfloat(g.mrow0.y)*vy + pfloat(g.mrow0.z)*vz) / 4096.0;
-    precise pfloat m2 = (pfloat(g.mrow1.x)*vx + pfloat(g.mrow1.y)*vy + pfloat(g.mrow1.z)*vz) / 4096.0;
-    precise pfloat m3 = (pfloat(g.mrow2.x)*vx + pfloat(g.mrow2.y)*vy + pfloat(g.mrow2.z)*vz) / 4096.0;
-    return pvec3(m1, m2, m3);
-}
-#endif
 
 /* proj_screen mirror: float sx = (float)(ofx + m1*H/z), with the CPU's
  * degenerate-Z floor. On plain chunks the floor never fires (an unclaimed
  * sector guarantees m3 > 0); the near variant projects pre-clip corners that
  * can sit at or behind the eye, where it does. */
-precise vec2 proj_of(pvec3 m) {
-    pfloat z = dsel(m.z > PF_1EM9, m.z, PF_1EM9);
-    precise pfloat sx = G_OF.x + m.x * G_H / z;
-    precise pfloat sy = G_OF.y + m.y * G_H / z;
+precise vec2 proj_of(vec3 m) {
+    float z = dsel(m.z > 1e-9, m.z, 1e-9);
+    precise float sx = G_OF.x + m.x * G_H / z;
+    precise float sy = G_OF.y + m.y * G_H / z;
     return vec2(float(sx), float(sy));
 }
 
@@ -572,19 +463,6 @@ precise vec2 proj_of(pvec3 m) {
  * projections, exactly as the walk's NCLIP runs on sv[].sx. */
 vec2 snap_of(vec2 s) { return pc.snap != 0 ? floor(s) : s; }
 
-#ifdef TERRAIN_FP32_ARM2
-/* The TERRAIN_FP32 build's proj_of on an fp32 camera-space value: the same
- * operations on the float globals. */
-precise vec2 proj_of(vec3 m) {
-    float z = mix(1e-9, m.z, m.z > 1e-9);
-    precise float sx = g.ofH.x + m.x * g.ofH.z / z;
-    precise float sy = g.ofH.y + m.y * g.ofH.z / z;
-    return vec2(float(sx), float(sy));
-}
-/* A flat or corner vertex's emitted point: the fp32 projection, or under
- * the integer snap the floor of the fp64 one. */
-vec2 snap_f32(pvec3 m, vec3 mf) { return pc.snap != 0 ? floor(proj_of(m)) : proj_of(mf); }
-#endif
 
 /* HQ sub-quad node ids: 0=TL 1=TR 2=BR 3=BL; 4..7 = mT,mB,mL,mR; 8 = centre.
  * sq[q] = {TL,mT,mL,C} {mT,TR,C,mR} {mL,C,BL,mB} {C,mR,mB,BR}. */
@@ -611,11 +489,11 @@ const int NODEMAP[4][4] = int[4][4](int[4](0, 4, 6, 8),
  * verdict for the shared midpoint, which is a property of the two shared
  * endpoints alone. An unsafe edge gets no override and its midpoint falls
  * back to the floor of its own projection. */
-vec2 hq_snap_screen(int node, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR, pvec3 m)
+vec2 hq_snap_screen(int node, vec3 TL, vec3 TR, vec3 BL, vec3 BR, vec3 m)
 {
     if (pc.snap == 0) return proj_of(m);
     if (node < 4 || node == 8) return floor(proj_of(m));
-    pvec3 ea, eb;
+    vec3 ea, eb;
     if      (node == 4) { ea = TL; eb = TR; }
     else if (node == 5) { ea = BL; eb = BR; }
     else if (node == 6) { ea = TL; eb = BL; }
@@ -637,15 +515,15 @@ vec2 hq_snap_screen(int node, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR, pvec3 m)
  * cell vertex carries its cell in mat_near1 (bit 31 set, cell in bits 0-3)
  * and its corner slot [TL,TR,BL,BR] in the role bits; node (r, c) is
  * rebuilt from the transformed parent corners in the walk's halving order. */
-precise pvec3 nc4_pt(pvec3 a, pvec3 b, int k) {
+precise vec3 nc4_pt(vec3 a, vec3 b, int k) {
     if (k == 0) return a;
     if (k == 4) return b;
-    precise pvec3 m = (a + b) * 0.5;
+    precise vec3 m = (a + b) * 0.5;
     if (k == 2) return m;
-    precise pvec3 q = ((k == 1 ? a : b) + m) * 0.5;
+    precise vec3 q = ((k == 1 ? a : b) + m) * 0.5;
     return q;
 }
-precise pvec3 nc4_node(int r, int c, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR) {
+precise vec3 nc4_node(int r, int c, vec3 TL, vec3 TR, vec3 BL, vec3 BR) {
     return nc4_pt(nc4_pt(TL, BL, r), nc4_pt(TR, BR, r), c);
 }
 
@@ -656,7 +534,7 @@ precise pvec3 nc4_node(int r, int c, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR) {
 /* nc4_snap_edge mirror: the point of the segment between the edge corners'
  * snapped projections at the parameter of the node's own projection, or the
  * floor of that projection when an edge corner is inside the near plane. */
-vec2 edge_snap_screen(pvec3 ea, pvec3 eb, pvec3 m)
+vec2 edge_snap_screen(vec3 ea, vec3 eb, vec3 m)
 {
     if (ea.z < G_NEAR || eb.z < G_NEAR) return floor(proj_of(m));
     vec2 A = floor(proj_of(ea)), B = floor(proj_of(eb));
@@ -670,13 +548,13 @@ vec2 edge_snap_screen(pvec3 ea, pvec3 eb, pvec3 m)
     return vec2(rx, ry);
 }
 
-vec2 nc4_snap_screen(int r, int c, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR, pvec3 m)
+vec2 nc4_snap_screen(int r, int c, vec3 TL, vec3 TR, vec3 BL, vec3 BR, vec3 m)
 {
     if (pc.snap == 0) return proj_of(m);
     bool er = (r == 0 || r == 4), ec = (c == 0 || c == 4);
     if (er == ec) return floor(proj_of(m));
-    pvec3 ea = er ? (r == 0 ? TL : BL) : (c == 0 ? TL : TR);
-    pvec3 eb = er ? (r == 0 ? TR : BR) : (c == 0 ? BL : BR);
+    vec3 ea = er ? (r == 0 ? TL : BL) : (c == 0 ? TL : TR);
+    vec3 eb = er ? (r == 0 ? TR : BR) : (c == 0 ? BL : BR);
     return edge_snap_screen(ea, eb, m);
 }
 
@@ -686,21 +564,21 @@ vec2 nc4_snap_screen(int r, int c, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR, pvec3
  * the 512x256 GTE screen (nc4_outcode). Applied under AFFINE_UV only: the
  * morph (r_environment.s 0x80028D1C-0x80028E44) moves the screen point while
  * UV and w stay, which perspective-correct texturing renders as a warp. */
-vec2 nc4_screen(int r, int c, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR)
+vec2 nc4_screen(int r, int c, vec3 TL, vec3 TR, vec3 BL, vec3 BR)
 {
-    pvec3 m = nc4_node(r, c, TL, TR, BL, BR);
+    vec3 m = nc4_node(r, c, TL, TR, BL, BR);
     vec2 sc = nc4_snap_screen(r, c, TL, TR, BL, BR, m);
     if (!AFFINE_UV || (r & 1) == 0 || (c & 1) == 0) return sc;
-    pfloat mn = min(min(TL.z, TR.z), min(BL.z, BR.z));
-    precise pfloat at = mn * 4.0 - 64.0;
+    float mn = min(min(TL.z, TR.z), min(BL.z, BR.z));
+    precise float at = mn * 4.0 - 64.0;
     if (at <= 0.0 || m.z <= 0.0) return sc;
     at = min(at, 256.0);             /* pinned far faces: full weight, never past it */
     vec2 op = floor(proj_of(m));
     if (op.y <= 0.0 || op.y >= 256.0 || op.x <= 0.0 || op.x >= 512.0) return sc;
     vec2 a = nc4_snap_screen(r - 1, c + 1, TL, TR, BL, BR, nc4_node(r - 1, c + 1, TL, TR, BL, BR));
     vec2 b = nc4_snap_screen(r + 1, c - 1, TL, TR, BL, BR, nc4_node(r + 1, c - 1, TL, TR, BL, BR));
-    precise pfloat mx = PDIV((256.0 - at) * pfloat(sc.x) + at * 0.5 * (pfloat(a.x) + pfloat(b.x)), 256.0);
-    precise pfloat my = PDIV((256.0 - at) * pfloat(sc.y) + at * 0.5 * (pfloat(a.y) + pfloat(b.y)), 256.0);
+    precise float mx = PDIV((256.0 - at) * float(sc.x) + at * 0.5 * (float(a.x) + float(b.x)), 256.0);
+    precise float my = PDIV((256.0 - at) * float(sc.y) + at * 0.5 * (float(a.y) + float(b.y)), 256.0);
     vec2 o = vec2(float(mx), float(my));
     return pc.snap != 0 ? floor(o) : o;
 }
@@ -724,15 +602,15 @@ const int NT4_EDGE[15] = int[15](0, 1, 1, 1, 0, 2, 0, 0, 3, 2, 0, 3, 2, 3, 0);
 
 /* nt4_grid mirror: nodes by the drain's halving order, each the camera-space
  * mean of its two parents. */
-precise pvec3 nt4_node(int n, pvec3 A, pvec3 B, pvec3 C) {
+precise vec3 nt4_node(int n, vec3 A, vec3 B, vec3 C) {
     if (n == 0) return A;
     if (n == 4) return B;
     if (n == 14) return C;
-    precise pvec3 m2 = (A + B) * 0.5, m9 = (A + C) * 0.5, m11 = (B + C) * 0.5;
+    precise vec3 m2 = (A + B) * 0.5, m9 = (A + C) * 0.5, m11 = (B + C) * 0.5;
     if (n == 2) return m2;
     if (n == 9) return m9;
     if (n == 11) return m11;
-    precise pvec3 r;
+    precise vec3 r;
     if      (n == 1)  r = (A + m2) * 0.5;
     else if (n == 3)  r = (B + m2) * 0.5;
     else if (n == 5)  r = (A + m9) * 0.5;
@@ -747,8 +625,8 @@ precise pvec3 nt4_node(int n, pvec3 A, pvec3 B, pvec3 C) {
 
 /* nt4_snap mirror: a corner or interior node floors its own projection, an
  * edge node sits on its edge's snapped segment. */
-vec2 nt4_screen(int n, pvec3 A, pvec3 B, pvec3 C) {
-    pvec3 m = nt4_node(n, A, B, C);
+vec2 nt4_screen(int n, vec3 A, vec3 B, vec3 C) {
+    vec3 m = nt4_node(n, A, B, C);
     if (pc.snap == 0) return proj_of(m);
     int e = NT4_EDGE[n];
     if (e == 0) return floor(proj_of(m));
@@ -761,25 +639,25 @@ vec2 nt4_screen(int n, pvec3 A, pvec3 B, pvec3 C) {
  * [0, 0xFFFF]) masked to the 12 bits the node word keeps. A quad cell sums
  * its four nodes, a sub-triangle SZ A + SZ B + 2 SZ C. Only a face in the
  * near band is drained; the rest key whole. */
-pfloat drain_sz(pfloat m3) {
-    pfloat sz = floor(m3 * 4.0);
+float drain_sz(float m3) {
+    float sz = floor(m3 * 4.0);
     if (sz <= 0.0) return 0.0;
     sz = dsel(sz > 65535.0, 65535.0, sz);
-    return pfloat(int(sz) & 0xFFF);
+    return float(int(sz) & 0xFFF);
 }
-float drain_key4(pfloat a, pfloat b, pfloat c, pfloat d) {
-    precise pfloat s = drain_sz(a) + drain_sz(b);
+float drain_key4(float a, float b, float c, float d) {
+    precise float s = drain_sz(a) + drain_sz(b);
     s = s + drain_sz(c);
     s = s + drain_sz(d);
     return float(s);
 }
-float drain_key3(pfloat a, pfloat b, pfloat c) {
-    precise pfloat s = drain_sz(a) + drain_sz(b);
+float drain_key3(float a, float b, float c) {
+    precise float s = drain_sz(a) + drain_sz(b);
     s = s + 2.0 * drain_sz(c);
     return float(s);
 }
 
-pfloat det3d(pvec3 a, pvec3 b, pvec3 c);
+float det3d(vec3 a, vec3 b, vec3 c);
 
 /* Node n's place (r, c) in the 15-node triangle grid (terrain.c k_nt4_rc). */
 const int NT4_RC[30] = int[30](0, 0,  0, 1,  0, 2,  0, 3,  0, 4,  1, 0,  1, 1,  1, 2,
@@ -819,16 +697,16 @@ void dtab_pack(inout dtab T, float keys[16], bool on[16], int slot[16], int cnt,
     T.t0.x |= grid << 14;
 }
 
-uint quad_fold_mask(pvec3 G[25], bool on[16]);
+uint quad_fold_mask(vec3 G[25], bool on[16]);
 
 /* tn_quad_cell_keys mirror: the keys of the 16 cells the drain inserts a
  * tier-4 quad as, over the grid of corners TL, TR, BL, BR; a cell whose key
  * is 0 carries none, nor, when `cull` (a straddling single-sided face), one
  * facing away over both of its triples (nc4_front). A folded quadrant q
  * (quad_fold_mask) sets bit 14 of entry 2 + q (tn_keycells_fold). */
-dtab quad_cells_tab(pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR, bool cull, bool flip)
+dtab quad_cells_tab(vec3 TL, vec3 TR, vec3 BL, vec3 BR, bool cull, bool flip)
 {
-    pvec3 G[25];
+    vec3 G[25];
     for (int r = 0; r < 5; r++)
         for (int c = 0; c < 5; c++) G[r * 5 + c] = nc4_node(r, c, TL, TR, BL, BR);
     dtab T;
@@ -836,15 +714,15 @@ dtab quad_cells_tab(pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR, bool cull, bool flip
     float keys[16]; bool on[16]; int slot[16];
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
-        pvec3 tl = G[r * 5 + c], tr = G[r * 5 + c + 1];
-        pvec3 bl = G[r * 5 + c + 5], br = G[r * 5 + c + 6];
+        vec3 tl = G[r * 5 + c], tr = G[r * 5 + c + 1];
+        vec3 bl = G[r * 5 + c + 5], br = G[r * 5 + c + 6];
         float key = drain_key4(tl.z, tr.z, bl.z, br.z);
         bool f = true;
         if (cull) {
-            precise pfloat d1 = det3d(tl, tr, bl);
+            precise float d1 = det3d(tl, tr, bl);
             f = flip ? (d1 <= 0.0) : (d1 >= 0.0);
             if (!f) {
-                precise pfloat d2 = det3d(tr, br, bl);
+                precise float d2 = det3d(tr, br, bl);
                 f = flip ? (d2 <= 0.0) : (d2 >= 0.0);
             }
         }
@@ -866,9 +744,9 @@ dtab quad_cells_tab(pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR, bool cull, bool flip
 /* tn_tri_cell_keys mirror: the same over a triangle's tier-4 (16) or tier-2
  * (4) sub-triangles, a sub-triangle facing away over its own triple
  * skipped when `cull`. */
-dtab tri_cells_tab(pvec3 A, pvec3 B, pvec3 C, bool tier2, bool cull, bool flip)
+dtab tri_cells_tab(vec3 A, vec3 B, vec3 C, bool tier2, bool cull, bool flip)
 {
-    pvec3 N[15];
+    vec3 N[15];
     for (int k = 0; k < 15; k++) N[k] = nt4_node(k, A, B, C);
     int base = tier2 ? 16 : 0, cnt = tier2 ? 4 : 16;
     dtab T;
@@ -877,11 +755,11 @@ dtab tri_cells_tab(pvec3 A, pvec3 B, pvec3 C, bool tier2, bool cull, bool flip)
     for (int i = 0; i < 16; i++) { keys[i] = 0.0; on[i] = false; slot[i] = 0; }
     for (int i = 0; i < cnt; i++) {
         int t = (base + i) * 3;
-        pvec3 a = N[NT_SUB[t]], b = N[NT_SUB[t + 1]], c = N[NT_SUB[t + 2]];
+        vec3 a = N[NT_SUB[t]], b = N[NT_SUB[t + 1]], c = N[NT_SUB[t + 2]];
         float key = drain_key3(a.z, b.z, c.z);
         bool f = true;
         if (cull) {
-            precise pfloat d = det3d(a, b, c);
+            precise float d = det3d(a, b, c);
             f = !(flip ? (d > 0.0) : (d < 0.0));
         }
         keys[i] = key;
@@ -903,22 +781,22 @@ vec2 nt4_fl(int n) { return vec2(float(NT4_RC[n * 2 + 1]), float(NT4_RC[n * 2]))
  * quadrant with corners Q0..Q3 (TL, TR, BL, BR), term by term as the walk
  * computes them: the eye-plane normals of its column and row isolines,
  * dotted with V and scaled to 1 at TR and BL. */
-pvec3 eye_normal(pvec3 a, pvec3 b) {
-    precise pfloat x = a.y * b.z - b.y * a.z;
-    precise pfloat y = a.z * b.x - b.z * a.x;
-    precise pfloat z = a.x * b.y - b.x * a.y;
-    return pvec3(x, y, z);
+vec3 eye_normal(vec3 a, vec3 b) {
+    precise float x = a.y * b.z - b.y * a.z;
+    precise float y = a.z * b.x - b.z * a.x;
+    precise float z = a.x * b.y - b.x * a.y;
+    return vec3(x, y, z);
 }
-pfloat eye_side(pvec3 n, pvec3 v) {
-    precise pfloat d = n.x * v.x + n.y * v.y;
+float eye_side(vec3 n, vec3 v) {
+    precise float d = n.x * v.x + n.y * v.y;
     d = d + n.z * v.z;
     return d;
 }
-vec2 quad_side_fl(pvec3 Q0, pvec3 Q1, pvec3 Q2, pvec3 Q3, pvec3 V) {
-    precise pvec3 ct = (Q0 + Q1) * 0.5, cb = (Q2 + Q3) * 0.5;
-    precise pvec3 rl = (Q0 + Q2) * 0.5, rr = (Q1 + Q3) * 0.5;
-    pvec3 nc = eye_normal(ct, cb), nr = eye_normal(rl, rr);
-    pfloat sc = eye_side(nc, Q1), sr = eye_side(nr, Q2);
+vec2 quad_side_fl(vec3 Q0, vec3 Q1, vec3 Q2, vec3 Q3, vec3 V) {
+    precise vec3 ct = (Q0 + Q1) * 0.5, cb = (Q2 + Q3) * 0.5;
+    precise vec3 rl = (Q0 + Q2) * 0.5, rr = (Q1 + Q3) * 0.5;
+    vec3 nc = eye_normal(ct, cb), nr = eye_normal(rl, rr);
+    float sc = eye_side(nc, Q1), sr = eye_side(nr, Q2);
     if (sc == 0.0) sc = 1.0;
     if (sr == 0.0) sr = 1.0;
     return vec2(float(eye_side(nc, V) / sc), float(eye_side(nr, V) / sr));
@@ -928,16 +806,16 @@ vec2 quad_side_fl(pvec3 Q0, pvec3 Q1, pvec3 Q2, pvec3 Q3, pvec3 V) {
  * of 2x2 quadrant q has a node strictly (1e-6 of the scale) across one of
  * the quadrant's isoline eye planes into a skipped cell's slot. G is the
  * 5x5 node grid, on[] the drawn cells. */
-uint quad_fold_mask(pvec3 G[25], bool on[16]) {
+uint quad_fold_mask(vec3 G[25], bool on[16]) {
     uint fm = 0u;
     for (int qd = 0; qd < 4; qd++) {
         int r0 = (qd >> 1) * 2, c0 = (qd & 1) * 2;
-        pvec3 Q0 = G[r0 * 5 + c0], Q1 = G[r0 * 5 + c0 + 2];
-        pvec3 Q2 = G[(r0 + 2) * 5 + c0], Q3 = G[(r0 + 2) * 5 + c0 + 2];
-        precise pvec3 ct = (Q0 + Q1) * 0.5, cb = (Q2 + Q3) * 0.5;
-        precise pvec3 rl = (Q0 + Q2) * 0.5, rr = (Q1 + Q3) * 0.5;
-        pvec3 nc = eye_normal(ct, cb), nr = eye_normal(rl, rr);
-        pfloat sc = eye_side(nc, Q1), sr = eye_side(nr, Q2);
+        vec3 Q0 = G[r0 * 5 + c0], Q1 = G[r0 * 5 + c0 + 2];
+        vec3 Q2 = G[(r0 + 2) * 5 + c0], Q3 = G[(r0 + 2) * 5 + c0 + 2];
+        precise vec3 ct = (Q0 + Q1) * 0.5, cb = (Q2 + Q3) * 0.5;
+        precise vec3 rl = (Q0 + Q2) * 0.5, rr = (Q1 + Q3) * 0.5;
+        vec3 nc = eye_normal(ct, cb), nr = eye_normal(rl, rr);
+        float sc = eye_side(nc, Q1), sr = eye_side(nr, Q2);
         if (sc == 0.0) sc = 1.0;
         if (sr == 0.0) sr = 1.0;
         bool f = false;
@@ -945,10 +823,10 @@ uint quad_fold_mask(pvec3 G[25], bool on[16]) {
             int lr = k >> 1, lc = k & 1;
             if (!on[(r0 + lr) * 4 + c0 + lc]) continue;
             for (int n = 0; n < 4 && !f; n++) {
-                pvec3 v = G[(r0 + lr + (n >> 1)) * 5 + c0 + lc + (n & 1)];
-                pfloat fx = eye_side(nc, v) / sc, fy = eye_side(nr, v) / sr;
-                int xc = (lc != 0 ? fx < -PF_1EM6 : fx > PF_1EM6) ? 1 : 0;
-                int xr = (lr != 0 ? fy < -PF_1EM6 : fy > PF_1EM6) ? 1 : 0;
+                vec3 v = G[(r0 + lr + (n >> 1)) * 5 + c0 + lc + (n & 1)];
+                float fx = eye_side(nc, v) / sc, fy = eye_side(nr, v) / sr;
+                int xc = (lc != 0 ? fx < -1e-6 : fx > 1e-6) ? 1 : 0;
+                int xr = (lr != 0 ? fy < -1e-6 : fy > 1e-6) ? 1 : 0;
                 if ((xc | xr) != 0 && !on[(r0 + (lr ^ xr)) * 4 + c0 + (lc ^ xc)]) f = true;
             }
         }
@@ -960,23 +838,22 @@ uint quad_fold_mask(pvec3 G[25], bool on[16]) {
 /* A camera-space point in the homogeneous screen space of the fold test
  * (psx_key_contest.glsl): (OFX z + H x, OFY z + H y, z), terrain.c
  * tn_fold_corner's terms. */
-vec3 fold_h(pvec3 m) {
-    precise pfloat hx = G_OF.x * m.z + G_H * m.x;
-    precise pfloat hy = G_OF.y * m.z + G_H * m.y;
+vec3 fold_h(vec3 m) {
+    precise float hx = G_OF.x * m.z + G_H * m.x;
+    precise float hy = G_OF.y * m.z + G_H * m.y;
     return vec3(float(hx), float(hy), float(m.z));
 }
 
-/* GTE_SAT mirror (double of the FLOAT screen coord, like the CPU's
- * NSAT(sv.sx)). */
-pfloat nsat(float v, bool unr_ovf) {
-    if (unr_ovf) return pfloat(v);
-    return dsel(v < -1024.0, -1024.0, dsel(v > 1023.0, 1023.0, pfloat(v)));
+/* GTE_SAT mirror (of the float screen coord, like the CPU's NSAT(sv.sx)). */
+float nsat(float v, bool unr_ovf) {
+    if (unr_ovf) return float(v);
+    return dsel(v < -1024.0, -1024.0, dsel(v > 1023.0, 1023.0, float(v)));
 }
 
 /* terrain.c tface_gte_flagged mirror, one corner: the .s vertex flag 0x10
  * (GTE FLAG bit 31 read for SZ3 < 0x600): SZ3 saturated at 0, SX2/SY2
  * saturated, or the UNR divide overflow (m3 < H_canon / 8). */
-bool gte_flag(pfloat mz, vec2 p) {
+bool gte_flag(float mz, vec2 p) {
     if (mz <= 0.0) return true;
     if (mz >= 384.0) return false;
     if (p.x < -1024.0 || p.x > 1023.0 || p.y < -1024.0 || p.y > 1023.0) return true;
@@ -1002,17 +879,17 @@ int dpcs_ch(int c8, int fc12, int ir0) {
  * onto the 8-bit grid before the fog blend. Alpha 1 selects cur. */
 vec3 canim_col(uint prev, vec3 cur)
 {
-    pfloat a = G_CA;
+    float a = G_CA;
     if (a == 1.0) return cur;
     ivec3 c = ivec3(round(cur * 255.0));
     ivec3 p = ivec3(int(prev & 0xFFu), int((prev >> 8) & 0xFFu), int((prev >> 16) & 0xFFu));
-    precise pvec3 v = pvec3(p) + pvec3(c - p) * a + 0.5;
+    precise vec3 v = vec3(p) + vec3(c - p) * a + 0.5;
     return vec3(ivec3(v)) / 255.0;
 }
 #endif
 
-vec3 terrain_col(pfloat mz, vec3 cfar, vec3 cnear, bool doFog, int fogRef,
-                 pfloat fogscale, bool grade, vec4 gp, vec4 gq)
+vec3 terrain_col(float mz, vec3 cfar, vec3 cnear, bool doFog, int fogRef,
+                 float fogscale, bool grade, vec4 gp, vec4 gq)
 {
     vec3 col;
     if (doFog) {
@@ -1054,45 +931,37 @@ vec3 terrain_col(pfloat mz, vec3 cfar, vec3 cnear, bool doFog, int fogRef,
 /* Camera-space triple product of three terrain corners (the walk's
  * tface_det3): the sign of the projected NCLIP over the same triple, and
  * still defined for a corner behind the eye. */
-#ifdef TERRAIN_FP32
-pfloat det3d(pvec3 a, pvec3 b, pvec3 c) {
-    precise pfloat d = a.x * (b.y * c.z - b.z * c.y)
+float det3d(vec3 a, vec3 b, vec3 c) {
+    precise float d = a.x * (b.y * c.z - b.z * c.y)
                      - a.y * (b.x * c.z - b.z * c.x)
                      + a.z * (b.x * c.y - b.y * c.x);
     return d;
 }
-#else
-pfloat det3d(pvec3 a, pvec3 b, pvec3 c) {
-    return a.x * (b.y * c.z - b.z * c.y)
-         - a.y * (b.x * c.z - b.z * c.x)
-         + a.z * (b.x * c.y - b.y * c.x);
-}
-#endif
 
-bool near_canonical(pfloat z0, pfloat z1, pfloat z2, pfloat z3, uint w3_40, uint w3_80) {
-    PREC32 pfloat sz0 = dsel(z0 > 0.0, z0 * 4.0, 0.0), sz1 = dsel(z1 > 0.0, z1 * 4.0, 0.0);
-    PREC32 pfloat sz2 = dsel(z2 > 0.0, z2 * 4.0, 0.0), sz3 = dsel(z3 > 0.0, z3 * 4.0, 0.0);
-    PREC32 pfloat sum = sz0 + sz1 + sz2 + sz3;
+bool near_canonical(float z0, float z1, float z2, float z3, uint w3_40, uint w3_80) {
+    precise float sz0 = dsel(z0 > 0.0, z0 * 4.0, 0.0), sz1 = dsel(z1 > 0.0, z1 * 4.0, 0.0);
+    precise float sz2 = dsel(z2 > 0.0, z2 * 4.0, 0.0), sz3 = dsel(z3 > 0.0, z3 * 4.0, 0.0);
+    precise float sum = sz0 + sz1 + sz2 + sz3;
     if (sum <= 0.0) return false;                 /* fully behind camera */
     if (w3_80 != 0u) return false;                  /* hard-excluded from HQ */
     if (sum >= 8192.0) return false;              /* not foreground (0x2000) */
-    pfloat mn = min(min(sz0, sz1), min(sz2, sz3));
+    float mn = min(min(sz0, sz1), min(sz2, sz3));
     if (mn < 320.0) return true;                  /* a corner SZ3 < 0x140 */
     return w3_40 == 0u;
 }
 
 /* tn_sz3 mirror: a corner's GTE SZ3 on a scale, truncated and saturated to
  * [0, 0xFFFF]. */
-int sz3_of(pfloat m, pfloat scale)
+int sz3_of(float m, float scale)
 {
     if (m <= 0.0) return 0;
-    PREC32 pfloat v = m * scale;
+    precise float v = m * scale;
     return v >= 65535.0 ? 0xFFFF : int(v);
 }
 
 /* tn_sz3_sum mirror: a face's corner-SZ3 sum (a triangle passes its shared
  * corner twice as z3). */
-int sz3_sum(pfloat z0, pfloat z1, pfloat z2, pfloat z3, pfloat scale)
+int sz3_sum(float z0, float z1, float z2, float z3, float scale)
 {
     return sz3_of(z0, scale) + sz3_of(z1, scale) + sz3_of(z2, scale) + sz3_of(z3, scale);
 }
@@ -1100,7 +969,7 @@ int sz3_sum(pfloat z0, pfloat z1, pfloat z2, pfloat z3, pfloat scale)
 /* tn_water_rgb mirror: the game's second-walk corner colour, the sector
  * colour DPCS-faded toward black (FC 0) with IR0 = clamp(2 * (SZ3 - 0x1000),
  * 0, 0xFFF) at SZ3 = mz * fogscale; unfaded under fog mode off. */
-vec3 water_col(vec3 c, pfloat mz, pfloat fogscale, bool fogOff)
+vec3 water_col(vec3 c, float mz, float fogscale, bool fogOff)
 {
     if (fogOff) return c;   /* fog mode off: no depth cue */
     int ir0 = clamp(2 * (sz3_of(mz, fogscale) - 0x1000), 0, 0xFFF);
@@ -1113,8 +982,8 @@ vec3 water_col(vec3 c, pfloat mz, pfloat fogscale, bool fogOff)
  * half, else t0k >> 8 the CLUT row. Per-corner int casts, then sum (the
  * walk's exact quantisation); ladnear is the nearest-corner rule (Spyro 2/3):
  * row = 15 - (max clamped IR0 >> 8), t0k = 256 * row. */
-int ladder_t0k(pfloat z0, pfloat z1, pfloat z2, pfloat z3, int fogRef,
-               pfloat fogscale, bool ladnear)
+int ladder_t0k(float z0, float z1, float z2, float z3, int fogRef,
+               float fogscale, bool ladnear)
 {
     if (ladnear) {
         int irmax = 0;
@@ -1155,7 +1024,7 @@ uvec2 clear_words(bool fogPP, bool fogbias, int t0k)
 
 /* face_near_tier4 mirror: a canonical near face with near_flag_tier2 clear
  * and a corner SZ3 under near_corner (0x140). */
-bool nc4_tier4(pfloat z0, pfloat z1, pfloat z2, pfloat z3, uint w3_40, uint w3_80) {
+bool nc4_tier4(float z0, float z1, float z2, float z3, uint w3_40, uint w3_80) {
     if (w3_40 != 0u) return false;
     if (!near_canonical(z0, z1, z2, z3, w3_40, w3_80)) return false;
     return min(min(z0, z1), min(z2, z3)) * 4.0 < 320.0;
@@ -1175,8 +1044,8 @@ bool ot_farcull_keyed() { return (uint(g.fog.w) & 0x10000u) != 0u; }
  * Mirrors tface_ot_slots for an LP face.
  * @param ob The face's bias field.
  * @return The offset in 128-world slots. */
-pfloat ot_lp_slots(uint ob) {
-    return pfloat(ot_lp_base() + ((uint(g.fog.w) >> 8) & 0xFu) * ob);
+float ot_lp_slots(uint ob) {
+    return float(ot_lp_base() + ((uint(g.fog.w) >> 8) & 0xFu) * ob);
 }
 
 /* The face-attribution identity of debug tint mode 7, 22 bits: the decode
@@ -1204,9 +1073,6 @@ uint attr_word(uint slot, bool lp, bool hqv, bool is4, bool drain)
 }
 
 #ifdef TERRAIN_READBACK
-#ifndef TERRAIN_FP32
-#error "TERRAIN_READBACK reads the TERRAIN_FP32 position chain"
-#endif
 /* ---- shared-vertex position readback (diagnostic) -------------------------
  * The variant draws each vertex as a point into an RGBA32_UINT target at a
  * pixel its element addresses: pass 0 (pc.pad0) writes the bits of the
@@ -1218,7 +1084,7 @@ uint attr_word(uint slot, bool lp, bool hqv, bool is4, bool drain)
  * canonical order. The key hashes that tree (the operands of a commutative
  * mean unordered, a static lerp pair as its plain leaf), so two vertices
  * carry one key when they apply the same operations to the same operands,
- * and the TERRAIN_FP32 contract is that such vertices land on bit-identical
+ * and the stage's contract is that such vertices land on bit-identical
  * clip positions. Key words x..z are the hash, w the root's kind; rb_emit
  * adds the drawing sector's slot to w (bits 8-16) for the pairing's
  * cross-sector census. */
@@ -1379,31 +1245,31 @@ void kill_vert() {
  * The CPU feed classifies every emitted tri against the active portal
  * opening planes and DROPS accepted rim faces - they lie in the opening
  * plane, coincident with the destination-sky preview, and no depth ordering
- * can separate them. Same classifier here, in fp64 `precise`, on the tri
+ * can separate them. Same classifier here, in fp32 `precise`, on the tri
  * rebuilt from the corner attributes (flags16 bit13 = second half/sub-tri).
  * rim_uv_contains / rim_uv_edge_dist run on the plane's outline dropped
  * into its in-plane (U,W) basis, exactly as the CPU helpers. */
-bool rim_uv_contains_g(int base, int pn, pfloat u, pfloat v) {
+bool rim_uv_contains_g(int base, int pn, float u, float v) {
     bool inp = false;
     for (int i = 0, j = pn - 1; i < pn; j = i++) {
-        pfloat iu = g.rim_pv[base + i].x, iv = g.rim_pv[base + i].y;
-        pfloat ju = g.rim_pv[base + j].x, jv = g.rim_pv[base + j].y;
+        float iu = g.rim_pv[base + i].x, iv = g.rim_pv[base + i].y;
+        float ju = g.rim_pv[base + j].x, jv = g.rim_pv[base + j].y;
         if ((iv > v) != (jv > v) &&
             u < (ju - iu) * (v - iv) / (jv - iv) + iu)
             inp = !inp;
     }
     return inp;
 }
-pfloat rim_uv_edge_dist_g(int base, int pn, pfloat u, pfloat v) {
-    pfloat best = PF_1E30;
+float rim_uv_edge_dist_g(int base, int pn, float u, float v) {
+    float best = 1e30;
     for (int i = 0, j = pn - 1; i < pn; j = i++) {
-        pfloat ax = g.rim_pv[base + j].x, ay = g.rim_pv[base + j].y;
-        PREC32 pfloat ex = g.rim_pv[base + i].x - ax, ey = g.rim_pv[base + i].y - ay;
-        PREC32 pfloat L2 = ex * ex + ey * ey;
-        PREC32 pfloat t = (L2 > PF_1EM9) ? ((u - ax) * ex + (v - ay) * ey) / L2 : 0.0;
+        float ax = g.rim_pv[base + j].x, ay = g.rim_pv[base + j].y;
+        precise float ex = g.rim_pv[base + i].x - ax, ey = g.rim_pv[base + i].y - ay;
+        precise float L2 = ex * ex + ey * ey;
+        precise float t = (L2 > 1e-9) ? ((u - ax) * ex + (v - ay) * ey) / L2 : 0.0;
         t = dsel(t < 0.0, 0.0, dsel(t > 1.0, 1.0, t));
-        PREC32 pfloat dx = u - (ax + t * ex), dy = v - (ay + t * ey);
-        PREC32 pfloat d = sqrt(dx * dx + dy * dy);
+        precise float dx = u - (ax + t * ex), dy = v - (ay + t * ey);
+        precise float d = sqrt(dx * dx + dy * dy);
         best = dsel(d < best, d, best);
     }
     return best;
@@ -1415,29 +1281,29 @@ pfloat rim_uv_edge_dist_g(int base, int pn, pfloat u, pfloat v) {
  * discards the part inside plane pi's outline (vRim = 1 + pi; the rim and
  * cover plane lists share the feed's plane order). Inputs are the emitted
  * tri's FLOAT screen coords (the feed ttri's sx/sy) and walk view-Z (m3). */
-int rim_classified(vec2 s0, vec2 s1, vec2 s2, pfloat z0, pfloat z1, pfloat z2) {
-    precise pfloat ofx = g.rim_oxyH.x, ofy = g.rim_oxyH.y, H = g.rim_oxyH.z;
+int rim_classified(vec2 s0, vec2 s1, vec2 s2, float z0, float z1, float z2) {
+    precise float ofx = g.rim_oxyH.x, ofy = g.rim_oxyH.y, H = g.rim_oxyH.z;
     if (H < 1.0) return 0;
-    pfloat eps = g.rim_knobs.x, nearw = g.rim_knobs.y;
-    pfloat reach = g.rim_knobs.z, cosw = g.rim_knobs.w;
-    pfloat sx[3] = pfloat[3](pfloat(s0.x), pfloat(s1.x), pfloat(s2.x));
-    pfloat sy[3] = pfloat[3](pfloat(s0.y), pfloat(s1.y), pfloat(s2.y));
-    pfloat vz[3] = pfloat[3](z0 * 16.0, z1 * 16.0, z2 * 16.0);
+    float eps = g.rim_knobs.x, nearw = g.rim_knobs.y;
+    float reach = g.rim_knobs.z, cosw = g.rim_knobs.w;
+    float sx[3] = float[3](float(s0.x), float(s1.x), float(s2.x));
+    float sy[3] = float[3](float(s0.y), float(s1.y), float(s2.y));
+    float vz[3] = float[3](z0 * 16.0, z1 * 16.0, z2 * 16.0);
     for (int pi = 0; pi < g.rim_cnt.x; pi++) {
         if (g.rim_abc[pi].w == 0.0) continue;      /* frame invalid */
-        precise pfloat nx = g.rim_nrm[pi].x, ny = g.rim_nrm[pi].y,
+        precise float nx = g.rim_nrm[pi].x, ny = g.rim_nrm[pi].y,
                        nz = g.rim_nrm[pi].z;
-        precise pvec3 V[3];
-        pfloat dmin = PF_1E30, dmax = 0.0;
+        precise vec3 V[3];
+        float dmin = 1e30, dmax = 0.0;
         bool okz = true;
         for (int k = 0; k < 3; k++) {
-            precise pfloat inv = g.rim_abc[pi].x * sx[k]
+            precise float inv = g.rim_abc[pi].x * sx[k]
                                + g.rim_abc[pi].y * sy[k] + g.rim_abc[pi].z;
-            if (inv <= PF_1EM9) { okz = false; break; }
-            precise pfloat vzk = vz[k];
-            V[k] = pvec3((sx[k] - ofx) * vzk / H, (sy[k] - ofy) * vzk / H, vzk);
-            precise pfloat dz = vzk - 1.0 / inv;
-            precise pfloat d = abs(dz * (nx * (sx[k] - ofx) + ny * (sy[k] - ofy)
+            if (inv <= 1e-9) { okz = false; break; }
+            precise float vzk = vz[k];
+            V[k] = vec3((sx[k] - ofx) * vzk / H, (sy[k] - ofy) * vzk / H, vzk);
+            precise float dz = vzk - 1.0 / inv;
+            precise float d = abs(dz * (nx * (sx[k] - ofx) + ny * (sy[k] - ofy)
                                          + nz * H) / H);
             dmin = dsel(d < dmin, d, dmin);
             dmax = dsel(d > dmax, d, dmax);
@@ -1445,12 +1311,12 @@ int rim_classified(vec2 s0, vec2 s1, vec2 s2, pfloat z0, pfloat z1, pfloat z2) {
         if (!okz) continue;
         if (dmin > 400.0) continue;                /* RIM_CAND_WINDOW */
         int base = pi * 16, pn = int(g.rim_nrm[pi].w);
-        precise pvec3 O = g.rim_O[pi].xyz, U = g.rim_U[pi].xyz,
+        precise vec3 O = g.rim_O[pi].xyz, U = g.rim_U[pi].xyz,
                       W = g.rim_W[pi].xyz;
-        PREC32 pfloat fu[3], fv[3];
-        pfloat fulo = PF_1E30, fuhi = -PF_1E30, fvlo = PF_1E30, fvhi = -PF_1E30;
+        precise float fu[3], fv[3];
+        float fulo = 1e30, fuhi = -1e30, fvlo = 1e30, fvhi = -1e30;
         for (int k = 0; k < 3; k++) {
-            precise pvec3 r = V[k] - O;
+            precise vec3 r = V[k] - O;
             fu[k] = r.x * U.x + r.y * U.y + r.z * U.z;
             fv[k] = r.x * W.x + r.y * W.y + r.z * W.z;
             fulo = dsel(fu[k] < fulo, fu[k], fulo);
@@ -1465,7 +1331,7 @@ int rim_classified(vec2 s0, vec2 s1, vec2 s2, pfloat z0, pfloat z1, pfloat z2) {
         /* contain: any vertex or the centroid inside the outline, or a
          * vertex within `reach` of an outline edge */
         bool touches = false;
-        PREC32 pfloat cu = 0.0, cv = 0.0;
+        precise float cu = 0.0, cv = 0.0;
         for (int k = 0; k < 3; k++) {
             cu += fu[k]; cv += fv[k];
             if (!touches && rim_uv_contains_g(base, pn, fu[k], fv[k]))
@@ -1479,18 +1345,14 @@ int rim_classified(vec2 s0, vec2 s1, vec2 s2, pfloat z0, pfloat z1, pfloat z2) {
                     touches = true;
         if (!touches) continue;                      /* RIMFAIL_CONTAIN */
         if (dmax > eps || dmin > nearw) continue;    /* RIMFAIL_DIST */
-        precise pvec3 e1 = V[1] - V[0], e2 = V[2] - V[0];
-        precise pfloat fx = e1.y * e2.z - e1.z * e2.y;
-        precise pfloat fy = e1.z * e2.x - e1.x * e2.z;
-        precise pfloat fz = e1.x * e2.y - e1.y * e2.x;
-        PREC32 pfloat fl = sqrt(fx * fx + fy * fy + fz * fz);
-        if (fl < PF_1EM9) continue;                   /* RIMFAIL_ANGLE */
-#ifdef TERRAIN_FP32
+        precise vec3 e1 = V[1] - V[0], e2 = V[2] - V[0];
+        precise float fx = e1.y * e2.z - e1.z * e2.y;
+        precise float fy = e1.z * e2.x - e1.x * e2.z;
+        precise float fz = e1.x * e2.y - e1.y * e2.x;
+        precise float fl = sqrt(fx * fx + fy * fy + fz * fz);
+        if (fl < 1e-9) continue;                   /* RIMFAIL_ANGLE */
         precise float fcos = abs((fx * nx + fy * ny + fz * nz) / fl);
         if (fcos < cosw) continue;
-#else
-        if (abs((fx * nx + fy * ny + fz * nz) / fl) < cosw) continue;
-#endif
         return g.rim_O[pi].w != 0.0 ? 2 + pi : 1;  /* all terms pass */
     }
     return 0;
@@ -1513,39 +1375,34 @@ int rim_classified(vec2 s0, vec2 s1, vec2 s2, pfloat z0, pfloat z1, pfloat z2) {
  * subdivide installs on its own nodes under the integer snap. A cut vertex
  * rebuilt by the clip carries none (ngte_clip_lerp zeroes oflag) and falls
  * back to the floor of its own projection, as push_tri does. */
-#ifdef TERRAIN_FP32_ARM2
-/* mf, osf: the position and override of the fp32 chain beside m and os. */
-struct cvx { pvec3 m; ivec3 c; ivec3 q; vec2 uv; vec2 os; bool ov; vec2 fl; vec3 mf; vec2 osf; };
-#elif defined(TERRAIN_READBACK)
+#if defined(TERRAIN_READBACK)
 /* rk: the corner's readback key. */
-struct cvx { pvec3 m; ivec3 c; ivec3 q; vec2 uv; vec2 os; bool ov; vec2 fl; uvec4 rk; };
+struct cvx { vec3 m; ivec3 c; ivec3 q; vec2 uv; vec2 os; bool ov; vec2 fl; uvec4 rk; };
 #else
-struct cvx { pvec3 m; ivec3 c; ivec3 q; vec2 uv; vec2 os; bool ov; vec2 fl; };
+struct cvx { vec3 m; ivec3 c; ivec3 q; vec2 uv; vec2 os; bool ov; vec2 fl; };
 #endif
 
 /* The cut of edge a-b at the plane m3 = zc (cv_lerp mirror). The clip
  * takes a cut only when the endpoints straddle zc, so exactly one is
- * behind it (m3 < zc). The fp32 build orders the operands behind endpoint
+ * behind it (m3 < zc). The stage orders the operands behind endpoint
  * first: two faces sharing a crossing edge traverse it in either direction,
  * and t from a then (1 - t) from b is a different rounding sequence, so the
  * shared cut position is bit-identical only with one canonical order. */
-cvx cv_lerp_n(cvx a, cvx b, pfloat zc) {
-#ifdef TERRAIN_FP32
+cvx cv_lerp_n(cvx a, cvx b, float zc) {
     if (a.m.z >= zc) { cvx sw = a; a = b; b = sw; }
-#endif
-    precise pfloat t = (zc - a.m.z) / (b.m.z - a.m.z);
+    precise float t = (zc - a.m.z) / (b.m.z - a.m.z);
     t = dsel(t < 0.0, 0.0, dsel(t > 1.0, 1.0, t));
-    precise pfloat px = a.m.x + t * (b.m.x - a.m.x);
-    precise pfloat py = a.m.y + t * (b.m.y - a.m.y);
+    precise float px = a.m.x + t * (b.m.x - a.m.x);
+    precise float py = a.m.y + t * (b.m.y - a.m.y);
     precise float  pu = a.uv.x + float(t) * (b.uv.x - a.uv.x);
     precise float  pv = a.uv.y + float(t) * (b.uv.y - a.uv.y);
     precise float  fx = a.fl.x + float(t) * (b.fl.x - a.fl.x);
     precise float  fy = a.fl.y + float(t) * (b.fl.y - a.fl.y);
-    precise pfloat cr = pfloat(a.c.x) + t * pfloat(b.c.x - a.c.x) + 0.5;
-    precise pfloat cg = pfloat(a.c.y) + t * pfloat(b.c.y - a.c.y) + 0.5;
-    precise pfloat cb = pfloat(a.c.z) + t * pfloat(b.c.z - a.c.z) + 0.5;
+    precise float cr = float(a.c.x) + t * float(b.c.x - a.c.x) + 0.5;
+    precise float cg = float(a.c.y) + t * float(b.c.y - a.c.y) + 0.5;
+    precise float cb = float(a.c.z) + t * float(b.c.z - a.c.z) + 0.5;
     cvx r;
-    r.m  = pvec3(px, py, zc);
+    r.m  = vec3(px, py, zc);
     r.uv = vec2(pu, pv);
     r.c  = ivec3(int(cr), int(cg), int(cb));
     r.q  = ivec3(0);
@@ -1554,31 +1411,12 @@ cvx cv_lerp_n(cvx a, cvx b, pfloat zc) {
 #ifdef TERRAIN_READBACK
     r.rk = rb_cut(a.rk, b.rk, zc);
 #endif
-#ifdef TERRAIN_FP32_ARM2
-    {   /* the TERRAIN_FP32 build's cut on the fp32 positions, behind
-         * endpoint first, at the same zc rounded to float (exact: the
-         * near plane is uploaded as that float, doubled exactly) */
-        vec3 am = a.mf, bm = b.mf;
-        float zf = float(zc);
-        if (am.z >= zf) { vec3 sw = am; am = bm; bm = sw; }
-        precise float tf = (zf - am.z) / (bm.z - am.z);
-        tf = mix(mix(tf, 1.0, tf > 1.0), 0.0, tf < 0.0);
-        precise float qx = am.x + tf * (bm.x - am.x);
-        precise float qy = am.y + tf * (bm.y - am.y);
-        r.mf = vec3(qx, qy, zf);
-        r.osf = vec2(0.0);
-    }
-#endif
     return r;
 }
 
 /* push_tri's screen resolution for one clip-fan corner: the installed
  * override when the subdivide left one, otherwise the (snapped) projection. */
 vec2 scr_of(cvx v) { return v.ov ? v.os : snap_of(proj_of(v.m)); }
-#ifdef TERRAIN_FP32_ARM2
-/* scr_of on the fp32 chain: its override, or snap_f32. */
-vec2 scr_f32(cvx v) { return v.ov ? v.osf : snap_f32(v.m, v.mf); }
-#endif
 
 /* Max distance (PSX px) a crossing vertex may project from the screen centre
  * before the whole face is re-clipped at a doubled zc - the walk's own
@@ -1621,11 +1459,11 @@ layout(std430, set = 2, binding = 1) readonly buffer TerrainPrevRecs {
  * cur. */
 uint coltab_lerp(uint prev, uint cur)
 {
-    pfloat a = G_CA;
+    float a = G_CA;
     if (a == 1.0) return cur;
     ivec3 c = ivec3(int(cur & 0xFFu), int((cur >> 8) & 0xFFu), int((cur >> 16) & 0xFFu));
     ivec3 p = ivec3(int(prev & 0xFFu), int((prev >> 8) & 0xFFu), int((prev >> 16) & 0xFFu));
-    precise pvec3 v = pvec3(p) + pvec3(c - p) * a + 0.5;
+    precise vec3 v = vec3(p) + vec3(c - p) * a + 0.5;
     ivec3 o = ivec3(v);
     return uint(o.x) | (uint(o.y) << 8) | (uint(o.z) << 16);
 }
@@ -1710,8 +1548,8 @@ int tj_desc(int m) {
 /* The weight of the edge's second corner at quarter k: k / 4 under
  * perspective-correct interpolation, the node's screen parameter
  * s * zb / ((1 - s) * za + s * zb) under AFFINE_UV (terrain.c tj_lerp_t). */
-pfloat tj_t(int k, pfloat za, pfloat zb) {
-    pfloat s = pfloat(k) * 0.25;
+float tj_t(int k, float za, float zb) {
+    float s = float(k) * 0.25;
     if (!AFFINE_UV || za <= 0.0 || zb <= 0.0) return s;
     return (s * zb) / ((1.0 - s) * za + s * zb);
 }
@@ -1730,7 +1568,7 @@ ivec3 tj_rgbq(vec3 a, vec3 b, float t) {
 }
 
 /* Member d's camera-space position. */
-precise pvec3 tj_pos(int d, pvec3 B[3]) {
+precise vec3 tj_pos(int d, vec3 B[3]) {
     if (d < 3) return B[d];
     int e = (d - 3) / 3;
     return nc4_pt(B[e], B[(e + 1) % 3], (d - 3) % 3 + 1);
@@ -1750,9 +1588,9 @@ float tj_seg_s(vec2 A, vec2 C, vec2 m) {
  * the raster gives the unsplit edge there: s under AFFINE_UV, the
  * perspective-correct s * za / ((1 - s) * zb + s * za) otherwise (terrain.c
  * tj_snap_node). */
-pfloat tj_seg_t(float s, pfloat za, pfloat zb) {
-    if (AFFINE_UV) return pfloat(s);
-    pfloat ps = pfloat(s);
+float tj_seg_t(float s, float za, float zb) {
+    if (AFFINE_UV) return float(s);
+    float ps = float(s);
     return (ps * za) / ((1.0 - ps) * zb + ps * za);
 }
 
@@ -1760,9 +1598,9 @@ pfloat tj_seg_t(float s, pfloat za, pfloat zb) {
  * placed under the integer snap on the segment between its edge's emitted
  * corner points (terrain.c tj_snap_node), unless an edge corner is inside
  * the near plane. */
-vec2 tj_scr(int d, pvec3 B[3], vec2 S[3]) {
+vec2 tj_scr(int d, vec3 B[3], vec2 S[3]) {
     if (d < 3) return S[d];
-    pvec3 m = tj_pos(d, B);
+    vec3 m = tj_pos(d, B);
     if (pc.snap == 0) return proj_of(m);
     int p = (d - 3) / 3, q = (p + 1) % 3;
     if (B[p].z < G_NEAR || B[q].z < G_NEAR) return floor(proj_of(m));
@@ -1776,7 +1614,7 @@ vec2 tj_scr(int d, pvec3 B[3], vec2 S[3]) {
 /* Member d's two base corners and the second's weight: a corner is its own
  * pair at weight 0; a node placed on its edge's snapped segment (tj_scr)
  * takes the weight of that placement (tj_seg_t), any other node tj_t's. */
-void tj_ends(int d, pvec3 B[3], vec2 S[3], out int p, out int q, out pfloat t) {
+void tj_ends(int d, vec3 B[3], vec2 S[3], out int p, out int q, out float t) {
     if (d < 3) { p = d; q = d; t = 0.0; return; }
     int e = (d - 3) / 3, k = (d - 3) % 3 + 1;
     p = e; q = (e + 1) % 3;
@@ -1788,10 +1626,10 @@ void tj_ends(int d, pvec3 B[3], vec2 S[3], out int p, out int q, out pfloat t) {
 
 /* HQ 2x2 node n (NODEMAP numbering) from the transformed parent corners,
  * the own-vertex rebuild's expressions. */
-precise pvec3 hq2_node(int n, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR) {
-    precise pvec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
-    precise pvec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
-    precise pvec3 C  = (mT + mB) * 0.5;
+precise vec3 hq2_node(int n, vec3 TL, vec3 TR, vec3 BL, vec3 BR) {
+    precise vec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
+    precise vec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
+    precise vec3 C  = (mT + mB) * 0.5;
     return n == 0 ? TL : n == 1 ? TR : n == 2 ? BR : n == 3 ? BL
          : n == 4 ? mT : n == 5 ? mB : n == 6 ? mL : n == 7 ? mR : C;
 }
@@ -1803,12 +1641,12 @@ precise pvec3 hq2_node(int n, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR) {
  * (i0, i1, i2), at record slots i0..i3; an HQ sub-quad's halves are
  * (TL, TR, BL) and (TR, BL, BR) of its NODEMAP nodes, at record slots
  * TL, TR, BL, BR. */
-void tj_base(bool hqv, bool quad, bool tri2, int subq, pvec3 m0, pvec3 m1, pvec3 m2, pvec3 m3c,
-             out pvec3 B[3], out vec2 S[3], out vec2 F[3], out int R[3]) {
+void tj_base(bool hqv, bool quad, bool tri2, int subq, vec3 m0, vec3 m1, vec3 m2, vec3 m3c,
+             out vec3 B[3], out vec2 S[3], out vec2 F[3], out int R[3]) {
     int o = tri2 ? 1 : 0;
     for (int j = 0; j < 3; j++) F[j] = vec2(0.0);
     if (hqv) {
-        pvec3 Q[4];
+        vec3 Q[4];
         for (int j = 0; j < 4; j++) Q[j] = hq2_node(NODEMAP[subq][j], m0, m1, m3c, m2);
         for (int j = 0; j < 3; j++) {
             B[j] = Q[o + j];
@@ -1825,168 +1663,6 @@ void tj_base(bool hqv, bool quad, bool tri2, int subq, pvec3 m0, pvec3 m1, pvec3
     for (int j = 0; j < 3; j++) S[j] = snap_of(proj_of(B[j]));
 }
 
-#ifdef TERRAIN_FP32_ARM2
-/* ---- the fp32 position chain beside the fp64 verdicts ----
- * Overloads on fp32 camera-space values of the node builders above, the
- * TERRAIN_FP32 build's expressions in its operation order, and the emitted
- * screen points: each takes the fp64 operands for its floors and near-plane
- * guards and the fp32 ones for every value the raster receives. */
-precise vec3 nc4_pt(vec3 a, vec3 b, int k) {
-    if (k == 0) return a;
-    if (k == 4) return b;
-    precise vec3 m = (a + b) * 0.5;
-    if (k == 2) return m;
-    precise vec3 q = ((k == 1 ? a : b) + m) * 0.5;
-    return q;
-}
-precise vec3 nc4_node(int r, int c, vec3 TL, vec3 TR, vec3 BL, vec3 BR) {
-    return nc4_pt(nc4_pt(TL, BL, r), nc4_pt(TR, BR, r), c);
-}
-precise vec3 nt4_node(int n, vec3 A, vec3 B, vec3 C) {
-    if (n == 0) return A;
-    if (n == 4) return B;
-    if (n == 14) return C;
-    precise vec3 m2 = (A + B) * 0.5, m9 = (A + C) * 0.5, m11 = (B + C) * 0.5;
-    if (n == 2) return m2;
-    if (n == 9) return m9;
-    if (n == 11) return m11;
-    precise vec3 r;
-    if      (n == 1)  r = (A + m2) * 0.5;
-    else if (n == 3)  r = (B + m2) * 0.5;
-    else if (n == 5)  r = (A + m9) * 0.5;
-    else if (n == 12) r = (C + m9) * 0.5;
-    else if (n == 8)  r = (B + m11) * 0.5;
-    else if (n == 13) r = (C + m11) * 0.5;
-    else if (n == 6)  r = (A + m11) * 0.5;
-    else if (n == 7)  r = (B + m9) * 0.5;
-    else              r = (C + m2) * 0.5;   /* node 10 */
-    return r;
-}
-precise vec3 hq2_node(int n, vec3 TL, vec3 TR, vec3 BL, vec3 BR) {
-    precise vec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
-    precise vec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
-    precise vec3 C  = (mT + mB) * 0.5;
-    return n == 0 ? TL : n == 1 ? TR : n == 2 ? BR : n == 3 ? BL
-         : n == 4 ? mT : n == 5 ? mB : n == 6 ? mL : n == 7 ? mR : C;
-}
-precise vec3 tj_pos(int d, vec3 B[3]) {
-    if (d < 3) return B[d];
-    int e = (d - 3) / 3;
-    return nc4_pt(B[e], B[(e + 1) % 3], (d - 3) % 3 + 1);
-}
-
-/* edge_snap_screen with the node's own projection from its fp32 value mf;
- * the guard and the snapped edge corners from the fp64 values. */
-vec2 edge_snap_f32(pvec3 ea, pvec3 eb, pvec3 m, vec3 mf)
-{
-    if (ea.z < G_NEAR || eb.z < G_NEAR) return floor(proj_of(m));
-    vec2 A = floor(proj_of(ea)), B = floor(proj_of(eb));
-    vec2 mm = proj_of(mf);
-    precise float dx = B.x - A.x, dy = B.y - A.y;
-    precise float L2 = dx * dx + dy * dy;
-    precise float num = (mm.x - A.x) * dx + (mm.y - A.y) * dy;
-    float tt = L2 > 0.0 ? num / L2 : 0.5;
-    if (tt < 0.0) tt = 0.0; else if (tt > 1.0) tt = 1.0;
-    precise float rx = A.x + tt * dx, ry = A.y + tt * dy;
-    return vec2(rx, ry);
-}
-
-/* hq_snap_screen of HQ node `node` (fp64 m, fp32 mf). */
-vec2 hq_snap_f32(int node, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR, pvec3 m, vec3 mf)
-{
-    if (pc.snap == 0) return proj_of(mf);
-    if (node < 4 || node == 8) return floor(proj_of(m));
-    pvec3 ea, eb;
-    if      (node == 4) { ea = TL; eb = TR; }
-    else if (node == 5) { ea = BL; eb = BR; }
-    else if (node == 6) { ea = TL; eb = BL; }
-    else                { ea = TR; eb = BR; }
-    return edge_snap_f32(ea, eb, m, mf);
-}
-
-/* nc4_snap_screen of node (r, c) (fp64 m, fp32 mf). */
-vec2 nc4_snap_f32(int r, int c, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR, pvec3 m, vec3 mf)
-{
-    if (pc.snap == 0) return proj_of(mf);
-    bool er = (r == 0 || r == 4), ec = (c == 0 || c == 4);
-    if (er == ec) return floor(proj_of(m));
-    pvec3 ea = er ? (r == 0 ? TL : BL) : (c == 0 ? TL : TR);
-    pvec3 eb = er ? (r == 0 ? TR : BR) : (c == 0 ? BL : BR);
-    return edge_snap_f32(ea, eb, m, mf);
-}
-
-/* nc4_screen: the morph's gates and weight `at` from the fp64 corners, its
- * blend on the fp32 points; under the integer snap the morphed point is a
- * floor, so the fp64 result. */
-vec2 nc4_screen_f32(int r, int c, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR,
-                    vec3 TLf, vec3 TRf, vec3 BLf, vec3 BRf)
-{
-    pvec3 m = nc4_node(r, c, TL, TR, BL, BR);
-    vec3 mf = nc4_node(r, c, TLf, TRf, BLf, BRf);
-    vec2 sc = nc4_snap_f32(r, c, TL, TR, BL, BR, m, mf);
-    if (!AFFINE_UV || (r & 1) == 0 || (c & 1) == 0) return sc;
-    pfloat mn = min(min(TL.z, TR.z), min(BL.z, BR.z));
-    precise pfloat at = mn * 4.0 - 64.0;
-    if (at <= 0.0 || m.z <= 0.0) return sc;
-    at = min(at, 256.0);
-    vec2 op = floor(proj_of(m));
-    if (op.y <= 0.0 || op.y >= 256.0 || op.x <= 0.0 || op.x >= 512.0) return sc;
-    if (pc.snap != 0) return nc4_screen(r, c, TL, TR, BL, BR);
-    vec2 a = proj_of(nc4_node(r - 1, c + 1, TLf, TRf, BLf, BRf));
-    vec2 b = proj_of(nc4_node(r + 1, c - 1, TLf, TRf, BLf, BRf));
-    float atf = float(at);
-    precise float mx = ((256.0 - atf) * sc.x + atf * 0.5 * (a.x + b.x)) * (1.0 / (256.0));
-    precise float my = ((256.0 - atf) * sc.y + atf * 0.5 * (a.y + b.y)) * (1.0 / (256.0));
-    return vec2(mx, my);
-}
-
-/* nt4_screen (fp64 corners A, B, C; fp32 Af, Bf, Cf). */
-vec2 nt4_screen_f32(int n, pvec3 A, pvec3 B, pvec3 C, vec3 Af, vec3 Bf, vec3 Cf)
-{
-    pvec3 m = nt4_node(n, A, B, C);
-    vec3 mf = nt4_node(n, Af, Bf, Cf);
-    if (pc.snap == 0) return proj_of(mf);
-    int e = NT4_EDGE[n];
-    if (e == 0) return floor(proj_of(m));
-    return edge_snap_f32(e == 3 ? B : A, e == 1 ? B : C, m, mf);
-}
-
-/* tj_scr: member d's emitted point from the fp32 base corners Bf and
- * emitted points Sf; the guard and its floor from the fp64 corners B. */
-vec2 tj_scr_f32(int d, pvec3 B[3], vec3 Bf[3], vec2 Sf[3])
-{
-    if (d < 3) return Sf[d];
-    vec3 mf = tj_pos(d, Bf);
-    if (pc.snap == 0) return proj_of(mf);
-    int p = (d - 3) / 3, q = (p + 1) % 3;
-    if (B[p].z < G_NEAR || B[q].z < G_NEAR) return floor(proj_of(tj_pos(d, B)));
-    vec2 A = Sf[p], C = Sf[q];
-    float tt = tj_seg_s(A, C, proj_of(mf));
-    precise float dx = C.x - A.x, dy = C.y - A.y;
-    precise float rx = A.x + tt * dx, ry = A.y + tt * dy;
-    return vec2(rx, ry);
-}
-
-/* tj_base's corner positions Bf and emitted points Sf in fp32 (B, the fp64
- * corners, for the floors). */
-void tj_base_f32(bool hqv, bool quad, bool tri2, int subq, pvec3 m0, pvec3 m1, pvec3 m2,
-                 pvec3 m3c, vec3 f0, vec3 f1, vec3 f2, vec3 f3, pvec3 B[3],
-                 out vec3 Bf[3], out vec2 Sf[3]) {
-    int o = tri2 ? 1 : 0;
-    if (hqv) {
-        for (int j = 0; j < 3; j++) {
-            int n = NODEMAP[subq][o + j];
-            Bf[j] = hq2_node(n, f0, f1, f3, f2);
-            Sf[j] = hq_snap_f32(n, m0, m1, m3c, m2, B[j], Bf[j]);
-        }
-        return;
-    }
-    if (!quad)     { Bf[0] = f0; Bf[1] = f1; Bf[2] = f2; }
-    else if (tri2) { Bf[0] = f1; Bf[1] = f3; Bf[2] = f2; }
-    else           { Bf[0] = f0; Bf[1] = f1; Bf[2] = f3; }
-    for (int j = 0; j < 3; j++) Sf[j] = snap_f32(B[j], Bf[j]);
-}
-#endif
 
 #if !defined(TERRAIN_NEAR) && !defined(TERRAIN_CELLS)
 /* This split vertex's record, in words. */
@@ -2388,7 +2064,6 @@ void main()
         if (!lp && (sf & SF_DRAWHP) == 0u) { kill_vert(); return; }
     }
     /* ---- face corners -> camera space ---- */
-#ifdef TERRAIN_FP32
     ivec3 cc0 = inC0.xyz;
     ivec3 cc1 = ivec3(inC0.w, inC1.x, inC1.y);
     ivec3 cc2 = ivec3(inC1.z, inC1.w, inC2.x);
@@ -2396,7 +2071,7 @@ void main()
     /* Sector origins are uint16 world/16 values, exact in the float o.xyz;
      * x4 makes them the corners' scale. */
     ivec3 wo = ivec3(s.sec[slot].o.xyz) * 4;
-#ifdef TERRAIN_FP32_SECDELTA
+#ifdef TERRAIN_SECDELTA
     ctl_wo = wo;
 #endif
 #ifdef TERRAIN_READBACK
@@ -2446,113 +2121,12 @@ void main()
     precise vec3 lc2 = cam_rel(wo + cc2);
     precise vec3 lc3 = cam_rel(wo + cc3);
 #endif
-#else
-    /* fp64: the walk's per-sector camera delta, exact walk mirror. */
-    pvec3 sorigin = pvec3(s.sec[slot].o.xyz);
-    precise pvec3 sdel = pvec3(sorigin.x - g.dcam_xy.x,     /* s4 */
-                               g.dcam_xy.y - sorigin.y,     /* s5 */
-                               g.dcam_zf.x - sorigin.z);    /* s6 */
-#define MAC(l) mac_of(l, sdel)
-    /* Baked corner positions are x4 fixed sector-local; *0.25 is exact. */
-#ifdef TERRAIN_ANIM
-    /* tsc_vanim_lerp mirror: p + (c - p) * a in double, then the float cast
-     * the CPU stores into cvF. Operands are local units (x4 fixed * 0.25 is
-     * exact), so this is the identical expression on the identical inputs. */
-    pfloat va = G_VA;
-    #define ANIM_LERP3(P, C) \
-        pvec3(pfloat(float(pfloat(P.x) * 0.25 + (pfloat(C.x) * 0.25 - pfloat(P.x) * 0.25) * va)), \
-              pfloat(float(pfloat(P.y) * 0.25 + (pfloat(C.y) * 0.25 - pfloat(P.y) * 0.25) * va)), \
-              pfloat(float(pfloat(P.z) * 0.25 + (pfloat(C.z) * 0.25 - pfloat(P.z) * 0.25) * va)))
-    ivec3 cc0 = inC0.xyz;
-    ivec3 cc1 = ivec3(inC0.w, inC1.x, inC1.y);
-    ivec3 cc2 = ivec3(inC1.z, inC1.w, inC2.x);
-    ivec3 cc3 = inC2.yzw;
-    ivec3 pc0 = inPrevC0.xyz;
-    ivec3 pc1 = ivec3(inPrevC0.w, inPrevC1.x, inPrevC1.y);
-    ivec3 pc2 = ivec3(inPrevC1.z, inPrevC1.w, inPrevC2.x);
-    ivec3 pc3 = inPrevC2.yzw;
-    precise pvec3 lc0 = ANIM_LERP3(pc0, cc0);
-    precise pvec3 lc1 = ANIM_LERP3(pc1, cc1);
-    precise pvec3 lc2 = ANIM_LERP3(pc2, cc2);
-    precise pvec3 lc3 = ANIM_LERP3(pc3, cc3);
-#else
-    pvec3 lc0 = pvec3(inC0.xyz) * 0.25;
-    pvec3 lc1 = pvec3(pfloat(inC0.w), pfloat(inC1.x), pfloat(inC1.y)) * 0.25;
-    pvec3 lc2 = pvec3(pfloat(inC1.z), pfloat(inC1.w), pfloat(inC2.x)) * 0.25;
-    pvec3 lc3 = pvec3(inC2.yzw) * 0.25;
-#ifdef TERRAIN_NEAR
-    /* A poly-anim sector's face with a previous-corner record: the anim
-     * stage's tsc_vanim_lerp mirror on the record's corners. */
-    ivec3 pc0, pc1, pc2, pc3;
-    if (near_prev_get(pc0, pc1, pc2, pc3)) {
-        const ivec3 cc0 = inC0.xyz;
-        const ivec3 cc1 = ivec3(inC0.w, inC1.x, inC1.y);
-        const ivec3 cc2 = ivec3(inC1.z, inC1.w, inC2.x);
-        const ivec3 cc3 = inC2.yzw;
-        pfloat va = G_VA;
-        #define NEAR_LERP3(P, C) \
-            pvec3(pfloat(float(pfloat(P.x) * 0.25 + (pfloat(C.x) * 0.25 - pfloat(P.x) * 0.25) * va)), \
-                  pfloat(float(pfloat(P.y) * 0.25 + (pfloat(C.y) * 0.25 - pfloat(P.y) * 0.25) * va)), \
-                  pfloat(float(pfloat(P.z) * 0.25 + (pfloat(C.z) * 0.25 - pfloat(P.z) * 0.25) * va)))
-        precise pvec3 l0 = NEAR_LERP3(pc0, cc0);
-        precise pvec3 l1 = NEAR_LERP3(pc1, cc1);
-        precise pvec3 l2 = NEAR_LERP3(pc2, cc2);
-        precise pvec3 l3 = NEAR_LERP3(pc3, cc3);
-        lc0 = l0; lc1 = l1; lc2 = l2; lc3 = l3;
-    }
-#endif
-#endif
-#endif
-    precise pvec3 m0 = MAC(lc0), m1 = MAC(lc1);
-    precise pvec3 m2 = MAC(lc2), m3c = MAC(lc3);
-#ifdef TERRAIN_FP32_ARM2
-    /* The corners on the TERRAIN_FP32 chain (cam_rel / cam_rel_lerp, then
-     * mac_of), the shadows the emitted position is built from. */
-    ivec3 a2o = ivec3(s.sec[slot].o.xyz) * 4;
-    ivec3 a2c0 = inC0.xyz;
-    ivec3 a2c1 = ivec3(inC0.w, inC1.x, inC1.y);
-    ivec3 a2c2 = ivec3(inC1.z, inC1.w, inC2.x);
-    ivec3 a2c3 = inC2.yzw;
-    precise vec3 f0, f1, f2, f3;
-#ifdef TERRAIN_ANIM
-    {
-        ivec3 p0 = inPrevC0.xyz;
-        ivec3 p1 = ivec3(inPrevC0.w, inPrevC1.x, inPrevC1.y);
-        ivec3 p2 = ivec3(inPrevC1.z, inPrevC1.w, inPrevC2.x);
-        ivec3 p3 = inPrevC2.yzw;
-        float fa = g.ofH.w;
-        f0 = mac_of(cam_rel_lerp(a2o + p0, a2o + a2c0, fa));
-        f1 = mac_of(cam_rel_lerp(a2o + p1, a2o + a2c1, fa));
-        f2 = mac_of(cam_rel_lerp(a2o + p2, a2o + a2c2, fa));
-        f3 = mac_of(cam_rel_lerp(a2o + p3, a2o + a2c3, fa));
-    }
-#elif defined(TERRAIN_NEAR)
-    {
-        ivec3 p0, p1, p2, p3;
-        if (!near_prev_get(p0, p1, p2, p3)) {
-            f0 = mac_of(cam_rel(a2o + a2c0));
-            f1 = mac_of(cam_rel(a2o + a2c1));
-            f2 = mac_of(cam_rel(a2o + a2c2));
-            f3 = mac_of(cam_rel(a2o + a2c3));
-        } else {
-            float fa = g.ofH.w;
-            f0 = mac_of(cam_rel_lerp(a2o + p0, a2o + a2c0, fa));
-            f1 = mac_of(cam_rel_lerp(a2o + p1, a2o + a2c1, fa));
-            f2 = mac_of(cam_rel_lerp(a2o + p2, a2o + a2c2, fa));
-            f3 = mac_of(cam_rel_lerp(a2o + p3, a2o + a2c3, fa));
-        }
-    }
-#else
-    f0 = mac_of(cam_rel(a2o + a2c0));
-    f1 = mac_of(cam_rel(a2o + a2c1));
-    f2 = mac_of(cam_rel(a2o + a2c2));
-    f3 = mac_of(cam_rel(a2o + a2c3));
-#endif
-#endif
+    precise vec3 m0 = MAC(lc0), m1 = MAC(lc1);
+    precise vec3 m2 = MAC(lc2), m3c = MAC(lc3);
     int nc = quad ? 4 : 3;
 
     int    fogRef   = g.fog.x + (((ff & FF_FOGBIAS) != 0u) ? 0x2000 : 0);
-    pfloat fogscale = G_FOGS;
+    float fogscale = G_FOGS;
 
     /* ---- NCLIP (both halves; either half admits the near verdict) ----
      * Cross products run on DOUBLES OF THE FLOAT screen coords (the CPU's
@@ -2561,21 +2135,21 @@ void main()
      * the regime does not move with --fov - the .s's own SXY there is
      * pinned garbage, so the TRUE facing is used). */
     vec2 p0f = proj_of(m0), p1f = proj_of(m1), p2f = proj_of(m2), p3f = proj_of(m3c);
-    PREC32 bool unr_ovf = (m0.z < PDIV(G_HCAN, 8.0)) || (m1.z < PDIV(G_HCAN, 8.0)) ||
+    precise bool unr_ovf = (m0.z < PDIV(G_HCAN, 8.0)) || (m1.z < PDIV(G_HCAN, 8.0)) ||
                           (m2.z < PDIV(G_HCAN, 8.0)) || (quad && m3c.z < PDIV(G_HCAN, 8.0));
-    pfloat nx0 = nsat(p0f.x, unr_ovf), ny0 = nsat(p0f.y, unr_ovf);
-    pfloat nx1 = nsat(p1f.x, unr_ovf), ny1 = nsat(p1f.y, unr_ovf);
-    pfloat nx2 = nsat(p2f.x, unr_ovf), ny2 = nsat(p2f.y, unr_ovf);
-    pfloat nx3 = nsat(p3f.x, unr_ovf), ny3 = nsat(p3f.y, unr_ovf);
+    float nx0 = nsat(p0f.x, unr_ovf), ny0 = nsat(p0f.y, unr_ovf);
+    float nx1 = nsat(p1f.x, unr_ovf), ny1 = nsat(p1f.y, unr_ovf);
+    float nx2 = nsat(p2f.x, unr_ovf), ny2 = nsat(p2f.y, unr_ovf);
+    float nx3 = nsat(p3f.x, unr_ovf), ny3 = nsat(p3f.y, unr_ovf);
     bool flip = (ff & FF_FLIP) != 0u;
     bool front, front2 = false;
     if (lp) {
         /* LP walk: HALF 1 over (i0,i1,i2), STRICTLY positive; HALF 2 over
          * (i3,i1,i2), STRICTLY negative; dside (w0 bit 7) emits regardless. */
-        precise pfloat n1 = (nx1 - nx0) * (ny2 - ny0) - (nx2 - nx0) * (ny1 - ny0);
+        precise float n1 = (nx1 - nx0) * (ny2 - ny0) - (nx2 - nx0) * (ny1 - ny0);
         front = n1 > 0.0;
         if (quad) {
-            precise pfloat n2 = (nx1 - nx3) * (ny2 - ny3) - (nx2 - nx3) * (ny1 - ny3);
+            precise float n2 = (nx1 - nx3) * (ny2 - ny3) - (nx2 - nx3) * (ny1 - ny3);
             front2 = n2 < 0.0;
         }
         if ((ff & FF_DSIDE) != 0u) front2 = true;
@@ -2584,13 +2158,13 @@ void main()
          * HALF 2 (quads) over (i2,i1,i3) with the flip-selected sign;
          * dside (the per-game word-3 bit) jumps straight to emit; a dside
          * tri skips its NCLIP verdict altogether. */
-        pfloat nxA = quad ? nx3 : nx2, nyA = quad ? ny3 : ny2;
-        precise pfloat n1 = (nx1 - nx0) * (nyA - ny0) - (nxA - nx0) * (ny1 - ny0);
+        float nxA = quad ? nx3 : nx2, nyA = quad ? ny3 : ny2;
+        precise float n1 = (nx1 - nx0) * (nyA - ny0) - (nxA - nx0) * (ny1 - ny0);
         if (flip) n1 = -n1;
         front = n1 >= 0.0;
         front2 = (ff & FF_DSIDE) != 0u;
         if (quad) {
-            precise pfloat n2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
+            precise float n2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
             front2 = front2 || (flip ? (n2 >= 0.0) : (n2 <= 0.0));
         }
     }
@@ -2600,22 +2174,22 @@ void main()
     if (lp && !fillPass) {
         if ((sf & SF_LPGAPONLY) != 0u && (ff & FF_GAPFILL) == 0u) { kill_vert(); return; }
         if ((sf & SF_LPUNCOV) != 0u && (ff & FF_LPRIDE) == 0u) { kill_vert(); return; }
-        pfloat z3g = quad ? m3c.z : m2.z;
-        PREC32 pfloat slotv = PDIV(m0.z + m1.z + m2.z + z3g, 32.0);
+        float z3g = quad ? m3c.z : m2.z;
+        precise float slotv = PDIV(m0.z + m1.z + m2.z + z3g, 32.0);
         if ((gf & GF_NOLOD) == 0) {
             /* .s LP far cull: slot >= cull_dist>>7 drops (all faces, fill
              * tags included); a keyed game tests the whole LP bucket index
              * against (cull_dist>>7) - 1. Skipped under extended LOD, which
              * keeps far faces. */
-            PREC32 pfloat fcv = slotv;
+            precise float fcv = slotv;
             int fclim = g.fog.z;
             if (ot_farcull_keyed()) {
                 fcv += ot_lp_slots((ff >> 24) & 0x1Fu);
                 fclim -= 1;
             }
-            if (fcv >= pfloat(fclim)) { kill_vert(); return; }
+            if (fcv >= float(fclim)) { kill_vert(); return; }
         }
-        pfloat thr = pfloat((sf >> SF_LPNEAR_SHIFT) & SF_LPNEAR_MASK);
+        float thr = float((sf >> SF_LPNEAR_SHIFT) & SF_LPNEAR_MASK);
         if (!gapfill_face && (gf & GF_LPNEAROUT) != 0) {
             /* LP near outcode, the only near rule of a game that has one:
              * every LP face of a sector whose HP draws or that has no HP
@@ -2628,12 +2202,12 @@ void main()
             /* Authored per-face admission: slot + 8*admit >= s3, deficit
              * -31..-1 falls back to any-corner SZ3 >= (s3-8a)*8, deeper
              * rejects. (LP is a FAR tier; og drops it near.) */
-            pfloat admit = pfloat((ff >> 19) & 0x1Fu);
-            pfloat s3v = pfloat((g.fog.x >> 5) - 0x20);
-            precise pfloat a1 = slotv + 8.0 * admit - s3v;
+            float admit = float((ff >> 19) & 0x1Fu);
+            float s3v = float((g.fog.x >> 5) - 0x20);
+            precise float a1 = slotv + 8.0 * admit - s3v;
             if (a1 < 0.0) {
                 if (a1 <= -32.0) { kill_vert(); return; }
-                PREC32 pfloat thr = (s3v - 8.0 * admit) * 8.0;
+                precise float thr = (s3v - 8.0 * admit) * 8.0;
                 bool any = m0.z >= thr || m1.z >= thr || m2.z >= thr ||
                            (quad && m3c.z >= thr);
                 if (!any) { kill_vert(); return; }
@@ -2650,7 +2224,7 @@ void main()
      * drop, as in the walk. Under GF_HQPIN (terrain.c tn_water_hq) such a
      * face takes the HQ variant with that walk's colours and no facing
      * test (waterHQ). ---- */
-    pfloat wz3 = quad ? m3c.z : m2.z;
+    float wz3 = quad ? m3c.z : m2.z;
     bool waterFar = !lp && !fillPass && (ff & FF_WATER) != 0u
                  && sz3_sum(m0.z, m1.z, m2.z, wz3, 4.0) >= 0x2000;
     if (waterFar && sz3_sum(m0.z, m1.z, m2.z, wz3, fogscale) >= 0x6000) { kill_vert(); return; }
@@ -2677,14 +2251,14 @@ void main()
      * face below that sum bound with any corner SZ3 < hp_drop.y is kept.
      * Runs BEFORE the near classify, exactly like the walk. */
     if (!lp && (gf & GF_HANDOFF) != 0) {
-        pfloat hpz3 = quad ? m3c.z : m2.z;
-        precise pfloat hpsum = (m0.z + m1.z + m2.z + hpz3) * fogscale;
-        if (hpsum >= 4.0 * pfloat(g.fog.x)) {
-            bool hpdrop = g.hp_drop.x == 0 || hpsum >= pfloat(g.hp_drop.x);
+        float hpz3 = quad ? m3c.z : m2.z;
+        precise float hpsum = (m0.z + m1.z + m2.z + hpz3) * fogscale;
+        if (hpsum >= 4.0 * float(g.fog.x)) {
+            bool hpdrop = g.hp_drop.x == 0 || hpsum >= float(g.hp_drop.x);
             if (!hpdrop) {
-                precise pfloat c0 = m0.z * fogscale, c1 = m1.z * fogscale;
-                precise pfloat c2 = m2.z * fogscale, c3 = hpz3 * fogscale;
-                pfloat cmin = pfloat(g.hp_drop.y);
+                precise float c0 = m0.z * fogscale, c1 = m1.z * fogscale;
+                precise float c2 = m2.z * fogscale, c3 = hpz3 * fogscale;
+                float cmin = float(g.hp_drop.y);
                 hpdrop = c0 >= cmin && c1 >= cmin && c2 >= cmin && c3 >= cmin;
             }
             if (hpdrop) { kill_vert(); return; }
@@ -2724,11 +2298,11 @@ void main()
                           gte_flag(m2.z, p2f) || (quad && gte_flag(m3c.z, p3f)));
     bool front3d = true;
     if (!lp && straddle) {
-        precise pfloat d1 = det3d(m0, m1, quad ? m3c : m2);
+        precise float d1 = det3d(m0, m1, quad ? m3c : m2);
         bool f1 = flip ? (d1 <= 0.0) : (d1 >= 0.0);
         bool f2 = false;
         if (quad) {
-            precise pfloat d2 = det3d(m1, m2, m3c);
+            precise float d2 = det3d(m1, m2, m3c);
             f2 = flip ? (d2 <= 0.0) : (d2 >= 0.0);
         }
         front3d = ((ff & FF_DSIDE) != 0u) || f1 || f2;
@@ -2741,7 +2315,7 @@ void main()
              * distance; only the behind-camera guard and the w3&0x80
              * exclusion remain (the latter is folded into FF_HQELIG at pack
              * time). Mirrors the walk's face_is_near extended branch. */
-            PREC32 pfloat sz = max(m0.z, 0.0) + max(m1.z, 0.0) + max(m2.z, 0.0) + max(m3c.z, 0.0);
+            precise float sz = max(m0.z, 0.0) + max(m1.z, 0.0) + max(m2.z, 0.0) + max(m3c.z, 0.0);
             near = sz > 0.0;
         } else {
             near = near_canonical(m0.z, m1.z, m2.z, m3c.z,
@@ -2769,7 +2343,7 @@ void main()
      * fully behind the camera to tier 2. */
     bool trinear = !quad && !lp && !fillPass && waterFar == waterHQ && !blendFar && (gf & GF_NEARHQ) != 0
                 && (waterHQ || (straddle ? front3d : (front || front2))) && (ff & FF_HQELIG) != 0u;
-    PREC32 bool trifront = max(m0.z, 0.0) + max(m1.z, 0.0) + 2.0 * max(m2.z, 0.0) > 0.0;
+    precise bool trifront = max(m0.z, 0.0) + max(m1.z, 0.0) + 2.0 * max(m2.z, 0.0) > 0.0;
     bool t4tri = trinear && (gf & GF_TRI4) != 0 && (ff & FF_CELLOK) != 0u
               && (pin ? ((ff & FF_W3_40) == 0u && trifront)
                       : nc4_tier4(m0.z, m1.z, m2.z, m2.z, ff & FF_W3_40, ff & FF_W3_80));
@@ -2817,15 +2391,11 @@ void main()
     /* ---- marked-edge split: this vertex's base triangle, and its own
      * member's base corners and weight (tj_ends) ---- */
     bool tjs = !is4 && (f16 & TJ_SPLIT) != 0u;
-    pvec3 tjB[3];
+    vec3 tjB[3];
     vec2 tjS[3], tjF[3];
     int tjR[3];
     int tjD = 0, tjP = 0, tjQ = 0;
-    pfloat tjT = 0.0;
-#ifdef TERRAIN_FP32_ARM2
-    vec3 tjBf[3];
-    vec2 tjSf[3];
-#endif
+    float tjT = 0.0;
 #ifdef TERRAIN_READBACK
     uvec4 rtjB[3];
 #endif
@@ -2833,10 +2403,6 @@ void main()
         tj_base(hqv, quad, (f16 & 0x2000u) != 0u, subq, m0, m1, m2, m3c, tjB, tjS, tjF, tjR);
 #ifdef TERRAIN_READBACK
         rb_tj_base(hqv, quad, (f16 & 0x2000u) != 0u, subq, rk0, rk1, rk2, rk3, rtjB);
-#endif
-#ifdef TERRAIN_FP32_ARM2
-        tj_base_f32(hqv, quad, (f16 & 0x2000u) != 0u, subq, m0, m1, m2, m3c, f0, f1, f2, f3,
-                    tjB, tjBf, tjSf);
 #endif
 #ifndef TERRAIN_NEAR
         tjD = tj_desc(int((uint(inPos.z) >> 2) & 3u));
@@ -2849,20 +2415,20 @@ void main()
     bool hqdside = (ff & FF_DSIDE) != 0u || waterHQ;
     if (ist && straddle && !hqdside) {
         /* nt4_emit's straddler facing: the sub-triangle's own triple. */
-        precise pfloat d = det3d(nt4_node(NT_SUB[tsub * 3], m0, m1, m2),
+        precise float d = det3d(nt4_node(NT_SUB[tsub * 3], m0, m1, m2),
                                  nt4_node(NT_SUB[tsub * 3 + 1], m0, m1, m2),
                                  nt4_node(NT_SUB[tsub * 3 + 2], m0, m1, m2));
         if (flip ? (d > 0.0) : (d < 0.0)) { kill_vert(); return; }
     } else if (is4 && straddle && !hqdside) {
         int cr = cell >> 2, cq = cell & 3;
-        precise pvec3 ctl = nc4_node(cr, cq, m0, m1, m3c, m2);
-        precise pvec3 ctr = nc4_node(cr, cq + 1, m0, m1, m3c, m2);
-        precise pvec3 cbl = nc4_node(cr + 1, cq, m0, m1, m3c, m2);
-        precise pvec3 cbr = nc4_node(cr + 1, cq + 1, m0, m1, m3c, m2);
-        precise pfloat d1 = det3d(ctl, ctr, cbl);
+        precise vec3 ctl = nc4_node(cr, cq, m0, m1, m3c, m2);
+        precise vec3 ctr = nc4_node(cr, cq + 1, m0, m1, m3c, m2);
+        precise vec3 cbl = nc4_node(cr + 1, cq, m0, m1, m3c, m2);
+        precise vec3 cbr = nc4_node(cr + 1, cq + 1, m0, m1, m3c, m2);
+        precise float d1 = det3d(ctl, ctr, cbl);
         bool cf = flip ? (d1 <= 0.0) : (d1 >= 0.0);
         if (!cf) {
-            precise pfloat d2 = det3d(ctr, cbr, cbl);
+            precise float d2 = det3d(ctr, cbr, cbl);
             cf = flip ? (d2 <= 0.0) : (d2 >= 0.0);
         }
         if (!cf) { kill_vert(); return; }
@@ -2875,7 +2441,7 @@ void main()
         /* An HP straddler with a corner in front of the eye that the
          * classifier does not queue for the near drain is emitted whole with
          * no NCLIP (.L80026DB8, tri .L80027310). */
-        pfloat zq = quad ? m3c.z : m2.z;
+        float zq = quad ? m3c.z : m2.z;
         bool whole = !near_canonical(m0.z, m1.z, m2.z, zq, ff & FF_W3_40, ff & FF_W3_80)
                   && (m0.z > 0.0 || m1.z > 0.0 || m2.z > 0.0 || zq > 0.0);
         bool facing = straddle ? (lp || front3d || whole) : (front || front2);
@@ -2901,11 +2467,11 @@ void main()
         if (tjs) {
             /* The split sub-triangle's members. */
             int d0 = tj_desc(0), d1 = tj_desc(1), d2 = tj_desc(2);
-            precise pvec3 ta = tj_pos(d0, tjB), tb = tj_pos(d1, tjB), tc2 = tj_pos(d2, tjB);
+            precise vec3 ta = tj_pos(d0, tjB), tb = tj_pos(d1, tjB), tc2 = tj_pos(d2, tjB);
             rimv = rim_classified(tj_scr(d0, tjB, tjS), tj_scr(d1, tjB, tjS), tj_scr(d2, tjB, tjS),
                                   ta.z, tb.z, tc2.z);
         } else if (!hqv) {
-            precise pvec3 ta, tb, tc2;
+            precise vec3 ta, tb, tc2;
             vec2 sa, sb, sc;
             if (!quad)      { ta = m0; tb = m1; tc2 = m2;  sa = p0f; sb = p1f; sc = p2f; }
             else if (lp) {
@@ -2920,23 +2486,23 @@ void main()
         } else if (ist) {
             /* Sub-triangle members (A,B,C), nt4_emit's order. */
             int na = NT_SUB[tsub * 3], nb = NT_SUB[tsub * 3 + 1], nc2 = NT_SUB[tsub * 3 + 2];
-            precise pvec3 ta = nt4_node(na, m0, m1, m2);
-            precise pvec3 tb = nt4_node(nb, m0, m1, m2);
-            precise pvec3 tc2 = nt4_node(nc2, m0, m1, m2);
+            precise vec3 ta = nt4_node(na, m0, m1, m2);
+            precise vec3 tb = nt4_node(nb, m0, m1, m2);
+            precise vec3 tc2 = nt4_node(nc2, m0, m1, m2);
             vec2 sa = nt4_screen(na, m0, m1, m2);
             vec2 sb = nt4_screen(nb, m0, m1, m2);
             vec2 sc = nt4_screen(nc2, m0, m1, m2);
             rimv = rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z);
         } else if (is4) {
             /* Cell members (TL,TR,BL) / (TR,BL,BR), emit_quad_cv's order. */
-            precise pvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+            precise vec3 TL = m0, TR = m1, BL = m3c, BR = m2;
             int cr = cell >> 2, cq = cell & 3;
             ivec2 n0 = tri2 ? ivec2(cr, cq + 1) : ivec2(cr, cq);
             ivec2 n1 = tri2 ? ivec2(cr + 1, cq) : ivec2(cr, cq + 1);
             ivec2 n2 = tri2 ? ivec2(cr + 1, cq + 1) : ivec2(cr + 1, cq);
-            precise pvec3 ta = nc4_node(n0.x, n0.y, TL, TR, BL, BR);
-            precise pvec3 tb = nc4_node(n1.x, n1.y, TL, TR, BL, BR);
-            precise pvec3 tc2 = nc4_node(n2.x, n2.y, TL, TR, BL, BR);
+            precise vec3 ta = nc4_node(n0.x, n0.y, TL, TR, BL, BR);
+            precise vec3 tb = nc4_node(n1.x, n1.y, TL, TR, BL, BR);
+            precise vec3 tc2 = nc4_node(n2.x, n2.y, TL, TR, BL, BR);
             vec2 sa = nc4_screen(n0.x, n0.y, TL, TR, BL, BR);
             vec2 sb = nc4_screen(n1.x, n1.y, TL, TR, BL, BR);
             vec2 sc = nc4_screen(n2.x, n2.y, TL, TR, BL, BR);
@@ -2944,16 +2510,16 @@ void main()
         } else {
             /* Sub-quad nodes from the transformed parent corners (the same
              * cv_mid mirrors the own-vertex rebuild uses below). */
-            precise pvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
-            precise pvec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
-            precise pvec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
-            precise pvec3 C  = (mT + mB) * 0.5;
-            precise pvec3 q0, q1, q2, q3;
+            precise vec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+            precise vec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
+            precise vec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
+            precise vec3 C  = (mT + mB) * 0.5;
+            precise vec3 q0, q1, q2, q3;
             if      (subq == 0) { q0 = TL; q1 = mT; q2 = mL; q3 = C;  }
             else if (subq == 1) { q0 = mT; q1 = TR; q2 = C;  q3 = mR; }
             else if (subq == 2) { q0 = mL; q1 = C;  q2 = BL; q3 = mB; }
             else                { q0 = C;  q1 = mR; q2 = mB; q3 = BR; }
-            precise pvec3 ta, tb, tc2;
+            precise vec3 ta, tb, tc2;
             int na, nb, nc2;
             if (tri2) { ta = q1; tb = q2; tc2 = q3;
                         na = NODEMAP[subq][1]; nb = NODEMAP[subq][2];
@@ -3069,14 +2635,10 @@ void main()
      * parent corners (cv_mid mirrors - midpoints averaged in camera space).
      * The near variant instead rebuilds the WHOLE emitted triangle, clips it
      * against the near plane and becomes one corner of the clipped fan. */
-    precise pvec3 mo;
+    precise vec3 mo;
     vec2 sscr;      /* the emitted screen point: push_tri's t->sx/sy mirror */
 #ifdef TERRAIN_READBACK
     uvec4 rbk;      /* mo's readback key */
-#endif
-#ifdef TERRAIN_FP32_ARM2
-    vec3 mof;       /* mo and sscr on the fp32 chain: the rasterised position */
-    vec2 sscrf;
 #endif
     vec2 mfl;       /* its drain face-local coordinate (psx_key_contest.glsl) */
 #ifdef TERRAIN_NEAR
@@ -3084,7 +2646,7 @@ void main()
     {
         /* Emitted-tri member positions, in the bake's emit order. */
         bool tri2n = (f16 & 0x2000u) != 0u;
-        pvec3 tp[3];
+        vec3 tp[3];
         /* Per-member screen override: set on a subdivide node (the CPU's
          * ngte_cvert.oflag), absent on a flat face's own corners. */
         vec2 tos[3] = vec2[3](vec2(0.0), vec2(0.0), vec2(0.0));
@@ -3094,42 +2656,6 @@ void main()
          * grid places, a 2x2 quadrant's corners at their isoline sides; a
          * flat quad keys whole and carries none. */
         vec2 tfl[3] = vec2[3](vec2(0.0), vec2(0.0), vec2(0.0));
-#ifdef TERRAIN_FP32_ARM2
-        vec3 tpf[3];
-        vec2 tosf[3] = vec2[3](vec2(0.0), vec2(0.0), vec2(0.0));
-        if (!hqv) {
-            if (!quad)      { tpf[0] = f0; tpf[1] = f1; tpf[2] = f2; }
-            else if (lp) {
-                if (tri2n)  { tpf[0] = f1; tpf[1] = f2; tpf[2] = f3; }
-                else        { tpf[0] = f0; tpf[1] = f1; tpf[2] = f2; }
-            } else {
-                if (tri2n)  { tpf[0] = f1; tpf[1] = f3; tpf[2] = f2; }
-                else        { tpf[0] = f0; tpf[1] = f1; tpf[2] = f3; }
-            }
-        } else if (ist) {
-            for (int k = 0; k < 3; k++) {
-                int n = NT_SUB[tsub * 3 + k];
-                tpf[k]  = nt4_node(n, f0, f1, f2);
-                tosf[k] = nt4_screen_f32(n, m0, m1, m2, f0, f1, f2);
-            }
-        } else if (is4) {
-            int cr = cell >> 2, cq = cell & 3;
-            ivec2 nn[3];
-            nn[0] = tri2n ? ivec2(cr, cq + 1) : ivec2(cr, cq);
-            nn[1] = tri2n ? ivec2(cr + 1, cq) : ivec2(cr, cq + 1);
-            nn[2] = tri2n ? ivec2(cr + 1, cq + 1) : ivec2(cr + 1, cq);
-            for (int k = 0; k < 3; k++) {
-                tpf[k]  = nc4_node(nn[k].x, nn[k].y, f0, f1, f3, f2);
-                tosf[k] = nc4_screen_f32(nn[k].x, nn[k].y, m0, m1, m3c, m2, f0, f1, f3, f2);
-            }
-        } else {
-            int base = tri2n ? 1 : 0;
-            for (int k = 0; k < 3; k++) {
-                int n = NODEMAP[subq][base + k];
-                tpf[k] = hq2_node(n, f0, f1, f3, f2);
-            }
-        }
-#endif
         if (!hqv) {
             if (!quad)      { tp[0] = m0; tp[1] = m1; tp[2] = m2;
                               tfl[1] = vec2(4.0, 0.0); tfl[2] = vec2(0.0, 4.0); }
@@ -3153,7 +2679,7 @@ void main()
         } else if (is4) {
             /* Cell members (TL,TR,BL) / (TR,BL,BR); each carries its
              * emitted point (snap and morph) as its override. */
-            precise pvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+            precise vec3 TL = m0, TR = m1, BL = m3c, BR = m2;
             int cr = cell >> 2, cq = cell & 3;
             ivec2 nn[3];
             nn[0] = tri2n ? ivec2(cr, cq + 1) : ivec2(cr, cq);
@@ -3166,11 +2692,11 @@ void main()
             }
             tov = true;
         } else {
-            precise pvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
-            precise pvec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
-            precise pvec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
-            precise pvec3 C  = (mT + mB) * 0.5;
-            precise pvec3 q0, q1, q2, q3;
+            precise vec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+            precise vec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
+            precise vec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
+            precise vec3 C  = (mT + mB) * 0.5;
+            precise vec3 q0, q1, q2, q3;
             if      (subq == 0) { q0 = TL; q1 = mT; q2 = mL; q3 = C;  }
             else if (subq == 1) { q0 = mT; q1 = TR; q2 = C;  q3 = mR; }
             else if (subq == 2) { q0 = mL; q1 = C;  q2 = BL; q3 = mB; }
@@ -3183,11 +2709,6 @@ void main()
                 for (int k = 0; k < 3; k++)
                     tos[k] = hq_snap_screen(NODEMAP[subq][base + k],
                                             TL, TR, BL, BR, tp[k]);
-#ifdef TERRAIN_FP32_ARM2
-                for (int k = 0; k < 3; k++)
-                    tosf[k] = hq_snap_f32(NODEMAP[subq][base + k],
-                                          TL, TR, BL, BR, tp[k], tpf[k]);
-#endif
                 tov = true;
             }
         }
@@ -3265,13 +2786,10 @@ void main()
          * they shade at their own depths, as the subdivide's nodes do. */
         if (tjs && pc.snap != 0 && !tov) {
             for (int k = 0; k < 3; k++) tos[k] = snap_of(proj_of(tp[k]));
-#ifdef TERRAIN_FP32_ARM2
-            for (int k = 0; k < 3; k++) tosf[k] = tos[k];
-#endif
             tov = true;
         }
         int tjd3[3], tjp3[3], tjq3[3];
-        pfloat tjt3[3];
+        float tjt3[3];
         for (int k = 0; k < 3 && tjs; k++) {
             tjd3[k] = tj_desc(k);
             tj_ends(tjd3[k], tp, tos, tjp3[k], tjq3[k], tjt3[k]);
@@ -3280,7 +2798,7 @@ void main()
          * bytes, as a corner's is. */
         ivec3 tq[3] = ivec3[3](ivec3(0), ivec3(0), ivec3(0));
         if (tjs && hqv) {
-            pvec3 p2[3];
+            vec3 p2[3];
             vec3 f2[3], n2[3];
             ivec3 q2[3];
             vec2 u2[3], o2[3], l2[3];
@@ -3295,15 +2813,6 @@ void main()
                 o2[k] = tj_scr(tjd3[k], tp, tos);
                 l2[k] = mix(tfl[a], tfl[b], t);
             }
-#ifdef TERRAIN_FP32_ARM2
-            vec3 pf2[3];
-            vec2 of2[3];
-            for (int k = 0; k < 3; k++) {
-                pf2[k] = tj_pos(tjd3[k], tpf);
-                of2[k] = tj_scr_f32(tjd3[k], tp, tpf, tosf);
-            }
-            tpf = pf2; tosf = of2;
-#endif
 #ifdef TERRAIN_READBACK
             uvec4 tk2[3];
             for (int k = 0; k < 3; k++) tk2[k] = rb_tj_pos(tjd3[k], tk);
@@ -3336,10 +2845,6 @@ void main()
 #ifdef TERRAIN_READBACK
             cin[k].rk = tk[k];
 #endif
-#ifdef TERRAIN_FP32_ARM2
-            cin[k].mf  = tpf[k];
-            cin[k].osf = tosf[k];
-#endif
         }
         /* A flat split mixes its corners' shaded colours into its nodes,
          * which keeps the flat face's shading. */
@@ -3359,10 +2864,6 @@ void main()
 #ifdef TERRAIN_READBACK
                 c2[k].rk = rb_tj_pos(tjd3[k], tk);
 #endif
-#ifdef TERRAIN_FP32_ARM2
-                c2[k].mf  = tj_pos(tjd3[k], tpf);
-                c2[k].osf = tj_scr_f32(tjd3[k], tp, tpf, tosf);
-#endif
             }
             cin = c2;
         }
@@ -3372,7 +2873,7 @@ void main()
          * re-clips the whole face at a doubled zc (<= 16 rounds). */
         cvx outv[4];
         int nout = 0;
-        pfloat zc = G_NEAR;
+        float zc = G_NEAR;
         for (int rnd = 0; rnd < 24; rnd++) {
             nout = 0;
             bool clipped = false;
@@ -3415,10 +2916,6 @@ void main()
 #ifdef TERRAIN_READBACK
         rbk = V.rk;
 #endif
-#ifdef TERRAIN_FP32_ARM2
-        mof = V.mf;
-        sscrf = scr_f32(V);
-#endif
         mfl = V.fl;
         uv  = V.uv;
         col = vec4(op_rgb8q(V.c, V.q), 1.0);
@@ -3431,17 +2928,11 @@ void main()
         rbk = rb_tj_pos(tjD, rtjB);
 #endif
         mfl = mix(tjF[tjP], tjF[tjQ], float(tjT));
-#ifdef TERRAIN_FP32_ARM2
-        mof = tj_pos(tjD, tjBf);
-        sscrf = tj_scr_f32(tjD, tjB, tjBf, tjSf);
-#endif
     } else if (!hqv) {
 #ifdef TERRAIN_ANIM
-        precise pvec3 lown = ANIM_LERP3(inPrevPos.xyz, inPos.xyz);
-#elif defined(TERRAIN_FP32)
-        precise vec3 lown = cam_rel(wo + inPos.xyz);
+        precise vec3 lown = ANIM_LERP3(inPrevPos.xyz, inPos.xyz);
 #else
-        pvec3 lown = pvec3(inPos.xyz) * 0.25;
+        precise vec3 lown = cam_rel(wo + inPos.xyz);
 #endif
         mo = MAC(lown);
         sscr = snap_of(proj_of(mo));
@@ -3451,14 +2942,6 @@ void main()
 #else
         rbk = rb_leaf(wo + inPos.xyz);
 #endif
-#endif
-#ifdef TERRAIN_FP32_ARM2
-#ifdef TERRAIN_ANIM
-        mof = mac_of(cam_rel_lerp(a2o + inPrevPos.xyz, a2o + inPos.xyz, g.ofH.w));
-#else
-        mof = mac_of(cam_rel(a2o + inPos.xyz));
-#endif
-        sscrf = snap_f32(mo, mof);
 #endif
         /* A triangle's corner A, B or C at (0,0), (4,0), (0,4); a flat
          * quad keys whole and carries none. */
@@ -3473,12 +2956,8 @@ void main()
         rbk = rb_nt4_node(n, rk0, rk1, rk2);
 #endif
         mfl = nt4_fl(n);
-#ifdef TERRAIN_FP32_ARM2
-        mof = nt4_node(n, f0, f1, f2);
-        sscrf = nt4_screen_f32(n, m0, m1, m2, f0, f1, f2);
-#endif
     } else if (is4) {
-        precise pvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+        precise vec3 TL = m0, TR = m1, BL = m3c, BR = m2;
         int nr = (cell >> 2) + (role >> 1), nq = (cell & 3) + (role & 1);
         mo = nc4_node(nr, nq, TL, TR, BL, BR);
         sscr = nc4_screen(nr, nq, TL, TR, BL, BR);
@@ -3486,26 +2965,18 @@ void main()
         rbk = rb_nc4_node(nr, nq, rk0, rk1, rk3, rk2);
 #endif
         mfl = vec2(float(nq), float(nr));
-#ifdef TERRAIN_FP32_ARM2
-        mof = nc4_node(nr, nq, f0, f1, f3, f2);
-        sscrf = nc4_screen_f32(nr, nq, TL, TR, BL, BR, f0, f1, f3, f2);
-#endif
     } else {
         /* Parent corners in .s grid order: TL=i0, TR=i1, BL=i3, BR=i2. */
-        precise pvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
-        precise pvec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
-        precise pvec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
-        precise pvec3 C  = (mT + mB) * 0.5;
+        precise vec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+        precise vec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
+        precise vec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
+        precise vec3 C  = (mT + mB) * 0.5;
         int node = NODEMAP[subq][role];
         mo = node == 0 ? TL : node == 1 ? TR : node == 2 ? BR : node == 3 ? BL
            : node == 4 ? mT : node == 5 ? mB : node == 6 ? mL : node == 7 ? mR : C;
         sscr = hq_snap_screen(node, TL, TR, BL, BR, mo);
 #ifdef TERRAIN_READBACK
         rbk = rb_hq2_node(node, rk0, rk1, rk3, rk2);
-#endif
-#ifdef TERRAIN_FP32_ARM2
-        mof = hq2_node(node, f0, f1, f3, f2);
-        sscrf = hq_snap_f32(node, TL, TR, BL, BR, mo, mof);
 #endif
         mfl = subq == 0 ? quad_side_fl(TL, mT, mL, C, mo)
             : subq == 1 ? quad_side_fl(mT, TR, C, mR, mo)
@@ -3515,7 +2986,7 @@ void main()
 #endif
 
     /* ---- og OT key (feed koff mirror; ambient per face / per HQ sub-quad) ---- */
-    PREC32 float koff = 0.0;
+    precise float koff = 0.0;
     float kcls = OP_KEY_CLASS_NONE;
     dtab ktab;
     ktab.t0 = uvec4(0u); ktab.t1 = uvec4(0u); ktab.kmin = 0.0; ktab.n = 0;
@@ -3538,7 +3009,7 @@ void main()
          * nt_emit), and one the always-HQ pin subdivides outside the band
          * keeps the whole-face key, as the game inserts that face whole.
          * Rounded to float exactly where the walk rounds. */
-        PREC32 float ok;
+        precise float ok;
         if (!hqv || !nearband) {
             ok = float((m0.z + m1.z + m2.z + m3c.z) * 4.0);
         } else if (ist) {
@@ -3552,15 +3023,15 @@ void main()
                             nc4_node(cr + 1, cq, m0, m1, m3c, m2).z,
                             nc4_node(cr + 1, cq + 1, m0, m1, m3c, m2).z);
         } else {
-            precise pvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
-            precise pvec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
-            precise pvec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
-            precise pvec3 C  = (mT + mB) * 0.5;
-            precise pvec4 sq =
-                subq == 0 ? pvec4(TL.z, mT.z, mL.z, C.z)
-              : subq == 1 ? pvec4(mT.z, TR.z, C.z, mR.z)
-              : subq == 2 ? pvec4(mL.z, C.z, BL.z, mB.z)
-              :             pvec4(C.z, mR.z, mB.z, BR.z);
+            precise vec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+            precise vec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
+            precise vec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
+            precise vec3 C  = (mT + mB) * 0.5;
+            precise vec4 sq =
+                subq == 0 ? vec4(TL.z, mT.z, mL.z, C.z)
+              : subq == 1 ? vec4(mT.z, TR.z, C.z, mR.z)
+              : subq == 2 ? vec4(mL.z, C.z, BL.z, mB.z)
+              :             vec4(C.z, mR.z, mB.z, BR.z);
             ok = drain_key4(sq.x, sq.y, sq.z, sq.w);
         }
         /* A drawn triangle of a face the drain inserts finer keys at the
@@ -3581,13 +3052,13 @@ void main()
         if (((mat0 >> 21) & 3u) != 0u) {
             koff = 0.0;
         } else if (nearband && (gf & GF_NBKEYS) == 0) {
-            koff = -float(pfloat(ok) + 0.5);
+            koff = -float(float(ok) + 0.5);
         } else {
             uint ob = (ff >> 24) & 0x1Fu;
-            PREC32 pfloat slots = lp ? ot_lp_slots(ob)
-                              : pfloat(((ff & FF_LPKEY) != 0u ? ot_lp_base() : 0u)
+            precise float slots = lp ? ot_lp_slots(ob)
+                              : float(((ff & FF_LPKEY) != 0u ? ot_lp_base() : 0u)
                                        + ot_hp_mul() * ob);
-            koff = float(pfloat(ok) + 128.0 * slots + 0.5);
+            koff = float(float(ok) + 128.0 * slots + 0.5);
             kcls = op_key_class(!lp && (ff & FF_LPKEY) == 0u, float(slots));
         }
     }
@@ -3644,11 +3115,7 @@ void main()
         if (koff <= 0.25) { kill_vert(); return; }   /* keyed faces only */
         float K  = koff - 0.5;
         float kv = max(K, 1.0);
-#ifdef TERRAIN_FP32_ARM2
-        vec2 cxy = clip_of(sscrf);
-#else
         vec2 cxy = clip_of(sscr);
-#endif
         gl_Position = op_key_clip(cxy, kv, kv);
         float fvz = float(mo.z) * 16.0;              /* TRUE per-vertex view-Z */
         float wq  = AFFINE_UV ? 1.0 : max(fvz, 1.0);
@@ -3722,21 +3189,13 @@ void main()
      * feed: z = pvz = vz with vz = float(m3)*16 (near-guarded at 1);
      * scene VS: vzo = the clamped z, q = vzo/Wu (Wu = the same vz), and
      * the (zc, W) pair uses W == vzo for clip invariance, so window depth
-     * and q match the CPU-fed pipeline bit-for-bit. */
-#ifdef TERRAIN_FP32_ARM2
-    float fvz = mof.z * 16.0;
-#else
+     * and q follow the CPU-fed pipeline's rule. */
     float fvz = float(mo.z) * 16.0;
-#endif
     float vzs = max(fvz, 1.0);
     float vzo = op_scene_vz(vzs);
     float Wu  = vzs;                       /* inW = pvz = the same view-Z */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
-#ifdef TERRAIN_FP32_ARM2
-    gl_Position = op_scene_clip(clip_of(sscrf), vzo, AFFINE_UV, DEPTH_REVERSED);
-#else
     gl_Position = op_scene_clip(clip_of(sscr), vzo, AFFINE_UV, DEPTH_REVERSED);
-#endif
     vUV    = uv * q;
     vColor = col * q;
     vQ     = q;

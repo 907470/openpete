@@ -9,7 +9,7 @@ keeps only terrain). Coverage is a property of the pixel, independent of
 which identity is drawn, so two arms of one pose compare pixel for pixel.
 
   census BASE ARM [--png-out DIR]
-      BASE and ARM are face-identity PNGs of one pose (fp64 and a test arm).
+      BASE and ARM are face-identity PNGs of one pose in two arms.
       Prints one line of key=value counts:
         faces      distinct retained identities in BASE (faces visible)
         walked     distinct walked identities in BASE
@@ -60,39 +60,6 @@ which identity is drawn, so two arms of one pose compare pixel for pixel.
                    Nonzero makes the capture impure; the caller refuses it.
       With --list, writes a "# size W H" line, then one line "x y size" per
       hole pixel (size = its component's pixel count) to FILE.
-
-  arms IDA IDB COLA COLB
-      One bin of the precision A/B: the face-identity PNGs and the stock
-      colour PNGs of one pose in two arms (fp64 against TERRAIN_FP32_ARM2 is
-      bin 1, TERRAIN_FP32_ARM2 against TERRAIN_FP32 bin 2). Prints:
-        px, edge, face, maxd  as split's diff, edge, face and max delta
-        tri        retained triangles visible in either arm
-        vanish     triangles with pixels in IDA and none in IDB; vanish_px
-                   their IDA pixels, vanish4 those with 4 or more;
-                   vanish_vis (vanish_vis_px) those of which half or more
-                   of the pixels differ in colour (otherwise a same-colour
-                   triangle took them: a depth tie of coincident surfaces)
-        appear     the same from IDB to IDA (appear_px, appear4, appear_vis)
-        repaint    triangles whose pixels common to both arms number at
-                   least 4 and of which half or more differ in colour;
-                   repaint_px their differing pixels; repaint_int those
-                   with a differing pixel off every identity boundary (a
-                   repaint whose differing pixels all sit on edges is a
-                   sliver following its edges)
-      A flip is a visible vanish or appear, or a repaint_int: a face that
-      changes identity or repaints wholesale. An edge shift moves pixels between
-      neighbouring triangles and changes no triangle's set.
-
-  classes ID CLS
-      CLS is a debug-tint-15 capture (each retained face painted with its
-      verdict-class word, terrain.vert) of the pose ID is the face-identity
-      capture of, in the same arm. Each retained triangle of ID takes the
-      most common word over its pixels; prints, per class bit, the
-      triangles carrying it and their pixels (name=tris/px): cells4 tri4
-      tri2 water hpraw hpfog rim hq lp near tjs snap affine fogoff fogpp
-      nolod keyed fill blendfar. A triangle whose run-wide bits (snap,
-      affine, fogoff, fogpp, nolod) differ from the majority's carries a
-      mixed word (a blended face) and is counted as impure, not classed.
 
 Engagement: a census line with faces == 0 and walked == 0 compared nothing
 and is marked VACUOUS by the caller.
@@ -279,99 +246,8 @@ def holes(argv):
     return 0
 
 
-def arms(argv):
-    ia, ib = load_ids(argv[0]), load_ids(argv[1])
-    ca = np.asarray(Image.open(argv[2]).convert("RGB"), dtype=np.int16)
-    cb = np.asarray(Image.open(argv[3]).convert("RGB"), dtype=np.int16)
-    if ib.shape != ia.shape or ca.shape[:2] != ia.shape or cb.shape[:2] != ia.shape:
-        print("arms: image sizes differ")
-        return 1
-    d = np.abs(ca - cb).max(axis=2)
-    diff = d > 0
-    near = dilate(boundary(ia)) & dilate(boundary(ib))
-    ra, rb = (ia & RET) != 0, (ib & RET) != 0
-    ua, na = np.unique(ia[ra], return_counts=True)
-    ub, nb = np.unique(ib[rb], return_counts=True)
-    ca_, cb_ = dict(zip(ua.tolist(), na.tolist())), dict(zip(ub.tolist(), nb.tolist()))
-    van = [n for f, n in ca_.items() if f not in cb_]
-    app = [n for f, n in cb_.items() if f not in ca_]
-    # A vanished (appeared) triangle is visible when half or more of its
-    # pixels in the arm holding it differ in colour; otherwise another
-    # triangle of the same colour took its pixels (a depth tie between
-    # coincident surfaces).
-    ua_d, na_d = np.unique(ia[ra & diff], return_counts=True)
-    ub_d, nb_d = np.unique(ib[rb & diff], return_counts=True)
-    da, db = dict(zip(ua_d.tolist(), na_d.tolist())), dict(zip(ub_d.tolist(), nb_d.tolist()))
-    van_v = [n for f, n in ca_.items() if f not in cb_ and 2 * da.get(f, 0) >= n]
-    app_v = [n for f, n in cb_.items() if f not in ca_ and 2 * db.get(f, 0) >= n]
-    same = ra & (ia == ib)
-    uc, nc = np.unique(ia[same], return_counts=True)
-    ud, nd = np.unique(ia[same & diff], return_counts=True)
-    dmap = dict(zip(ud.tolist(), nd.tolist()))
-    rep = [f for f, n in zip(uc.tolist(), nc.tolist()) if n >= 4 and 2 * dmap.get(f, 0) >= n]
-    # A repaint with no differing pixel away from an identity boundary is a
-    # sliver whose every pixel sits on an edge: its colour moved with the
-    # edge's interpolation, not with a verdict.
-    ui, ni = np.unique(ia[same & diff & ~near], return_counts=True)
-    imap = dict(zip(ui.tolist(), ni.tolist()))
-    rep_int = [f for f in rep if imap.get(f, 0) > 0]
-    rep = [dmap[f] for f in rep]
-    print("px=%d edge=%d face=%d maxd=%d tri=%d vanish=%d vanish_px=%d vanish4=%d "
-          "appear=%d appear_px=%d appear4=%d vanish_vis=%d vanish_vis_px=%d appear_vis=%d "
-          "appear_vis_px=%d repaint=%d repaint_px=%d repaint_int=%d"
-          % (int(diff.sum()), int((diff & near).sum()), int((diff & ~near).sum()),
-             int(d.max()), len(set(ca_) | set(cb_)), len(van), sum(van),
-             sum(1 for n in van if n >= 4), len(app), sum(app), sum(1 for n in app if n >= 4),
-             len(van_v), sum(van_v), len(app_v), sum(app_v), len(rep), sum(rep), len(rep_int)))
-    return 0
-
-
-CLASS_BITS = ("cells4", "tri4", "tri2", "water", "hpraw", "hpfog", "rim", "hq", "lp", "near",
-              "tjs", "snap", "affine", "fogoff", "fogpp", "nolod", "keyed", "fill", "blendfar")
-
-
-def classes(argv):
-    ids = load_ids(argv[0])
-    cw = load_ids(argv[1])
-    if cw.shape != ids.shape:
-        print("classes: image sizes differ")
-        return 1
-    # A triangle's class word is the most common word over its pixels: a
-    # blended face mixes its word with the destination, and the tint
-    # capture's key contest can hand a pixel to another face.
-    m = (ids & RET) != 0
-    tri, word = ids[m], cw[m] & 0x3FFFFF
-    key = (tri.astype(np.uint64) << np.uint64(32)) | word.astype(np.uint64)
-    uk, nk = np.unique(key, return_counts=True)
-    best = {}
-    for k, n in zip(uk.tolist(), nk.tolist()):
-        t, w = k >> 32, k & 0xFFFFFFFF
-        if n > best.get(t, (0, 0))[0]:
-            best[t] = (n, w)
-    ut, nt = np.unique(tri, return_counts=True)
-    px = dict(zip(ut.tolist(), nt.tolist()))
-    # The run-wide bits (snap affine fogoff fogpp nolod) are one value for
-    # every face of a capture; a triangle whose modal word disagrees with
-    # the majority's is a mixed word (a blended face) and is dropped.
-    gmask = sum(1 << CLASS_BITS.index(n) for n in ("snap", "affine", "fogoff", "fogpp", "nolod"))
-    votes = {}
-    for _, w in best.values():
-        votes[w & gmask] = votes.get(w & gmask, 0) + 1
-    gwin = max(votes, key=votes.get) if votes else 0
-    impure = [t for t, (_, w) in best.items() if (w & gmask) != gwin]
-    for t in impure:
-        del best[t]
-    out = ["ret_px=%d tris=%d impure=%d" % (int(m.sum()), len(best), len(impure))]
-    for k, n in enumerate(CLASS_BITS):
-        ts = [t for t, (_, w) in best.items() if w & (1 << k)]
-        out.append("%s=%d/%d" % (n, len(ts), sum(px[t] for t in ts)))
-    print(" ".join(out))
-    return 0
-
-
 def main():
-    cmds = {"census": census, "split": split, "holes": holes,
-            "arms": arms, "classes": classes}
+    cmds = {"census": census, "split": split, "holes": holes}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         print(__doc__)
         return 64

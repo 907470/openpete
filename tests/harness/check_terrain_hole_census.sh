@@ -1,38 +1,42 @@
 #!/usr/bin/env bash
-# check_terrain_hole_census.sh - retained-terrain hole census: the fp32
-# vertex stage's coverage against the fp64 stage's, per freecam pose, from
-# face-identity captures (OPENPETE_TERRAIN_FACEID=1).
+# check_terrain_hole_census.sh - retained-terrain hole census over
+# face-identity captures (OPENPETE_TERRAIN_FACEID=1), per freecam pose.
 #
 # A face-identity capture paints each pixel with the identity of the terrain
 # face covering it (terrain_faceid.frag on the retained cache's colour
 # pipelines, linked to the shipped vertex stage's pre-rasterisation library;
 # walked faces recoloured on the host), and keeps nothing but terrain. Per
-# pose and LOD tier it captures three arms on one build and device:
-#   f64  the fp64 stage (OPENPETE_TERRAIN_FP32 unset)
-#   f32  the fp32 stage (OPENPETE_TERRAIN_FP32=1)
-#   ctl  the positive control (OPENPETE_TERRAIN_FP32=2, per-sector rounding)
-# and tools/terrain_hole_census.py compares f32 and ctl against f64: pxdiff
-# (pixels whose face identity or coverage differs; the summed count below),
-# holes (terrain in f64, background in the arm), reverse holes, the change
-# in isolated-identity pixels, and identity changes interior to faces.
-# With --lto=both each arm also runs under OPENPETE_PIPELINE_LTO=0, the
-# fast-linked pipelines; --repeat=2 captures every leg twice and reports a
-# leg whose two captures differ. With --colour each pose also captures the
-# stock image of f64 and f32 and splits their pixel difference into edge and
-# face pixels (terrain_hole_census.py split).
+# pose and LOD tier the default mode captures, on one build and device:
+#   p0   the shipped vertex stage, under each --lto arm
+#   p1   the positive control (OPENPETE_TERRAIN_SECDELTA=1, per-sector
+#        rounding of the camera operand), under each --lto arm
+# and tools/terrain_hole_census.py compares, per --lto arm, the control
+# against the shipped stage (ctl_px, expected nonzero: the proof the
+# census sees a shared-vertex disagreement) and, with --lto=both, the
+# fast-linked shipped stage against the LTO one (fast_cov, its holes plus
+# reverse holes, expected 0: the position chain's operation order is
+# identical in every pipeline; its pxdiff is reported, not judged, since
+# the face-identity words of one face differ between the two link modes
+# while its coverage does not). pxdiff
+# counts pixels whose face identity or coverage differs; the tool's line
+# also gives holes (terrain in the base, background in the arm), reverse
+# holes, the change in isolated-identity pixels, and identity changes
+# interior to faces. --repeat=2 captures every leg twice and reports a leg
+# whose two captures differ. Every cache leg runs with the first-touch bake
+# budget off (OPENPETE_TC_BAKE_BUDGET_US=off), so the arena placement, and
+# with it each face's identity, is the same in every leg of a pose.
 #
 # --jitter=J sets OPENPETE_TERRAIN_CAM_JITTER=J on every leg: the terrain
 # camera (the CPU walk's, its triangle dump's and the cache's alike) moves
 # by a sub-unit offset on each axis, so the camera-relative operand carries
 # a fraction. A freecam camera is integral, and with an integral camera the
-# fp32 combine and the control's per-sector combine are both exact, so
+# shipped combine and the control's per-sector combine are both exact, so
 # without it the control cannot engage.
 #
-# Engagement: a row whose f64 capture shows no face (faces + walked == 0),
+# Engagement: a row whose base capture shows no face (faces + walked == 0),
 # or whose leg logged no retained sectors (secs > 0 on a [tgpu-cen] line),
-# is VACUOUS. The control's summed holes must be nonzero or the run is
-# VACUOUS as a whole (a blind detector, not a pass). Holes, pxdiff and the
-# control are counted in pxdiff.
+# is VACUOUS. The control's summed pxdiff must be nonzero or the run is
+# VACUOUS as a whole (a blind detector, not a pass).
 #
 # OPENPETE_BIN=<path to openpete.exe> drives a Windows build instead (a
 # hardware device: headless, --input-lock, knobs forwarded through WSLENV).
@@ -40,44 +44,37 @@
 # Usage:
 #   tests/harness/check_terrain_hole_census.sh [--game SLUG] [--filter SUBSTR] [--jitter=J]
 #       [--lods "original extended"] [--lto=on|off|both] [--repeat=N]
-#       [--colour] [--stride=K] [--jobs N] [--out DIR] [--build-dir=DIR]
-#       [--holes [--prec=N] [--classify] [--max-holes=N]] [--resume]
+#       [--stride=K] [--jobs N] [--out DIR] [--build-dir=DIR]
+#       [--holes [--control] [--classify] [--max-holes=N]] [--resume]
+#       [--vprec=subpixel|integer] [--texmap=perspective|affine] [--fog=MODE] [--start=N]
 # --stride=K keeps every K-th selected manifest row (the first, the K+1-th,
 # ...), a sample of the corpus for a run on a slow device.
 #
 # --holes counts holes instead of comparing arms: one capture per pose and
-# LOD (the fp64 stage, or the precision --prec=N names; LTO; --jitter as
-# given), with --render-paths terrain,portal,transition so no moby, sky,
-# particle or HUD path draws (the terrain feed and the cache's claims are
-# those of a full capture). `terrain_hole_census.py holes` counts the clear
-# pixels enclosed by terrain: pins (1 px) and holes (components up to
-# 16 px). A row whose image holds a pixel that is neither the clear colour
-# nor a face identity (foreign > 0) is IMPURE and fails the run. With
-# --classify, every row with a pin also runs a walk leg on the Linux build
-# (--terrain-cache 0, OPENPETE_TERRAIN_TRIDUMP at the capture key), and
-# tools/terrain_hole_classify.py attributes each pin to a geometric class
-# (T-junction, crack, walk-covered, shared edge, open edge, unattributed).
-# --max-holes=N passes a run with at most N holes (default 0).
+# LOD (the shipped stage, or with --control the per-sector control; LTO;
+# --jitter as given), with --render-paths terrain,portal,transition so no
+# moby, sky, particle or HUD path draws (the terrain feed and the cache's
+# claims are those of a full capture). `terrain_hole_census.py holes`
+# counts the clear pixels enclosed by terrain: pins (1 px) and holes
+# (components up to 16 px). A row whose image holds a pixel that is
+# neither the clear colour nor a face identity (foreign > 0) is IMPURE and
+# fails the run. With --classify, every row with a pin also runs a walk leg
+# on the Linux build (--terrain-cache 0, OPENPETE_TERRAIN_TRIDUMP at the
+# capture key), and tools/terrain_hole_classify.py attributes each pin to a
+# geometric class (T-junction, crack, walk-covered, shared edge, open edge,
+# unattributed). --max-holes=N passes a run with at most N holes (default
+# 0).
+# --vprec, --texmap (affine sets the AFFINE_UV stages) and --fog set the
+# run's configuration (defaults: subpixel, perspective, the game's fog);
+# --start=N captures every leg at frame N in place of the manifest's start.
 # --resume keeps a leg whose output exists and is newer than the binary
 # (and the walk dump's newer than the build's), so an interrupted run
 # continues where it stopped; without it every leg's outputs are removed
 # before it runs.
 #
-# --arms runs the precision A/B instead: per pose and LOD three arms, the
-# fp64 stage (p0), TERRAIN_FP32_ARM2 (p3: fp64 verdicts, fp32 rasterised
-# position) and the fp32 stage (p1), each captured as a face-identity and a
-# stock colour image, plus one debug-tint-15 capture of p3 (each retained
-# face's verdict-class word). `terrain_hole_census.py arms` prints bin 1
-# (p0 against p3: edge shifts) and bin 2 (p3 against p1: verdict flips) per
-# row, `classes` the per-class pixel counts. --vprec=subpixel|integer,
-# --texmap=perspective|affine (affine sets the AFFINE_UV stages) and
-# --fog=MODE set the run's configuration (defaults: subpixel, perspective,
-# the game's fog). --start=N captures every leg at frame N in place of the
-# manifest's start (every arm of a row at the same frame).
-#
-# Exit 0 when every engaged row reads pxdiff == 0 for f32 (--holes: the
-# summed holes are at most --max-holes and no row is IMPURE), 1 when any
-# does not or the run is VACUOUS, 64 SKIP (no binary, disc or PIL).
+# Exit 0 when every engaged row reads fast_cov == 0 (--holes: the summed
+# holes are at most --max-holes and no row is IMPURE), 1 when any does not
+# or the run is VACUOUS, 64 SKIP (no binary, disc or PIL).
 set -u
 
 # Unattended launcher: every run this script starts is silenced.
@@ -89,8 +86,8 @@ cd "$(dirname "$0")/../.."
 source scripts/lib/game.sh
 
 BUILD_DIR=build/linux-release
-OUT="" FILTER="" LODS="original extended" LTO=on REPEAT=1 COLOUR=0 JOBS=2 JITTER="" STRIDE=1
-HOLES=0 HPREC=0 CLASSIFY=0 MAXHOLES=0 RESUME=0 ARMS=0 VPREC=subpixel TEXMAP=perspective FOGM="" START=""
+OUT="" FILTER="" LODS="original extended" LTO=on REPEAT=1 JOBS=2 JITTER="" STRIDE=1
+HOLES=0 HPREC=0 CLASSIFY=0 MAXHOLES=0 RESUME=0 VPREC=subpixel TEXMAP=perspective FOGM="" START=""
 prev=""
 for a in "$@"; do
     case "$a" in
@@ -103,13 +100,11 @@ for a in "$@"; do
         --jobs=*)      JOBS="${a#*=}";;
         --jitter=*)    JITTER="${a#*=}";;
         --stride=*)    STRIDE="${a#*=}";;
-        --colour)      COLOUR=1;;
         --holes)       HOLES=1;;
-        --prec=*)      HPREC="${a#*=}";;
+        --control)     HPREC=1;;
         --classify)    CLASSIFY=1;;
         --max-holes=*) MAXHOLES="${a#*=}";;
         --resume)      RESUME=1;;
-        --arms)        ARMS=1;;
         --vprec=*)     VPREC="${a#*=}";;
         --texmap=*)    TEXMAP="${a#*=}";;
         --fog=*)       FOGM="${a#*=}";;
@@ -147,7 +142,7 @@ TOOL=tools/terrain_hole_census.py
 # Windows exe.
 LINUX_BIN="$(pg_tree_bin "$BUILD_DIR" "$PG_GAME")"
 
-leg() {  # tag level pose start lod precision lto faceid [kind: holes|walk]
+leg() {  # tag level pose start lod control(0|1) lto faceid [kind: holes|walk]
     local tag="$1" level="$2" pose="$3" start="$4" lod="$5" prec="$6" lto="$7" fid="$8"
     local kind="${9:-}"
     local -a PG_SKIP_ARGS=()
@@ -160,12 +155,16 @@ leg() {  # tag level pose start lod precision lto faceid [kind: holes|walk]
     if [[ "$kind" == walk ]]; then
         env+=("OPENPETE_TERRAIN_TRIDUMP=$start,$out")
     else
-        env+=(OPENPETE_TERRAIN_CACHE_FORCE=1)
+        # OPENPETE_TC_BAKE_BUDGET_US=off: the face identity hashes a face's
+        # element index in its arena buffer, which follows the order sectors
+        # are baked; the first-touch budget orders bakes by bake time, a
+        # wall-clock quantity, so without the pin two captures of one pose
+        # place a sector at different elements and repaint every face.
+        env+=(OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off)
     fi
-    [[ "$prec" != 0 ]] && env+=("OPENPETE_TERRAIN_FP32=$prec")
+    [[ "$prec" != 0 ]] && env+=(OPENPETE_TERRAIN_SECDELTA=1)
     [[ "$lto" == fast ]] && env+=(OPENPETE_PIPELINE_LTO=0)
     [[ "$fid" == 1 ]] && env+=(OPENPETE_TERRAIN_FACEID=1)
-    [[ "$fid" == c ]] && env+=(OPENPETE_TERRAIN_GPU_TINT=15)
     [[ -n "$JITTER" ]] && env+=("OPENPETE_TERRAIN_CAM_JITTER=$JITTER")
     local -a args=(--no-card --mute 1 --vibration 0 --mods ""
         --renderer vk --lod "$lod" --aspect 4:3 --vertex-precision "$VPREC"
@@ -301,118 +300,39 @@ if [[ $HOLES == 1 ]]; then
     [[ $vac -eq $rows ]] && verdict=VACUOUS
     summary=""
     for c in $(printf '%s\n' "${!CLS[@]}" | sort); do summary+=" $c=${CLS[$c]}"; done
-    echo "[hole-census] game=$PG_GAME mode=holes prec=$HPREC rows=$rows vacuous=$vac impure=$impure" \
+    echo "[hole-census] game=$PG_GAME mode=holes control=$HPREC rows=$rows vacuous=$vac impure=$impure" \
          "missing=$missing pins=$t_pins holes=$t_holes hole_px=$t_px${summary:+ classes:$summary}" \
          "verdict=$verdict"
     [[ $verdict == PASS ]]
     exit
 fi
 
-if [[ $ARMS == 1 ]]; then
-    LEGS="$OUT/legs-arms.txt"; rm -f "${OUT:?}/legs-arms.txt"
-    for i in "${!SLUGS[@]}"; do
-        for lod in $LODS; do
-            for prec in 0 3 1; do
-                for fid in 1 0; do
-                    echo "${SLUGS[$i]}__${lod}__p${prec}__f$fid|$i|$lod|$prec|lto|$fid" >> "$LEGS"
-                done
-            done
-            echo "${SLUGS[$i]}__${lod}__p3__fc|$i|$lod|3|lto|c" >> "$LEGS"
-        done
-    done
-    [[ -f "$LEGS" ]] || { echo "[fp32-arms] game=$PG_GAME rows=0 verdict=VACUOUS"; exit 1; }
-    run_legs "$LEGS"
-    rows=0 vac=0 missing=0
-    declare -A T1=() T2=() CL=() CP=()
-    for i in "${!SLUGS[@]}"; do
-        for lod in $LODS; do
-            rows=$((rows + 1))
-            b="$OUT/${SLUGS[$i]}__${lod}"
-            secs="$(secs_of "${b}__p3__f0.log")"
-            l1="$(python3 "$TOOL" arms "${b}__p0__f1-vk.png" "${b}__p3__f1-vk.png" \
-                  "${b}__p0__f0-vk.png" "${b}__p3__f0-vk.png")" || l1="MISSING"
-            l2="$(python3 "$TOOL" arms "${b}__p3__f1-vk.png" "${b}__p1__f1-vk.png" \
-                  "${b}__p3__f0-vk.png" "${b}__p1__f0-vk.png")" || l2="MISSING"
-            lc="$(python3 "$TOOL" classes "${b}__p3__f1-vk.png" "${b}__p3__fc-vk.png")" || lc="MISSING"
-            if [[ "$l1" == MISSING* || "$l2" == MISSING* || "$lc" == MISSING* ]]; then
-                missing=$((missing + 1))
-                echo "[fp32-arms] row=${SLUGS[$i]} lod=$lod MISSING"
-                continue
-            fi
-            note=""
-            tri="$(sed -n 's/.* tri=\([0-9]*\) .*/\1/p' <<<"$l1")"
-            if [[ "${tri:-0}" -eq 0 || "${secs:-0}" -eq 0 ]]; then
-                vac=$((vac + 1)); note=" VACUOUS"
-            else
-                for kvp in $l1; do T1["${kvp%%=*}"]=$(( ${T1["${kvp%%=*}"]:-0} + ${kvp#*=} )); done
-                for kvp in $l2; do T2["${kvp%%=*}"]=$(( ${T2["${kvp%%=*}"]:-0} + ${kvp#*=} )); done
-                for kvp in $lc; do
-                    v="${kvp#*=}"
-                    CL["${kvp%%=*}"]=$(( ${CL["${kvp%%=*}"]:-0} + ${v%%/*} ))
-                    [[ "$v" == */* ]] && CP["${kvp%%=*}"]=$(( ${CP["${kvp%%=*}"]:-0} + ${v#*/} ))
-                done
-            fi
-            echo "[fp32-arms] row=${SLUGS[$i]} lod=$lod secs=${secs:-0}$note"
-            echo "[fp32-arms]   bin1 $l1"
-            echo "[fp32-arms]   bin2 $l2"
-            echo "[fp32-arms]   cls  $lc"
-        done
-    done
-    sum() {
-        local -n A=$1
-        local k o=""
-        for k in px edge face tri vanish vanish_px vanish4 appear appear_px appear4 vanish_vis \
-                 vanish_vis_px appear_vis appear_vis_px repaint repaint_px repaint_int; do
-            o+=" $k=${A[$k]:-0}"
-        done
-        echo "$o"
-    }
-    cls=""
-    for k in ret_px tris impure; do cls+=" $k=${CL[$k]:-0}"; done
-    for k in cells4 tri4 tri2 water hpraw hpfog rim hq lp near tjs snap affine fogoff fogpp \
-             nolod keyed fill blendfar; do cls+=" $k=${CL[$k]:-0}/${CP[$k]:-0}"; done
-    echo "[fp32-arms] game=$PG_GAME vprec=$VPREC texmap=$TEXMAP fog=${FOGM:-auto}" \
-         "lods=\"$LODS\" rows=$rows vacuous=$vac missing=$missing"
-    echo "[fp32-arms] bin1$(sum T1)"
-    echo "[fp32-arms] bin2$(sum T2)"
-    echo "[fp32-arms] classes$cls"
-    verdict=DONE
-    [[ $vac -eq $rows ]] && verdict=VACUOUS
-    echo "[fp32-arms] verdict=$verdict"
-    [[ $verdict == DONE && $missing -eq 0 ]]
-    exit
-fi
-
 # Every leg of the run, one line each, run JOBS at a time.
-LEGS="$OUT/legs.txt"; rm -f "$LEGS"
+LEGS="$OUT/legs.txt"; rm -f "${OUT:?}/legs.txt"
 for i in "${!SLUGS[@]}"; do
     for lod in $LODS; do
         for lto in $LTOS; do
-            for prec in 0 1 2; do
+            for prec in 0 1; do
                 for r in $(seq 1 "$REPEAT"); do
                     echo "${SLUGS[$i]}__${lod}__${lto}__p${prec}__r$r|$i|$lod|$prec|$lto|1" >> "$LEGS"
                 done
             done
         done
-        if [[ $COLOUR == 1 ]]; then
-            for prec in 0 1; do
-                echo "${SLUGS[$i]}__${lod}__lto__p${prec}__col|$i|$lod|$prec|lto|0" >> "$LEGS"
-            done
-        fi
     done
 done
 [[ -f "$LEGS" ]] || { echo "[hole-census] game=$PG_GAME rows=0 verdict=VACUOUS"; exit 1; }
 
 run_legs "$LEGS"
 
-rows=0 vac=0 bad=0 ctl_px=0 ctl_iso=0 f32_px=0 f32_iso=0 nondet=0
+rows=0 vac=0 bad=0 ctl_px=0 ctl_iso=0 fast_px=0 fast_cov=0 nondet=0
 for i in "${!SLUGS[@]}"; do
     for lod in $LODS; do
+        lto_base="$OUT/${SLUGS[$i]}__${lod}__lto__p0__r1"
         for lto in $LTOS; do
             base="$OUT/${SLUGS[$i]}__${lod}__${lto}__p0__r1"
             rows=$((rows + 1))
             for r in $(seq 2 "$REPEAT"); do
-                for prec in 0 1 2; do
+                for prec in 0 1; do
                     p="$OUT/${SLUGS[$i]}__${lod}__${lto}__p${prec}__r"
                     if ! cmp -s "${p}1-vk.png" "${p}$r-vk.png"; then
                         echo "[hole-census] row=${SLUGS[$i]} lod=$lod lto=$lto arm=p$prec repeat=$r NONDETERMINISTIC"
@@ -421,37 +341,36 @@ for i in "${!SLUGS[@]}"; do
                 done
             done
             secs="$(secs_of "$base.log")"
-            for prec in 1 2; do
-                arm="$OUT/${SLUGS[$i]}__${lod}__${lto}__p${prec}__r1"
-                line="$(python3 "$TOOL" census "$base-vk.png" "$arm-vk.png")" || line="MISSING"
-                arm_name=$([[ $prec == 1 ]] && echo f32 || echo ctl)
+            # ctl: the control against the shipped stage of the same link
+            # mode; fast: the fast-linked shipped stage against the LTO one.
+            pairs=("ctl|$base|$OUT/${SLUGS[$i]}__${lod}__${lto}__p1__r1")
+            [[ $lto == fast && " $LTOS " == *" lto "* ]] && pairs+=("fast|$lto_base|$base")
+            for pr in "${pairs[@]}"; do
+                IFS='|' read -r arm_name b a <<<"$pr"
+                line="$(python3 "$TOOL" census "$b-vk.png" "$a-vk.png")" || line="MISSING"
                 echo "[hole-census] row=${SLUGS[$i]} lod=$lod lto=$lto arm=$arm_name secs=${secs:-0} $line"
                 [[ "$line" == MISSING* ]] && { bad=$((bad + 1)); continue; }
                 hs="$(sed -n 's/.* pxdiff=\([0-9]*\) .*/\1/p' <<<"$line")"
                 iso="$(sed -n 's/.*iso_d=\(-\?[0-9]*\).*/\1/p' <<<"$line")"
                 fc="$(sed -n 's/^faces=\([0-9]*\) walked=\([0-9]*\).*/\1 \2/p' <<<"$line")"
                 if [[ $(( ${fc% *} + ${fc#* } )) -eq 0 || "${secs:-0}" -eq 0 ]]; then
-                    [[ $prec == 1 ]] && vac=$((vac + 1)); continue
+                    [[ $arm_name == ctl ]] && vac=$((vac + 1)); continue
                 fi
-                if [[ $prec == 1 ]]; then
-                    f32_px=$((f32_px + hs)); f32_iso=$((f32_iso + iso))
-                    [[ $hs -ne 0 ]] && bad=$((bad + 1))
+                if [[ $arm_name == fast ]]; then
+                    cv="$(sed -n 's/.* holes=\([0-9]*\) rholes=\([0-9]*\).*/\1 \2/p' <<<"$line")"
+                    cv=$(( ${cv% *} + ${cv#* } ))
+                    fast_px=$((fast_px + hs)); fast_cov=$((fast_cov + cv))
+                    [[ $cv -ne 0 ]] && bad=$((bad + 1))
                 else
                     ctl_px=$((ctl_px + hs)); ctl_iso=$((ctl_iso + iso))
                 fi
             done
         done
-        if [[ $COLOUR == 1 ]]; then
-            c="$OUT/${SLUGS[$i]}__${lod}__lto"
-            echo "[hole-census] row=${SLUGS[$i]} lod=$lod split: $(python3 "$TOOL" split \
-                "${c}__p0__r1-vk.png" "${c}__p1__r1-vk.png" "${c}__p0__col-vk.png" \
-                "${c}__p1__col-vk.png" --components 6 | tr '\n' ';')"
-        fi
     done
 done
 verdict=PASS
 [[ $bad -ne 0 ]] && verdict=FAIL
 [[ $ctl_px -eq 0 || $vac -eq $rows ]] && verdict=VACUOUS
-echo "[hole-census] game=$PG_GAME rows=$rows vacuous=$vac f32_px=$f32_px f32_iso_d=$f32_iso" \
+echo "[hole-census] game=$PG_GAME rows=$rows vacuous=$vac fast_cov=$fast_cov fast_px=$fast_px" \
      "ctl_px=$ctl_px ctl_iso_d=$ctl_iso nondeterministic=$nondet verdict=$verdict"
 [[ $verdict == PASS ]]

@@ -558,9 +558,9 @@ typedef struct {
  * time; cnt.x the plane count, cnt.y 1 when the blended cover is on;
  * margin.x the plane-cover margin;
  * abc the plane's screen field, w = outline point count; bbox and poly the
- * outline, 16 points per plane. Every member is 32-bit, so the stages need
- * no shaderFloat64; abc holds the planes' double fields rounded to float,
- * the precision the cover test computes in. */
+ * outline, 16 points per plane. Every member is 32-bit; abc holds the
+ * planes' double fields rounded to float, the precision the cover test
+ * computes in. */
 #define NR_COVER_PLANES 6
 typedef struct {
     float   fc[4];
@@ -5175,7 +5175,7 @@ static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
  *   path is off or no moby is in view, no ACTOR triangle either, so the
  *   retained state is read as world on its own. Testing only the retained
  *   state rejects every present whenever the retained path is initialised but
- *   unusable - a delayed or split scene, a device without fp64 - because the
+ *   unusable - a delayed or split scene, a software device - because the
  *   feeder then stages an empty state per scene, which reads the same as a
  *   genuine per-scene skip; the CPU route covers those.
  * - Retained path not in use (frame_content() < 0): scene_has_world decides,
@@ -7130,16 +7130,13 @@ static int nr_eager_twins(rhi_device *dev, const nr_eager_descs *d, const nr_eag
 
 /** @brief Return whether the terrain cache can draw on this device, the conditions of openpete_native_tercache_usable known before bring-up.
  *
- * shaderFloat64 when the fp64 terrain vertex stages are selected
- * (openpete_tercache_device_precision_ok), and a hardware
- * device unless OPENPETE_TERRAIN_CACHE_FORCE waives the software-device
- * exclusion. The variable is read through openpete_config_env, so the
+ * A hardware device unless OPENPETE_TERRAIN_CACHE_FORCE waives the
+ * software-device exclusion. The variable is read through openpete_config_env, so the
  * game-neutral stage's [env] winner counts before the full stage sets it.
  * @param dev The device.
  * @return 1 when the cache's pipelines may be created on @p dev. */
 static int nr_tercache_device_ok(const rhi_device *dev)
 {
-    if (!openpete_tercache_device_precision_ok(dev)) return 0;
     const char *force = openpete_config_env("OPENPETE_TERRAIN_CACHE_FORCE");
     return (force && *force && *force != '0') || !rhi_device_is_software(dev);
 }
@@ -8239,9 +8236,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * kill switch - it skips the ~130 MB device-memory arenas too). Software
      * vk never draws the retained path (the usable() exclusion), so don't
      * spend the arenas there either - except under the FORCE waiver the
-     * llvmpipe parity harness uses. A device without shaderFloat64 draws
-     * it only with the fp32 stages selected (nr_tercache_device_ok). A failed init logs + leaves
-     * the CPU walk in place. */
+     * llvmpipe parity harness uses (nr_tercache_device_ok). A failed init
+     * logs + leaves the CPU walk in place. */
     if (opts->terrain_cache && nr_tercache_device_ok(dev))
         openpete_tercache_init(dev, nr_eager_batch);
 
@@ -8280,9 +8276,6 @@ int openpete_native_tercache_usable(void)
         && scene_delay_depth() == 0
         && !tag_split_dev()
         && !scene_box_armed()
-        /* The fp64 vertex stages need shaderFloat64; the fp32 ones run
-         * on any device. */
-        && openpete_tercache_device_precision_ok(s_nr.dev)
         && (s_force || !rhi_device_is_software(s_nr.dev));
 }
 
