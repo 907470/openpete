@@ -59,8 +59,14 @@ autumn-plains-skelos-badlands-portal-entry|1723|200||1423,1424,1425,1646,1658,17
 # otherwise) across a level edge; @tcsqueeze also sizes every arena primary at
 # 32768 elements (OPENPETE_TC_INITIAL_CAP) so the arenas grow mid-level. Coverage
 # rows of the arena-growth path: the image must match the unsqueezed run.
-autumn-plains-skelos-badlands-portal-entry@tcache|1723|200||1723,2273|OPENPETE_TERRAIN_CACHE_FORCE=1
-autumn-plains-skelos-badlands-portal-entry@tcsqueeze|1723|200||1723,2273|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768
+autumn-plains-skelos-badlands-portal-entry@tcache|1723|200||1723,2273|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+# @tcbudget0: the first-touch bake budget at 0 (one sector baked per tick), pinned
+# through bake-in, where deferred sectors are drawn by the CPU walk beside
+# retained ones; a change at that seam moves these tiles. The other
+# cache-forced rows turn the budget off, since a wall-time budget makes the
+# walked set differ between runs.
+autumn-plains-skelos-badlands-portal-entry@tcbudget0|1361|10000||1361,1375,2265|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=0
+autumn-plains-skelos-badlands-portal-entry@tcsqueeze|1723|200||1723,2273|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768 OPENPETE_TC_BAKE_BUDGET_US=off
 #
 # colossus-ice-skating: the player on the Colossus rink with the mirrored copy
 # under the ice. 1494, 1694 and 1734 are intermediate legs whose tick pair spans a

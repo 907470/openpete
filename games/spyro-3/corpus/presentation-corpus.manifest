@@ -20,8 +20,14 @@ sunrise-spring-sunny-villa-portal-entry|2073|100||2073,2239,3133,3273
 # otherwise) across a level edge; @tcsqueeze also sizes every arena primary at
 # 32768 elements (OPENPETE_TC_INITIAL_CAP) so the arenas grow mid-level. Coverage
 # rows of the arena-growth path: the image must match the unsqueezed run.
-sunrise-spring-sunny-villa-portal-entry@tcache|2073|100||2073,3273|OPENPETE_TERRAIN_CACHE_FORCE=1
-sunrise-spring-sunny-villa-portal-entry@tcsqueeze|2073|100||2073,3273|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768
+sunrise-spring-sunny-villa-portal-entry@tcache|2073|100||2073,3273|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+# @tcbudget0: the first-touch bake budget at 0 (one sector baked per tick), pinned
+# through bake-in, where deferred sectors are drawn by the CPU walk beside
+# retained ones; a change at that seam moves these tiles. The other
+# cache-forced rows turn the budget off, since a wall-time budget makes the
+# walked set differ between runs.
+sunrise-spring-sunny-villa-portal-entry@tcbudget0|577|10000||577,1577|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=0
+sunrise-spring-sunny-villa-portal-entry@tcsqueeze|2073|100||2073,3273|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768 OPENPETE_TC_BAKE_BUDGET_US=off
 
 # sunrise-spring-surface-swim arms the player draw's water-plane split.
 # g_Spyro+0x28 is zero on every frame of the other three bk2s and of the whole

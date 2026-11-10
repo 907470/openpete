@@ -114,14 +114,20 @@ moving-terrain                           | 1700  | 100  |        | 2263,2438
 nestor                                   | 1700  | 100  |        | 1710,1875
 particle-circling-stars                  | 1700
 pause-menu-text-moby-swim                | 1700  | 100 | freeze
-pause-menu-text-moby-swim@vpint          | 1750  | 100  | freeze | 1750 | --vertex-precision integer OPENPETE_TERRAIN_CACHE_FORCE=1 PRESENTATION_LEG_TIMEOUT=900
+pause-menu-text-moby-swim@vpint          | 1750  | 100  | freeze | 1750 | --vertex-precision integer OPENPETE_TERRAIN_CACHE_FORCE=1 PRESENTATION_LEG_TIMEOUT=900 OPENPETE_TC_BAKE_BUDGET_US=off
 # pause-unpause@rpcache: unpause with only cache-drawn terrain in the scene
 # (terrain, Spyro and the 2D layer selected, 4:3, cache forced on): the pause
 # freeze stayed up because cache-owned terrain did not count as world.
 # Blessed pre-fix.
-pause-unpause@rpcache                    | 1700  | 100  |        | 1760,1800,2060 | --no-card --aspect 4:3 --render-paths terrain,spyro,ui OPENPETE_TERRAIN_CACHE_FORCE=1
+pause-unpause@rpcache                    | 1700  | 100  |        | 1760,1800,2060 | --no-card --aspect 4:3 --render-paths terrain,spyro,ui OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
 # pause-unpause@spyrofirst: a render that captures before its first feed, after a render no present showed (Spyro feeds first under these paths), VBL 1753.
 pause-unpause@spyrofirst                 | 1700  | 100  |        | 1753 | --no-card --aspect 4:3 --render-paths terrain,spyro,ui
+# @tcbudget0: the first-touch bake budget at 0 (one sector baked per tick), pinned
+# through bake-in, where deferred sectors are drawn by the CPU walk beside
+# retained ones; a change at that seam moves these tiles. The other
+# cache-forced rows turn the budget off, since a wall-time budget makes the
+# walked set differ between runs.
+pause-unpause@tcbudget0|1667|10000||1667,1753|--no-card --aspect 4:3 --render-paths terrain,spyro,ui OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=0
 peace-keepers-terrain-culling            | 1700  | 100  |        | 3230,3238
 portal-cyclorama-cull                    | 1700  | 100  |        | 2000,2156
 portal-ground-disocclusion               | 1700  | 100  |        | 2440,2444
@@ -153,11 +159,11 @@ toasty-defeat@w1a                        | 3660  | 10   |        | 3665 | OPENPE
 # Toasty lowered wall 1 z-fighting the grass (interpenetrates); freecam at VBL 3650.
 toasty-defeat@w1b                        | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=101912,130057,21099,554,555
 # Toasty lowered wall 1 z-fighting the grass, drawn by the GPU terrain cache; freecam at VBL 3650.
-toasty-defeat@w1b-tcache                 | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=101912,130057,21099,554,555 OPENPETE_TERRAIN_CACHE_FORCE=1
+toasty-defeat@w1b-tcache                 | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=101912,130057,21099,554,555 OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
 # The same pose with every arena primary sized at 32768 elements
 # (OPENPETE_TC_INITIAL_CAP), so the arenas grow mid-level: a coverage row of the
 # arena-growth path, whose image must match @w1b-tcache.
-toasty-defeat@w1b-tcsqueeze              | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=101912,130057,21099,554,555 OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768
+toasty-defeat@w1b-tcsqueeze              | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=101912,130057,21099,554,555 OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768 OPENPETE_TC_BAKE_BUDGET_US=off
 # Toasty lowered wall 2 drawn under the grass (disappears); freecam at VBL 3650.
 toasty-defeat@w2a                        | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=111273,125857,24236,-719,803
 # Toasty lowered wall 2 z-fighting the grass (interpenetrates); freecam at VBL 3650.
