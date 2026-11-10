@@ -235,3 +235,10 @@ skelos_badlands@wizardfx | pos=(95730, 55975, 28402) yaw=86 pitch=69
 # (view-Z 3691-3891), cutting a notch into the rim; the PSX paints the same
 # notch by ordering-table order. Blessed pre-fix.
 autumn_plains@notch | pos=(105146, 109794, 31699) yaw=-1937 pitch=160 | | --aspect 4:3
+# autumn_plains@doorkey: looking up at the door beside the Fracture Hills
+# portal, the door's faces (terrain sector 134) and the nearer ceiling arch
+# (sector 153) are decided by ordering key on some pixels and by depth on
+# their neighbours, so the door's outline against the arch is jagged. The
+# door is closed from a level start and the contest is present there too.
+# Blessed pre-fix.
+autumn_plains@doorkey | pos=(101952, 143650, 32010) yaw=-1055 pitch=-275 | | --aspect 4:3
