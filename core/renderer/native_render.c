@@ -2636,16 +2636,29 @@ uint32_t openpete_native_scene_fade_prim(void) { return s_scene_fade_prim; }
 /* The player slot the last 2D rank compared against, for the census. */
 static int s_under_player_slot = -1;
 
+/** @brief Set or clear one stored 2D triangle's under-player mark from the predicate.
+ *
+ * A HUD or HUD_PANEL triangle with a primitive address is marked when
+ * @p under answers 1 for that address; any other triangle with an address
+ * is cleared, and one without an address is left as it is.
+ * @param q The stored triangle.
+ * @param under The predicate on a primitive address; NULL clears the mark.
+ * @return 1 when the triangle is marked, else 0. */
+static int scene_tri_mark_under_player(scene_tri_t* q, int (*under)(uint32_t prim)) {
+    if (!q->prim) return 0;
+    q->under_player = under && (q->category == OPENPETE_SCENE_HUD ||
+                                q->category == OPENPETE_SCENE_HUD_PANEL) && under(q->prim);
+    return q->under_player;
+}
+
 int openpete_native_scene_mark_under_player(int (*under)(uint32_t prim), int player_slot) {
     s_under_player_slot = player_slot;
     int n = 0;
-    for (int t = 0; t < s_scene_n; t++) {
-        scene_tri_t* q = &s_scene[t];
-        if (!q->prim) continue;
-        q->under_player = under && (q->category == OPENPETE_SCENE_HUD ||
-                                    q->category == OPENPETE_SCENE_HUD_PANEL) && under(q->prim);
-        n += q->under_player;
-    }
+    for (int t = 0; t < s_scene_n; t++) n += scene_tri_mark_under_player(&s_scene[t], under);
+    /* The carry accumulation holds the copies taken at feed time, before this
+     * mark; the capture commits them as the 2D carry the sub-tick re-extract
+     * re-applies (apply_overlay), so they take the same mark. */
+    for (int t = 0; t < s_overlay_accum_n; t++) scene_tri_mark_under_player(&s_overlay_accum[t], under);
     return n;
 }
 

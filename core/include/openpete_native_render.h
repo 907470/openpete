@@ -1923,7 +1923,10 @@ void openpete_native_scene_mark_over_fade(uint32_t fade_rank);
  * Each HUD or HUD_PANEL triangle with a primitive address is marked when
  * @p under answers 1 for that address and cleared otherwise; the compose
  * draws the marked ones before the PLAYER group, the rest over the player.
- * OVERLAY triangles are left unmarked. Renderer state only.
+ * OVERLAY triangles are left unmarked. Covers the live scene and the
+ * feed-time carry accumulation, which the next capture commits as the 2D carry
+ * the sub-tick re-extract re-applies, so both presents draw one order.
+ * Renderer state only.
  * @param under The predicate on a primitive address; NULL clears every mark.
  * @param player_slot The player's ordering-table slot, kept for the
  *        OPENPETE_UI_UNDER_CENSUS line.
