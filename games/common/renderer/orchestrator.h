@@ -44,8 +44,9 @@ void spyro_native_canon_epoch_commit(void);
 
 /** @brief Moves the in-flight canonical-render epoch past the captures of a render no canonical present showed.
  *
- * render_paths_superseded calls it when the game opens a scene while its
- * previous scene never reached a canonical present. Captures stamped before
+ * render_paths_superseded calls it when the game's render at a newer VBL
+ * first captures or opens a scene while its previous scene never reached a
+ * canonical present. Captures stamped before
  * the call no longer match the epoch the next commit latches, so the
  * sub-tick re-extracts that follow that commit replay only what the newest
  * render captured. The latched epoch is unchanged until that commit. A
@@ -129,6 +130,10 @@ uint32_t cyclorama_native_bg_word(struct CPUState* cpu);
  * with no sub-tick spine reports never-fresh, so every replay is skipped. */
 /** @brief Returns the in-flight canonical-render epoch, the value a producer hook stores at capture time.
  *
+ * On the game's render, the call first supersedes a pending unpresented
+ * scene of an older VBL (openpete_native_scene_note_game_capture), as the
+ * spyro_native_canon_capture_* entries do, so a capture taken before its
+ * render's first feed carries the render's epoch.
  * @return The epoch; always 0 for a game with no sub-tick spine. */
 uint32_t spyro_native_canon_epoch_stamp(void);
 /** @brief Reports whether a capture stamp belongs to the last closed canonical render.

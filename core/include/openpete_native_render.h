@@ -1811,13 +1811,27 @@ void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame));
  * The canonical present shows the newest scene the game rendered, so what a
  * superseded render recorded for the sub-tick re-extract (drawn render
  * paths, captured producer state) describes an image no present showed.
- * The callback runs from openpete_native_scene_begin_frame before the new
- * scene opens, on the game's render. A scene counts as presented from the
- * canonical capture that takes it (openpete_native_scene_capture_overlay);
+ * The callback runs on the game's render before the new scene opens: from
+ * openpete_native_scene_note_game_capture at the render's first producer
+ * capture, else from openpete_native_scene_begin_frame, once per render. A
+ * scene counts as presented from the canonical capture that takes it
+ * (openpete_native_scene_capture_overlay);
  * re-extract rebuilds in between do not present it. One callback; a later
  * call replaces it.
  * @param fn Callback taking the VBL stamp of the scene being opened, or NULL. */
 void openpete_native_scene_register_superseded(void (*fn)(unsigned frame));
+
+/** @brief Supersede the pending game scene when the game's render at a newer VBL captures producer state before its first feed opens its scene.
+ *
+ * A producer hook may stamp a capture with the canonical-render epoch before
+ * its render's first openpete_native_scene_begin_frame. When the previous
+ * game scene never reached a canonical present, the superseded callback
+ * then runs here, so the epoch moves before the capture is stamped and the
+ * capture belongs to the render of its VBL, as a render path's interval
+ * does. A no-op off the game fiber, inside the sub-tick view, with no
+ * pending game scene, or at the pending scene's own VBL.
+ * @param frame The VBL the capture runs on (openpete_frame). */
+void openpete_native_scene_note_game_capture(unsigned frame);
 
 /** @brief Set the ordering-table traversal rank stamped on the triangles added next.
  *

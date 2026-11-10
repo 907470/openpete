@@ -12,6 +12,9 @@
 
 #include <stdio.h>
 
+#include "openpete_fiber.h"          /* openpete_frame */
+#include "openpete_native_render.h"  /* openpete_native_scene_note_game_capture */
+
 /** @brief Report no interpolated position: no bracket is active. */
 static int none_interp_pos(unsigned int key, double out[3]) {
     (void)key; (void)out;
@@ -91,22 +94,34 @@ void game_orchestrator_bind(const game_orchestrator_t* o, void (*interp_register
 
 #undef BIND
 
+/** @brief Lets a producer capture of the game's render supersede the pending unpresented scene before the capture takes the epoch.
+ *
+ * Every capture stamps the in-flight epoch through these entries; a render
+ * at a newer VBL than the pending game scene moves the epoch here, before
+ * its first stamp, so all of the render's captures share one epoch whichever
+ * path feeds first. */
+static void capture_note(void) { openpete_native_scene_note_game_capture(openpete_frame); }
+
 int openpete_native_interp_pos(unsigned int key, double out[3]) { return s_orch.interp_pos(key, out); }
 void spyro_native_canon_epoch_commit(void) { s_orch.epoch_commit(); }
 void spyro_native_canon_epoch_supersede(void) { s_orch.epoch_supersede(); }
-uint32_t spyro_native_canon_epoch_stamp(void) { return s_orch.epoch_stamp(); }
+uint32_t spyro_native_canon_epoch_stamp(void) { capture_note(); return s_orch.epoch_stamp(); }
 int spyro_native_canon_epoch_fresh(uint32_t stamp) { return s_orch.epoch_fresh(stamp); }
 int spyro_native_canon_mobyreg_fresh(void) { return s_orch.mobyreg_fresh(); }
 int spyro_native_canon_shaded_fresh(void) { return s_orch.shaded_fresh(); }
 void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len) {
+    capture_note();
     s_orch.capture_range(cpu, off, len);
 }
-void spyro_native_canon_capture_recs(void* cpu) { s_orch.capture_recs(cpu); }
+void spyro_native_canon_capture_recs(void* cpu) { capture_note(); s_orch.capture_recs(cpu); }
 const uint8_t* spyro_native_canon_prev_recs(uint32_t* len, op_time_t* ref_ns) {
     return s_orch.prev_recs(len, ref_ns);
 }
-void spyro_native_canon_capture_sxy(void* cpu) { s_orch.capture_sxy(cpu); }
-void spyro_native_canon_capture_camera(void* cpu, int producer) { s_orch.capture_camera(cpu, producer); }
+void spyro_native_canon_capture_sxy(void* cpu) { capture_note(); s_orch.capture_sxy(cpu); }
+void spyro_native_canon_capture_camera(void* cpu, int producer) {
+    capture_note();
+    s_orch.capture_camera(cpu, producer);
+}
 int spyro_native_prod_camera_enter(int producer) { return s_orch.prod_camera_enter(producer); }
 void spyro_native_prod_camera_leave(void) { s_orch.prod_camera_leave(); }
 void game_interp_register(void) { s_interp_register(); }

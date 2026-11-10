@@ -1701,6 +1701,55 @@ static void scene_close_completed(void) {
 /* 1 while the frame-close callback runs: its feeds re-enter begin_frame with
  * the closing scene's stamp and must append to that scene. */
 static int s_scene_close_cb_in;
+/* VBL of the render that superseded the pending game scene ahead of its own
+ * scene opening (openpete_native_scene_note_game_capture); 0xFFFFFFFF once
+ * that render's scene opens. */
+static unsigned s_scene_superseded_frame = 0xFFFFFFFFu;
+static unsigned s_scene_early_supersedes;   /* census: supersedes taken at a capture */
+static unsigned s_scene_early_unopened;     /* census: of those, renders presented with no scene opened */
+
+/** @brief Retires the pending game scene for the game's render at a newer VBL, running the superseded callback once for that render.
+ *
+ * The env a DrawOTag drew the superseded scene with is not the env of the
+ * render's scene, which the next capture presents.
+ * @param frame VBL of the superseding render. */
+static void scene_supersede_pending(unsigned frame) {
+    s_drawenv_drawn_valid = 0;
+    if (s_scene_superseded_frame == frame) return;
+    s_scene_superseded_frame = frame;
+    if (s_scene_superseded_cb) s_scene_superseded_cb(frame);
+}
+
+/** @brief Closes the supersede state of the render whose scene a present has just captured.
+ *
+ * A render that superseded at a capture and never opened its scene is
+ * counted: the present showed the superseded scene under the render's epoch. */
+static void scene_supersede_presented(void) {
+    if (s_scene_superseded_frame != 0xFFFFFFFFu) s_scene_early_unopened++;
+    s_scene_superseded_frame = 0xFFFFFFFFu;
+}
+
+/** @brief Prints the count of supersedes a capture took ahead of its render's scene opening. */
+static void scene_early_supersede_census(void) {
+    fprintf(stderr, "native: scene supersede: at capture=%u unopened at present=%u\n",
+            s_scene_early_supersedes, s_scene_early_unopened);
+}
+
+void openpete_native_scene_note_game_capture(unsigned frame) {
+    if (!s_game_scene_pending || frame == s_scene_game_frame) return;
+    if (openpete_subtick_view_active() || !openpete_fiber_in_game()) return;
+    if (s_scene_superseded_frame != frame) {
+        static int s_cen = -1;
+        if (s_cen < 0) {
+            const char* e = getenv("OPENPETE_LOAD_CENSUS");
+            s_cen = (e && *e && *e != '0');
+            if (s_cen) atexit(scene_early_supersede_census);
+        }
+        s_scene_early_supersedes++;
+    }
+    scene_supersede_pending(frame);
+}
+
 void openpete_native_scene_begin_frame(unsigned frame) {
     const int game_feed = !openpete_subtick_view_active();
     if (game_feed) { s_scene_game_frame = frame; s_game_fed = 1; }
@@ -1723,13 +1772,12 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         /* The game opening a scene while its previous scene never reached a
          * canonical present: the present that follows shows this scene only,
          * so what the earlier render recorded for the sub-tick re-extract
-         * belongs to an image no present showed. */
+         * belongs to an image no present showed. A capture of this render
+         * made before its first feed may have superseded it already. */
         if (game_feed) {
-            /* The env a DrawOTag drew the superseded scene with is not the
-             * env of the scene opened here, which the next capture presents. */
-            if (s_game_scene_pending) s_drawenv_drawn_valid = 0;
-            if (s_game_scene_pending && s_scene_superseded_cb) s_scene_superseded_cb(frame);
+            if (s_game_scene_pending) scene_supersede_pending(frame);
             s_game_scene_pending = 1;
+            s_scene_superseded_frame = 0xFFFFFFFFu;
         }
         if (!reclaim && s_scene_frame != 0xFFFFFFFFu && s_scene_frame_close_cb && !s_scene_close_cb_in) {
             s_scene_close_cb_in = 1;   /* the callback feeds, which re-enters begin_frame */
@@ -3659,6 +3707,7 @@ void openpete_native_scene_capture_overlay(void) {
     }
     drawn_area_presented(s_scene_frame);
     s_game_scene_pending = 0;
+    scene_supersede_presented();
     /* Roll curr -> prev so apply_overlay can interpolate animated 2D-UI positions
      * (the logo slide-in) across sub-ticks. Runs on the CANONICAL present only, so
      * prev/curr are consecutive canonical captures (one sim tick apart). */

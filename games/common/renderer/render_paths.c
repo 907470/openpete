@@ -182,7 +182,7 @@ void render_paths_canon_snapshot(void) {
     s_canon_mask = m;
 }
 
-/** @brief Drops what a render superseded before any canonical present recorded, when the game opens its next scene.
+/** @brief Drops what a render superseded before any canonical present recorded, when the game's next render first captures or opens its scene.
  *
  * Registered with openpete_native_scene_register_superseded. The canonical
  * present that follows shows only the newest scene, so the polybuf
@@ -190,7 +190,9 @@ void render_paths_canon_snapshot(void) {
  * the pending set, and the canonical-render epoch moves past the captures
  * the superseded render stamped (spyro_native_canon_epoch_supersede). A
  * render never spans a VBL boundary, so a path the new scene's render
- * recorded before its first feed opened the scene stays.
+ * recorded before its first feed opened the scene stays; its producer
+ * captures stay with it because the callback runs at the render's first
+ * capture, before any is stamped (openpete_native_scene_note_game_capture).
  *
  * A scene a runahead speculation opens drops the intervals and marks but
  * keeps the epoch: the producers gated to the committed tick's render
