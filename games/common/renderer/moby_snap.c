@@ -952,7 +952,7 @@ static long ms_overlaps(const terrain_snap_box* box, const uint8_t* snapped, int
  * stores each queued moby's contact planes in world space, keyed by moby
  * identity, in the table of its canonical epoch and native scene build; the
  * tables of the two newest epochs are kept (T-1 and T). While the carry is
- * on (OPENPETE_MOBY_SNAP_CARRY=1), a sub-tick re-extract maps the planes of
+ * on (the default; OPENPETE_MOBY_SNAP_CARRY=0 turns it off), a sub-tick re-extract maps the planes of
  * the endpoint the moby rank carry selects into its own camera instead of
  * capturing and testing the terrain again, and resolves only the mobys the
  * endpoint did not resolve. The terrain walk's camera space is
@@ -1146,11 +1146,11 @@ static int mc_moby_sig(uint32_t mid, uint32_t* sig) {
     return 1;
 }
 
-/** @brief Whether the snap carry is on (OPENPETE_MOBY_SNAP_CARRY=1), read once.
+/** @brief Whether the snap carry is on (the default; OPENPETE_MOBY_SNAP_CARRY=0 turns it off), read once.
  * @return 1 when on, else 0. */
 static int mc_carry_on(void) {
     static int s = -1;
-    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY"); s = e && *e == '1'; }
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY"); s = !(e && *e == '0'); }
     return s;
 }
 
