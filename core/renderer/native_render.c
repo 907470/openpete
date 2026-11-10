@@ -21308,38 +21308,45 @@ static int gpuz_prof_id(const char *name)
     return id;
 }
 
-/** @brief Fold the harvested GPU zone results into the perf trace and the once-per-second line.
+/** @brief Forward one harvested frame's GPU zones to the perf trace, keyed by the RHI frame serial.
  *
- * No effect unless GPU timers are on. Every harvested zone goes to the perf
- * trace, keyed by the RHI frame serial it was recorded under. Depth-0 zones
- * (all depths under OPENPETE_GPU_TIMERS_VERBOSE, re-read per call) update an
- * exponential moving average per zone name, weight 0.05, seeded by the
- * first sample, with at most GPUZ_MAX names. About once per second the
- * averages print as a `[gpu-pass]` line on stderr. */
-static void gpu_zone_report(void)
+ * The serial identifies a frame that actually rendered, which a present
+ * index does not: under eager production scenes are published and
+ * superseded without ever rendering.
+ * @param res The harvested zones.
+ * @param n Their count. */
+static void gpu_zone_trace(const rhi_gpu_zone_result *res, int n)
 {
-    if (!rhi_gpu_timers_on(s_nr.dev)) return;
-    rhi_gpu_zone_result res[RHI_GPU_ZONES_MAX];
-    int n = rhi_gpu_zone_results(s_nr.dev, res, RHI_GPU_ZONES_MAX);
+    const uint64_t serial = rhi_gpu_results_token(s_nr.dev);
+    for (int i = 0; i < n; i++)
+        op_prof_gpu_zone(gpuz_prof_id(res[i].name), res[i].depth, serial,
+                         (uint32_t)(res[i].start_us + 0.5), (uint32_t)(res[i].us + 0.5));
+}
 
-    /* Forward the harvested (frame-lagged) zones to the perf trace, keyed by the
-     * RHI frame serial stored at that frame's begin. The serial identifies a
-     * frame that actually rendered, which a present index does not: under eager
-     * production scenes are published and superseded without ever rendering. */
-    if (op_prof_on() && n > 0) {
-        uint64_t serial = rhi_gpu_results_token(s_nr.dev);
-        for (int i = 0; i < n; i++) {
-            int zid = gpuz_prof_id(res[i].name);
-            op_prof_gpu_zone(zid, res[i].depth, serial,
-                             (uint32_t)(res[i].start_us + 0.5),
-                             (uint32_t)(res[i].us + 0.5));
-        }
+/** @brief Write one harvested frame's GPU_FRAME pace record: first zone start to last zone end, and the depth-0 zone sum.
+ * @param res The harvested zones.
+ * @param n Their count. */
+static void gpu_zone_pace(const rhi_gpu_zone_result *res, int n)
+{
+    double end_us = 0.0, busy_us = 0.0;
+    for (int i = 0; i < n; i++) {
+        if (res[i].start_us + res[i].us > end_us) end_us = res[i].start_us + res[i].us;
+        if (res[i].depth == 0) busy_us += res[i].us;
     }
+    openpete_pace_gpu_frame(rhi_gpu_results_token(s_nr.dev), (int64_t)(end_us * 1000.0),
+                            (int64_t)(busy_us * 1000.0), n);
+}
 
-    /* The once-per-second stderr line folds DEPTH-0 zones only (the pass
-     * skeleton + per-mod postfx attribution) - nested sub-zones (sc.*) would
-     * double its length and their audience is the --profile-out trace, which
-     * got every depth above. OPENPETE_GPU_TIMERS_VERBOSE=1 shows all depths. */
+/** @brief Fold one harvested frame's GPU zones into the per-name averages and print the `[gpu-pass]` line about once per second.
+ *
+ * Depth-0 zones (all depths under OPENPETE_GPU_TIMERS_VERBOSE, re-read per
+ * call) update an exponential moving average per zone name, weight 0.05,
+ * seeded by the first sample, with at most GPUZ_MAX names; nested sc.*
+ * zones would double the line and their audience is the perf trace.
+ * @param res The harvested zones.
+ * @param n Their count. */
+static void gpu_zone_line(const rhi_gpu_zone_result *res, int n)
+{
     /* Re-read per report (~1/s - cheap): setenv is the live channel. */
     const char* gpuz_env = getenv("OPENPETE_GPU_TIMERS_VERBOSE");
     int s_gpuz_verbose = (gpuz_env && *gpuz_env && *gpuz_env != '0');
@@ -21370,6 +21377,24 @@ static void gpu_zone_report(void)
                         " %s %.0f", s_gpuz[j].name, s_gpuz[j].ema);
     fprintf(stderr, "%s  (ema us)\n", line);
     s_gpuz_last = now;
+}
+
+/** @brief Hand the GPU zone results rhi_begin_frame just harvested to their consumers: the perf trace, the GPU_FRAME pace record and the `[gpu-pass]` line.
+ *
+ * No effect unless GPU timers are on. The trace takes every zone while a
+ * trace is open; the pace record is written under OPENPETE_BUGREPORT_GPU;
+ * the line is printed unless OPENPETE_BUGREPORT_GPU armed the timers
+ * without OPENPETE_GPU_TIMERS in the environment. */
+static void gpu_zone_report(void)
+{
+    if (!rhi_gpu_timers_on(s_nr.dev)) return;
+    rhi_gpu_zone_result res[RHI_GPU_ZONES_MAX];
+    const int n = rhi_gpu_zone_results(s_nr.dev, res, RHI_GPU_ZONES_MAX);
+    const int pace = openpete_pace_gpu_records_wanted();
+    if (n > 0 && op_prof_on()) gpu_zone_trace(res, n);
+    if (n > 0 && pace) gpu_zone_pace(res, n);
+    const char* timers = getenv("OPENPETE_GPU_TIMERS");
+    if (!pace || (timers && *timers && *timers != '0')) gpu_zone_line(res, n);
 }
 
 /* Game-registered sub-tick re-extract callback (high-FPS spine). Invoked by

@@ -231,6 +231,7 @@ static void tick_run_vbl(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
      * outside the audio feed's synthetic device). */
     openpete_audio_consumer_producer_step();
     tick_latch_order_check(it);
+    const int pending_before = openpete_present_pending;
 
     it->vbl.exec_start_ns = op_now();
     /* Bracket the VBL BEFORE the switch: the guest's pad read fires
@@ -256,6 +257,11 @@ static void tick_run_vbl(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
      * shown, or the game draws its fed scene into the buffer on
      * screen) owes that scene a present. */
     openpete_present_pending = openpete_native_scene_yield_owes_present(openpete_present_pending);
+    /* The per-tick CPU split: every fiber run counts as sim time, and a
+     * VBL that raised a present closes the interval's record. */
+    openpete_pace_split_add(OP_PACE_SPLIT_SIM, it->vbl.exec_end_ns - it->vbl.exec_start_ns);
+    if (openpete_present_pending && !pending_before)
+        openpete_pace_tick_split(openpete_frame, it->vbl.exec_end_ns - it->vbl.exec_start_ns);
     step_after_vbl(stepping, &S->step_one);
 
     /* Sample the actuator buffer the tick just wrote. Here, rather

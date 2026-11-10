@@ -2351,6 +2351,13 @@ static const knob_desc_t g_builtin_debug[] = {
       "its pairing state and drawn position, the newest 1024 presents held "
       "in memory and written to a bug report as subtick.bin. Set 0 to drop "
       "the ring."),
+    ENVROW_LATCHED("BUGREPORT_GPU", "Debug", "0",
+      "Arm the GPU timestamp zones and keep one GPU_FRAME record per "
+      "rendered frame in the pace ring (the span from the first zone's start "
+      "to the last zone's end, and the sum of the top-level zones), written "
+      "to a bug report in pace.oppl and folded into pace-coarse.bin. Off by "
+      "default: the timestamp writes cost GPU time not yet measured on a "
+      "weak GPU. Set 1 to record. Read at device creation."),
     ENVROW_LATCHED("THREAD_SPLIT", "Debug", "1",
       "Run the sim on a worker thread while the main thread owns the window "
       "and the event pump, so dragging or resizing the window cannot stall "

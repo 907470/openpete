@@ -16,7 +16,12 @@ and the identity fields: build version and commit, exe SHA-256, module
 SHA-256 and march, codegen and ROM stamps, disc name and SHA-256, game,
 argv, the anchor and press records (frame, VBL, feed key, park site), the
 taint counts, the thumbnail list, the sub-tick ring's counts, the note
-state and the redaction counts with their findings.
+state and the redaction counts with their findings. Its `records` field
+names the performance records the writing build records: the pace record
+types (`pace.types`), whether GPU_FRAME records were on
+(`pace.gpu_frames`), and the coarse ring's member, version, row count and
+row span (`pace_coarse`). A bundle without `records` was written before
+these records existed; the reader still reads its pace ring.
 
 | Member | Content |
 | --- | --- |
@@ -26,6 +31,7 @@ state and the redaction counts with their findings.
 | `hashes.csv` | one `frame,vbl,fnv1a64,<region>...` row per tick from the anchor, the `--gameplay-hash-log` row |
 | `host-trace.bin`, `pace.oppl`, `input-events.csv`, `hang/rings.bin` | the host-loop trace, the pace ring (last 30 s), the raw host input ring, the hang watchdog's dispatch rings |
 | `screen.png`, `thumbs/NNN.png` | the presented image at the press; the thumbnail ring, oldest first |
+| `pace-coarse.bin` | the coarse session ring: one row per second since the pace ring was armed (rows merge pairwise and the span doubles when 8192 rows fill), folded from every pace record: VBLs and the not-live ones, presents, repeats, sheds, slips, the longest present interval, the TICK_SPLIT sums, the EAGER_PLAN slots, scenes, cuts and highest level, the GPU_FRAME sum and maximum (layout in `core/include/openpete_pace_log.h`, `OP_PACE_CR_*`) |
 | `subtick.bin` | the sub-tick present ring: the last 1024 re-extracted presents (2.13 s at 480 Hz) with kind, alpha, the tick stamps they lerp between and the scene ring slot, and per drawn object record its pairing key, class, pairing verdict, the snapshot pair's prev and curr positions, angles and roll stamps, and the screen centroid and world position it was drawn at (layout in `core/include/openpete_bugrec_subtick.h`) |
 | `reports.txt`, `pace-census.txt`, `summary.txt` | the subsystem reports at the press and at the screenshot; their pace lines; the state summary |
 | `config.txt`, `keymap.txt`, `config-files/`, `env.txt`, `argv.txt` | `--config-report`, `--keys-report`, the raw config tiers, the `OPENPETE_*` environment, the command line |
@@ -43,6 +49,35 @@ the manifest and logged as `bugreport: finding:`. A mod config row marked
 `secret = true`, and every key the mod's schema does not declare, is
 written as a comment naming the key.
 
+## Performance records
+
+The pace ring (`pace.oppl`, 30 s) carries three record types beside the
+pacing records, and `pace-coarse.bin` folds every record into rows that
+cover the whole session.
+
+| Record | When | Content |
+| --- | --- | --- |
+| `TICK_SPLIT` (15) | after each VBL whose fiber run raised a present (a drawing VBL) | microseconds since the previous one: sim (every fiber run), extract (re-extracts, as in PRESENT_SPAN), terrain (the canonical terrain build and scene feed, inside sim), moby (the canonical moby native pass after the game's draw, inside sim), snap in sub-tick re-extracts (inside extract) and in the canonical feed (inside terrain and moby), render (scene render and submit on the presenting thread), present (the present thread's staged present: acquire, blit, queue present); the counts of extracts, renders, presents and snap resolves; the drawing VBL's own fiber run |
+| `EAGER_PLAN` (16) | each span eager production plans (one per canonical tick, windowed only) | the `OPENPETE_EAGER_DBG` plan line: slots, budget, per-scene tail cost, afford, the span's level and the standing level, the previous span's cut, lag, non-drawing VBL cost, tick start lateness, planned scenes and the planned grid period |
+| `GPU_FRAME` (17) | each rendered frame's harvested GPU timestamp zones, under `OPENPETE_BUGREPORT_GPU=1` | first zone start to last zone end, the depth-0 zone sum, the zone count and the RHI frame token |
+
+Headless runs write TICK_SPLIT records with the sim, terrain, moby and
+canonical snap slots (and only when the native renderer is up, which
+headless needs a `--screenshot-on-frame` for); eager production, and with
+it EAGER_PLAN and the extract, render and present slots, runs only in a
+window. `OPENPETE_BUGREPORT_GPU` is off by default: its GPU cost on a weak
+GPU is unmeasured. Measure it on the Windows exe with two windowed
+`--pace-log` runs of the same bk2, with and without the variable, and
+compare the present-interval p99 and the fence block times
+(`scripts/pacing/pace.py`).
+
+Sizes: a TICK_SPLIT and an EAGER_PLAN record are 64 B each per tick, 3.8
+KB/s together (115 KB in a 30 s ring); GPU_FRAME is 64 B per rendered frame
+(115 KB per 30 s at 60 Hz, 920 KB at 480 Hz). They share the existing 8 MiB
+ring (131072 records), which then holds 30 s at about 2600 records per
+second. The coarse ring is 1 MiB in memory (8192 rows of 128 B) and
+writes only its used rows: 450 KB raw for an hour.
+
 ## Reading a bundle: `tools/bugreport.py`
 
 The reader treats a bundle as untrusted input: members are read by name
@@ -57,6 +92,8 @@ python3 -I tools/bugreport.py replay BUNDLE [--exe PATH] [--disc CUE] [--archive
                                      [--work DIR] [--timeout S] [--dry-run] [-- EXTRA...]
 python3 -I tools/bugreport.py subtick BUNDLE [--class C] [--key K] [--last N] [--max-keys N]
                                       [--tol-px PX] [--tol-world W]
+python3 -I tools/bugreport.py perf BUNDLE [--rows]
+python3 -I tools/bugreport.py corpus PATH... [--tsv OUT] [--quiet]
 python3 -I tools/bugreport.py diff-hashes A B
 ```
 
@@ -86,6 +123,30 @@ python3 -I tools/bugreport.py diff-hashes A B
   `--tol-world` (default 2) world units from both its lerp and its curr
   position; exit 2 when either flag fires. `info` prints the ring's
   one-line summary.
+- `perf` reads the performance records (BUNDLE may be an extracted
+  `pace.oppl`): the manifest's `records` field; over the pace ring the
+  present rate over the window and over its last 10 s, the present
+  interval p50, p99 and maximum, the sim tick p50 and p90 (the drawing
+  VBL's fiber run: TICK_SPLIT's, else the longer run of each VBL pair),
+  scenes and sheds per canonical present; the TICK_SPLIT p50 per slot;
+  the EAGER_PLAN means of slots, afford and planned scenes, level p50 and
+  maximum, the share of cut spans and the budget p50; the GPU_FRAME p50
+  and p99; and the coarse rows' per-row present rate p10, p50 and p90 with
+  the first and last row's. `--rows` prints the coarse rows as TSV. `info`
+  prints a one-line count of the records.
+- `corpus` takes directories (every `bug-*.zip` inside) and bundle paths
+  and writes one TSV row per bundle: name, error, build, commit, game,
+  level, trigger, platform, GPU, driver, refresh, present mode,
+  fullscreen, `--render-fps`, eager, swapchain extent, enabled mods, the
+  note's first 80 characters, the records it holds, and the `perf`
+  rollups. A bundle without a record kind leaves its columns empty; a
+  bundle that does not open gets a row with the reason. The summary
+  counts bundles per record kind, gives the median rollups per game and
+  GPU, and lists the five bundles whose last 10 s present rate is
+  furthest below their target (`--render-fps` when below the refresh,
+  else the refresh). Bundles stay local: a received bundle holds the
+  tester's savestates, so the corpus is a directory outside the
+  repository.
 - `diff-hashes` names the first divergent tick and the regions that
   differ between two region-hash CSVs; A or B may be a bundle, whose
   `hashes.csv` is read.
@@ -241,6 +302,8 @@ that file alone; an artifact with no `EXE-SHA256SUMS` line is not found.
 | `OPENPETE_BUGREC_DUMP_AT=N`, `OPENPETE_BUGREC_DUMP_DIR=D` | at feed key N, write the recorder's contents to D: `anchor-<i>.state`, `.card<N>.mcr`, `.modsave`, `.seg.bk2` and `.txt` per anchor, `hashes.csv`, `hosttrace.bin`, `pace.bin`, `input-events.csv`, `devices.txt`, `recorder.txt`. The first without the second logs an error and dumps nothing |
 | `OPENPETE_BUGREPORT_THUMBS=0` | turn the thumbnail ring off (default `1`): 20 thumbnails in a 320x180 box, one per 250 ms of present clock |
 | `OPENPETE_BUGREPORT_SUBTICK=0` | turn the sub-tick present ring off (default `1`); the bundle then holds no `subtick.bin` |
+| `OPENPETE_BUGREPORT_GPU=1` | arm the GPU timestamp zones and record a GPU_FRAME per rendered frame (default `0`); read at device creation. `OPENPETE_GPU_TIMERS=1` arms the same zones and also prints the `[gpu-pass]` line |
+| `OPENPETE_PACE_RING=0` | no pace ring and no coarse ring; the bundle then holds neither `pace.oppl` nor `pace-coarse.bin`, and no TICK_SPLIT, EAGER_PLAN or GPU_FRAME record is made unless `--pace-log` is open |
 | `OPENPETE_BUGREPORT_REPLAY_DIR`, `OPENPETE_BUGREPORT_REPLAY_SITE_WAIT`, `OPENPETE_BUGREPORT_REPLAY_WINDOWED` | the replay's scratch directory, park-wait cap (above), and a set value runs the replay in a window instead of headless |
 | `OPENPETE_BUGREPORT_REPLAY_ENV=A,B=V,...` | instrument variables the replay keeps: `NAME` keeps the developer's value, `NAME=VALUE` sets one; set after `env.txt`, each printed as `env kept`. Refused (exit 64): a name outside `OPENPETE_*`, a harness trigger the replay drops, an unset name, and a variable whose consumer writes guest RAM, feeds the pad or the CD timing, or loads mods (`OPENPETE_PLAYER_POSE`, `OPENPETE_FREECAM*`, `OPENPETE_CAMLOCK*`, `OPENPETE_CUSTOM_WARP`, `OPENPETE_SKIP_*`, `OPENPETE_LOAD_DELAY`, `OPENPETE_INPUT_*`, `OPENPETE_SYNTH_PADS`, `OPENPETE_MOUSE*`, `OPENPETE_DEVUI_INJECT_MOUSE`, `OPENPETE_REWIND_*`, `OPENPETE_MODS`, `OPENPETE_MODS_DIR`, `OPENPETE_MOD_CHANNEL_MASK`, `OPENPETE_MOD_HOT_RELOAD`, the `*_POKE` fault injectors, `OPENPETE_MODSAVE_FAULT_*`). A kept variable not on that list is unverified as neutral; the row and press-state compares report it if it is not |
 

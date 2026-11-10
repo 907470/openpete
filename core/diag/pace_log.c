@@ -88,6 +88,14 @@ static unsigned     s_ring_env_bytes;
 static int64_t      s_ring_created_unix_ns;
 static int64_t      s_ring_epoch_ns;
 
+/* The coarse session ring (openpete_pace_log.h): rows indexed by
+ * (t_ns - s_ring_epoch_ns) / 1 s / s_coarse_span, folded by pace_emit under
+ * s_lock from every record it stores. */
+static uint32_t (*s_coarse)[OP_PACE_CR_FIELDS];
+static uint32_t     s_coarse_used;     /* rows from row 0 to the newest written */
+static uint32_t     s_coarse_span = 1; /* seconds per row */
+static int64_t      s_coarse_last_present_ns;
+
 int openpete_pace_log_active(void) { return s_fp != NULL; }
 
 /** @brief Return whether any sink takes records: the log file or the ring. */
@@ -150,6 +158,118 @@ static void census_unlock(void)
     SDL_UnlockMutex(openpete_mutex_once(&s_census_lock));
 }
 
+/** @brief Add v to a u32 row field, saturating at UINT32_MAX.
+ * @param f The field.
+ * @param v The value to add. */
+static void cr_add(uint32_t* f, uint64_t v)
+{
+    const uint64_t t = (uint64_t)*f + v;
+    *f = t > UINT32_MAX ? UINT32_MAX : (uint32_t)t;
+}
+
+/** @brief Raise a u32 row field to v when v is larger, saturating at UINT32_MAX.
+ * @param f The field.
+ * @param v The candidate. */
+static void cr_max(uint32_t* f, uint64_t v)
+{
+    if (v > UINT32_MAX) v = UINT32_MAX;
+    if (v > *f) *f = (uint32_t)v;
+}
+
+/** @brief Merge adjacent coarse rows pairwise into the lower half and double the row span; the caller holds the writer lock.
+ *
+ * Counts and sums add, maxima take the larger; the merged row starts at the
+ * first row's start and covers twice the span. */
+static void coarse_halve_locked(void)
+{
+    const uint32_t half = OP_PACE_COARSE_ROWS / 2u;
+    for (uint32_t i = 0; i < half; i++) {
+        uint32_t* d = s_coarse[i];
+        const uint32_t* a = s_coarse[2u * i];
+        const uint32_t* b = s_coarse[2u * i + 1u];
+        uint32_t m[OP_PACE_CR_FIELDS];
+        for (int k = 0; k < OP_PACE_CR_FIELDS; k++) {
+            const int is_max = k == OP_PACE_CR_IV_MAX_US || k == OP_PACE_CR_TICK_US_MAX ||
+                               k == OP_PACE_CR_LEVEL_MAX || k == OP_PACE_CR_GPU_US_MAX;
+            m[k] = a[k];
+            if (is_max) cr_max(&m[k], b[k]); else cr_add(&m[k], b[k]);
+        }
+        m[OP_PACE_CR_T0_S] = 2u * i * s_coarse_span;
+        m[OP_PACE_CR_SPAN_S] = 2u * s_coarse_span;
+        memcpy(d, m, sizeof m);
+    }
+    memset(s_coarse[half], 0, (size_t)half * sizeof s_coarse[0]);
+    s_coarse_span *= 2u;
+    s_coarse_used = (s_coarse_used + 1u) / 2u;
+}
+
+/** @brief Return the microseconds in the low (hi = 0) or high (hi = 1) u32 word of a split slot.
+ * @param v The slot.
+ * @param hi Which word.
+ * @return The word. */
+static uint32_t split_word(int64_t v, int hi)
+{
+    return (uint32_t)((uint64_t)v >> (hi ? 32 : 0));
+}
+
+/** @brief Fold one record into its coarse row; the caller holds the writer lock.
+ * @param r The record. */
+static void coarse_fold_locked(const pace_rec_t* r)
+{
+    if (r->t_ns < s_ring_epoch_ns) return;
+    uint64_t sec = (uint64_t)(r->t_ns - s_ring_epoch_ns) / 1000000000u;
+    while (sec / s_coarse_span >= OP_PACE_COARSE_ROWS) coarse_halve_locked();
+    const uint32_t i = (uint32_t)(sec / s_coarse_span);
+    uint32_t* row = s_coarse[i];
+    if (i + 1u > s_coarse_used) s_coarse_used = i + 1u;
+    row[OP_PACE_CR_T0_S] = i * s_coarse_span;
+    row[OP_PACE_CR_SPAN_S] = s_coarse_span;
+    switch (r->type) {
+    case OP_PACE_VBL:
+        cr_add(&row[OP_PACE_CR_VBLS], 1);
+        if (r->flags & OP_PACE_F_NOT_LIVE) cr_add(&row[OP_PACE_CR_VBLS_NOT_LIVE], 1);
+        break;
+    case OP_PACE_PRESENT: {
+        cr_add(&row[r->flags == OP_PACE_REPEAT ? OP_PACE_CR_REPEATS : OP_PACE_CR_PRESENTS], 1);
+        if (s_coarse_last_present_ns && r->t_ns > s_coarse_last_present_ns) {
+            const int64_t iv = r->t_ns - s_coarse_last_present_ns;
+            cr_max(&row[OP_PACE_CR_IV_MAX_US], (uint64_t)(iv / 1000));
+            if (iv > 25000000) cr_add(&row[OP_PACE_CR_IV_LONG], 1);
+        }
+        s_coarse_last_present_ns = r->t_ns;
+        break;
+    }
+    case OP_PACE_SHED: cr_add(&row[OP_PACE_CR_SHEDS], 1); break;
+    case OP_PACE_SLIP: cr_add(&row[OP_PACE_CR_SLIPS], 1); break;
+    case OP_PACE_TICK_SPLIT:
+        cr_add(&row[OP_PACE_CR_TICKS], 1);
+        cr_add(&row[OP_PACE_CR_TICK_US_SUM], split_word(r->f, 0));
+        cr_max(&row[OP_PACE_CR_TICK_US_MAX], split_word(r->f, 0));
+        cr_add(&row[OP_PACE_CR_SIM_US_SUM], split_word(r->a, 0));
+        cr_add(&row[OP_PACE_CR_EXTRACT_US_SUM], split_word(r->a, 1));
+        cr_add(&row[OP_PACE_CR_TERRAIN_US_SUM], split_word(r->b, 0));
+        cr_add(&row[OP_PACE_CR_MOBY_US_SUM], split_word(r->b, 1));
+        cr_add(&row[OP_PACE_CR_SNAP_US_SUM], (uint64_t)split_word(r->c, 0) + split_word(r->c, 1));
+        cr_add(&row[OP_PACE_CR_RENDER_US_SUM], split_word(r->d, 0));
+        cr_add(&row[OP_PACE_CR_PRESENT_US_SUM], split_word(r->d, 1));
+        cr_add(&row[OP_PACE_CR_EXTRACTS], (uint64_t)r->e & 0xFFFFu);
+        break;
+    case OP_PACE_EAGER_PLAN:
+        cr_add(&row[OP_PACE_CR_PLANS], 1);
+        cr_add(&row[OP_PACE_CR_PLAN_SLOTS], (uint64_t)r->f & 0xFFFFu);
+        cr_add(&row[OP_PACE_CR_PLAN_SCENES], ((uint64_t)r->f >> 32) & 0xFFFFu);
+        if (r->flags & OP_PACE_EP_CUT) cr_add(&row[OP_PACE_CR_PLAN_CUTS], 1);
+        cr_max(&row[OP_PACE_CR_LEVEL_MAX], r->aux & 0xFFu);
+        break;
+    case OP_PACE_GPU_FRAME:
+        cr_add(&row[OP_PACE_CR_GPU_FRAMES], 1);
+        cr_add(&row[OP_PACE_CR_GPU_US_SUM], (uint64_t)(r->a / 1000));
+        cr_max(&row[OP_PACE_CR_GPU_US_MAX], (uint64_t)(r->a / 1000));
+        break;
+    default: break;
+    }
+}
+
 /** @brief Append one record to the ring and to the file's write buffer, flushing the buffer when it fills.
  *
  * Does nothing when neither the ring is armed nor a log file is open. The
@@ -160,6 +280,7 @@ static void pace_emit(const pace_rec_t* r)
     if (!pace_sink_on()) return;
     SDL_LockMutex(s_lock);
     if (s_ring) ring_put_locked(r);
+    if (s_coarse) coarse_fold_locked(r);
     if (s_fp) {                 /* re-check: close() may have won the race */
         s_buf[s_buf_n++] = *r;
         if (s_buf_n == PACE_BUF_RECORDS) pace_flush_locked();
@@ -216,6 +337,8 @@ int openpete_pace_ring_arm(const char* env)
     }
     if (env_bytes) memcpy(env_copy, env, env_bytes);
     env_copy[env_bytes] = '\0';
+    /* The coarse rows are optional: without them the 30 s ring still runs. */
+    uint32_t (*coarse)[OP_PACE_CR_FIELDS] = calloc(OP_PACE_COARSE_ROWS, sizeof *coarse);
     SDL_Time wall_ns = 0;
     SDL_GetCurrentTime(&wall_ns);
     SDL_LockMutex(s_lock);
@@ -224,6 +347,7 @@ int openpete_pace_ring_arm(const char* env)
     s_ring_env_bytes = (unsigned)env_bytes;
     s_ring_created_unix_ns = (int64_t)wall_ns;
     s_ring_epoch_ns = op_now();
+    s_coarse = coarse;
     SDL_UnlockMutex(s_lock);
     if (!s_fp) s_next_clocksample_ns = op_now();
     atomic_store_explicit(&s_ring_on, 1, memory_order_release);
@@ -254,6 +378,30 @@ int openpete_pace_ring_image(int64_t window_ns, void** out, size_t* len, size_t*
     *out = img;
     *len = OP_PACE_HEADER_FIXED + (size_t)s_ring_env_bytes + n * sizeof(pace_rec_t);
     if (records) *records = n;
+    return 0;
+}
+
+int openpete_pace_coarse_image(void** out, size_t* len, size_t* rows)
+{
+    *out = NULL; *len = 0;
+    if (rows) *rows = 0;
+    if (!atomic_load_explicit(&s_ring_on, memory_order_acquire) || !s_coarse) return -1;
+    const size_t hdr = 40u, rb = (size_t)OP_PACE_CR_FIELDS * 4u;
+    uint8_t* img = malloc(hdr + (size_t)OP_PACE_COARSE_ROWS * rb);
+    if (!img) return -1;
+    SDL_LockMutex(s_lock);
+    const uint32_t n = s_coarse_used, span = s_coarse_span;
+    memcpy(img + hdr, s_coarse, (size_t)n * rb);
+    const int64_t at = (int64_t)op_now() - s_ring_epoch_ns;
+    SDL_UnlockMutex(s_lock);
+    const uint32_t hv[4] = { OP_PACE_COARSE_VERSION, (uint32_t)rb, n, span };
+    memcpy(img, OP_PACE_COARSE_MAGIC, 8);
+    memcpy(img + 8, hv, sizeof hv);
+    memcpy(img + 24, &s_ring_created_unix_ns, 8);
+    memcpy(img + 32, &at, 8);
+    *out = img;
+    *len = hdr + (size_t)n * rb;
+    if (rows) *rows = n;
     return 0;
 }
 
@@ -978,6 +1126,7 @@ void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
                                 int64_t end_ns, int64_t extract_ns)
 {
     if (!pace_sink_on()) return;
+    openpete_pace_split_add(OP_PACE_SPLIT_EXTRACT, extract_ns);
     pace_rec_t r = {0};
     r.type  = OP_PACE_PRESENT_SPAN;
     r.flags = kind;
@@ -1379,4 +1528,111 @@ int64_t openpete_pace_inject(int paced) OP_REQUIRES(sim)
     if (s_spec[3] > 0 && s_done >= s_spec[3]) return 0;
     s_done++;
     return pace_stall(s_spec[0]);
+}
+
+/* ------------------------------------------------------------------ */
+/* per-tick CPU split, planner and GPU records                        */
+/* ------------------------------------------------------------------ */
+
+/* Accumulated since the last TICK_SPLIT record; added from the sim and
+ * present threads, read and zeroed by the sim thread. */
+static _Atomic uint64_t s_split_ns[OP_PACE_SPLIT_COUNT];
+static _Atomic uint32_t s_split_n[OP_PACE_SPLIT_COUNT];
+
+int openpete_pace_split_on(void) { return pace_sink_on(); }
+
+int64_t op_pace_split_now(void) { return (int64_t)op_now(); }
+
+void op_pace_split__cleanup(op_pace_split_guard* g)
+{
+    if (g->t0) openpete_pace_split_add(g->which, (int64_t)op_now() - g->t0);
+}
+
+void openpete_pace_split_add(int which, int64_t ns)
+{
+    if ((unsigned)which >= OP_PACE_SPLIT_COUNT || !pace_sink_on()) return;
+    atomic_fetch_add_explicit(&s_split_ns[which], ns > 0 ? (uint64_t)ns : 0u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&s_split_n[which], 1u, memory_order_relaxed);
+}
+
+/** @brief Take an accumulator's microseconds and zero it, saturated to u32.
+ * @param which OP_PACE_SPLIT_* slot.
+ * @return The microseconds. */
+static uint64_t split_take_us(int which)
+{
+    const uint64_t us = atomic_exchange_explicit(&s_split_ns[which], 0u, memory_order_relaxed) / 1000u;
+    return us > UINT32_MAX ? UINT32_MAX : us;
+}
+
+/** @brief Take an accumulator's call count and zero it, saturated to u16.
+ * @param which OP_PACE_SPLIT_* slot.
+ * @return The count. */
+static uint64_t split_take_n(int which)
+{
+    const uint32_t n = atomic_exchange_explicit(&s_split_n[which], 0u, memory_order_relaxed);
+    return n > 0xFFFFu ? 0xFFFFu : n;
+}
+
+void openpete_pace_tick_split(uint32_t vbl_index, int64_t tick_ns)
+{
+    if (!pace_sink_on()) return;
+    uint64_t us[OP_PACE_SPLIT_COUNT];
+    for (int k = 0; k < OP_PACE_SPLIT_COUNT; k++) us[k] = split_take_us(k);
+    const uint64_t n_ex = split_take_n(OP_PACE_SPLIT_EXTRACT), n_rd = split_take_n(OP_PACE_SPLIT_RENDER);
+    const uint64_t n_pr = split_take_n(OP_PACE_SPLIT_PRESENT);
+    const uint64_t n_sn = split_take_n(OP_PACE_SPLIT_SNAP_REX) + split_take_n(OP_PACE_SPLIT_SNAP_CANON);
+    for (int k = 0; k < OP_PACE_SPLIT_COUNT; k++) (void)atomic_exchange_explicit(&s_split_n[k], 0u, memory_order_relaxed);
+    pace_rec_t r = {0};
+    r.type  = OP_PACE_TICK_SPLIT;
+    r.index = vbl_index;
+    r.t_ns  = (int64_t)op_now();
+    r.a = (int64_t)(us[OP_PACE_SPLIT_SIM] | us[OP_PACE_SPLIT_EXTRACT] << 32);
+    r.b = (int64_t)(us[OP_PACE_SPLIT_TERRAIN] | us[OP_PACE_SPLIT_MOBY] << 32);
+    r.c = (int64_t)(us[OP_PACE_SPLIT_SNAP_REX] | us[OP_PACE_SPLIT_SNAP_CANON] << 32);
+    r.d = (int64_t)(us[OP_PACE_SPLIT_RENDER] | us[OP_PACE_SPLIT_PRESENT] << 32);
+    r.e = (int64_t)(n_ex | n_rd << 16 | n_pr << 32 | (n_sn > 0xFFFFu ? 0xFFFFu : n_sn) << 48);
+    const int64_t t_us = tick_ns > 0 ? tick_ns / 1000 : 0;
+    r.f = t_us > (int64_t)UINT32_MAX ? (int64_t)UINT32_MAX : t_us;
+    pace_emit(&r);
+}
+
+void openpete_pace_eager_plan(uint32_t vbl_index, int64_t t_ns, uint8_t flags,
+                              int level, int std_level, int slots, int afford,
+                              int planned, int64_t period_ns, int64_t budget_ns,
+                              int64_t tail_ns, int64_t lag_ns, int64_t vbl_ns,
+                              int64_t late_ns)
+{
+    if (!pace_sink_on()) return;
+#define EP_U16(v) ((uint64_t)((v) < 0 ? 0 : (v) > 0xFFFF ? 0xFFFF : (v)))
+    pace_rec_t r = {0};
+    r.type  = OP_PACE_EAGER_PLAN;
+    r.flags = flags;
+    r.aux   = (uint16_t)(EP_U16(level) > 0xFF ? 0xFF : EP_U16(level)) |
+              (uint16_t)((EP_U16(std_level) > 0xFF ? 0xFF : EP_U16(std_level)) << 8);
+    r.index = vbl_index;
+    r.t_ns  = t_ns;
+    r.a = budget_ns; r.b = tail_ns; r.c = lag_ns; r.d = vbl_ns; r.e = late_ns;
+    r.f = (int64_t)(EP_U16(slots) | EP_U16(afford) << 16 | EP_U16(planned) << 32 |
+                    EP_U16(period_ns / 1000) << 48);
+#undef EP_U16
+    pace_emit(&r);
+}
+
+void openpete_pace_gpu_frame(uint64_t token, int64_t frame_ns, int64_t busy_ns, int zones)
+{
+    if (!pace_sink_on()) return;
+    pace_rec_t r = {0};
+    r.type  = OP_PACE_GPU_FRAME;
+    r.aux   = (uint16_t)(zones < 0 ? 0 : zones > 0xFFFF ? 0xFFFF : zones);
+    r.index = (uint32_t)token;
+    r.t_ns  = (int64_t)op_now();
+    r.a = frame_ns; r.b = busy_ns; r.c = (int64_t)token;
+    pace_emit(&r);
+}
+
+int openpete_pace_gpu_records_wanted(void)
+{
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_BUGREPORT_GPU"); on = (e && *e && *e != '0'); }
+    return on;
 }

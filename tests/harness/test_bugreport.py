@@ -18,6 +18,18 @@ reads its hashes.csv; CSVs with no tick in common report VACUOUS.
 Pace: present records 16.67 ms apart with one 50 ms gap give p50 16.67 ms
 and one hitch.
 
+Performance records: a synthetic pace image holding VBL, PRESENT, SHED,
+TICK_SPLIT, EAGER_PLAN and GPU_FRAME records packed as pace_log.c packs them,
+and a coarse image of three rows, decode to the values packed (split
+microseconds and counts, plan level, standing level, slots, afford, planned
+scenes and period, GPU frame span and busy time, coarse fields); the rollup
+gives the present rate, the sim tick from the TICK_SPLIT records, sheds and
+scenes per tick; `perf` prints every record kind; `corpus` over a directory
+holding a new bundle, a bundle with neither new member and a non-zip writes
+one TSV row each, the old bundle with its pace rollups and empty record
+columns, the non-zip with an error; a coarse image with a bad magic is
+refused.
+
 Thumbnails and note: 20 thumbnail PNGs with a 4.75 s span report count,
 size, span, rate and "all decode"; a PNG with a broken chunk CRC is counted
 as not decoding; no thumbnail member reports the manifest's state; notes.txt
@@ -404,6 +416,118 @@ class DiffHashes(Base):
         rc, _, err = run("diff-hashes", a, a)
         self.assertEqual(rc, 64)
         self.assertNotIn("Traceback", err)
+
+
+def rec(typ, t, index=0, flags=0, aux=0, a=0, b=0, c=0, d=0, e=0, f=0):
+    return struct.pack("<BBHIqqqqqqq", typ, flags, aux, index, t, a, b, c, d, e, f)
+
+
+def u32pair(lo, hi):
+    return lo | (hi << 32)
+
+
+def perf_ring(ticks=60):
+    """A pace image of `ticks` ticks at 30 Hz: two VBLs (0.2 and 4.0 ms runs), four presents (one canonical),
+    one shed, one TICK_SPLIT, one EAGER_PLAN and one GPU_FRAME per tick."""
+    env = b"build=test\ngpu=Test GPU\nrefresh_mhz=120000\npresent_mode=fifo\nrender_fps=120\neager=1\nplatform=Linux\n"
+    hdr = struct.pack("<IIIIIIqqqqq", br.OPPL_MAGIC, 2, 64 + len(env), 64, len(env), 0, 0, 0, 2250000, 37609, 2)
+    out, t = [], 10**9
+    for k in range(ticks):
+        v0 = 2 * k
+        out.append(rec(br.PACE_VBL, t, v0, c=t, d=t + 200000))
+        out.append(rec(br.PACE_VBL, t + 16_700_000, v0 + 1, c=t + 16_700_000, d=t + 20_700_000))
+        out.append(rec(br.PACE_TICK_SPLIT, t + 20_800_000, v0 + 1, a=u32pair(4200, 1500), b=u32pair(900, 400),
+                       c=u32pair(120, 60), d=u32pair(2000, 300), e=3 | 4 << 16 | 4 << 32 | 5 << 48, f=4000))
+        out.append(rec(br.PACE_EAGER_PLAN, t + 20_900_000, v0 + 1, flags=br.PACE_EP_CUT if k % 10 == 0 else 0,
+                       aux=2 | 1 << 8, a=20_000_000, b=1_500_000, c=5_000_000, d=200_000, e=0,
+                       f=4 | 3 << 16 | 2 << 32 | 8333 << 48))
+        out.append(rec(br.PACE_GPU_FRAME, t + 21_000_000, k, aux=12, a=3_000_000, b=2_500_000, c=k))
+        for q in range(4):
+            out.append(rec(br.PACE_PRESENT, t + q * 8_333_333, flags=0 if q == 0 else 1))
+        out.append(rec(br.PACE_SHED, t + 30_000_000, flags=1, aux=2))
+        t += 33_433_000
+    return hdr + env + b"".join(out)
+
+
+def coarse_image(rows=3):
+    fields = len(br.COARSE_FIELDS)
+    body = b""
+    for i in range(rows):
+        v = [0] * fields
+        v[br.COARSE_FIELDS.index("vbls")] = 60
+        v[br.COARSE_FIELDS.index("presents")] = 100 + 10 * i
+        v[br.COARSE_FIELDS.index("level_max")] = i + 1
+        v[0], v[1] = i, 1
+        body += struct.pack("<%dI" % fields, *v)
+    return br.COARSE_HEADER.pack(br.COARSE_MAGIC, 1, 4 * fields, rows, 1, 0, rows * 10**9) + body
+
+
+class PerfRecords(Base):
+    def test_decode(self):
+        _h, recs = br.pace_records(perf_ring(2))
+        sp = [br.split_decode(r) for r in recs if r[0] == br.PACE_TICK_SPLIT][0]
+        self.assertEqual((sp["sim"], sp["extract"], sp["terrain"], sp["moby"]), (4.2, 1.5, 0.9, 0.4))
+        self.assertEqual((sp["snap_rex"], sp["snap_canon"], sp["render"], sp["present"]), (0.12, 0.06, 2.0, 0.3))
+        self.assertEqual((sp["n_extract"], sp["n_render"], sp["n_present"], sp["n_snap"], sp["tick"]), (3, 4, 4, 5, 4.0))
+        pl = [br.plan_decode(r) for r in recs if r[0] == br.PACE_EAGER_PLAN][0]
+        self.assertEqual((pl["level"], pl["std"], pl["slots"], pl["afford"], pl["planned"]), (2, 1, 4, 3, 2))
+        self.assertTrue(pl["cut"])
+        self.assertAlmostEqual(pl["period_ms"], 8.333)
+        self.assertAlmostEqual(pl["budget"], 20.0)
+        g = [br.gpu_decode(r) for r in recs if r[0] == br.PACE_GPU_FRAME][1]
+        self.assertEqual((g["token"], g["zones"], g["frame_ms"], g["busy_ms"]), (1, 12, 3.0, 2.5))
+
+    def test_rollup(self):
+        r = br.perf_rollup(perf_ring(60))
+        self.assertAlmostEqual(r["pres_s"], 240 / r["window_s"], places=6)
+        self.assertAlmostEqual(r["sim_p50"], 4.0)
+        self.assertAlmostEqual(r["scenes_tick"], 4.0)
+        self.assertAlmostEqual(r["sheds_tick"], 1.0)
+        self.assertEqual(r["split_ticks"], 60)
+        self.assertAlmostEqual(r["split_render"], 2.0)
+        self.assertEqual((r["plans"], r["plan_level_max"]), (60, 2))
+        self.assertAlmostEqual(r["plan_cut_frac"], 0.1)
+        self.assertAlmostEqual(r["gpu_p50"], 3.0)
+
+    def test_coarse(self):
+        h, rows = br.coarse_parse(coarse_image())
+        self.assertEqual((h["rows"], h["span_s"]), (3, 1))
+        self.assertEqual([x["presents"] for x in rows], [100, 110, 120])
+        c = br.coarse_rollup(rows)
+        self.assertEqual((c["coarse_pres_first"], c["coarse_pres_last"], c["coarse_s"]), (100, 120, 3))
+        with self.assertRaises(br.BundleError):
+            br.coarse_parse(b"BADMAGIC" + coarse_image()[8:])
+
+    def test_perf_and_corpus(self):
+        new = members()
+        new["pace.oppl"] = perf_ring(60)
+        new["pace-coarse.bin"] = coarse_image()
+        new["notes.txt"] = b"stutter\tin the hub\n"
+        man = manifest(new, records={"pace": {"member": "pace.oppl", "types": list(range(1, 18))},
+                                     "pace_coarse": {"member": "pace-coarse.bin", "rows": 3}})
+        corp = self.d / "corpus"
+        corp.mkdir()
+        write_bundle(corp / "bug-spyro-1-new.zip", new, man)
+        write_bundle(corp / "bug-spyro-1-old.zip")
+        (corp / "bug-spyro-1-junk.zip").write_bytes(b"not a zip")
+        rc, out, _err = run("perf", corp / "bug-spyro-1-new.zip")
+        self.assertEqual(rc, 0)
+        for want in ("split (60 ticks)", "planner (60 spans)", "gpu (60 frames)", "coarse: 3 rows"):
+            self.assertIn(want, out)
+        tsv = self.d / "c.tsv"
+        rc, out, _err = run("corpus", corp, "--tsv", tsv)
+        self.assertEqual(rc, 0)
+        self.assertIn("corpus: 3 bundle(s)", out)
+        lines = tsv.read_text().splitlines()
+        cols = lines[0].split("\t")
+        rows = {r.split("\t")[0]: dict(zip(cols, r.split("\t"))) for r in lines[1:]}
+        self.assertEqual(len(rows), 3)
+        nw, old, junk = rows["bug-spyro-1-new.zip"], rows["bug-spyro-1-old.zip"], rows["bug-spyro-1-junk.zip"]
+        self.assertEqual((nw["split_ticks"], nw["plans"], nw["gpu_frames"], nw["note"]), ("60", "60", "60", "stutter in the hub"))
+        self.assertEqual(nw["gpu"], "Test GPU")
+        self.assertEqual((old["split_ticks"], old["plans"], old["coarse_s"]), ("", "", ""))
+        self.assertNotEqual(old["pres_s"], "")
+        self.assertIn("not a readable zip", junk["error"])
 
 
 class Pace(unittest.TestCase):

@@ -74,6 +74,7 @@
 #include "openpete_native_vram.h"   /* VRAM model reads for the record dumper */
 #include "openpete_workpool.h"      /* parallel sector walk (--extract-threads) */
 #include "openpete_profile.h"       /* ter.* sub-scopes (--profile-out) */
+#include "openpete_pace_log.h"      /* OP_PACE_SPLIT_SCOPE - per-tick CPU split */
 #include "openpete_disc_trace.h"    /* OPENPETE_DISC_TAG_TERRAIN: the HP source reads */
 #include "openpete_fnv1a64.h"       /* HP source face keys */
 #include "openpete_log.h"
@@ -22156,6 +22157,7 @@ static void terrain_defer_census(void) {
  * @param cpu      guest CPU state
  * @param occGroup the world draw's occlusion-group argument (a0), -1 = walk all */
 static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) {
+    OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_TERRAIN);
     render_material_level_push(cpu);             /* the bake's level keys */
     { OP_PROF_ACCUM_SCOPE("terrain.build");
       terrain_build(cpu, occGroup); }            /* native walk + tris */

@@ -538,6 +538,27 @@ static op_time_t eager_grid_period(op_time_t period, const eager_lattice_t *lat,
     return period;
 }
 
+/** @brief Write the EAGER_PLAN pace record of the span just planned: the fields of the OPENPETE_EAGER_DBG plan line, on every span.
+ * @param now The plan instant.
+ * @param sp The planned span.
+ * @param period The planned grid period.
+ * @param budget The production budget in nanoseconds.
+ * @param afford The number of scenes the budget affords. */
+static void eager_plan_record(op_time_t now, const eager_span_t *sp, op_time_t period,
+                              op_time_t budget, int afford)
+{
+    const int lvl = s_eager.level > 0 ? s_eager.level : 1;
+    const int planned = s_eager.policy == 1 ? (afford < sp->ns ? afford : sp->ns)
+                                            : (sp->ns + lvl - 1) / lvl;
+    const uint8_t flags = (uint8_t)((s_eager.span_cut ? OP_PACE_EP_CUT : 0u) |
+                                    (s_eager.tick_late > 0 ? OP_PACE_EP_LATE : 0u) |
+                                    (s_eager.pinned > 0 ? OP_PACE_EP_PINNED : 0u) |
+                                    (s_eager.policy == 1 ? OP_PACE_EP_GREEDY : 0u));
+    openpete_pace_eager_plan(openpete_frame, now, flags, s_eager.level, s_eager.level, sp->ns,
+                             afford, planned, period, budget, eager_tail_cost(), s_eager.lag,
+                             s_eager.vbl_ema, s_eager.tick_late);
+}
+
 /** @brief Plan the display instants of the span that starts now and adjust the decimation level.
  *
  * Counts the previous span as cut when it left targets unproduced. Pulls
@@ -606,6 +627,7 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
     const int afford = eager_afford(now, prod_end, ns, &budget);
     if (!s_eager.pinned) eager_ladder_step(ns, afford);
     eager_plan_dbg(now, first_in, span_end, period, &lat, &sp, budget, afford);
+    eager_plan_record(now, &sp, period, budget, afford);
     s_eager.span_cut = 0;
     s_eager.span_late = s_eager.tick_late > 0;
 

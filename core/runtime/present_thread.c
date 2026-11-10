@@ -571,6 +571,7 @@ static int present_thread_main(void *unused)
                 did = openpete_native_render_scene(slot_idx, (uint64_t)(op_now() / 1000));
             }
             const op_time_t c = op_now() - c0;
+            openpete_pace_split_add(OP_PACE_SPLIT_RENDER, c);
             SDL_LockMutex(s_pt.mx);
             s_pt.busy = 0;
             SDL_SignalCondition(s_pt.idle_cv);
@@ -672,6 +673,7 @@ static int present_thread_main(void *unused)
         const op_time_t c0 = op_now();
         const int did = openpete_native_present_stage(stage);
         const op_time_t c = op_now() - c0;
+        openpete_pace_split_add(OP_PACE_SPLIT_PRESENT, c);
         /* The refusal ledger is what turns a declined swapchain into SHED
          * records; run it even without a present. */
         openpete_pace_record_present((uint8_t)kind, alpha, paired);

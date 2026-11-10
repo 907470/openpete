@@ -2748,9 +2748,9 @@ static bool create_sync_and_commands(rhi_device *dev)
     return true;
 }
 
-/** @brief Create the per-slot timestamp query pools for GPU pass zones when OPENPETE_GPU_TIMERS is set and supported.
+/** @brief Create the per-slot timestamp query pools for GPU pass zones when OPENPETE_GPU_TIMERS or OPENPETE_BUGREPORT_GPU is set and supported.
  *
- * With OPENPETE_GPU_TIMERS unset or 0, or with a graphics queue reporting no
+ * With both OPENPETE_GPU_TIMERS and OPENPETE_BUGREPORT_GPU unset or 0, or with a graphics queue reporting no
  * timestamp valid bits or a zero timestamp period, dev->gpu_timers stays false
  * and every zone call returns at its flag check; the unsupported case logs
  * one line. Otherwise one pool of RHI_GPU_ZONES_MAX * 2 queries is created per
@@ -2761,7 +2761,8 @@ static bool create_sync_and_commands(rhi_device *dev)
 static bool create_gpu_timers(rhi_device *dev)
 {
     const char *e = rhi_knob("OPENPETE_GPU_TIMERS");
-    if (!(e && *e && *e != '0')) return true;   /* off: zero cost */
+    const char *b = rhi_knob("OPENPETE_BUGREPORT_GPU");   /* the bug report's GPU_FRAME records */
+    if (!(e && *e && *e != '0') && !(b && *b && *b != '0')) return true;   /* off: zero cost */
 
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(dev->phys, &props);

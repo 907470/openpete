@@ -75,7 +75,54 @@ enum {
      * kind, flags = OP_PACE_PD_*, a = swapchain image index (-1 none), b, c =
      * swapchain extent, d = openpete_interp_tick_stamp, e =
      * openpete_interp_present_now, f = the RHI's swapchain presents so far. */
-    OP_PACE_PRESENT_DETAIL = 14
+    OP_PACE_PRESENT_DETAIL = 14,
+    /* CPU time per tick, written after each drawing VBL's fiber run for the
+     * interval since the previous one. Slots carry two u32 microsecond values
+     * each (low word first): a = sim (every fiber run in the interval),
+     * extract (re-extracts, PRESENT_SPAN extract_ns); b = terrain (canonical
+     * terrain build and scene feed), moby (canonical moby native pass after
+     * the game's own draw); c = snap in sub-tick re-extracts, snap in the
+     * canonical feed (moby contact resolve with its carry); d = render
+     * (scene render and submit on the presenting thread), present (staged
+     * present: acquire, blit, queue present); e = u16 counts: extracts,
+     * renders, presents, snap resolves; f = the drawing VBL's own fiber run
+     * (low word). index = openpete_frame of the drawing VBL. */
+    OP_PACE_TICK_SPLIT = 15,
+    /* The eager planner's span plan, one per canonical tick while eager
+     * production runs (the fields of the OPENPETE_EAGER_DBG plan line):
+     * index = openpete_frame, flags = OP_PACE_EP_*, aux = span level (low
+     * byte) and standing level (high byte), t_ns = the plan instant, a =
+     * budget ns, b = per-scene tail cost ns, c = lag ns, d = non-drawing VBL
+     * cost ns, e = tick start lateness ns, f = slots (bits 0-15), afford
+     * (16-31), planned scenes (32-47), planned grid period in us (48-63,
+     * saturated). */
+    OP_PACE_EAGER_PLAN = 16,
+    /* GPU time of one rendered frame from the GPU timestamp zones, written
+     * when its results are harvested (frames in flight later): index = low
+     * word of the frame's RHI token, aux = zone count, a = first zone start to
+     * last zone end ns, b = sum of depth-0 zone durations ns, c = the token. */
+    OP_PACE_GPU_FRAME = 17
+};
+
+/* EAGER_PLAN flags. */
+enum {
+    OP_PACE_EP_CUT    = 1u << 0,  /* the previous span left targets unproduced */
+    OP_PACE_EP_LATE   = 1u << 1,  /* the tick started past its deadline (stall) */
+    OP_PACE_EP_PINNED = 1u << 2,  /* OPENPETE_EAGER_LEVEL pins the level */
+    OP_PACE_EP_GREEDY = 1u << 3   /* OPENPETE_EAGER_POLICY=greedy */
+};
+
+/* TICK_SPLIT accumulators (the duration slots, in record order). */
+enum {
+    OP_PACE_SPLIT_SIM = 0,
+    OP_PACE_SPLIT_EXTRACT,
+    OP_PACE_SPLIT_TERRAIN,
+    OP_PACE_SPLIT_MOBY,
+    OP_PACE_SPLIT_SNAP_REX,
+    OP_PACE_SPLIT_SNAP_CANON,
+    OP_PACE_SPLIT_RENDER,
+    OP_PACE_SPLIT_PRESENT,
+    OP_PACE_SPLIT_COUNT
 };
 
 /* PRESENT_DETAIL flags: the interpolation mode the present ran under. */
@@ -581,6 +628,134 @@ uint16_t openpete_pace_pad_reads_this_vbl(void);
 int  openpete_pace_pad_probe_armed(void);
 /** @brief Mark the pad-read probe armed; run.c calls it once it has set the probe's guest address. */
 void openpete_pace_pad_probe_arm(void);
+
+/* ---- per-tick CPU split, planner and GPU records ------------------------ */
+
+/** @brief Return nonzero while any sink takes records (the ring or a log file), so the split's clock reads are worth taking.
+ * @return 1 while a sink is on, else 0. */
+int  openpete_pace_split_on(void);
+
+/** @brief Add a measured duration to one TICK_SPLIT accumulator; callable from any thread.
+ *
+ * The extract, render, present and snap accumulators also count one call
+ * each. A relaxed atomic add; no-op without a sink.
+ * @param which OP_PACE_SPLIT_* slot; out of range is ignored.
+ * @param ns Duration in nanoseconds; negative adds 0. */
+void openpete_pace_split_add(int which, int64_t ns);
+
+/** @brief Write the TICK_SPLIT record of the interval ending at this drawing VBL and zero the accumulators.
+ *
+ * Sim thread, after the drawing VBL's fiber run. No-op without a sink.
+ * @param vbl_index openpete_frame of the drawing VBL.
+ * @param tick_ns The drawing VBL's own fiber run. */
+void openpete_pace_tick_split(uint32_t vbl_index, int64_t tick_ns);
+
+/** @brief Write one EAGER_PLAN record (the fields of the OPENPETE_EAGER_DBG plan line).
+ * @param vbl_index openpete_frame at the plan.
+ * @param t_ns The plan instant.
+ * @param flags OP_PACE_EP_* bits.
+ * @param level The span's divisor level.
+ * @param std_level The standing divisor level.
+ * @param slots The span's slot count.
+ * @param afford The scenes the budget affords.
+ * @param planned The scenes planned.
+ * @param period_ns The planned grid period.
+ * @param budget_ns The production budget.
+ * @param tail_ns The per-scene tail cost.
+ * @param lag_ns The animation lag.
+ * @param vbl_ns The non-drawing VBL's mean cost.
+ * @param late_ns The tick's start lateness. */
+void openpete_pace_eager_plan(uint32_t vbl_index, int64_t t_ns, uint8_t flags,
+                              int level, int std_level, int slots, int afford,
+                              int planned, int64_t period_ns, int64_t budget_ns,
+                              int64_t tail_ns, int64_t lag_ns, int64_t vbl_ns,
+                              int64_t late_ns);
+
+/** @brief Write one GPU_FRAME record for a harvested frame's timestamp zones.
+ * @param token The frame's RHI token.
+ * @param frame_ns First zone start to last zone end.
+ * @param busy_ns Sum of the depth-0 zone durations.
+ * @param zones Zone count. */
+void openpete_pace_gpu_frame(uint64_t token, int64_t frame_ns, int64_t busy_ns, int zones);
+
+/** @brief Return nonzero when OPENPETE_BUGREPORT_GPU asks for GPU_FRAME records (read once).
+ * @return 1 when set to a nonzero value, else 0. */
+int  openpete_pace_gpu_records_wanted(void);
+
+#if defined(__GNUC__) || defined(__clang__)
+typedef struct { int which; int64_t t0; } op_pace_split_guard;
+/** @brief Cleanup handler of OP_PACE_SPLIT_SCOPE: add the scope's elapsed time to its accumulator.
+ * @param g The scope's guard; t0 is 0 when no sink was on at entry. */
+void op_pace_split__cleanup(op_pace_split_guard* g);
+#define OP_PACE_SPLIT__CAT2(a, b) a##b
+#define OP_PACE_SPLIT__CAT(a, b)  OP_PACE_SPLIT__CAT2(a, b)
+/* Times the rest of the enclosing block into the OP_PACE_SPLIT_* slot. */
+#define OP_PACE_SPLIT_SCOPE(slot) \
+    op_pace_split_guard OP_PACE_SPLIT__CAT(op_pace_sg_, __LINE__) \
+        __attribute__((cleanup(op_pace_split__cleanup))) = \
+        { (slot), openpete_pace_split_on() ? op_pace_split_now() : 0 }
+#else
+#define OP_PACE_SPLIT_SCOPE(slot) ((void)0)
+#endif
+/** @brief Return op_now() for the split scopes, without including openpete_time.h in every user.
+ * @return The op_now() instant in nanoseconds. */
+int64_t op_pace_split_now(void);
+
+/* ---- coarse session ring ----------------------------------------------- */
+
+/* One row per second of the session (a row covers span_s seconds; when the
+ * rows are full, adjacent pairs merge and span_s doubles), folded from the
+ * records pace_emit sees, so the rows cover what the 30 s ring has let go. */
+#define OP_PACE_COARSE_ROWS    8192u
+#define OP_PACE_COARSE_VERSION 1u
+#define OP_PACE_COARSE_MAGIC   "OPPCRS01"
+enum {
+    OP_PACE_CR_T0_S = 0,      /* row start, seconds since the ring was armed */
+    OP_PACE_CR_SPAN_S,        /* seconds the row covers */
+    OP_PACE_CR_VBLS,
+    OP_PACE_CR_VBLS_NOT_LIVE,
+    OP_PACE_CR_PRESENTS,      /* canonical and intermediate */
+    OP_PACE_CR_REPEATS,
+    OP_PACE_CR_SHEDS,
+    OP_PACE_CR_IV_MAX_US,     /* longest present-to-present interval ending in the row */
+    OP_PACE_CR_IV_LONG,       /* intervals over 25 ms */
+    OP_PACE_CR_TICKS,         /* TICK_SPLIT records */
+    OP_PACE_CR_TICK_US_SUM,   /* drawing VBL fiber run */
+    OP_PACE_CR_TICK_US_MAX,
+    OP_PACE_CR_SIM_US_SUM,
+    OP_PACE_CR_EXTRACT_US_SUM,
+    OP_PACE_CR_TERRAIN_US_SUM,
+    OP_PACE_CR_MOBY_US_SUM,
+    OP_PACE_CR_SNAP_US_SUM,   /* both legs */
+    OP_PACE_CR_RENDER_US_SUM,
+    OP_PACE_CR_PRESENT_US_SUM,
+    OP_PACE_CR_EXTRACTS,
+    OP_PACE_CR_PLANS,         /* EAGER_PLAN records */
+    OP_PACE_CR_PLAN_SLOTS,
+    OP_PACE_CR_PLAN_SCENES,
+    OP_PACE_CR_PLAN_CUTS,
+    OP_PACE_CR_LEVEL_MAX,
+    OP_PACE_CR_GPU_FRAMES,
+    OP_PACE_CR_GPU_US_SUM,
+    OP_PACE_CR_GPU_US_MAX,
+    OP_PACE_CR_SLIPS,
+    OP_PACE_CR_RESERVED0,
+    OP_PACE_CR_RESERVED1,
+    OP_PACE_CR_RESERVED2,
+    OP_PACE_CR_FIELDS         /* 32 u32 per row, 128 B */
+};
+
+/** @brief Build the coarse session ring's image on the heap: a 40-byte header and the rows from the first to the newest.
+ *
+ * Header: magic OP_PACE_COARSE_MAGIC (8 B), u32 version, u32 row bytes,
+ * u32 rows, u32 span_s, i64 the ring's creation time in Unix ns, i64 the
+ * image instant in ns since the ring was armed. Copied under the writer
+ * lock.
+ * @param out Receives the image; free with free().
+ * @param len Receives its length.
+ * @param rows Receives the row count; may be NULL.
+ * @return 0 on success, -1 when the ring is not armed or allocation fails. */
+int  openpete_pace_coarse_image(void** out, size_t* len, size_t* rows);
 
 /* ---- census (always compiled, no log file needed) ----------------------- */
 

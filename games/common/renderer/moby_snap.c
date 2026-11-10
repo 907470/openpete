@@ -6,6 +6,7 @@
 #include "renderer/terrain.h"
 #include "renderer/orchestrator.h"   /* canonical epoch: the carry's tables */
 #include "openpete_profile.h"        /* mcan.resolve / mrex.resolve */
+#include "openpete_pace_log.h"       /* OP_PACE_SPLIT_SCOPE - per-tick CPU split */
 #include "openpete_native_render.h"
 #include "openpete_fiber.h"          /* openpete_feed_key_now: census line label */
 
@@ -2528,8 +2529,8 @@ static void ms_resolve(void) {
 
 /** @brief Run ms_resolve inside the profiler scope of its leg: mrex.resolve in a sub-tick re-extract, else mcan.resolve. */
 static void ms_resolve_scoped(void) {
-    if (s_rex) { OP_PROF_ACCUM_SCOPE("mrex.resolve"); ms_resolve(); }
-    else       { OP_PROF_ACCUM_SCOPE("mcan.resolve"); ms_resolve(); }
+    if (s_rex) { OP_PROF_ACCUM_SCOPE("mrex.resolve"); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_SNAP_REX); ms_resolve(); }
+    else       { OP_PROF_ACCUM_SCOPE("mcan.resolve"); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_SNAP_CANON); ms_resolve(); }
 }
 
 void moby_snap_moby_fed(void) { ms_resolve_scoped(); }

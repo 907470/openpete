@@ -70,6 +70,7 @@
 #include "game_layout.h"          /* game_layout.moby: the engine addresses this walk reads */
 #include "openpete_recomp_module.h"  /* the game's own moby draws, run through the module dispatch */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+#include "openpete_pace_log.h"   /* OP_PACE_SPLIT_SCOPE - per-tick CPU split */
 #include "openpete_thread_roles.h"
 
 static int moby_lift_tier(void);
@@ -10859,6 +10860,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
     { OP_PROF_ACCUM_SCOPE("moby.srend");
       moby_run_draw(cpu, draw_addr); }         /* run the real renderer */
     uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
+    OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_MOBY);    /* the native pass after the game's draw */
 
     render_path_record(RP_MOBY, start, end);  /* polybuf range for the OT filter */
 

@@ -19,6 +19,7 @@
 #include "openpete_disc_trace.h"
 #include "openpete_host_trace.h"
 #include "openpete_log.h"
+#include "openpete_pace_log.h"
 #include "openpete_paths.h"
 #include "openpete_psx.h"
 #include "openpete_recomp_module.h"
@@ -948,6 +949,25 @@ static void json_subtick(wbuf_t* w, const br_job_t* j)
               (unsigned long long)base, (unsigned long long)outside);
 }
 
+/** @brief Write the manifest's records field: the pace record types this build writes and the coarse ring's member, version, rows and row span.
+ *
+ * A reader takes a type missing from the list as not recorded by the
+ * writing build, which tells an old bundle from a run that produced none.
+ * @param w The output.
+ * @param j The job. */
+static void json_records(wbuf_t* w, const br_job_t* j)
+{
+    uint32_t span = 0;
+    if (j->pace_coarse && j->pace_coarse_len >= 24u) memcpy(&span, (const uint8_t*)j->pace_coarse + 20, 4);
+    wb_printf(w, ",\n  \"records\": {\"pace\": {\"member\": %s, \"version\": %u, \"types\": [",
+              j->pace ? "\"pace.oppl\"" : "null", OP_PACE_VERSION);
+    for (int t = OP_PACE_VBL; t <= OP_PACE_GPU_FRAME; t++) wb_printf(w, "%s%d", t > OP_PACE_VBL ? ", " : "", t);
+    wb_printf(w, "], \"gpu_frames\": %d}, \"pace_coarse\": {\"member\": %s, \"version\": %u, "
+              "\"rows\": %zu, \"span_s\": %u}}", openpete_pace_gpu_records_wanted(),
+              j->pace_coarse ? "\"pace-coarse.bin\"" : "null", OP_PACE_COARSE_VERSION,
+              j->pace_coarse_rows, span);
+}
+
 /** @brief Write the manifest's session fields: anchor, press, window, taint, mods, answers and the member list.
  * @param w The output.
  * @param j The job.
@@ -964,6 +984,7 @@ static void json_session(wbuf_t* w, const br_job_t* j, const br_members_t* m, co
               j->segment_rows, j->hash_n);
     json_thumbs(w, j);
     json_subtick(w, j);
+    json_records(w, j);
     wb_printf(w, ",\n  \"note\": {\"state\": ");
     wb_json_str(w, j->note_state[0] ? j->note_state : "off");
     wb_printf(w, ", \"chars\": %zu}", j->note ? strlen(j->note) : (size_t)0);
@@ -1048,6 +1069,8 @@ static void add_press_members(br_members_t* m, br_job_t* j)
     add_streamed(m, j, "input-events.csv", BRM_TEXT, stream_input);
     if (j->trace) br_members_add_copy(m, "host-trace.bin", j->trace, j->trace_n * HT_REC_BYTES, BRM_BINARY);
     if (j->pace) br_members_add_copy(m, "pace.oppl", j->pace, j->pace_len, BRM_BINARY);
+    if (j->pace_coarse)
+        br_members_add_copy(m, "pace-coarse.bin", j->pace_coarse, j->pace_coarse_len, BRM_BINARY);
     if (j->hang) br_members_add_copy(m, "hang/rings.bin", j->hang, j->hang_len, BRM_BINARY);
     if (j->subtick) br_members_add_copy(m, "subtick.bin", j->subtick, j->subtick_len, BRM_BINARY);
     wbuf_t rep = {0};
@@ -1156,6 +1179,7 @@ void br_job_free(br_job_t* j)
     free(j->hash_rows);
     free(j->trace);
     free(j->pace);
+    free(j->pace_coarse);
     free(j->input);
     free(j->hang);
     free(j->subtick);

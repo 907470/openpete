@@ -389,7 +389,7 @@ static void press_anchor(br_job_t* j) OP_REQUIRES(sim)
     j->hash_n = openpete_bugrec_hash_rows_copy(a ? a->frame : openpete_frame, &j->hash_rows);
 }
 
-/** @brief Copy the host-trace, pace, input, hang and sub-tick present rings.
+/** @brief Copy the host-trace, pace (30 s and coarse), input, hang and sub-tick present rings.
  * @param j The job. */
 static void press_rings(br_job_t* j) OP_REQUIRES(sim)
 {
@@ -402,6 +402,10 @@ static void press_rings(br_job_t* j) OP_REQUIRES(sim)
     if (openpete_pace_ring_image(OP_PACE_RING_WINDOW_NS, &j->pace, &j->pace_len, &j->pace_n) != 0) {
         j->pace = NULL;
         j->pace_len = j->pace_n = 0;
+    }
+    if (openpete_pace_coarse_image(&j->pace_coarse, &j->pace_coarse_len, &j->pace_coarse_rows) != 0) {
+        j->pace_coarse = NULL;
+        j->pace_coarse_len = j->pace_coarse_rows = 0;
     }
     j->input_n = openpete_bugrec_input_snapshot(&j->input);
     /* At a fatal exit the dump the watchdog just wrote holds these rings. */

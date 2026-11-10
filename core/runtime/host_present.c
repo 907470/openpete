@@ -576,7 +576,8 @@ static void inline_canonical_render(void) OP_REQUIRES(sim)
     openpete_mods_present_flush(&g_game.cpu, 1);
     const int audit_arm = gpu_audit_selftest_arm();
     if (audit_arm) g_openpete_guest_running = 1;
-    openpete_native_render_frame((uint64_t)(op_now() / 1000));
+    { OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_RENDER);
+      openpete_native_render_frame((uint64_t)(op_now() / 1000)); }
     if (audit_arm) g_openpete_guest_running = 0;
 }
 
@@ -727,7 +728,8 @@ static void present_inline_intermediate(host_session_t* S, const host_iter_t* it
     }
     /* Mod draw service: present hooks at sub-tick alpha (no commit). */
     openpete_mods_present_flush(&g_game.cpu, 0);
-    openpete_native_render_frame((uint64_t)(op_now() / 1000));
+    { OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_RENDER);
+      openpete_native_render_frame((uint64_t)(op_now() / 1000)); }
     present_record_shown(&S->out.ftl, OP_PROF_INTERMEDIATE);
     pace_record_present(OP_PACE_INTERMEDIATE);
     /* The span feeds the predictor and the pace log, so attribution can

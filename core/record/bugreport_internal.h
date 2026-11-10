@@ -98,6 +98,8 @@ typedef struct br_job {
     size_t   trace_n;
     void*    pace;
     size_t   pace_len, pace_n;
+    void*    pace_coarse;       /* the coarse session ring's image (pace-coarse.bin) */
+    size_t   pace_coarse_len, pace_coarse_rows;
     openpete_bugrec_input_t* input;
     size_t   input_n;
     uint8_t* hang;              /* the dispatch rings in hang-trace.bin's layout */

@@ -31,6 +31,19 @@ Subcommands:
       pair lerps to. Flags a record drawn at more than one screen position
       within one present (MULTI) and a paired record drawn off its lerp
       (OFFLERP). BUNDLE may also be an extracted subtick.bin.
+  perf BUNDLE
+      The performance records: the 30 s pace ring's present and sim
+      rollups, the per-tick CPU split (TICK_SPLIT), the eager planner's
+      spans (EAGER_PLAN), GPU frame times (GPU_FRAME, under
+      OPENPETE_BUGREPORT_GPU) and the coarse session rows
+      (pace-coarse.bin). A bundle without a record prints that it holds
+      none. BUNDLE may also be an extracted pace.oppl.
+  corpus PATH... [--tsv OUT] [--quiet]
+      One row per bundle over directories (every bug-*.zip inside) and
+      bundle paths: build, game, level, GPU, refresh, present mode, mods,
+      note, and the rollups `perf` computes; prints the TSV (or writes it
+      to OUT) and a text summary. A bundle that does not open gets a row
+      naming why.
   diff-hashes A B
       First divergent tick and the regions that differ between two
       region-hash CSVs (`frame,vbl,fnv1a64,<region>...`). A or B may be a
@@ -84,8 +97,23 @@ OPPL_MAGIC = 0x4C50504F
 OPPL_HEADER_FIXED = 64
 OPPL_LAYOUT = {48: "<BBHIqqqqq", 64: "<BBHIqqqqqqq"}
 PACE_VBL, PACE_PRESENT, PACE_SHED, PACE_SLIP = 1, 2, 3, 4
-PACE_REPEAT = 2
+PACE_TICK_SPLIT, PACE_EAGER_PLAN, PACE_GPU_FRAME = 15, 16, 17
+PACE_CANONICAL, PACE_INTERMEDIATE, PACE_REPEAT = 0, 1, 2
+PACE_F_NOT_LIVE = 64
+PACE_EP_CUT, PACE_EP_LATE, PACE_EP_PINNED, PACE_EP_GREEDY = 1, 2, 4, 8
 PACE_WINDOW_S = 30.0
+# TICK_SPLIT slots in record order: (slot, high word) per duration (core/include/openpete_pace_log.h).
+SPLIT_FIELDS = (("sim", 0, 0), ("extract", 0, 1), ("terrain", 1, 0), ("moby", 1, 1),
+                ("snap_rex", 2, 0), ("snap_canon", 2, 1), ("render", 3, 0), ("present", 3, 1))
+# Coarse session ring (pace-coarse.bin): header and the 32 u32 fields of a row.
+COARSE_MAGIC = b"OPPCRS01"
+COARSE_HEADER = struct.Struct("<8sIIIIqq")
+COARSE_FIELDS = ("t0_s", "span_s", "vbls", "vbls_not_live", "presents", "repeats", "sheds", "iv_max_us",
+                 "iv_long", "ticks", "tick_us_sum", "tick_us_max", "sim_us_sum", "extract_us_sum",
+                 "terrain_us_sum", "moby_us_sum", "snap_us_sum", "render_us_sum", "present_us_sum",
+                 "extracts", "plans", "plan_slots", "plan_scenes", "plan_cuts", "level_max", "gpu_frames",
+                 "gpu_us_sum", "gpu_us_max", "slips", "reserved0", "reserved1", "reserved2")
+COARSE_MAX_FIELDS = {"iv_max_us", "tick_us_max", "level_max", "gpu_us_max"}
 
 # The tarfile extraction filter refusing links out of the tree, where the runtime has one.
 TAR_FILTER = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
@@ -324,6 +352,178 @@ def pace_summary(data, window_s=PACE_WINDOW_S):
     return out
 
 
+def pace_records(data):
+    """Parse an OPPL image into (header dict, list of record tuples); raises BundleError naming the fault.
+
+    A record tuple is (type, flags, aux, index, t_ns, a, b, c, d, e, f); a v1
+    (48 B) record has e and f as None."""
+    if len(data) < OPPL_HEADER_FIXED:
+        raise BundleError(f"pace log: {len(data)} B, shorter than the header")
+    (magic, version, header_bytes, rec_bytes, env_bytes, _r, created, epoch,
+     vbl_num, vbl_den, tick_vbls) = struct.unpack_from("<IIIIIIqqqqq", data, 0)
+    if magic != OPPL_MAGIC:
+        raise BundleError(f"pace log: bad magic 0x{magic:08x}")
+    fmt = OPPL_LAYOUT.get(rec_bytes)
+    if fmt is None:
+        raise BundleError(f"pace log: record size {rec_bytes} unknown")
+    if header_bytes < OPPL_HEADER_FIXED or header_bytes > len(data) or env_bytes > header_bytes - OPPL_HEADER_FIXED:
+        raise BundleError(f"pace log: header size {header_bytes} out of range")
+    env = parse_kv(data[OPPL_HEADER_FIXED:OPPL_HEADER_FIXED + env_bytes].decode("utf-8", "replace"))
+    body = data[header_bytes:]
+    body = body[: len(body) // rec_bytes * rec_bytes]
+    recs = list(struct.iter_unpack(fmt, body))
+    if rec_bytes == 48:
+        recs = [r + (None, None) for r in recs]
+    hdr = {"version": version, "record_bytes": rec_bytes, "created_unix_ns": created, "epoch_ns": epoch,
+           "vbl_hz": vbl_num / vbl_den if vbl_den else VBL_HZ, "tick_vbls": tick_vbls, "env": env}
+    return hdr, recs
+
+
+def pct(xs, p):
+    """The p-th percentile of xs by nearest rank (index int(p/100 * n), clamped); None for an empty list."""
+    if not xs:
+        return None
+    s = sorted(xs)
+    return s[min(len(s) - 1, int(p / 100.0 * len(s)))]
+
+
+def u32w(v, hi):
+    """The low (hi=0) or high (hi=1) unsigned 32-bit word of a signed 64-bit slot."""
+    return ((v or 0) >> (32 * hi)) & 0xFFFFFFFF
+
+
+def split_decode(r):
+    """A TICK_SPLIT record as a dict: index, t_ns, durations in ms, counts, the drawing VBL's own run in ms."""
+    slots = (r[5], r[6], r[7], r[8])
+    d = {"index": r[3], "t_ns": r[4]}
+    for name, slot, hi in SPLIT_FIELDS:
+        d[name] = u32w(slots[slot], hi) / 1000.0
+    e = r[9] or 0
+    d["n_extract"], d["n_render"] = e & 0xFFFF, (e >> 16) & 0xFFFF
+    d["n_present"], d["n_snap"] = (e >> 32) & 0xFFFF, (e >> 48) & 0xFFFF
+    d["tick"] = u32w(r[10], 0) / 1000.0
+    return d
+
+
+def plan_decode(r):
+    """An EAGER_PLAN record as a dict (the fields of the OPENPETE_EAGER_DBG plan line; times in ms)."""
+    f = r[10] or 0
+    return {"index": r[3], "t_ns": r[4], "flags": r[1], "cut": bool(r[1] & PACE_EP_CUT),
+            "late": bool(r[1] & PACE_EP_LATE), "level": r[2] & 0xFF, "std": (r[2] >> 8) & 0xFF,
+            "budget": r[5] / 1e6, "tail": r[6] / 1e6, "lag": r[7] / 1e6, "vbl": r[8] / 1e6,
+            "late_ms": (r[9] or 0) / 1e6, "slots": f & 0xFFFF, "afford": (f >> 16) & 0xFFFF,
+            "planned": (f >> 32) & 0xFFFF, "period_ms": ((f >> 48) & 0xFFFF) / 1000.0}
+
+
+def gpu_decode(r):
+    """A GPU_FRAME record as a dict: token, zones, frame span and depth-0 busy time in ms."""
+    return {"token": r[7], "zones": r[2], "frame_ms": r[5] / 1e6, "busy_ms": r[6] / 1e6, "t_ns": r[4]}
+
+
+def coarse_parse(data):
+    """Parse a pace-coarse.bin image into (header dict, rows as dicts); raises BundleError naming the fault."""
+    if len(data) < COARSE_HEADER.size:
+        raise BundleError("pace-coarse.bin: shorter than its header")
+    magic, ver, rb, n, span, created, at = COARSE_HEADER.unpack_from(data, 0)
+    if magic != COARSE_MAGIC:
+        raise BundleError("pace-coarse.bin: bad magic")
+    if ver != 1 or rb != 4 * len(COARSE_FIELDS):
+        raise BundleError(f"pace-coarse.bin: version {ver} row bytes {rb}, this reader knows 1 / {4 * len(COARSE_FIELDS)}")
+    if COARSE_HEADER.size + n * rb > len(data):
+        raise BundleError(f"pace-coarse.bin: {n} rows do not fit {len(data)} B")
+    fmt = struct.Struct("<%dI" % len(COARSE_FIELDS))
+    rows = []
+    for i in range(n):
+        v = dict(zip(COARSE_FIELDS, fmt.unpack_from(data, COARSE_HEADER.size + i * rb)))
+        v["t0_s"], v["span_s"] = i * span, span
+        rows.append(v)
+    return {"version": ver, "rows": n, "span_s": span, "created_unix_ns": created, "at_ns": at}, rows
+
+
+def tick_runs(vbls):
+    """The drawing VBL's fiber run in ms per tick: the longer run of each VBL pair (index // 2)."""
+    by = {}
+    for r in vbls:
+        run = ((r[8] or 0) - (r[7] or 0)) / 1e6
+        k = r[3] // 2
+        by[k] = max(by.get(k, 0.0), run)
+    return list(by.values())
+
+
+def perf_rollup(data, tail_s=10.0):
+    """Rollups of an OPPL image: presents and intervals over the window and the last tail_s seconds,
+    the sim tick, sheds and scenes per tick, and the TICK_SPLIT, EAGER_PLAN and GPU_FRAME records.
+
+    @return a dict; keys of a record kind the image does not hold are absent, and
+    `types` lists the record types present."""
+    hdr, recs = pace_records(data)
+    out = {"pace_records": len(recs), "env": hdr["env"], "types": sorted({r[0] for r in recs})}
+    pres = [r for r in recs if r[0] == PACE_PRESENT]
+    vbls = [r for r in recs if r[0] == PACE_VBL]
+    times = [r[4] for r in pres] + [r[4] for r in vbls]
+    if not times:
+        return out
+    end, start = max(times), min(times)
+    out["window_s"] = (end - start) / 1e9
+    out["vbls"] = len(vbls)
+    out["not_live"] = sum(1 for r in vbls if r[1] & PACE_F_NOT_LIVE)
+    shown = sorted(r[4] for r in pres)
+    out["presents"] = len(shown)
+    out["repeats"] = sum(1 for r in pres if r[1] == PACE_REPEAT)
+    canon = sum(1 for r in pres if r[1] == PACE_CANONICAL)
+    inter = sum(1 for r in pres if r[1] == PACE_INTERMEDIATE)
+    sheds = sum(1 for r in recs if r[0] == PACE_SHED)
+    out["sheds"] = sheds
+    if out["window_s"] > 0:
+        out["pres_s"] = len(shown) / out["window_s"]
+    tail0 = end - int(tail_s * 1e9)
+    tail = [t for t in shown if t >= tail0]
+    if tail and out["window_s"] >= tail_s:
+        out["pres_s_tail"] = len(tail) / tail_s
+    iv = [(b - a) / 1e6 for a, b in zip(shown, shown[1:])]
+    if iv:
+        out["iv_p50"], out["iv_p99"], out["iv_max"] = pct(iv, 50), pct(iv, 99), max(iv)
+    if canon:
+        out["scenes_tick"] = (canon + inter) / canon
+        out["sheds_tick"] = sheds / canon
+    splits = [split_decode(r) for r in recs if r[0] == PACE_TICK_SPLIT]
+    runs = [d["tick"] for d in splits] if splits else tick_runs(vbls)
+    if runs:
+        out["sim_p50"], out["sim_p90"] = pct(runs, 50), pct(runs, 90)
+    if splits:
+        out["split_ticks"] = len(splits)
+        for name, _s, _h in SPLIT_FIELDS:
+            out["split_" + name] = pct([d[name] for d in splits], 50)
+    plans = [plan_decode(r) for r in recs if r[0] == PACE_EAGER_PLAN]
+    if plans:
+        n = len(plans)
+        out["plans"] = n
+        out["plan_slots"] = sum(p["slots"] for p in plans) / n
+        out["plan_afford"] = sum(p["afford"] for p in plans) / n
+        out["plan_scenes"] = sum(p["planned"] for p in plans) / n
+        out["plan_level_p50"], out["plan_level_max"] = pct([p["level"] for p in plans], 50), max(p["level"] for p in plans)
+        out["plan_cut_frac"] = sum(1 for p in plans if p["cut"]) / n
+        out["plan_budget_p50"] = pct([p["budget"] for p in plans], 50)
+    gpus = [gpu_decode(r) for r in recs if r[0] == PACE_GPU_FRAME]
+    if gpus:
+        out["gpu_frames"] = len(gpus)
+        out["gpu_p50"], out["gpu_p99"] = pct([g["frame_ms"] for g in gpus], 50), pct([g["frame_ms"] for g in gpus], 99)
+    return out
+
+
+def coarse_rollup(rows):
+    """Session rollups of coarse rows: covered seconds, and the per-row present rate's p10/p50/p90 over
+    rows with VBLs mostly live, with the first and last such rows' rates."""
+    live = [r for r in rows if r["vbls"] and r["vbls_not_live"] * 2 < r["vbls"]]
+    out = {"coarse_rows": len(rows), "coarse_span_s": rows[0]["span_s"] if rows else 0,
+           "coarse_s": sum(r["span_s"] for r in rows if r["vbls"])}
+    rates = [(r["presents"] + r["repeats"]) / r["span_s"] for r in live if r["span_s"]]
+    if rates:
+        out["coarse_pres_p10"], out["coarse_pres_p50"], out["coarse_pres_p90"] = pct(rates, 10), pct(rates, 50), pct(rates, 90)
+        out["coarse_pres_first"], out["coarse_pres_last"] = rates[0], rates[-1]
+    return out
+
+
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 PNG_PIXELS_MAX = 1 << 26       # a thumbnail's decoded bound (w * h)
 
@@ -501,6 +701,26 @@ def subtick_line(b):
             + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) + f"), {len(objs)} drawn records"
             + (f", {trunc} presents truncated" if trunc else "")
             + f"; MULTI {len(multi)} OFFLERP {len(off)} (python3 -I tools/bugreport.py subtick)")
+
+
+def records_line(b):
+    """The `info` line naming the performance records a bundle holds, with the `perf` command."""
+    have = []
+    if b.has("pace.oppl"):
+        try:
+            _h, recs = pace_records(b.read("pace.oppl"))
+        except BundleError as e:
+            return f"perf records: pace.oppl unreadable ({e})"
+        n = {}
+        for r in recs:
+            if r[0] in (PACE_TICK_SPLIT, PACE_EAGER_PLAN, PACE_GPU_FRAME):
+                n[r[0]] = n.get(r[0], 0) + 1
+        have += [f"{n.get(PACE_TICK_SPLIT, 0)} TICK_SPLIT", f"{n.get(PACE_EAGER_PLAN, 0)} EAGER_PLAN",
+                 f"{n.get(PACE_GPU_FRAME, 0)} GPU_FRAME"]
+    have.append("pace-coarse.bin" if b.has("pace-coarse.bin") else "no pace-coarse.bin")
+    if not b.manifest.get("records"):
+        have.append("manifest names no records (older writer)")
+    return "perf records: " + ", ".join(have) + " (python3 -I tools/bugreport.py perf)"
 
 
 def note_line(b, m):
@@ -880,6 +1100,7 @@ def cmd_info(args):
             w(line + f"; slips {ps['slips']} sheds {ps['sheds']} (whole ring)")
     else:
         w("pace: no pace.oppl")
+    w(records_line(b))
     dev = parse_kv(b.text("device.txt"))
     w("device: " + " ".join(f"{k}={dev[k]}" for k in ("platform", "os_release_PRETTY_NAME", "kernel", "cpu",
                                                      "logical_cpus", "ram_mib", "wsl") if k in dev))
@@ -1140,6 +1361,230 @@ def cmd_subtick(args):
     return EXIT_DIVERGED if (multi or off) else EXIT_OK
 
 
+def perf_source(arg):
+    """(pace bytes or None, coarse bytes or None, manifest or None) of a bundle or an extracted pace log."""
+    pth = Path(arg)
+    if pth.is_file() and not zipfile.is_zipfile(pth):
+        if pth.stat().st_size > MEMBER_MAX:
+            raise BundleError(f"{arg}: over the bound {MEMBER_MAX}")
+        return pth.read_bytes(), None, None
+    b = Bundle(arg)
+    return (b.read("pace.oppl") if b.has("pace.oppl") else None,
+            b.read("pace-coarse.bin") if b.has("pace-coarse.bin") else None, b.manifest)
+
+
+def fmt_ms(v, nd=2):
+    """A float to nd decimals, or '-' for None."""
+    return "-" if v is None else f"{v:.{nd}f}"
+
+
+def perf_lines(pace, coarse, manifest):
+    """The `perf` report lines for a pace image, a coarse image and a manifest (each may be None)."""
+    o = []
+    w = o.append
+    rec = (manifest or {}).get("records")
+    if manifest is not None:
+        w("records: " + (json.dumps(rec, sort_keys=True) if rec else
+                         "the manifest names none (a bundle written before the performance records)"))
+    if pace is None:
+        w("pace: no pace.oppl")
+    else:
+        r = perf_rollup(pace)
+        env = r.get("env", {})
+        w(f"pace: {r['pace_records']} records, types {r['types']}; gpu {env.get('gpu', '?')} refresh "
+          f"{int(env.get('refresh_mhz', 0) or 0) / 1000:.3f} Hz {env.get('present_mode', '?')} eager={env.get('eager', '?')}")
+        if "window_s" in r:
+            w(f"  window {r['window_s']:.1f} s: {r['presents']} presents ({fmt_ms(r.get('pres_s'), 1)}/s, last 10 s "
+              f"{fmt_ms(r.get('pres_s_tail'), 1)}/s), interval p50 {fmt_ms(r.get('iv_p50'))} p99 {fmt_ms(r.get('iv_p99'))} "
+              f"max {fmt_ms(r.get('iv_max'))} ms; sim tick p50 {fmt_ms(r.get('sim_p50'))} p90 {fmt_ms(r.get('sim_p90'))} ms; "
+              f"scenes/tick {fmt_ms(r.get('scenes_tick'))} sheds/tick {fmt_ms(r.get('sheds_tick'))}; "
+              f"{r['not_live']} of {r['vbls']} VBLs not live")
+        if "split_ticks" in r:
+            w(f"  split ({r['split_ticks']} ticks), p50 ms per tick: " +
+              " ".join(f"{n} {fmt_ms(r['split_' + n])}" for n, _s, _h in SPLIT_FIELDS))
+        elif PACE_TICK_SPLIT not in r["types"]:
+            w("  split: no TICK_SPLIT record")
+        if "plans" in r:
+            w(f"  planner ({r['plans']} spans): slots {r['plan_slots']:.2f} afford {r['plan_afford']:.2f} "
+              f"planned {r['plan_scenes']:.2f} per span; level p50 {r['plan_level_p50']} max {r['plan_level_max']}; "
+              f"cut {100 * r['plan_cut_frac']:.1f}%; budget p50 {r['plan_budget_p50']:.2f} ms")
+        else:
+            w("  planner: no EAGER_PLAN record (eager production did not run: headless, or not windowed)")
+        if "gpu_frames" in r:
+            w(f"  gpu ({r['gpu_frames']} frames): frame p50 {r['gpu_p50']:.3f} p99 {r['gpu_p99']:.3f} ms")
+        else:
+            w("  gpu: no GPU_FRAME record (OPENPETE_BUGREPORT_GPU off)")
+    if coarse is None:
+        w("coarse: no pace-coarse.bin")
+    else:
+        ch, rows = coarse_parse(coarse)
+        c = coarse_rollup(rows)
+        w(f"coarse: {ch['rows']} rows of {ch['span_s']} s, {c['coarse_s']} s with VBLs; present rate per row "
+          f"p10 {fmt_ms(c.get('coarse_pres_p10'), 1)} p50 {fmt_ms(c.get('coarse_pres_p50'), 1)} "
+          f"p90 {fmt_ms(c.get('coarse_pres_p90'), 1)}/s, first {fmt_ms(c.get('coarse_pres_first'), 1)} "
+          f"last {fmt_ms(c.get('coarse_pres_last'), 1)}/s")
+    return o
+
+
+def cmd_perf(args):
+    pace, coarse, man = perf_source(args.bundle)
+    print("\n".join(perf_lines(pace, coarse, man)))
+    if args.rows and coarse is not None:
+        _h, rows = coarse_parse(coarse)
+        cols = ("t0_s", "span_s", "vbls", "vbls_not_live", "presents", "repeats", "sheds", "iv_max_us", "ticks",
+                "tick_us_max", "sim_us_sum", "extract_us_sum", "render_us_sum", "plans", "plan_scenes", "level_max",
+                "gpu_frames", "gpu_us_max")
+        print("\t".join(cols))
+        for r in rows:
+            print("\t".join(str(r[k]) for k in cols))
+    return EXIT_OK
+
+
+# Corpus TSV columns, in order: identity, device, then rollups.
+CORPUS_COLS = ("bundle", "error", "build", "commit", "game", "level", "trigger", "platform", "gpu", "driver",
+               "refresh_hz", "present_mode", "fullscreen", "render_fps", "eager", "extent", "mods", "note",
+               "records", "window_s", "pres_s", "pres_s_tail", "iv_p50", "iv_p99", "iv_max", "sim_p50", "sim_p90",
+               "sheds_tick", "scenes_tick", "not_live", "split_ticks") + tuple(
+                   "split_" + n for n, _s, _h in SPLIT_FIELDS) + (
+               "plans", "plan_slots", "plan_afford", "plan_scenes", "plan_level_p50", "plan_level_max",
+               "plan_cut_frac", "gpu_frames", "gpu_p50", "gpu_p99", "coarse_s", "coarse_span_s",
+               "coarse_pres_p10", "coarse_pres_p50", "coarse_pres_p90", "coarse_pres_first", "coarse_pres_last")
+
+
+def tsv_cell(v):
+    """A TSV cell: floats to 3 decimals, None as empty, tabs and newlines as spaces, at most 120 characters."""
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        return f"{v:.3f}"
+    return re.sub(r"[\t\r\n]+", " ", str(v))[:120]
+
+
+def corpus_row(path):
+    """The corpus row (a dict over CORPUS_COLS) of one bundle; a bundle that does not open gives a row with `error`."""
+    row = {"bundle": Path(path).name}
+    try:
+        b = Bundle(path)
+    except BundleError as e:
+        row["error"] = str(e)
+        return row
+    m = b.manifest
+    summ = parse_kv(b.text("summary.txt"))
+    pr = m.get("press") if isinstance(m.get("press"), dict) else {}
+    row.update(build=m.get("build_version"), commit=m.get("build_commit"), game=m.get("game"),
+               level=summ.get("level", pr.get("level")), trigger=m.get("trigger") or "press",
+               mods=",".join(str(x.get("id")) for x in (m.get("mods") or []) if isinstance(x, dict)) or "none")
+    note = b.text("notes.txt", 4096)
+    row["note"] = (note or "").strip()[:80] if note else ""
+    dev = b.text("device.txt") or ""
+    mm = re.search(r"swapchain=(\d+x\d+)", dev)
+    row["extent"] = mm.group(1) if mm else None
+    rec = m.get("records")
+    row["records"] = "pace%s%s" % ("+types" + str(max((rec.get("pace") or {}).get("types") or [0])) if rec else "",
+                                   "+coarse" if b.has("pace-coarse.bin") else "")
+    errs = []
+    if b.has("pace.oppl"):
+        try:
+            r = perf_rollup(b.read("pace.oppl"))
+            env = r.pop("env", {})
+            row.update({k: v for k, v in r.items() if k in CORPUS_COLS})
+            row.update(platform=env.get("platform"), gpu=env.get("gpu"), driver=env.get("driver"),
+                       present_mode=env.get("present_mode"), fullscreen=env.get("fullscreen"),
+                       render_fps=env.get("render_fps"), eager=env.get("eager"))
+            try:
+                row["refresh_hz"] = int(env.get("refresh_mhz") or 0) / 1000.0
+            except ValueError:
+                row["refresh_hz"] = None
+        except BundleError as e:
+            errs.append(str(e))
+    else:
+        errs.append("no pace.oppl")
+    if b.has("pace-coarse.bin"):
+        try:
+            _h, rows = coarse_parse(b.read("pace-coarse.bin"))
+            row.update(coarse_rollup(rows))
+        except BundleError as e:
+            errs.append(str(e))
+    if errs:
+        row["error"] = "; ".join(errs)
+    return row
+
+
+def corpus_paths(args):
+    """Bundle paths from directories (every bug-*.zip inside, sorted) and file arguments, de-duplicated."""
+    out = []
+    for a in args:
+        p = Path(a)
+        if p.is_dir():
+            out += sorted(x for x in p.glob("bug-*.zip") if x.is_file())
+        else:
+            out.append(p)
+    seen, uniq = set(), []
+    for p in out:
+        k = str(p.resolve())
+        if k not in seen:
+            seen.add(k)
+            uniq.append(p)
+    return uniq
+
+
+def present_target(r):
+    """The present rate a row aims at: --render-fps when it is below the refresh, else the refresh; None when unknown."""
+    hz = r.get("refresh_hz")
+    try:
+        fps = float(r.get("render_fps") or 0)
+    except ValueError:
+        fps = 0.0
+    if hz and 0 < fps < hz:
+        return fps
+    return hz or (fps if fps > 0 else None)
+
+
+def corpus_summary(rows):
+    """The corpus text summary: counts by game and GPU, median rollups per game, and the rows furthest below their refresh."""
+    o = []
+    w = o.append
+    ok = [r for r in rows if r.get("pres_s") is not None]
+    w(f"corpus: {len(rows)} bundle(s), {len(ok)} with presents, {sum(1 for r in rows if r.get('error'))} with an error; "
+      f"{sum(1 for r in rows if r.get('split_ticks'))} with TICK_SPLIT, {sum(1 for r in rows if r.get('plans'))} "
+      f"with EAGER_PLAN, {sum(1 for r in rows if r.get('gpu_frames'))} with GPU_FRAME, "
+      f"{sum(1 for r in rows if r.get('coarse_s') is not None)} with coarse rows")
+    by = {}
+    for r in ok:
+        by.setdefault((r.get("game"), r.get("gpu")), []).append(r)
+    for (g, gpu), rs in sorted(by.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
+        w(f"  {g} on {gpu}: {len(rs)} bundle(s); median present rate {fmt_ms(pct([x['pres_s'] for x in rs], 50), 1)}/s, "
+          f"interval p99 {fmt_ms(pct([x['iv_p99'] for x in rs if x.get('iv_p99') is not None], 50))} ms, "
+          f"sim tick p50 {fmt_ms(pct([x['sim_p50'] for x in rs if x.get('sim_p50') is not None], 50))} ms, "
+          f"scenes/tick {fmt_ms(pct([x['scenes_tick'] for x in rs if x.get('scenes_tick') is not None], 50))}")
+    frac = []
+    for r in ok:
+        tgt = present_target(r)
+        if tgt and r.get("pres_s_tail") is not None:
+            frac.append((r["pres_s_tail"] / tgt, tgt, r))
+    for f, tgt, r in sorted(frac, key=lambda x: x[0])[:5]:
+        w(f"  low: {r['bundle']} {r['game']} level {r['level']}: last 10 s {fmt_ms(r['pres_s_tail'], 1)}/s of a "
+          f"{tgt:.0f}/s target ({100 * f:.0f}%), sim p50 {fmt_ms(r.get('sim_p50'))} ms, "
+          f"scenes/tick {fmt_ms(r.get('scenes_tick'))}")
+    return o
+
+
+def cmd_corpus(args):
+    paths = corpus_paths(args.paths)
+    if not paths:
+        print("corpus: no bundle found", file=sys.stderr)
+        return EXIT_REFUSED
+    rows = [corpus_row(p) for p in paths]
+    tsv = "\t".join(CORPUS_COLS) + "\n" + "".join(
+        "\t".join(tsv_cell(r.get(c)) for c in CORPUS_COLS) + "\n" for r in rows)
+    if args.tsv:
+        Path(args.tsv).write_text(tsv)
+    elif not args.quiet:
+        sys.stdout.write(tsv)
+    print("\n".join(corpus_summary(rows)))
+    return EXIT_OK
+
+
 def cmd_diff(args):
     a = load_hashes(args.a)
     b = load_hashes(args.b)
@@ -1177,12 +1622,19 @@ def main(argv=None):
     p.add_argument("--flag-lines", type=int, default=20, help="flag lines listed per kind (default 20)")
     p.add_argument("--tol-px", type=float, default=2.0, help="MULTI screen tolerance (default 2 px)")
     p.add_argument("--tol-world", type=float, default=2.0, help="OFFLERP world tolerance (default 2 units)")
+    p = sub.add_parser("perf", help="performance records: pace rollups, CPU split, planner, GPU, coarse rows")
+    p.add_argument("bundle", help="a bundle, or an extracted pace.oppl")
+    p.add_argument("--rows", action="store_true", help="also print the coarse rows as TSV")
+    p = sub.add_parser("corpus", help="one TSV row per bundle over directories and paths, and a text summary")
+    p.add_argument("paths", nargs="+", help="directories (every bug-*.zip inside) and bundle paths")
+    p.add_argument("--tsv", help="write the TSV here instead of standard output")
+    p.add_argument("--quiet", action="store_true", help="print the summary only")
     p = sub.add_parser("diff-hashes", help="first divergent tick and region of two hash CSVs")
     p.add_argument("a")
     p.add_argument("b")
     args = ap.parse_args(argv)
     fn = {"info": cmd_info, "extract": cmd_extract, "replay": cmd_replay, "subtick": cmd_subtick,
-          "diff-hashes": cmd_diff}[args.cmd]
+          "perf": cmd_perf, "corpus": cmd_corpus, "diff-hashes": cmd_diff}[args.cmd]
     try:
         return fn(args)
     except BundleError as e:
