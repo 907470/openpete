@@ -1607,7 +1607,10 @@ static int mc_still(uint32_t mid) {
  * bit-equal to the endpoint's its projected corners are also compared
  * (mc_corner_delta), exactly: any difference, or a changed triangle count,
  * refreshes it, which covers pose inputs the signature does not read. Under
- * a moving camera the corners are not compared: the S2/S3 simple kind
+ * a moving camera a changed triangle count still refreshes it (the walk
+ * drew another face set: a tier the present's own verdict picks, faces the
+ * camera culls), since the endpoint's planes came from triangles the present
+ * may not draw; the corners themselves are not compared: the S2/S3 simple kind
  * places a moby from its cull record's camera-relative offsets, held in
  * integer quarter-world units ((moby - camera) >> 2, mobydraw.s:617-630),
  * so an unchanged moby's corners step by whole grid units (1.0, 2.236) from
@@ -1623,7 +1626,7 @@ static int mc_refresh(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int 
     if (!mc_refresh_on()) return 0;
     if (mc_still(mb->mid) != 1) return 1;
     if (mc_faces_changed(ep, e, mb, k, same)) return 2;
-    if (!same) return 0;
+    if (!same) return s_rs_wb && e->wb_ok && e->nwc != 3 * mb->nt;
     int topo = 0;
     const double d = s_rs_wb && e->wb_ok ? mc_corner_delta(ep, e, mb, &topo) : -1.0;
     return topo || d != 0.0;
@@ -2414,9 +2417,9 @@ static void ms_carry_add(ms_census* cs) {
  * planes (mc_map); with the carry on it adds them and resolves only the
  * mobys the endpoint did not or mc_refresh refused, moved to the front of
  * the queue, unless the verify runs, which resolves the whole queue and adds
- * only those. Under integer vertex snap, now or at the endpoint's store, no
- * plane carries: the walk floors each corner's screen position under the
- * present camera, so a carried plane is exact only for a bit-equal camera.
+ * only those. Under integer vertex snap the carry runs as well, though the
+ * walk floors each corner's screen position under the present camera, so a
+ * carried plane is exact only for a bit-equal camera.
  * @param cs The census.
  * @return The count of queued mobys, from the front, the contact pass resolves. */
 static int ms_carry_begin(ms_census* cs) {
