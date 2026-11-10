@@ -1,0 +1,18 @@
+# terrain-claims.manifest - freecam poses for the retained-terrain claim census
+# (tests/harness/check_terrain_claims.sh).
+#
+# One row per pose, the freecam corpus row form:
+#   <level>[:<area>] | pos=(x, y, z) yaw=Y pitch=P | [start VBL] | [launch]
+#   level   a --skip-to-level name; <level>:<area> enters the sub-area
+#           (--skip-to-area)
+#   pose    a freecam pose string (the per-tick freecam log format, verbatim)
+#   start   the capture VBL (default: the freecam corpus's canonical VBL)
+#   launch  tokens for this row's legs only (KEY=VALUE env entries, else
+#           command-line arguments)
+#
+# Each row runs at --lod original and --lod extended with the retained cache
+# forced on. Every row must read zero sectors claimed back to the CPU walk, in
+# every claim class, on its last canonical walk at or before the capture VBL.
+# The rows are freecam corpus poses, one or two per level, sub-areas included.
+beast_makers | pos=(178888, 198598, 29311) yaw=2520 pitch=118
+misty_bog | pos=(124375, 100894, 23444) yaw=-5022 pitch=249

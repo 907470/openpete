@@ -1,0 +1,37 @@
+# terrain-claims.manifest - freecam poses for the retained-terrain claim census
+# (tests/harness/check_terrain_claims.sh).
+#
+# One row per pose, the freecam corpus row form:
+#   <level>[:<area>] | pos=(x, y, z) yaw=Y pitch=P | [start VBL] | [launch]
+#   level   a --skip-to-level name; <level>:<area> enters the sub-area
+#           (--skip-to-area)
+#   pose    a freecam pose string (the per-tick freecam log format, verbatim)
+#   start   the capture VBL (default: the freecam corpus's canonical VBL)
+#   launch  tokens for this row's legs only (KEY=VALUE env entries, else
+#           command-line arguments)
+#
+# Each row runs at --lod original and --lod extended with the retained cache
+# forced on. Every row must read zero sectors claimed back to the CPU walk, in
+# every claim class, on its last canonical walk at or before the capture VBL.
+# The rows are freecam corpus poses, one or two per level, sub-areas included.
+summer_forest | pos=(130413, 15471, 38359) yaw=1088 pitch=160
+idol_springs | pos=(115428, 98127, 14292) yaw=-1135 pitch=160
+hurricos | pos=(19757, 33954, 15316) yaw=496 pitch=160
+sunny_beach | pos=(72260, 16288, 26067) yaw=1936 pitch=160
+crushs_dungeon | pos=(24218, 29700, 11221) yaw=96 pitch=160
+skelos_badlands | pos=(54371, 53353, 26580) yaw=400 pitch=160
+breeze_harbor | pos=(83855, 83763, 11221) yaw=-433 pitch=160
+metro_speedway | pos=(140182, 62755, 17920) yaw=1551 pitch=0
+shady_oasis | pos=(47104, 25331, 5217) yaw=1024 pitch=160
+fracture_hills | pos=(123263, 72199, 34629) yaw=-672 pitch=160
+gulps_overlook | pos=(36864, 51634, 18901) yaw=-1024 pitch=158
+mystic_marsh | pos=(112622, 35105, 9155) yaw=1648 pitch=160
+canyon_speedway | pos=(66451, 83321, 27812) yaw=1839 pitch=0
+metropolis | pos=(115904, 59478, 40916) yaw=1696 pitch=160
+riptos_arena | pos=(44103, 72307, 8612) yaw=-1040 pitch=160
+glimmer | pos=(55630, 29629, 25462) yaw=974 pitch=243
+autumn_plains | pos=(90130, 56523, 28297) yaw=1024 pitch=160
+winter_tundra | pos=(51217, 30497, 40037) yaw=752 pitch=160
+zephyr | pos=(188848, 40008, 31664) yaw=1707 pitch=156
+magma_cone | pos=(93407, 88746, 41508) yaw=-1999 pitch=236
+mystic_marsh | pos=(81530, 30903, 15232) yaw=-160 pitch=145

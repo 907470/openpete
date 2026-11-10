@@ -1,0 +1,36 @@
+# terrain-claims.manifest - freecam poses for the retained-terrain claim census
+# (tests/harness/check_terrain_claims.sh).
+#
+# One row per pose, the freecam corpus row form:
+#   <level>[:<area>] | pos=(x, y, z) yaw=Y pitch=P | [start VBL] | [launch]
+#   level   a --skip-to-level name; <level>:<area> enters the sub-area
+#           (--skip-to-area)
+#   pose    a freecam pose string (the per-tick freecam log format, verbatim)
+#   start   the capture VBL (default: the freecam corpus's canonical VBL)
+#   launch  tokens for this row's legs only (KEY=VALUE env entries, else
+#           command-line arguments)
+#
+# Each row runs at --lod original and --lod extended with the retained cache
+# forced on. Every row must read zero sectors claimed back to the CPU walk, in
+# every claim class, on its last canonical walk at or before the capture VBL.
+# The rows are freecam corpus poses, one or two per level, sub-areas included.
+sunrise_spring | pos=(45559, 29220, 16378) yaw=1474 pitch=379
+sunny_villa | pos=(79168, 34297, 14796) yaw=867 pitch=197
+cloud_spires | pos=(26935, 50493, 13187) yaw=-1351 pitch=84
+molten_crater | pos=(60294, 100033, 12024) yaw=791 pitch=212
+seashell_shore | pos=(70859, 80778, 15700) yaw=-1802 pitch=222
+midday_gardens | pos=(64750, 54918, 9705) yaw=380 pitch=207
+spooky_swamp | pos=(61666, 72370, 9835) yaw=167 pitch=33
+evening_lake | pos=(45318, 64221, 42770) yaw=1790 pitch=-20
+super_bonus_round:1 | pos=(63716, 66117, 15554) yaw=507 pitch=155
+midnight_mountain | pos=(108418, 95872, 10261) yaw=-1196 pitch=205
+bamboo_terrace | pos=(81096, 78349, 17263) yaw=1054 pitch=198
+desert_ruins | pos=(79114, 47350, 18182) yaw=-2048 pitch=35
+icy_peak | pos=(80284, 63461, 10860) yaw=-1136 pitch=35
+fireworks_factory | pos=(-18130, 83228, 13192) yaw=-78 pitch=119
+sunny_villa:2 | pos=(169418, 57750, 40535) yaw=1402 pitch=574
+haunted_tomb | pos=(93215, 91480, 22144) yaw=1493 pitch=49
+fireworks_factory:1 | pos=(27271, 51213, 20983) yaw=-1026 pitch=7
+lost_fleet:1 | pos=(21472, 54568, 36864) yaw=123 pitch=179 roll=-1
+harbor_speedway | pos=(55529, 136037, 11623) yaw=-753 pitch=-41
+dino_mines:2 | pos=(193476, 57000, 11500) yaw=1023 pitch=-1

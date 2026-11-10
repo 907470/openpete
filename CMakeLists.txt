@@ -2374,6 +2374,40 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Retained-terrain claim census: per row of
+    # games/<game>/corpus/terrain-claims.manifest, one headless leg per LOD
+    # tier with the cache forced on under software vk; the last canonical
+    # walk at the capture VBL must claim 0 sectors in every class (arena
+    # included). Exit 2 is VACUOUS (a leg's walk saw no sector or wrote no
+    # census line) and fails the test. Skips (exit 64) without a binary, a
+    # disc or a Vulkan loader. The legs run serially, 4-6 min each on a
+    # loaded host (one --skip-to-level boot to the capture VBL).
+    foreach(_tc_game IN ITEMS spyro-1 spyro-2 spyro-3)
+        add_test(NAME terrain_claims_${_tc_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_terrain_claims.sh
+                         --game ${_tc_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(terrain_claims_${_tc_game} PROPERTIES
+            LABELS "slow;terrain;${_tc_game}"
+            RESOURCE_LOCK openpete_game
+            # Spyro 2 holds 21 rows (42 legs), Spyro 3 20, Spyro 1 2; each
+            # leg self-limited at --max-runtime-seconds 580.
+            TIMEOUT 18000
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+    # Its negative control: OPENPETE_TERRAIN_CANIMNEAR=0 on a row with
+    # colour-anim near sectors must read claims > 0, else the census is blind.
+    add_test(NAME terrain_claims_calibrate
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_terrain_claims.sh
+                     --game spyro-3 --filter lost_fleet:1 --lod extended --calibrate
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(terrain_claims_calibrate PROPERTIES
+        LABELS "slow;terrain;spyro-3"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # CPU terrain walk vs retained terrain cache, per-pose residual against a
     # committed baseline. Per row of games/spyro-1/corpus/walk-cache.manifest, two
     # headless legs at the freecam corpus's canonical VBL (the walk, and the
