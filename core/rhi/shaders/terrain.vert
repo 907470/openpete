@@ -58,6 +58,9 @@
 #if defined(TERRAIN_FP32_ARM2) && defined(TERRAIN_FP32)
 #error "TERRAIN_FP32_ARM2 is a variant of the fp64 build"
 #endif
+/* TERRAIN_READBACK (on the TERRAIN_FP32 build): the shared-vertex position
+ * readback, drawn as points into an RGBA32_UINT target (rb_emit); the
+ * position chain is the TERRAIN_FP32 build's, unchanged. Diagnostic only. */
 
 /* Terrain sector-mesh vertex stage - the retained-terrain GPU path
  * (extraction rearchitecture, seam 2).
@@ -1200,8 +1203,171 @@ uint attr_word(uint slot, bool lp, bool hqv, bool is4, bool drain)
            (drain ? 1u << 12 : 0u) | (nearv << 13) | (h << 14);
 }
 
+#ifdef TERRAIN_READBACK
+#ifndef TERRAIN_FP32
+#error "TERRAIN_READBACK reads the TERRAIN_FP32 position chain"
+#endif
+/* ---- shared-vertex position readback (diagnostic) -------------------------
+ * The variant draws each vertex as a point into an RGBA32_UINT target at a
+ * pixel its element addresses: pass 0 (pc.pad0) writes the bits of the
+ * vertex's final gl_Position, pass 1 its key. Every camera-space position
+ * this stage emits is a tree of operations on integer world corners: a leaf
+ * is cam_rel (or cam_rel_lerp of a previous -> current pair) of one corner,
+ * an inner node the mean (a + b) * 0.5 of two positions (HQ, nc4, nt4 and
+ * split nodes), a cut the clip of an edge at zc with its endpoints in
+ * canonical order. The key hashes that tree (the operands of a commutative
+ * mean unordered, a static lerp pair as its plain leaf), so two vertices
+ * carry one key when they apply the same operations to the same operands,
+ * and the TERRAIN_FP32 contract is that such vertices land on bit-identical
+ * clip positions. Key words x..z are the hash, w the root's kind; rb_emit
+ * adds the drawing sector's slot to w (bits 8-16) for the pairing's
+ * cross-sector census. */
+#define RB_LEAF 1u
+#define RB_NODE 2u
+#define RB_CUT  3u
+#define RB_W    4096u   /* target width in pixels */
+
+/* One invertible mixing round over four 32-bit lanes (pcg4d). */
+uvec4 rb_round(uvec4 s) {
+    s = s * 1664525u + 1013904223u;
+    s.x += s.y * s.w; s.y += s.z * s.x; s.z += s.x * s.y; s.w += s.y * s.z;
+    s ^= s >> 16u;
+    s.x += s.y * s.w; s.y += s.z * s.x; s.z += s.x * s.y; s.w += s.y * s.z;
+    return s;
+}
+/* Absorb one word into a hash state. */
+uvec4 rb_in(uvec4 s, uint w) {
+    return rb_round(s ^ uvec4(w, w * 0x9E3779B9u, ~w, w + 0x7F4A7C15u));
+}
+/* Absorb a key's four words. */
+uvec4 rb_key_in(uvec4 s, uvec4 k) { return rb_in(rb_in(rb_in(rb_in(s, k.x), k.y), k.z), k.w); }
+/* Absorb an integer world position. */
+uvec4 rb_w_in(uvec4 s, ivec3 w) { return rb_in(rb_in(rb_in(s, uint(w.x)), uint(w.y)), uint(w.z)); }
+/* Finish a hash state into a key of the given kind. */
+uvec4 rb_close(uvec4 s, uint kind) {
+    s = rb_round(rb_round(s));
+    return uvec4(s.xyz, kind);
+}
+/* The key of cam_rel at world position w (x4 units). */
+uvec4 rb_leaf(ivec3 w) {
+    return rb_close(rb_w_in(uvec4(0x52424B31u, 0x4C454146u, RB_LEAF, 0u), w), RB_LEAF);
+}
+/* The key of cam_rel_lerp from wp to wc: the plain leaf when the corner
+ * does not move, since the lerp then yields cam_rel's value exactly. */
+uvec4 rb_leaf_lerp(ivec3 wp, ivec3 wc) {
+    if (wp == wc) return rb_leaf(wc);
+    return rb_close(rb_w_in(rb_w_in(uvec4(0x52424B31u, 0x4C455250u, RB_LEAF, 1u), wp), wc),
+                    RB_LEAF);
+}
+/* Strict lexicographic order on keys. */
+bool rb_less(uvec4 a, uvec4 b) {
+    if (a.x != b.x) return a.x < b.x;
+    if (a.y != b.y) return a.y < b.y;
+    if (a.z != b.z) return a.z < b.z;
+    return a.w < b.w;
+}
+/* The key of (a + b) * 0.5: the add commutes, so the operands are unordered. */
+uvec4 rb_mean(uvec4 a, uvec4 b) {
+    bool sw = rb_less(b, a);
+    uvec4 s = uvec4(0x52424B31u, 0x4E4F4445u, RB_NODE, 0u);
+    s = rb_key_in(rb_key_in(s, sw ? b : a), sw ? a : b);
+    return rb_close(s, RB_NODE);
+}
+/* The key of cv_lerp_n's cut of edge a-b at zc (endpoints in canonical order). */
+uvec4 rb_cut(uvec4 a, uvec4 b, float zc) {
+    bool sw = rb_less(b, a);
+    uvec4 s = uvec4(0x52424B31u, 0x43555420u, RB_CUT, 0u);
+    s = rb_in(rb_key_in(rb_key_in(s, sw ? b : a), sw ? a : b), floatBitsToUint(zc));
+    return rb_close(s, RB_CUT);
+}
+/* nc4_pt's key. */
+uvec4 rb_nc4_pt(uvec4 a, uvec4 b, int k) {
+    if (k == 0) return a;
+    if (k == 4) return b;
+    uvec4 m = rb_mean(a, b);
+    if (k == 2) return m;
+    return rb_mean(k == 1 ? a : b, m);
+}
+/* nc4_node's key. */
+uvec4 rb_nc4_node(int r, int c, uvec4 TL, uvec4 TR, uvec4 BL, uvec4 BR) {
+    return rb_nc4_pt(rb_nc4_pt(TL, BL, r), rb_nc4_pt(TR, BR, r), c);
+}
+/* nt4_node's key. */
+uvec4 rb_nt4_node(int n, uvec4 A, uvec4 B, uvec4 C) {
+    if (n == 0) return A;
+    if (n == 4) return B;
+    if (n == 14) return C;
+    uvec4 m2 = rb_mean(A, B), m9 = rb_mean(A, C), m11 = rb_mean(B, C);
+    if (n == 2) return m2;
+    if (n == 9) return m9;
+    if (n == 11) return m11;
+    if (n == 1)  return rb_mean(A, m2);
+    if (n == 3)  return rb_mean(B, m2);
+    if (n == 5)  return rb_mean(A, m9);
+    if (n == 12) return rb_mean(C, m9);
+    if (n == 8)  return rb_mean(B, m11);
+    if (n == 13) return rb_mean(C, m11);
+    if (n == 6)  return rb_mean(A, m11);
+    if (n == 7)  return rb_mean(B, m9);
+    return rb_mean(C, m2);   /* node 10 */
+}
+/* hq2_node's key (NODEMAP numbering). */
+uvec4 rb_hq2_node(int n, uvec4 TL, uvec4 TR, uvec4 BL, uvec4 BR) {
+    if (n == 0) return TL;
+    if (n == 1) return TR;
+    if (n == 2) return BR;
+    if (n == 3) return BL;
+    uvec4 mT = rb_mean(TL, TR), mB = rb_mean(BL, BR);
+    if (n == 4) return mT;
+    if (n == 5) return mB;
+    if (n == 6) return rb_mean(TL, BL);
+    if (n == 7) return rb_mean(TR, BR);
+    return rb_mean(mT, mB);
+}
+/* tj_pos's key over the base triangle's keys. */
+uvec4 rb_tj_pos(int d, uvec4 B[3]) {
+    if (d < 3) return B[d];
+    int e = (d - 3) / 3;
+    return rb_nc4_pt(B[e], B[(e + 1) % 3], (d - 3) % 3 + 1);
+}
+/* tj_base's corner keys, from the face corner keys k0..k3 (m0, m1, m2, m3c). */
+void rb_tj_base(bool hqv, bool quad, bool tri2, int subq, uvec4 k0, uvec4 k1, uvec4 k2, uvec4 k3,
+                out uvec4 B[3]) {
+    int o = tri2 ? 1 : 0;
+    if (hqv) {
+        for (int j = 0; j < 3; j++) B[j] = rb_hq2_node(NODEMAP[subq][o + j], k0, k1, k3, k2);
+        return;
+    }
+    if (!quad)     { B[0] = k0; B[1] = k1; B[2] = k2; }
+    else if (tri2) { B[0] = k1; B[1] = k3; B[2] = k2; }
+    else           { B[0] = k0; B[1] = k1; B[2] = k3; }
+}
+/* Replace the emitted position by this vertex's readback pixel: pass 0
+ * stores the bits of the gl_Position just computed, pass 1 the key.
+ * pc.pad1 is the element base of the draw's buffer in the target, pc.pad2
+ * the cell vertices per record (bits 0-7; 0 for a vertex arena, where the
+ * element is gl_VertexIndex) and the target height (bits 8-31); element e
+ * owns pixels 2e and 2e + 1. The key pixel carries the sector slot in w
+ * bits 8-16. */
+void rb_emit(uvec4 key, uint slot) {
+    uint per = uint(pc.pad2) & 0xFFu, h = uint(pc.pad2) >> 8u;
+    uint elem = per != 0u ? uint(gl_InstanceIndex) * per + uint(gl_VertexIndex)
+                          : uint(gl_VertexIndex);
+    uint px = 2u * (uint(pc.pad1) + elem) + uint(pc.pad0 & 1);
+    vMat = pc.pad0 == 0 ? floatBitsToUint(gl_Position) : uvec4(key.xyz, key.w | (slot << 8u));
+    gl_Position = vec4((float(px % RB_W) + 0.5) * (2.0 / float(RB_W)) - 1.0,
+                       1.0 - (float(px / RB_W) + 0.5) * (2.0 / float(h)), 0.5, 1.0);
+    gl_PointSize = 1.0;
+}
+#endif
+
 void kill_vert() {
+#ifdef TERRAIN_READBACK
+    gl_Position = vec4(-2.0, -2.0, 0.5, 1.0);   /* a point outside the view: no pixel */
+    gl_PointSize = 1.0;
+#else
     gl_Position = vec4(0.0, 0.0, 0.0, 1.0);   /* degenerate: no raster */
+#endif
     vUV = vec2(0.0); vColor = vec4(0.0); vMat = uvec4(0u);
     vKoff = 0.0; vKcls = OP_KEY_CLASS_NONE; vQ = 1.0;
     vKfl = vec2(0.0); vKq = 1.0; vKc0 = uvec4(0u); vKc1 = uvec4(0u);
@@ -1350,6 +1516,9 @@ int rim_classified(vec2 s0, vec2 s1, vec2 s2, pfloat z0, pfloat z1, pfloat z2) {
 #ifdef TERRAIN_FP32_ARM2
 /* mf, osf: the position and override of the fp32 chain beside m and os. */
 struct cvx { pvec3 m; ivec3 c; ivec3 q; vec2 uv; vec2 os; bool ov; vec2 fl; vec3 mf; vec2 osf; };
+#elif defined(TERRAIN_READBACK)
+/* rk: the corner's readback key. */
+struct cvx { pvec3 m; ivec3 c; ivec3 q; vec2 uv; vec2 os; bool ov; vec2 fl; uvec4 rk; };
 #else
 struct cvx { pvec3 m; ivec3 c; ivec3 q; vec2 uv; vec2 os; bool ov; vec2 fl; };
 #endif
@@ -1382,6 +1551,9 @@ cvx cv_lerp_n(cvx a, cvx b, pfloat zc) {
     r.q  = ivec3(0);
     r.os = vec2(0.0); r.ov = false;
     r.fl = vec2(fx, fy);
+#ifdef TERRAIN_READBACK
+    r.rk = rb_cut(a.rk, b.rk, zc);
+#endif
 #ifdef TERRAIN_FP32_ARM2
     {   /* the TERRAIN_FP32 build's cut on the fp32 positions, behind
          * endpoint first, at the same zc rounded to float (exact: the
@@ -2227,6 +2399,10 @@ void main()
 #ifdef TERRAIN_FP32_SECDELTA
     ctl_wo = wo;
 #endif
+#ifdef TERRAIN_READBACK
+    uvec4 rk0 = rb_leaf(wo + cc0), rk1 = rb_leaf(wo + cc1);
+    uvec4 rk2 = rb_leaf(wo + cc2), rk3 = rb_leaf(wo + cc3);
+#endif
 #define MAC(l) mac_of(l)
 #ifdef TERRAIN_ANIM
     ivec3 pc0 = inPrevC0.xyz;
@@ -2239,6 +2415,10 @@ void main()
     precise vec3 lc1 = ANIM_LERP3(pc1, cc1);
     precise vec3 lc2 = ANIM_LERP3(pc2, cc2);
     precise vec3 lc3 = ANIM_LERP3(pc3, cc3);
+#ifdef TERRAIN_READBACK
+    rk0 = rb_leaf_lerp(wo + pc0, wo + cc0); rk1 = rb_leaf_lerp(wo + pc1, wo + cc1);
+    rk2 = rb_leaf_lerp(wo + pc2, wo + cc2); rk3 = rb_leaf_lerp(wo + pc3, wo + cc3);
+#endif
 #elif defined(TERRAIN_NEAR)
     /* A poly-anim sector's face with a previous-corner record lerps as the
      * anim stage does; every other face takes cam_rel. */
@@ -2255,6 +2435,10 @@ void main()
         lc1 = cam_rel_lerp(wo + pc1, wo + cc1, va);
         lc2 = cam_rel_lerp(wo + pc2, wo + cc2, va);
         lc3 = cam_rel_lerp(wo + pc3, wo + cc3, va);
+#ifdef TERRAIN_READBACK
+        rk0 = rb_leaf_lerp(wo + pc0, wo + cc0); rk1 = rb_leaf_lerp(wo + pc1, wo + cc1);
+        rk2 = rb_leaf_lerp(wo + pc2, wo + cc2); rk3 = rb_leaf_lerp(wo + pc3, wo + cc3);
+#endif
     }
 #else
     precise vec3 lc0 = cam_rel(wo + cc0);
@@ -2642,8 +2826,14 @@ void main()
     vec3 tjBf[3];
     vec2 tjSf[3];
 #endif
+#ifdef TERRAIN_READBACK
+    uvec4 rtjB[3];
+#endif
     if (tjs) {
         tj_base(hqv, quad, (f16 & 0x2000u) != 0u, subq, m0, m1, m2, m3c, tjB, tjS, tjF, tjR);
+#ifdef TERRAIN_READBACK
+        rb_tj_base(hqv, quad, (f16 & 0x2000u) != 0u, subq, rk0, rk1, rk2, rk3, rtjB);
+#endif
 #ifdef TERRAIN_FP32_ARM2
         tj_base_f32(hqv, quad, (f16 & 0x2000u) != 0u, subq, m0, m1, m2, m3c, f0, f1, f2, f3,
                     tjB, tjBf, tjSf);
@@ -2881,6 +3071,9 @@ void main()
      * against the near plane and becomes one corner of the clipped fan. */
     precise pvec3 mo;
     vec2 sscr;      /* the emitted screen point: push_tri's t->sx/sy mirror */
+#ifdef TERRAIN_READBACK
+    uvec4 rbk;      /* mo's readback key */
+#endif
 #ifdef TERRAIN_FP32_ARM2
     vec3 mof;       /* mo and sscr on the fp32 chain: the rasterised position */
     vec2 sscrf;
@@ -2998,6 +3191,34 @@ void main()
                 tov = true;
             }
         }
+#ifdef TERRAIN_READBACK
+        /* The members' readback keys, as tp was built above. */
+        uvec4 tk[3];
+        if (!hqv) {
+            if (!quad)      { tk[0] = rk0; tk[1] = rk1; tk[2] = rk2; }
+            else if (lp) {
+                if (tri2n)  { tk[0] = rk1; tk[1] = rk2; tk[2] = rk3; }
+                else        { tk[0] = rk0; tk[1] = rk1; tk[2] = rk2; }
+            } else {
+                if (tri2n)  { tk[0] = rk1; tk[1] = rk3; tk[2] = rk2; }
+                else        { tk[0] = rk0; tk[1] = rk1; tk[2] = rk3; }
+            }
+        } else if (ist) {
+            for (int k = 0; k < 3; k++) tk[k] = rb_nt4_node(NT_SUB[tsub * 3 + k], rk0, rk1, rk2);
+        } else if (is4) {
+            int cr = cell >> 2, cq = cell & 3;
+            for (int k = 0; k < 3; k++) {
+                ivec2 n = k == 0 ? (tri2n ? ivec2(cr, cq + 1) : ivec2(cr, cq))
+                        : k == 1 ? (tri2n ? ivec2(cr + 1, cq) : ivec2(cr, cq + 1))
+                        :          (tri2n ? ivec2(cr + 1, cq + 1) : ivec2(cr + 1, cq));
+                tk[k] = rb_nc4_node(n.x, n.y, rk0, rk1, rk3, rk2);
+            }
+        } else {
+            int base = tri2n ? 1 : 0;
+            for (int k = 0; k < 3; k++)
+                tk[k] = rb_hq2_node(NODEMAP[subq][base + k], rk0, rk1, rk3, rk2);
+        }
+#endif
         /* Member attributes: self's are this vertex's own, the other two
          * ride the ctx twin in emit order (a = self+1, b = self+2 mod 3).
          * All six vertices of a source triangle sit at whole-triangle
@@ -3083,6 +3304,11 @@ void main()
             }
             tpf = pf2; tosf = of2;
 #endif
+#ifdef TERRAIN_READBACK
+            uvec4 tk2[3];
+            for (int k = 0; k < 3; k++) tk2[k] = rb_tj_pos(tjd3[k], tk);
+            tk = tk2;
+#endif
             for (int k = 0; k < 3; k++) {
                 tp[k] = p2[k]; cf[k] = f2[k]; cn[k] = n2[k]; tq[k] = q2[k];
                 uvm[k] = u2[k]; tos[k] = o2[k]; tfl[k] = l2[k];
@@ -3107,6 +3333,9 @@ void main()
             cin[k].os = tos[k];
             cin[k].ov = tov;
             cin[k].fl = tfl[k];
+#ifdef TERRAIN_READBACK
+            cin[k].rk = tk[k];
+#endif
 #ifdef TERRAIN_FP32_ARM2
             cin[k].mf  = tpf[k];
             cin[k].osf = tosf[k];
@@ -3127,6 +3356,9 @@ void main()
                 c2[k].uv = mix(cin[a].uv, cin[b].uv, t);
                 c2[k].os = tj_scr(tjd3[k], tp, tos);
                 c2[k].fl = mix(cin[a].fl, cin[b].fl, t);
+#ifdef TERRAIN_READBACK
+                c2[k].rk = rb_tj_pos(tjd3[k], tk);
+#endif
 #ifdef TERRAIN_FP32_ARM2
                 c2[k].mf  = tj_pos(tjd3[k], tpf);
                 c2[k].osf = tj_scr_f32(tjd3[k], tp, tpf, tosf);
@@ -3180,6 +3412,9 @@ void main()
         cvx V = outv[self == 0 ? e0 : (self == 1 ? e1 : e2)];
         mo  = V.m;
         sscr = scr_of(V);
+#ifdef TERRAIN_READBACK
+        rbk = V.rk;
+#endif
 #ifdef TERRAIN_FP32_ARM2
         mof = V.mf;
         sscrf = scr_f32(V);
@@ -3192,6 +3427,9 @@ void main()
     if (tjs) {
         mo = tj_pos(tjD, tjB);
         sscr = tj_scr(tjD, tjB, tjS);
+#ifdef TERRAIN_READBACK
+        rbk = rb_tj_pos(tjD, rtjB);
+#endif
         mfl = mix(tjF[tjP], tjF[tjQ], float(tjT));
 #ifdef TERRAIN_FP32_ARM2
         mof = tj_pos(tjD, tjBf);
@@ -3207,6 +3445,13 @@ void main()
 #endif
         mo = MAC(lown);
         sscr = snap_of(proj_of(mo));
+#ifdef TERRAIN_READBACK
+#ifdef TERRAIN_ANIM
+        rbk = rb_leaf_lerp(wo + inPrevPos.xyz, wo + inPos.xyz);
+#else
+        rbk = rb_leaf(wo + inPos.xyz);
+#endif
+#endif
 #ifdef TERRAIN_FP32_ARM2
 #ifdef TERRAIN_ANIM
         mof = mac_of(cam_rel_lerp(a2o + inPrevPos.xyz, a2o + inPos.xyz, g.ofH.w));
@@ -3224,6 +3469,9 @@ void main()
         int n = NT_SUB[tsub * 3 + role];
         mo = nt4_node(n, m0, m1, m2);
         sscr = nt4_screen(n, m0, m1, m2);
+#ifdef TERRAIN_READBACK
+        rbk = rb_nt4_node(n, rk0, rk1, rk2);
+#endif
         mfl = nt4_fl(n);
 #ifdef TERRAIN_FP32_ARM2
         mof = nt4_node(n, f0, f1, f2);
@@ -3234,6 +3482,9 @@ void main()
         int nr = (cell >> 2) + (role >> 1), nq = (cell & 3) + (role & 1);
         mo = nc4_node(nr, nq, TL, TR, BL, BR);
         sscr = nc4_screen(nr, nq, TL, TR, BL, BR);
+#ifdef TERRAIN_READBACK
+        rbk = rb_nc4_node(nr, nq, rk0, rk1, rk3, rk2);
+#endif
         mfl = vec2(float(nq), float(nr));
 #ifdef TERRAIN_FP32_ARM2
         mof = nc4_node(nr, nq, f0, f1, f3, f2);
@@ -3249,6 +3500,9 @@ void main()
         mo = node == 0 ? TL : node == 1 ? TR : node == 2 ? BR : node == 3 ? BL
            : node == 4 ? mT : node == 5 ? mB : node == 6 ? mL : node == 7 ? mR : C;
         sscr = hq_snap_screen(node, TL, TR, BL, BR, mo);
+#ifdef TERRAIN_READBACK
+        rbk = rb_hq2_node(node, rk0, rk1, rk3, rk2);
+#endif
 #ifdef TERRAIN_FP32_ARM2
         mof = hq2_node(node, f0, f1, f3, f2);
         sscrf = hq_snap_f32(node, TL, TR, BL, BR, mo, mof);
@@ -3489,4 +3743,7 @@ void main()
     vKfl = mfl * q;      /* p interpolates as the UV does (psx_key_contest.glsl) */
     vKd  = kd * q;
     vKq  = q;
+#ifdef TERRAIN_READBACK
+    rb_emit(rbk, slot);
+#endif
 }

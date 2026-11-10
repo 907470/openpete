@@ -19,7 +19,7 @@ find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 set(RHI_SHADER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(RHI_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${RHI_SHADER_OUT_DIR})
-set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert psx_sample.frag psx_scene.frag psx_scene_key.frag psx_key_cutout.frag key_ident.frag blit.frag freeze_overlay.frag resolve.frag overlay_resolve.frag shadow_decal.frag shadow_decal_tex.vert shadow_decal_tex.frag prepass.vert terrain_key.vert occl_downsample.frag hd_tex.frag hd_tex_cutout.frag postfx_fs.vert raster_quantize.frag psx_dither.frag moby_rank.vert moby_rank.frag moby_rank_cutout.frag moby_shell.frag moby_shell_intr.frag terrain.vert terrain.frag terrain_prepass.frag terrain_prepass_cutout.frag prepass_cutout.frag terrain_key_cache.frag terrain_faceid.frag storage_pull.vert storage_pull_tex.vert tex_store.frag)
+set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert psx_sample.frag psx_scene.frag psx_scene_key.frag psx_key_cutout.frag key_ident.frag blit.frag freeze_overlay.frag resolve.frag overlay_resolve.frag shadow_decal.frag shadow_decal_tex.vert shadow_decal_tex.frag prepass.vert terrain_key.vert occl_downsample.frag hd_tex.frag hd_tex_cutout.frag postfx_fs.vert raster_quantize.frag psx_dither.frag moby_rank.vert moby_rank.frag moby_rank_cutout.frag moby_shell.frag moby_shell_intr.frag terrain.vert terrain.frag terrain_prepass.frag terrain_prepass_cutout.frag prepass_cutout.frag terrain_key_cache.frag terrain_faceid.frag terrain_readback.frag storage_pull.vert storage_pull_tex.vert tex_store.frag)
 # The launcher shape pass (core/renderer/launcher_shape_pass.c).
 list(APPEND RHI_SHADERS launcher_shape.vert launcher_shape.frag)
 # The launcher sky pass (core/renderer/launcher_sky_pass.c).
@@ -226,15 +226,24 @@ endforeach()
 # positive control of the hole census (OPENPETE_TERRAIN_FP32=2): the camera
 # operand is rounded per sector, so a vertex shared by two sectors can
 # round apart. Diagnostic only; no shipped configuration selects it.
+# <variant>_fp32rb.vert / <variant>_fp32ctlrb.vert: the fp32 and control
+# stages with TERRAIN_READBACK, the shared-vertex position readback
+# (OPENPETE_TERRAIN_READBACK). Diagnostic only.
 foreach(vv plain anim near cells_near cells_anim plain:ctl anim:ctl near:ctl
-           cells_near:ctl cells_anim:ctl)
+           cells_near:ctl cells_anim:ctl plain:rb anim:rb near:rb cells_near:rb
+           cells_anim:rb plain:ctl:rb anim:ctl:rb near:ctl:rb cells_near:ctl:rb
+           cells_anim:ctl:rb)
     string(REPLACE ":" ";" vp "${vv}")
     list(GET vp 0 v)
     set(defs --define-macro TERRAIN_FP32=1)
     set(sfx fp32)
-    if(vv MATCHES ":ctl$")
+    if(vv MATCHES ":ctl")
         list(APPEND defs --define-macro TERRAIN_FP32_SECDELTA=1)
         set(sfx fp32ctl)
+    endif()
+    if(vv MATCHES ":rb$")
+        list(APPEND defs --define-macro TERRAIN_READBACK=1)
+        set(sfx ${sfx}rb)
     endif()
     if(v STREQUAL "plain")
         set(name terrain_${sfx})

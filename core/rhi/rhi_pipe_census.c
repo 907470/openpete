@@ -138,6 +138,10 @@ uint64_t rhi_pc_desc_hash(const rhi_pipeline_desc *d)
     if (d->ssbo_set2) h = pc_mix(h, 0x5353424f32ull);   /* "SSBO2" */
     if (d->tex_ssbo_set2) h = pc_mix(h, 0x5458535332ull);   /* "TXSS2" */
     if (d->push_vertex) h = pc_mix(h, 0x5055534856ull);     /* "PUSHV" */
+    if (d->topology != RHI_TOPOLOGY_TRIANGLE_LIST)
+        h = pc_mix(h, 0x544f504f00ull | (uint64_t)d->topology);       /* "TOPO" */
+    if (d->color_format != RHI_COLOR_FORMAT_SCENE)
+        h = pc_mix(h, 0x434f4c4600ull | (uint64_t)d->color_format);   /* "COLF" */
     return h;
 }
 

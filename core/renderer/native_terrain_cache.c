@@ -1253,6 +1253,8 @@ static int tc_range_draw_on(void)
 
 static void tc_exhaust_warn(void);
 
+static void tc_rb_free(rhi_device *dev);
+
 void openpete_tercache_shutdown(rhi_device *dev)
 {
     if (!dev) return;
@@ -1278,6 +1280,7 @@ void openpete_tercache_shutdown(rhi_device *dev)
     for (int a = 0; a < OPTC_ARENA_COUNT; a++)
         for (int b = 0; b < TC_BUF_SLOTS; b++) free(s_tc.reg[a][b].c);
     if (s_tc.hd_dummy) { rhi_destroy_texture(dev, s_tc.hd_dummy); s_tc.hd_dummy = NULL; }
+    tc_rb_free(dev);
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) tc_arena_free_all(dev, a);
     rhi_pipeline **const named[] = {
         &s_tc.ps.pipe_world, &s_tc.ps.pipe_world_mark, &s_tc.ps.pipe_alpha, &s_tc.ps.pipe_add,
@@ -3469,9 +3472,14 @@ static void tc_faceid_issue(const tc_pc *pc, int arena, int bi, int cells, uint3
     }
 }
 
+/* Set while openpete_tercache_readback_record draws: every arena draw is
+ * then issued once, as a plain draw. */
+static int s_tc_rb_drawing;
+
 /** @brief Issue one arena draw over elements [first, first + n) of the bound buffer, tc_dup_draw times.
  *
- * Under OPENPETE_TERRAIN_FACEID the draw is tc_faceid_issue's, once.
+ * Under OPENPETE_TERRAIN_FACEID the draw is tc_faceid_issue's, once; a
+ * readback draw (s_tc_rb_drawing) is issued once.
  * @param pc The draw's push constants (already pushed for the stock draw).
  * @param arena Arena index.
  * @param bi Buffer index within the arena.
@@ -3482,10 +3490,10 @@ static void tc_faceid_issue(const tc_pc *pc, int arena, int bi, int cells, uint3
 static void tc_issue(const tc_pc *pc, int arena, int bi, int cells, uint32_t per,
                      uint32_t first, uint32_t n)
 {
-    if (openpete_tercache_faceid())
+    if (openpete_tercache_faceid() && !s_tc_rb_drawing)
         tc_faceid_issue(pc, arena, bi, cells, per, first, n);
     else
-        for (int r = 0, rn = tc_dup_draw(); r < rn; r++) {
+        for (int r = 0, rn = s_tc_rb_drawing ? 1 : tc_dup_draw(); r < rn; r++) {
             if (cells) rhi_draw_instanced(s_tc.dev, per, n, 0, first);
             else       rhi_draw(s_tc.dev, n, first);
         }
@@ -4053,6 +4061,229 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
                 tc_zone_name(which), s_tc_mat_passes, s_tc_mat_stock);
     s_tc_mat_pass = -1;
     rhi_gpu_zone_end(s_tc.dev);
+}
+
+/* ---- shared-vertex position readback ------------------------------------
+ * OPENPETE_TERRAIN_READBACK (diagnostic, unregistered): the TERRAIN_READBACK
+ * stage of each family draws every drawn vertex of the selected state as a
+ * point at a pixel its element addresses (terrain.vert rb_emit), once with
+ * its gl_Position bits and once with its readback key, into one RGBA32_UINT
+ * target the harness pairs on the host (tools/terrain_readback.py). */
+
+/* The TERRAIN_READBACK stages per arena family (k_tc_vert order): row 0 on
+ * the TERRAIN_FP32 stage, row 1 on the TERRAIN_FP32_SECDELTA control. */
+static const char *const k_tc_vert_rb[2][OPENPETE_MATERIAL_TER_VARIANTS] = {
+    { "terrain_fp32rb.vert.spv", "terrain_anim_fp32rb.vert.spv",
+      "terrain_near_fp32rb.vert.spv", "terrain_cells_anim_fp32rb.vert.spv",
+      "terrain_cells_near_fp32rb.vert.spv" },
+    { "terrain_fp32ctlrb.vert.spv", "terrain_anim_fp32ctlrb.vert.spv",
+      "terrain_near_fp32ctlrb.vert.spv", "terrain_cells_anim_fp32ctlrb.vert.spv",
+      "terrain_cells_near_fp32ctlrb.vert.spv" },
+};
+#define TC_RB_W      4096u      /* target width; terrain.vert RB_W */
+#define TC_RB_HMAX   16384u     /* tallest target */
+#define TC_RB_MAXENT (OPTC_ARENA_COUNT * TC_BUF_SLOTS)
+
+/* One drawn arena buffer of a recorded readback. */
+typedef struct { uint32_t arena, buf, base, count, per; } tc_rb_entry;
+
+static struct {
+    int            on;          /* -1 unread, else the latched switch */
+    int            warned;      /* the wrong-precision notice was printed */
+    rhi_texture   *rt;
+    uint32_t       h;           /* the target's height */
+    rhi_pipeline  *pipe[OPENPETE_MATERIAL_TER_VARIANTS];
+    int            armed;       /* a readback is recorded and not yet written */
+    int            row;         /* precision row of the recording */
+    uint32_t       elems;       /* elements laid out */
+    int            n;
+    tc_rb_entry    ent[TC_RB_MAXENT];
+} s_tc_rb = { .on = -1 };
+
+/** @brief Return the arena family (a TC_V_* value) of an arena.
+ * @param arena Arena index.
+ * @return Its family. */
+static int tc_arena_family(int arena)
+{
+    if (OPTC_ARENA_IS_CELL_ANIM(arena)) return TC_V_CELLS_ANIM;
+    if (OPTC_ARENA_IS_CELL(arena)) return TC_V_CELLS_NEAR;
+    if (OPTC_ARENA_IS_NEAR(arena)) return TC_V_NEAR;
+    return OPTC_ARENA_IS_ANIM(arena) ? TC_V_ANIM : TC_V_PLAIN;
+}
+
+/** @brief Return the readback pipeline of an arena family, created at its first use.
+ *
+ * The family's cache pipeline layout and vertex input, the TERRAIN_READBACK
+ * stage of the recording's precision row, terrain_readback.frag, point
+ * topology, an RGBA32_UINT colour target, no blend and no depth test.
+ * @param fam The family, a TC_V_* value.
+ * @param row The k_tc_vert_rb row.
+ * @return The pipeline, or NULL when it failed to build. */
+static rhi_pipeline *tc_rb_pipe(int fam, int row)
+{
+    if (s_tc_rb.pipe[fam]) return s_tc_rb.pipe[fam];
+    const int anim = fam == TC_V_ANIM || fam == TC_V_CELLS_ANIM;
+    const int near = fam == TC_V_NEAR || fam == TC_V_CELLS_NEAR;
+    const rhi_pipeline_desc d = {
+        .vert_spv = k_tc_vert_rb[row][fam], .frag_spv = "terrain_readback.frag.spv",
+        .blend = RHI_BLEND_NONE,
+        .terrain_pipeline = true, .terrain_anim = anim != 0, .terrain_near = near != 0,
+        .terrain_cells = fam == TC_V_CELLS_ANIM || fam == TC_V_CELLS_NEAR,
+        .pair_set7 = true, .tex_ssbo_set2 = true, .push_const_size = sizeof(tc_pc),
+        .topology = RHI_TOPOLOGY_POINT_LIST, .color_format = RHI_COLOR_FORMAT_RGBA32_UINT,
+    };
+    s_tc_rb.pipe[fam] = rhi_create_pipeline(s_tc.dev, &d);
+    return s_tc_rb.pipe[fam];
+}
+
+/** @brief Lay out every drawn arena buffer of the selected state in the readback target.
+ *
+ * A buffer's elements are its high-water mark (records times cell vertices
+ * per record on a cell arena), the range tc_draw_buf can draw from; each
+ * buffer takes the next free element base. Fills s_tc_rb.ent, n and elems.
+ * @return The pixels the layout needs (two per element). */
+static uint64_t tc_rb_layout(void)
+{
+    s_tc_rb.n = 0;
+    uint32_t base = 0;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        const int cells = OPTC_ARENA_IS_CELL(a);
+        const uint32_t per = !cells ? 0u : OPTC_ARENA_IS_CELL_ANIM(a) ? RHI_TERRAIN_CELL_VERTS_ANIM
+                                                                      : RHI_TERRAIN_CELL_VERTS_NEAR;
+        for (int b = 0, nb = atomic_load_explicit(&s_tc.arena[a].n, memory_order_acquire);
+             b < nb; b++) {
+            const uint32_t high = s_tc.sel.mark_high[a][b];
+            if (high == 0) continue;
+            const uint32_t count = cells ? high * per : high;
+            s_tc_rb.ent[s_tc_rb.n++] = (tc_rb_entry){ (uint32_t)a, (uint32_t)b, base, count, per };
+            base += count;
+        }
+    }
+    s_tc_rb.elems = base;
+    return 2ull * base;
+}
+
+/** @brief Make the readback target at least @p need pixels, TC_RB_W wide.
+ * @param need Pixels the layout needs.
+ * @return 1 when the target holds them, else 0. */
+static int tc_rb_target(uint64_t need)
+{
+    const uint64_t rows = (need + TC_RB_W - 1) / TC_RB_W;
+    if (rows == 0 || rows > TC_RB_HMAX) return 0;
+    if (s_tc_rb.rt && s_tc_rb.h >= rows) return 1;
+    if (s_tc_rb.rt) rhi_destroy_texture_deferred(s_tc.dev, s_tc_rb.rt);
+    s_tc_rb.h = (uint32_t)((rows + 255u) & ~255ull);
+    if (s_tc_rb.h > TC_RB_HMAX) s_tc_rb.h = TC_RB_HMAX;
+    s_tc_rb.rt = rhi_create_render_target_format(s_tc.dev, TC_RB_W, s_tc_rb.h,
+                                                 RHI_COLOR_FORMAT_RGBA32_UINT);
+    return s_tc_rb.rt != NULL;
+}
+
+/** @brief Return whether the readback runs: OPENPETE_TERRAIN_READBACK set and not "0", with an fp32 precision row.
+ * @return The k_tc_vert_rb row (0 or 1), or -1 when the readback is off. */
+static int tc_rb_row(void)
+{
+    if (s_tc_rb.on < 0) {
+        const char *e = getenv("OPENPETE_TERRAIN_READBACK");
+        s_tc_rb.on = e && *e && *e != '0';
+    }
+    if (!s_tc_rb.on) return -1;
+    const int row = tc_precision_row();
+    if (row == 1 || row == 2) return row - 1;
+    if (!s_tc_rb.warned)
+        fprintf(stderr, "[tc-readback] off: it reads the fp32 stages "
+                        "(OPENPETE_TERRAIN_FP32=1 or 2)\n");
+    s_tc_rb.warned = 1;
+    return -1;
+}
+
+/** @brief Draw one laid-out buffer twice, position pass then key pass.
+ * @param e The buffer's layout entry.
+ * @param clip The screen-to-clip mapping. */
+static void tc_rb_draw_entry(const tc_rb_entry *e, const openpete_tercache_clip *clip)
+{
+    tc_pc pc;
+    tc_pc_fill(&pc, 0, clip);
+    pc.pad_[1] = (int32_t)e->base;
+    pc.pad_[2] = (int32_t)(e->per | (s_tc_rb.h << 8));
+    for (int mode = 0; mode < 2; mode++) {
+        pc.pad_[0] = mode;
+        tc_draw_buf((int)e->arena, (int)e->buf, &s_tc.arena[e->arena].buf[e->buf], &pc);
+    }
+}
+
+/** @brief Destroy the readback target and pipelines (cache shutdown).
+ * @param dev Device. */
+static void tc_rb_free(rhi_device *dev)
+{
+    if (s_tc_rb.rt) rhi_destroy_texture(dev, s_tc_rb.rt);
+    for (int i = 0; i < OPENPETE_MATERIAL_TER_VARIANTS; i++)
+        if (s_tc_rb.pipe[i]) rhi_destroy_pipeline(dev, s_tc_rb.pipe[i]);
+    memset(&s_tc_rb, 0, sizeof s_tc_rb);
+    s_tc_rb.on = -1;
+}
+
+int openpete_tercache_readback_record(const openpete_tercache_clip *clip, rhi_texture *vram)
+{
+    const int row = tc_rb_row();
+    if (row < 0 || !s_tc.ready || !s_tc.draw_open || !s_tc.ubo || !clip) return 0;
+    if (!tc_rb_target(tc_rb_layout())) {
+        fprintf(stderr, "[tc-readback] %u elements exceed the %ux%u target\n",
+                s_tc_rb.elems, TC_RB_W, TC_RB_HMAX);
+        return 0;
+    }
+    tc_ubo_flush_frame();
+    rhi_begin_render_target(s_tc.dev, s_tc_rb.rt, 0.0f, 0.0f, 0.0f, 0.0f);
+    s_tc_rb_drawing = 1;
+    const int mat_was = s_tc_mat_pass;
+    s_tc_mat_pass = -1;
+    int bound = -1;
+    for (int i = 0; i < s_tc_rb.n; i++) {
+        const tc_rb_entry *e = &s_tc_rb.ent[i];
+        const int fam = tc_arena_family((int)e->arena);
+        rhi_pipeline *p = tc_rb_pipe(fam, row);
+        if (!p) continue;
+        if (fam != bound) {
+            rhi_bind_pipeline(s_tc.dev, p);
+            if (tc_bind_draw_inputs(vram, NULL) != 0) continue;
+            bound = fam;
+        }
+        tc_rb_draw_entry(e, clip);
+    }
+    s_tc_mat_pass = mat_was;
+    s_tc_rb_drawing = 0;
+    rhi_end_render_target(s_tc.dev, s_tc_rb.rt);
+    s_tc_rb.armed = 1;
+    s_tc_rb.row = row + 1;
+    fprintf(stderr, "[tc-readback] recorded buffers=%d elements=%u target=%ux%u row=%d\n",
+            s_tc_rb.n, s_tc_rb.elems, TC_RB_W, s_tc_rb.h, s_tc_rb.row);
+    return 1;
+}
+
+int openpete_tercache_readback_write(const char *path)
+{
+    if (!s_tc_rb.armed || !s_tc_rb.rt || !path) return 1;
+    s_tc_rb.armed = 0;
+    const size_t bytes = (size_t)TC_RB_W * s_tc_rb.h * 16u;
+    uint32_t *tex = malloc(bytes);
+    int w = 0, h = 0;
+    if (!tex || !rhi_read_render_target_texels(s_tc.dev, s_tc_rb.rt, tex, bytes, &w, &h)) {
+        free(tex);
+        fprintf(stderr, "[tc-readback] read of the target failed\n");
+        return -1;
+    }
+    FILE *f = fopen(path, "wb");
+    const uint32_t hdr[6] = { 0x42524354u /* "TCRB" */, 1u, (uint32_t)w, (uint32_t)h,
+                              (uint32_t)s_tc_rb.n, (uint32_t)s_tc_rb.row };
+    const size_t words = (size_t)s_tc_rb.elems * 2u * 4u;
+    int ok = f && fwrite(hdr, sizeof hdr, 1, f) == 1 &&
+             fwrite(s_tc_rb.ent, sizeof(tc_rb_entry), (size_t)s_tc_rb.n, f) == (size_t)s_tc_rb.n &&
+             fwrite(tex, sizeof(uint32_t), words, f) == words;
+    if (f && fclose(f) != 0) ok = 0;
+    free(tex);
+    fprintf(stderr, "[tc-readback] %s %s elements=%u\n", ok ? "wrote" : "FAILED writing",
+            path, s_tc_rb.elems);
+    return ok ? 0 : -1;
 }
 
 void openpete_tercache_get_stats(openpete_tercache_stats_t *out)

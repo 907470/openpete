@@ -1125,6 +1125,37 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
                             struct rhi_texture *vram, int use_mark,
                             const openpete_tercache_keys *keys);
 
+/** @brief Record the shared-vertex position readback of the selected retained terrain state into its own target, under OPENPETE_TERRAIN_READBACK.
+ *
+ * Diagnostic; the variable is read with getenv at the first call and
+ * latched, and is unregistered. With it set and not "0", and the fp32 stages
+ * selected (OPENPETE_TERRAIN_FP32 1 or 2), every arena buffer's drawn
+ * spans of the WORLD pass are drawn twice as points with the
+ * TERRAIN_READBACK stage of their family into an RGBA32_UINT target:
+ * element e of a buffer whose base is b owns pixels 2(b + e) (the bits of
+ * its gl_Position) and 2(b + e) + 1 (its readback key, with the sector slot
+ * in bits 8-16 of the fourth word); a killed vertex
+ * writes neither and reads back zero. Must be called inside a frame,
+ * outside any render pass; openpete_tercache_readback_write reads the
+ * target once that frame is submitted.
+ * @param clip The screen-to-clip mapping the positions are computed under.
+ * @param vram VRAM texture, or NULL to leave the binding.
+ * @return 1 when a readback was recorded, else 0. */
+int  openpete_tercache_readback_record(const openpete_tercache_clip *clip,
+                                       struct rhi_texture *vram);
+/** @brief Write the last recorded shared-vertex readback to a file and disarm it.
+ *
+ * Waits the device idle and reads the target back. The file holds the
+ * magic "TCRB", the words version (1), target width, target height, entry
+ * count and precision row (1 fp32, 2 the per-sector control), one entry of
+ * five words per drawn arena buffer (arena, buffer, element base, element
+ * count, cell vertices per record or 0), then the texels of the first
+ * 2 x (elements) pixels, four 32-bit words each, all little-endian.
+ * @param path Output path.
+ * @return 0 when written; 1 when no readback is armed; -1 on a read or
+ *         write failure. */
+int  openpete_tercache_readback_write(const char *path);
+
 /* Census (builder increments rebuild counts; the module tracks the rest). */
 typedef struct {
     uint32_t chunks, verts_used, verts_cap;   /* summed over arenas */

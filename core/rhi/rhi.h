@@ -1005,6 +1005,20 @@ typedef enum { RHI_STENCIL_NONE, RHI_STENCIL_MARK, RHI_STENCIL_TEST,
 typedef enum { RHI_DEPTH_SCENE = 0, RHI_DEPTH_FORWARD = 1,
                RHI_DEPTH_CLASSES } rhi_depth_class;
 
+/* Primitive topology of a pipeline. TRIANGLE_LIST (the zero value) is every
+ * renderer pipeline's; POINT_LIST rasterises each vertex as one point, whose
+ * vertex stage writes gl_PointSize (a diagnostic that addresses one pixel
+ * per vertex). */
+typedef enum { RHI_TOPOLOGY_TRIANGLE_LIST = 0, RHI_TOPOLOGY_POINT_LIST } rhi_topology;
+
+/* Colour format of a render target and of the pipelines drawn into it.
+ * SCENE (the zero value) is the fixed internal 8-bit format every pass
+ * shares. RGBA32_UINT holds four 32-bit unsigned words per texel: a
+ * fragment stage writes `out uvec4`, blending is off, the clear words are
+ * the clear colour's float bits, and the texels are read back as stored
+ * (rhi_read_render_target_texels). Such a target is not sampleable. */
+typedef enum { RHI_COLOR_FORMAT_SCENE = 0, RHI_COLOR_FORMAT_RGBA32_UINT } rhi_color_format;
+
 typedef struct rhi_pipeline_desc {
     const char    *vert_spv;    /* filename within RHI_SHADER_DIR */
     const char    *frag_spv;
@@ -1206,6 +1220,13 @@ typedef struct rhi_pipeline_desc {
     bool           push_vertex; /* the push-constant block is visible to the
                                  * vertex stage as well as the fragment stage
                                  * (the terrain pipelines' visibility).       */
+    rhi_topology   topology;    /* primitive topology; TRIANGLE_LIST unless a
+                                 * pipeline asks for points                   */
+    rhi_color_format color_format; /* the colour format of the render pass
+                                 * the pipeline is built against: SCENE, or
+                                 * RGBA32_UINT for a target made by
+                                 * rhi_create_render_target_format with that
+                                 * format (blend must be RHI_BLEND_NONE)      */
 } rhi_pipeline_desc;
 
 /** @brief Create a single-instance host-visible vertex buffer, updated by map and memcpy.
@@ -2659,6 +2680,20 @@ void rhi_texture_set_filter_linear(rhi_device *dev, rhi_texture *tex);
  * @param height Height in pixels.
  * @return The render target, or NULL on failure. */
 rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t height);
+/** @brief Create a render target of a given colour format, drawn into with rhi_begin_render_target by pipelines whose color_format is that format.
+ *
+ * RHI_COLOR_FORMAT_SCENE makes the target rhi_create_render_target makes.
+ * RHI_COLOR_FORMAT_RGBA32_UINT makes a target of four 32-bit unsigned words
+ * per texel, with its own render pass (same depth attachment, colour
+ * stored and ending SHADER_READ_ONLY); it has no sampler set and is read
+ * with rhi_read_render_target_texels.
+ * @param dev Device the target is created on.
+ * @param width Width in pixels.
+ * @param height Height in pixels.
+ * @param fmt Colour format.
+ * @return The render target, or NULL on failure. */
+rhi_texture *rhi_create_render_target_format(rhi_device *dev, uint32_t width, uint32_t height,
+                                             rhi_color_format fmt);
 
 /** @brief Begin a render pass into render target `rt`, clearing color to (r, g, b, a) and depth to far.
  *
@@ -2872,6 +2907,21 @@ bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
  * @return false on the preconditions of rhi_read_render_target. */
 bool rhi_read_render_target_raw(rhi_device *dev, rhi_texture *rt, void *out,
                                 size_t out_bytes, int *out_w, int *out_h);
+/** @brief Read a render target's colour texels back as stored, without swizzle or alpha rewrite.
+ *
+ * Texel size is the target's format's: 4 bytes in the internal format's
+ * own byte order, 16 bytes (four native-endian 32-bit words) for an
+ * RHI_COLOR_FORMAT_RGBA32_UINT target. Same preconditions and device wait
+ * as rhi_read_render_target.
+ * @param dev Device.
+ * @param rt Render target, or NULL.
+ * @param out Destination; must hold width x height texels.
+ * @param out_bytes Size of @p out in bytes.
+ * @param out_w Receives the target's width; may be NULL.
+ * @param out_h Receives the target's height; may be NULL.
+ * @return false on the preconditions of rhi_read_render_target. */
+bool rhi_read_render_target_texels(rhi_device *dev, rhi_texture *rt, void *out,
+                                   size_t out_bytes, int *out_w, int *out_h);
 
 /** @brief Create a depth-sampled render target whose depth image also allows transfer reads, for rhi_read_render_target_depth.
  *

@@ -22225,6 +22225,37 @@ static void path_with_suffix(const char *base, const char *suffix,
     else     snprintf(out, cap, "%s%s", base, suffix);
 }
 
+/** @brief Record the retained terrain's shared-vertex readback (OPENPETE_TERRAIN_READBACK) under a dump's full-extent clip mapping.
+ *
+ * Inside the dump's frame, outside any pass; does nothing unless the
+ * readback is on and a terrain state is selected. */
+static void tercache_readback_record(void)
+{
+    if (!openpete_tercache_frame_open()) return;
+    const int prev_fe = s_render_full_extent;
+    s_render_full_extent = 1;
+    openpete_tercache_clip c;
+    tercache_clip_params(&c);
+    s_render_full_extent = prev_fe;
+    (void)openpete_tercache_readback_record(&c, s_nr.vram_tex);
+}
+
+/** @brief Write a recorded shared-vertex readback beside a dump, as <base without extension>-readback.bin.
+ *
+ * A compose read into memory (an in-process capture, not a dump) writes
+ * nothing.
+ * @param base The dump's path base.
+ * @param dump Nonzero for a dump written to files. */
+static void tercache_readback_write(const char *base, int dump)
+{
+    if (!dump) return;
+    char p[1100];
+    const char *dot = strrchr(base, '.');
+    if (dot) snprintf(p, sizeof p, "%.*s-readback.bin", (int)(dot - base), base);
+    else     snprintf(p, sizeof p, "%s-readback.bin", base);
+    (void)openpete_tercache_readback_write(p);
+}
+
 /** @brief Write the terrain key image's colour attachment (owner true view-Z, class byte) to <stem>.rgba.
  *
  * Four bytes per texel, rows top-down, alpha kept (rhi_read_render_target_raw).
@@ -23940,6 +23971,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         hd_flush_pending();        /* HD replacement textures queued at draw time */
         openpete_native_hdfold_flush();
         native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
+        tercache_readback_record();
         /* BLACK clear - live-offscreen parity. The live present clears black and
          * relies on the scene's own bg-fill quad; clearing to the bg colour here
          * painted over exactly the class of bug where that quad is built but
@@ -23987,6 +24019,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
                              openpete_native_hdfold_pending() == 0)) break;
     }
     shot_chrome_note(menu_verts);
+    tercache_readback_write(base, cap_out == NULL);
 
     unsigned char *nat = malloc(frame_px * 4);          /* native, top-down    */
     unsigned char *ref = with_ref ? malloc(frame_px * 4)     : NULL;  /* reference, top-down  */

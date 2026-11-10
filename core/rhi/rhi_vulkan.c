@@ -607,6 +607,10 @@ struct rhi_device {
      * memory per spec, even where drivers happen to preserve it.) Attachment
      * formats match rt_rp/off_rp, so all existing pipelines are compatible. */
     VkRenderPass   rt_ds_rp;
+    /* rt_rp with an R32G32B32A32_UINT colour attachment: the pass of every
+     * RHI_COLOR_FORMAT_RGBA32_UINT target and the pass its pipelines are
+     * built against. */
+    VkRenderPass   rt_u32_rp;
     VkImage        off_image;
     VkDeviceMemory off_mem;
     VkImageView    off_view;
@@ -2437,20 +2441,22 @@ static bool create_render_pass(rhi_device *dev)
     return true;
 }
 
-/** @brief Create dev->rt_rp, the render pass for render-to-texture targets.
+/** @brief Create a render-to-texture render pass with a given colour format: dev->rt_rp (RHI_RT_FORMAT) or dev->rt_u32_rp.
  *
- * The attachment formats match off_rp (RHI_RT_FORMAT color, depth_format
- * depth-stencil), so pipelines built against off_rp are compatible with it.
- * The color attachment ends in SHADER_READ_ONLY_OPTIMAL, and the outgoing
- * dependency (render_pass_deps) makes its writes visible to fragment-shader
- * reads, so a later pass in the same frame can sample the image. Depth and
- * stencil clear on load and are not stored.
- * @param dev Device whose formats are read and whose rt_rp is written.
+ * With RHI_RT_FORMAT the attachment formats match off_rp (RHI_RT_FORMAT
+ * color, depth_format depth-stencil), so pipelines built against off_rp are
+ * compatible with it. The color attachment ends in SHADER_READ_ONLY_OPTIMAL,
+ * and the outgoing dependency (render_pass_deps) makes its writes visible to
+ * fragment-shader reads, so a later pass in the same frame can sample the
+ * image. Depth and stencil clear on load and are not stored.
+ * @param dev Device whose depth format is read.
+ * @param color_fmt The colour attachment's format.
+ * @param out Receives the render pass.
  * @return true on success, false when vkCreateRenderPass fails. */
-static bool create_rt_render_pass(rhi_device *dev)
+static bool create_rt_render_pass_fmt(rhi_device *dev, VkFormat color_fmt, VkRenderPass *out)
 {
     VkAttachmentDescription color = {
-        .format = RHI_RT_FORMAT,
+        .format = color_fmt,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -2485,7 +2491,7 @@ static bool create_rt_render_pass(rhi_device *dev)
         .subpassCount = 1, .pSubpasses = &sub,
         .dependencyCount = RP_DEPS, .pDependencies = deps,
     };
-    VkResult r = vkCreateRenderPass(dev->device, &rci, NULL, &dev->rt_rp);
+    VkResult r = vkCreateRenderPass(dev->device, &rci, NULL, out);
     if (r != VK_SUCCESS) { RHI_LOG("vkCreateRenderPass(rt) failed: %d\n", (int)r); return false; }
     return true;
 }
@@ -4281,7 +4287,8 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     pipeline_cache_open(dev);
     step = "The Vulkan device's render targets could not be created.";
     if (!create_render_pass(dev))       goto fail;
-    if (!create_rt_render_pass(dev))    goto fail;
+    if (!create_rt_render_pass_fmt(dev, RHI_RT_FORMAT, &dev->rt_rp)) goto fail;
+    if (!create_rt_render_pass_fmt(dev, VK_FORMAT_R32G32B32A32_UINT, &dev->rt_u32_rp)) goto fail;
     if (!create_rt_ds_render_pass(dev)) goto fail;
     if (!create_offscreen(dev))         goto fail;
     if (!headless && !create_stages(dev)) goto fail;
@@ -4407,6 +4414,7 @@ static void device_objects_destroy(rhi_device *dev)
     if (dev->off_load_rp) vkDestroyRenderPass(dev->device, dev->off_load_rp, NULL);
     if (dev->rt_rp)  vkDestroyRenderPass(dev->device, dev->rt_rp, NULL);
     if (dev->rt_ds_rp) vkDestroyRenderPass(dev->device, dev->rt_ds_rp, NULL);
+    if (dev->rt_u32_rp) vkDestroyRenderPass(dev->device, dev->rt_u32_rp, NULL);
 
     desc_pools_free(dev);
     if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
@@ -6195,20 +6203,70 @@ static VkImageUsageFlags rt_depth_usage(bool depth_sampleable, bool depth_readab
     return u;
 }
 
+/** @brief Return the colour format, texel bytes and render pass of a render target.
+ *
+ * A u32 target is R32G32B32A32_UINT (16 bytes) through rt_u32_rp; any other
+ * is RHI_RT_FORMAT (4 bytes) through rt_ds_rp when its depth is sampled,
+ * else rt_rp.
+ * @param dev Device.
+ * @param depth_sampleable Whether the depth is sampled.
+ * @param u32 Whether the colour format is R32G32B32A32_UINT.
+ * @param fmt Receives the colour format.
+ * @param bpp Receives the bytes per texel.
+ * @param pass Receives the render pass. */
+static void rt_kind_of(const rhi_device *dev, bool depth_sampleable, bool u32,
+                       VkFormat *fmt, uint32_t *bpp, VkRenderPass *pass)
+{
+    *fmt = RHI_RT_FORMAT;
+    *bpp = 4u;
+    *pass = depth_sampleable ? dev->rt_ds_rp : dev->rt_rp;
+    if (!u32) return;
+    *fmt = VK_FORMAT_R32G32B32A32_UINT;
+    *bpp = 16u;
+    *pass = dev->rt_u32_rp;
+}
+
+/** @brief Give a render target its colour sampling set (its view with the shared sampler), so it binds like any texture; a u32 target is read back, never sampled, and gets none.
+ *
+ * @param dev Device.
+ * @param t The target, its view made.
+ * @param u32 Whether the colour format is R32G32B32A32_UINT.
+ * @return false when the set could not be allocated. */
+static bool rt_color_set(rhi_device *dev, rhi_texture *t, bool u32)
+{
+    if (u32) return true;
+    if (!desc_alloc(dev, dev->vram_set_layout, &t->set, &t->set_pool)) {
+        RHI_LOG("rt descriptor set allocation failed\n");
+        return false;
+    }
+    VkDescriptorImageInfo dii = {
+        .sampler = dev->vram_sampler, .imageView = t->view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkWriteDescriptorSet w = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = t->set, .dstBinding = 0,
+        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &dii,
+    };
+    vkUpdateDescriptorSets(dev->device, 1, &w, 0, NULL);
+    return true;
+}
+
 /** @brief Create a render target: a color image of the offscreen format, a depth-stencil attachment, a framebuffer and a sampling descriptor set.
  *
  * A depth-sampleable target also gets a depth-aspect view and descriptor
  * set and renders through rt_ds_rp; a depth-readable one's depth image is
- * a transfer source.
+ * a transfer source. A u32 target's colour image is R32G32B32A32_UINT
+ * (16 bytes per texel), renders through rt_u32_rp and has no sampling set.
  * @param dev Device.
  * @param width Width in pixels.
  * @param height Height in pixels.
  * @param depth_sampleable Whether the depth is sampled.
  * @param depth_readable Whether the depth is read back.
+ * @param u32 Whether the colour format is R32G32B32A32_UINT.
  * @return The target, or NULL when any step fails (partial resources are destroyed). */
 static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
                                               uint32_t height, bool depth_sampleable,
-                                              bool depth_readable)
+                                              bool depth_readable, bool u32)
 {
     if (depth_sampleable) {
         /* SAMPLED_IMAGE is not in the spec's REQUIRED feature set for the
@@ -6225,14 +6283,17 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
     rhi_texture *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
     t->is_rt = true;
-    t->width = width; t->height = height; t->bpp = 4;
+    VkFormat cfmt;
+    VkRenderPass pass;
+    t->width = width; t->height = height;
+    rt_kind_of(dev, depth_sampleable, u32, &cfmt, &t->bpp, &pass);
     t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     /* Color image: same format as the offscreen/swapchain (so rt_rp & off_rp
      * pipelines are compatible), usable as a color attachment AND a sampler. */
     VkImageCreateInfo ici = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D, .format = RHI_RT_FORMAT,
+        .imageType = VK_IMAGE_TYPE_2D, .format = cfmt,
         .extent = { width, height, 1 }, .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
         /* TRANSFER_DST: rhi_snapshot_offscreen_to_rt blits into a render
@@ -6258,7 +6319,7 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
     vkBindImageMemory(dev->device, t->image, t->mem, 0);
     VkImageViewCreateInfo vci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = t->image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = RHI_RT_FORMAT,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = cfmt,
         .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1 },
     };
     if (vkCreateImageView(dev->device, &vci, NULL, &t->view) != VK_SUCCESS) {
@@ -6297,7 +6358,7 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
         RHI_LOG("rt depth vkCreateImageView failed\n"); goto fail;
     }
     t->depth_readable = depth_readable;
-    t->rt_pass = depth_sampleable ? dev->rt_ds_rp : dev->rt_rp;
+    t->rt_pass = pass;
     VkImageView fb_atts[2] = { t->view, t->rt_depth_view };
     VkFramebufferCreateInfo fci = {
         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = t->rt_pass,
@@ -6335,19 +6396,7 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
         vkUpdateDescriptorSets(dev->device, 1, &dw, 0, NULL);
     }
 
-    /* Descriptor set (this view + shared sampler) so it binds like any texture. */
-    if (!desc_alloc(dev, dev->vram_set_layout, &t->set, &t->set_pool)) {
-        RHI_LOG("rt descriptor set allocation failed\n"); goto fail;
-    }
-    VkDescriptorImageInfo dii = {
-        .sampler = dev->vram_sampler, .imageView = t->view,
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    };
-    VkWriteDescriptorSet w = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = t->set, .dstBinding = 0,
-        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &dii,
-    };
-    vkUpdateDescriptorSets(dev->device, 1, &w, 0, NULL);
+    if (!rt_color_set(dev, t, u32)) goto fail;
 
     /* Valid sampling layout before the first render (defensive). */
     VkCommandBuffer cb = one_shot_begin(dev);
@@ -6385,19 +6434,26 @@ fail:
 
 rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t height)
 {
-    return create_render_target_impl(dev, width, height, false, false);
+    return create_render_target_impl(dev, width, height, false, false, false);
+}
+
+rhi_texture *rhi_create_render_target_format(rhi_device *dev, uint32_t width, uint32_t height,
+                                             rhi_color_format fmt)
+{
+    return create_render_target_impl(dev, width, height, false, false,
+                                     fmt == RHI_COLOR_FORMAT_RGBA32_UINT);
 }
 
 rhi_texture *rhi_create_render_target_depth_sampled(rhi_device *dev,
                                                     uint32_t width, uint32_t height)
 {
-    return create_render_target_impl(dev, width, height, true, false);
+    return create_render_target_impl(dev, width, height, true, false, false);
 }
 
 rhi_texture *rhi_create_render_target_depth_readable(rhi_device *dev,
                                                      uint32_t width, uint32_t height)
 {
-    return create_render_target_impl(dev, width, height, true, true);
+    return create_render_target_impl(dev, width, height, true, true, false);
 }
 
 void rhi_bind_depth_sampler(rhi_device *dev, rhi_texture *rt, uint32_t set)
@@ -7326,33 +7382,37 @@ bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
     return true;
 }
 
-/** @brief Read a render target's colour image into host RGBA8, alpha forced opaque or kept as stored.
+/** @brief Read a render target's colour image into host RGBA8 (alpha forced opaque or kept as stored), or its texels as stored.
  *
- * The body of rhi_read_render_target and rhi_read_render_target_raw.
+ * The body of rhi_read_render_target, rhi_read_render_target_raw and
+ * rhi_read_render_target_texels.
  * @param dev Device.
  * @param rt Render target, or NULL.
- * @param out Destination; must hold width x height x 4 bytes.
+ * @param out Destination; must hold width x height x 4 bytes (mode 2:
+ *            width x height texels of the target's size).
  * @param out_bytes Size of @p out in bytes.
  * @param out_w Receives the width; may be NULL.
  * @param out_h Receives the height; may be NULL.
- * @param keep_alpha Nonzero to copy the stored alpha instead of 0xFF.
+ * @param mode 0: RGBA8 with alpha 0xFF; 1: RGBA8 with the stored alpha;
+ *             2: the texels as stored, no swizzle.
  * @return false on the preconditions rhi_read_render_target names. */
 static bool read_render_target_color(rhi_device *dev, rhi_texture *rt, void *out,
                                      size_t out_bytes, int *out_w, int *out_h,
-                                     int keep_alpha)
+                                     int mode)
 {
     if (!rt || !rt->is_rt) return false;
     int w = (int)rt->width, h = (int)rt->height;
     if (out_w) *out_w = w;
     if (out_h) *out_h = h;
-    size_t need = rt_readback_bytes(w, h);
+    const size_t texels = (size_t)w * (size_t)h * rt->bpp;
+    size_t need = mode == 2 ? texels : rt_readback_bytes(w, h);
     if (!out || out_bytes < need || w <= 0 || h <= 0) return false;
 
     /* The RT is left in SHADER_READ_ONLY by rhi_end_render_target. Wait for the
      * frame that rendered it, transition to TRANSFER_SRC, copy to a host buffer,
      * then restore SHADER_READ_ONLY so it stays sampleable / safe to destroy. */
     vkDeviceWaitIdle(dev->device);
-    rhi_buffer *rb = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+    rhi_buffer *rb = create_host_buffer(dev, texels, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                         /*prefer_cached=*/true);
     if (!rb) return false;
 
@@ -7378,8 +7438,9 @@ static bool read_render_target_color(rhi_device *dev, rhi_texture *rt, void *out
     one_shot_end(dev, cb);
     rt->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    readback_swizzle(dev, rb->mapped, out, w, h);
-    if (keep_alpha) {
+    if (mode == 2) memcpy(out, rb->mapped, texels);
+    else readback_swizzle(dev, rb->mapped, out, w, h);
+    if (mode == 1) {
         const uint8_t *src = (const uint8_t *)rb->mapped;
         uint8_t *dst = (uint8_t *)out;
         for (size_t i = 0; i < (size_t)w * (size_t)h; i++) dst[i * 4 + 3] = src[i * 4 + 3];
@@ -7398,6 +7459,12 @@ bool rhi_read_render_target_raw(rhi_device *dev, rhi_texture *rt, void *out,
                                 size_t out_bytes, int *out_w, int *out_h)
 {
     return read_render_target_color(dev, rt, out, out_bytes, out_w, out_h, 1);
+}
+
+bool rhi_read_render_target_texels(rhi_device *dev, rhi_texture *rt, void *out,
+                                   size_t out_bytes, int *out_w, int *out_h)
+{
+    return read_render_target_color(dev, rt, out, out_bytes, out_w, out_h, 2);
 }
 
 bool rhi_read_render_target_depth(rhi_device *dev, rhi_texture *rt, float *out,
@@ -8123,6 +8190,18 @@ static void pipe_create_record(rhi_device *dev, rhi_pipe_site site, rhi_pc_kind 
         atomic_fetch_add_explicit(&dev->pcache_fu_misses, 1u, memory_order_relaxed);
 }
 
+/** @brief Return the render pass a pipeline is built against: rt_u32_rp for an RGBA32_UINT colour format, else off_rp.
+ *
+ * Every SCENE-format pass (off_rp, rt_rp, rt_ds_rp) is compatible with
+ * off_rp, so one build serves all of them.
+ * @param dev Device.
+ * @param d The pipeline's description.
+ * @return The render pass. */
+static VkRenderPass pipe_render_pass(const rhi_device *dev, const rhi_pipeline_desc *d)
+{
+    return d->color_format == RHI_COLOR_FORMAT_RGBA32_UINT ? dev->rt_u32_rp : dev->off_rp;
+}
+
 /** @brief Describe the create info a pipeline gets for a variant: the dedupe fields, the constants each stage receives and the polygon mode.
  *
  * A pipeline the wireframe view selects (pipeline_wire_view) rasterizes as
@@ -8150,7 +8229,7 @@ static void pipe_variant_view(const rhi_device *dev, const rhi_pipeline_desc *d,
         .declared = info->vs_ids | info->fs_ids,
         .poly_mode = (uint32_t)((w && dev->has_fill_non_solid) ? VK_POLYGON_MODE_LINE
                                                                : VK_POLYGON_MODE_FILL),
-        .render_pass = (uint64_t)(uintptr_t)dev->off_rp,
+        .render_pass = (uint64_t)(uintptr_t)pipe_render_pass(dev, d),
     };
     for (int i = 0; i < 6; i++) v->consts[i] = ((v->declared >> i) & 1u) ? c[i] : 0u;
 }
@@ -8624,7 +8703,8 @@ static bool pipe_state_fill(const rhi_device *dev, const rhi_pipeline_desc *desc
     }
     st->ia = (VkPipelineInputAssemblyStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .topology = desc->topology == RHI_TOPOLOGY_POINT_LIST ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+                                                              : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
     };
     st->vp = (VkPipelineViewportStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
@@ -8822,15 +8902,17 @@ static uint64_t gpl_mix_layout(uint64_t h, const pipe_state *st)
  * and constants, depth-stencil and multisample state, the layout and the
  * render pass. Output: the blend attachment and constants, multisample
  * state and the render pass. Any thread.
- * @param dev Device whose offscreen render pass is read.
+ * @param dev Device whose render passes are read.
+ * @param desc The pipeline's description (its render pass, pipe_render_pass).
  * @param st The pipeline's parts (pipe_state_fill).
  * @param info Its stage facts.
  * @param key Receives the three keys. */
-static void gpl_part_keys(const rhi_device *dev, const pipe_state *st, const pipe_stage_info *info,
+static void gpl_part_keys(const rhi_device *dev, const rhi_pipeline_desc *desc,
+                          const pipe_state *st, const pipe_stage_info *info,
                           uint64_t key[GPL_PARTS])
 {
     const uint64_t basis = 0xcbf29ce484222325ull;
-    const uint64_t rp = (uint64_t)(uintptr_t)dev->off_rp;
+    const uint64_t rp = (uint64_t)(uintptr_t)pipe_render_pass(dev, desc);
     for (int p = 0; p < GPL_PARTS; p++) {
         key[p] = gpl_mix(basis, &p, sizeof p);
         key[p] = gpl_mix(key[p], &rp, sizeof rp);
@@ -8975,7 +9057,7 @@ static bool gpl_build(rhi_device *dev, int part, const gpl_src *src, VkPipeline 
         .pNext = &li,
         .flags = lf,
         .layout = *out_layout,
-        .renderPass = dev->off_rp,
+        .renderPass = pipe_render_pass(dev, &src->desc),
         .subpass = 0,
     };
     gpl_part_states(part, &st, m, &gp);
@@ -9141,7 +9223,7 @@ static int pipeline_link(rhi_device *dev, const rhi_compile_job *job, const pipe
                          VkPipelineCreateFlags flags, bool lto, VkPipeline *out, pipe_feedback *fb)
 {
     uint64_t key[GPL_PARTS];
-    gpl_part_keys(dev, st, &job->info, key);
+    gpl_part_keys(dev, &job->desc, st, &job->info, key);
     VkPipeline libs[GPL_PARTS];
     for (int p = 0; p < GPL_PARTS; p++) {
         gpl_src src;
@@ -9159,7 +9241,7 @@ static int pipeline_link(rhi_device *dev, const rhi_compile_job *job, const pipe
         .pNext = &lci,
         .flags = flags | (lto ? RHI_PIPE_CREATE_LTO : 0u),
         .layout = layout,
-        .renderPass = dev->off_rp,
+        .renderPass = pipe_render_pass(dev, &job->desc),
         .subpass = 0,
     };
     *out = VK_NULL_HANDLE;
@@ -9221,7 +9303,7 @@ static VkResult pipeline_create_whole(rhi_device *dev, const rhi_compile_job *jo
         .pColorBlendState = &st->cb,
         .pDynamicState = &st->ds,
         .layout = layout,
-        .renderPass = dev->off_rp,
+        .renderPass = pipe_render_pass(dev, &job->desc),
         .subpass = 0,
         .flags = flags,
     };
@@ -9930,7 +10012,7 @@ static pool_item *gpl_items_for(rhi_device *dev, const rhi_compile_job *job, rhi
     pipe_state st;
     if (!pipe_state_fill(dev, &job->desc, &job->info, &var, &st)) return NULL;
     uint64_t key[GPL_PARTS];
-    gpl_part_keys(dev, &st, &job->info, key);
+    gpl_part_keys(dev, &job->desc, &st, &job->info, key);
     pool_item *head = NULL;
     for (int p = 0; p < GPL_PARTS; p++) {
         pool_item *it = gpl_claim_new(dev, key[p])
