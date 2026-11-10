@@ -42,8 +42,15 @@
 #   tests/harness/check_terrain_readback.sh [--game SLUG] [--filter SUBSTR]
 #       [--stride=K] [--manifest=PATH] [--lods "original extended"]
 #       [--jitter=J] [--carve-out=PAIR[,PAIR...]] [--out DIR] [--build-dir=DIR]
-# --manifest names a freecam manifest (name | pose | start) in place of the
-# game's corpus; --stride=K keeps every K-th selected row.
+# The poses are the game's games/<game>/corpus/terrain-readback.manifest
+# (name | pose | start): rows chosen so that every named family pair meets
+# on screen. --manifest names another freecam manifest; --stride=K keeps
+# every K-th selected row.
+#
+# OPENPETE_BIN=<path to openpete.exe> drives a Windows build instead (a
+# hardware device: headless, --input-lock, knobs forwarded through WSLENV;
+# the disc and output paths are absolute Linux paths, which the exe opens
+# through the WSL share it is started from).
 #
 # Exit 0 PASS: every f32 pair agrees, every leg's two captures agree, the
 # control disagrees somewhere, and every named family pair was compared at
@@ -85,7 +92,8 @@ GAME="$(pg_parse_game "$@")" || exit 64
 PG_BUILD_DIR="$BUILD_DIR"
 pg_resolve "$GAME" || exit 64
 pg_cap_settings
-[[ -n "$MAN" ]] || MAN="$PG_FREECAM_MANIFEST"
+[[ -n "$MAN" ]] || MAN="$PG_CORPUS_DIR/terrain-readback.manifest"
+[[ -f "$MAN" ]] || { echo "readback: SKIP (no manifest at $MAN)"; exit 64; }
 [[ -x "$PG_BIN"  ]] || { echo "readback: SKIP (no binary at $PG_BIN)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "readback: SKIP (no disc at $PG_DISC)"; exit 64; }
 python3 -c 'import numpy' 2>/dev/null || { echo "readback: SKIP (python3 or numpy missing)"; exit 64; }
@@ -93,6 +101,9 @@ python3 -c 'import numpy' 2>/dev/null || { echo "readback: SKIP (python3 or nump
 [[ -n "$OUT" ]] || OUT="$BUILD_DIR/terrain-readback/$PG_GAME"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd -P)"
+DISC_ABS="$(cd "$(dirname "$PG_DISC")" && pwd -P)/$(basename "$PG_DISC")"
+# shellcheck source=scripts/lib/wslenv.sh
+source scripts/lib/wslenv.sh
 TOOL=tools/terrain_readback.py
 
 leg() {  # tag level pose start lod precision
@@ -100,16 +111,29 @@ leg() {  # tag level pose start lod precision
     local -a PG_SKIP_ARGS=()
     pg_skip_args "$level"
     rm -f "${OUT:?}/$tag.png" "${OUT:?}/$tag-vk.png" "${OUT:?}/$tag-readback.bin"
-    PG_CAPTURE_ENV=(OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TERRAIN_READBACK=1
-                    "OPENPETE_TERRAIN_FP32=$prec" "OPENPETE_TERRAIN_CAM_JITTER=$JITTER")
+    local -a env=(OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TERRAIN_READBACK=1
+                  "OPENPETE_TERRAIN_FP32=$prec" "OPENPETE_TERRAIN_CAM_JITTER=$JITTER")
+    local -a args=(--no-card --mute 1 --vibration 0 --mods "" --renderer vk --lod "$lod" --aspect 4:3
+        --vertex-precision subpixel --texture-mapping perspective
+        "${PG_SKIP_ARGS[@]}" --freecam-pose "$pose"
+        --screenshot-native-only --screenshot-on-frame "$start"
+        --screenshot-output "$OUT/$tag.png"
+        --frame-limit $((start + 20)) --max-runtime-seconds 840)
+    if [[ "$PG_BIN" == *.exe ]]; then
+        # A Windows exe (OPENPETE_BIN): the knobs cross WSL only through
+        # WSLENV (scripts/lib/wslenv.sh); the run is headless and takes no
+        # input.
+        rm -f "${OUT:?}/$tag.log"
+        wslenv_forward OPENPETE_VIBRATION=0 "${env[@]}"
+        op_own_run env "${WSLENV_ARGS[@]}" timeout -k 10 900 "$PG_BIN" --headless --input-lock \
+            --no-config --disc "$DISC_ABS" --disc-cache 0 "${PG_RUN_ARGS[@]}" "${args[@]}" \
+            >"$OUT/$tag.log" 2>&1 </dev/null
+        [[ -f "$OUT/$tag-readback.bin" ]]
+        return
+    fi
+    PG_CAPTURE_ENV=("${env[@]}")
     PG_CAPTURE_TIMEOUT=900
-    pg_capture "$OUT/$tag.log" "$OUT/$tag-readback.bin" -- \
-        --no-card --mute 1 --vibration 0 --mods "" --renderer vk --lod "$lod" --aspect 4:3 \
-        --vertex-precision subpixel --texture-mapping perspective \
-        "${PG_SKIP_ARGS[@]}" --freecam-pose "$pose" \
-        --screenshot-native-only --screenshot-on-frame "$start" \
-        --screenshot-output "$OUT/$tag.png" \
-        --frame-limit $((start + 20)) --max-runtime-seconds 840
+    pg_capture "$OUT/$tag.log" "$OUT/$tag-readback.bin" -- "${args[@]}"
 }
 
 # The manifest is read into arrays before any run: a child that inherits the

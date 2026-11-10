@@ -1,0 +1,22 @@
+# terrain-readback.manifest - freecam poses for the retained-terrain
+# shared-vertex position readback (tests/harness/check_terrain_readback.sh).
+#
+# One row per pose:  <level> | pos=(x, y, z) yaw=Y pitch=P | [start VBL]
+#   level  a --skip-to-level name
+#   pose   a freecam pose string (the per-tick freecam log format, verbatim)
+#   start  the capture VBL (default: the freecam corpus's canonical VBL)
+#
+# The rows together put every named arena family pair on screen at both LOD
+# tiers: plain/plain, plain/anim, plain/near, anim/near, cell/near,
+# cell/anim, cell/cell and cut/cut (tools/terrain_readback.py). anim/near
+# needs a poly-anim sector whose bounding sphere lies wholly beyond the near
+# threshold (anim arena) beside a static sector that crosses the camera
+# plane (near arena): the camera stands on the static neighbour just outside
+# the anim sector's sphere, looking at it.
+summer_forest | pos=(130413, 15471, 38359) yaw=1088 pitch=160
+# anim/near and cell/anim: the freecam corpus's first
+# idol_springs row.
+idol_springs | pos=(115428, 98127, 14292) yaw=-1135 pitch=160
+# cell/anim and anim/near: the camera on sector 17 outside poly-anim
+# sector 75's sphere.
+summer_forest | pos=(111280, 54073, 30016) yaw=46 pitch=60
