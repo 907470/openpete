@@ -230,3 +230,8 @@ glimmer@sphere4x3 | pos=(29329, 38785, 9174) yaw=1183 pitch=249 | | --aspect 4:3
 # full-size lower in the next; the intermediate leg draws them along the
 # game's own keyframe blend between the two.
 skelos_badlands@wizardfx | pos=(95730, 55975, 28402) yaw=86 pitch=69
+# autumn_plains@notch: at the corner of the paved aqueduct's tan rim a stone
+# wall face farther from the camera (view-Z 4126) hides the nearer rim face
+# (view-Z 3691-3891), cutting a notch into the rim; the PSX paints the same
+# notch by ordering-table order. Blessed pre-fix.
+autumn_plains@notch | pos=(105146, 109794, 31699) yaw=-1937 pitch=160 | | --aspect 4:3
