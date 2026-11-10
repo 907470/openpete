@@ -26,7 +26,7 @@ sunrise-spring-sunny-villa-portal-entry@tcache|2073|100||2073,3273|OPENPETE_TERR
 # retained ones; a change at that seam moves these tiles. The other
 # cache-forced rows turn the budget off, since a wall-time budget makes the
 # walked set differ between runs.
-sunrise-spring-sunny-villa-portal-entry@tcbudget0|577|10000||577,1577|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=0
+sunrise-spring-sunny-villa-portal-entry@tcbudget0|577|200||577,1577|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=0
 sunrise-spring-sunny-villa-portal-entry@tcsqueeze|2073|100||2073,3273|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768 OPENPETE_TC_BAKE_BUDGET_US=off
 
 # sunrise-spring-surface-swim arms the player draw's water-plane split.

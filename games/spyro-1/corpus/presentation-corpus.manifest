@@ -127,7 +127,7 @@ pause-unpause@spyrofirst                 | 1700  | 100  |        | 1753 | --no-c
 # retained ones; a change at that seam moves these tiles. The other
 # cache-forced rows turn the budget off, since a wall-time budget makes the
 # walked set differ between runs.
-pause-unpause@tcbudget0|1667|10000||1667,1753|--no-card --aspect 4:3 --render-paths terrain,spyro,ui OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=0
+pause-unpause@tcbudget0|1667|100||1667,1753|--no-card --aspect 4:3 --render-paths terrain,spyro,ui OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=0
 peace-keepers-terrain-culling            | 1700  | 100  |        | 3230,3238
 portal-cyclorama-cull                    | 1700  | 100  |        | 2000,2156
 portal-ground-disocclusion               | 1700  | 100  |        | 2440,2444

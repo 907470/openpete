@@ -65,7 +65,7 @@ autumn-plains-skelos-badlands-portal-entry@tcache|1723|200||1723,2273|OPENPETE_T
 # retained ones; a change at that seam moves these tiles. The other
 # cache-forced rows turn the budget off, since a wall-time budget makes the
 # walked set differ between runs.
-autumn-plains-skelos-badlands-portal-entry@tcbudget0|1361|10000||1361,1375,2265|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=0
+autumn-plains-skelos-badlands-portal-entry@tcbudget0|1361|200||1361,1375,2265|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=0
 autumn-plains-skelos-badlands-portal-entry@tcsqueeze|1723|200||1723,2273|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768 OPENPETE_TC_BAKE_BUDGET_US=off
 #
 # colossus-ice-skating: the player on the Colossus rink with the mirrored copy
