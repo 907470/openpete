@@ -588,6 +588,44 @@ ngte_cvert ngte_clip_lerp(ngte_cvert a, ngte_cvert b, double zc) {
     return r;
 }
 
+/** @brief One Sutherland-Hodgman pass of a triangle against z >= zc.
+ *
+ * @param z The three corners' depths.
+ * @param zc The plane's depth.
+ * @param out Receives the output corners.
+ * @param clipped Receives 1 when a corner was cut, else 0.
+ * @return The output corner count, below 3 when the face lies behind the plane. */
+static int ngte_clip_pass(const double z[3], double zc, ngte_clip_ref out[4], int* clipped) {
+    int nout = 0;
+    *clipped = 0;
+    for (int i = 0; i < 3; i++) {
+        const int nx = (i + 1) % 3;
+        const int curIn = z[i] >= zc, nxtIn = z[nx] >= zc;
+        if (curIn) out[nout++] = (ngte_clip_ref){ (uint8_t)i, (uint8_t)i, 0, 0.0 };
+        if (curIn != nxtIn && nout < 4) {
+            double t = (zc - z[i]) / (z[nx] - z[i]);
+            if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+            out[nout++] = (ngte_clip_ref){ (uint8_t)i, (uint8_t)nx, 1, t };
+            *clipped = 1;
+        }
+    }
+    return nout;
+}
+
+int ngte_near_clip_tri(const double z[3], double zc, ngte_clip_beyond_fn beyond, const void* ctx,
+                       ngte_clip_ref out[4], double* zc_out, int* clipped) {
+    for (int round = 0; ; round++) {
+        const int nout = ngte_clip_pass(z, zc, out, clipped);
+        if (nout < 3) return 0;
+        int far = 0;
+        if (*clipped && round < 16 && beyond)
+            for (int i = 0; i < nout && !far; i++) far = beyond(ctx, &out[i], zc);
+        if (far) { zc *= 2.0; continue; }
+        *zc_out = zc;
+        return nout;
+    }
+}
+
 void ngte_prim_decode(const uint32_t* w, int words, int raw_max, ngte_prim* t) {
     if (words > NGTE_PRIM_RAW_MAX) words = NGTE_PRIM_RAW_MAX;
     memset(t, 0, sizeof(*t));

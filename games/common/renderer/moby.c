@@ -622,7 +622,10 @@ static double project(const float M[3][3], const double TR[3], double vx, double
  * canonical H rather than the display's) the float coordinate carries nothing
  * the hardware had, so the vertex re-projects through ngte_project_gte with
  * the divide cap and the +-1024 SXY saturation. A vertex further than H/2
- * keeps its float projection. NGTE_LIMIT counts the regime at both H values.
+ * keeps its float projection. The pinned pair is what the game's face test
+ * and paint key read; the drawn shape of a face with such a vertex is the
+ * float projection of its view-space geometry, clipped at the near plane
+ * (emit_wtri_near). NGTE_LIMIT counts the regime at both H values.
  * @param M The model-to-view rotation, 1.0 = 1.0.
  * @param TR The projection translation.
  * @param vx The model-space vertex X.
@@ -1099,6 +1102,7 @@ typedef struct { float sx, sy, vz; int sat; int unr; int rec;
                  moby_otk_vert_t iv;   /* the draw's integer RTPS output (paint key) */
                  moby_otk_rec_t otk;   /* the record's paint key; first vertex only */
                  float mv[3];          /* the model-space vertex projected (water-plane distance) */
+                 float hx, hy;         /* the float projection times tvz (moby_vert_homog) */
                } proj_xy;  /* vz=view-Z; rec=source record (diag);
                  kvz = the written depth at the true distance (size correction
                  and GPF depth restore applied) before the one-slot tie pull and
@@ -1106,7 +1110,51 @@ typedef struct { float sx, sy, vz; int sat; int unr; int rec;
                  unr = this vertex fell in the GTE divide-overflow regime (see
                  moby_gte_near_fixup); sx/sy are then the hardware-clamped pair;
                  ex/ey/ez = the model->view rotated vertex offset (M.v)/4096 = viewPos-TR,
-                 the input to the specular env-reflection UV map. */
+                 the input to the specular env-reflection UV map;
+                 hx/hy = the vertex's homogeneous screen position: the float
+                 projection of its view-space point times tvz, linear in view
+                 space, so a near-plane cut interpolates it and divides by the
+                 cut's tvz. */
+
+/* The near plane emit_wtri_near clips at, in tvz units (full-world view Z):
+ * 16 world units, the plane the terrain walk clips at (its s_nearz of 1.0
+ * in world/16 view Z), so both producers lose geometry at the same depth. */
+#define MOBY_NEAR_W 16.0
+
+/** @brief The depth a vertex sets its record's near floor with: its fed depth, raised to the near clip plane when it lies nearer than the plane.
+ *
+ * The fed depth is affine in tvz with the given slope, so a vertex nearer
+ * than MOBY_NEAR_W (one at or behind the eye included) contributes the depth
+ * its edges are cut at; the record's lift then keeps every drawn corner at
+ * or above the floor.
+ * @param fvz The vertex's fed depth.
+ * @param tw The vertex's tvz.
+ * @param slope The fed depth's rate of change with tvz.
+ * @return The floor depth. */
+static double moby_floor_depth(double fvz, double tw, double slope) {
+    return tw < MOBY_NEAR_W ? fvz + (MOBY_NEAR_W - tw) * slope : fvz;
+}
+
+/** @brief Store a vertex's homogeneous screen position from its float projection.
+ *
+ * The float projection is sx = ofx + mac1 H / z with z = vzz, or z = 1 when
+ * vzz is 0 (ngte_project_raw_f). hx = (ofx vzz + (sx - ofx) z) wk is
+ * (ofx vzz + mac1 H) wk, which is linear in the view-space point and finite
+ * at and behind the eye; hx / tvz is the projection wherever tvz = vzz wk is
+ * positive. hy likewise.
+ * @param o The vertex; hx and hy are written.
+ * @param sx The float projection's screen X, before moby_gte_near_fixup.
+ * @param sy The float projection's screen Y, before moby_gte_near_fixup.
+ * @param vzz The projection's view Z.
+ * @param ofx The projection's screen offset X.
+ * @param ofy The projection's screen offset Y.
+ * @param wk The factor from vzz to the vertex's tvz. */
+static void moby_vert_homog(proj_xy* o, double sx, double sy, double vzz,
+                            double ofx, double ofy, double wk) {
+    const double z = vzz != 0.0 ? vzz : 1.0;
+    o->hx = (float)((ofx * vzz + (sx - ofx) * z) * wk);
+    o->hy = (float)((ofy * vzz + (sy - ofy) * z) * wk);
+}
 
 /** @brief Open the previous pose's keyframe streams for the two-pass shape lerp.
  *
@@ -1682,9 +1730,11 @@ static void moby_mf_bound_check(const int M[3][3], const float Mf_probe[3][3], c
  * the record centre is in front of the camera (moby_tie_pull_on() off drops
  * the pull), since the .s resolves a same-slot moby-terrain tie to the moby;
  * tvz the perspective W; ex, ey, ez the rotated vertex offset (M.v)/4096, the
- * specular env-UV input; iv the integer RTPS of the record's paint key. When
- * the pull puts the nearest in-front vertex below 1, the whole record lifts
- * uniformly onto the near floor. out[0].otk carries the paint key.
+ * specular env-UV input; iv the integer RTPS of the record's paint key; hx,
+ * hy the homogeneous screen position (moby_vert_homog). When the pull puts
+ * the nearest vertex below 1, each vertex nearer than the near clip plane
+ * counted at the plane (moby_floor_depth), the whole record lifts uniformly
+ * onto the near floor. out[0].otk carries the paint key.
  * @param cpu The guest CPU state, read only.
  * @param header The AnimationHeader (scale byte, ShortShift, tier vertex counts).
  * @param headerB Keyframe B's header; header when below KSEG0.
@@ -1894,13 +1944,14 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
         double sx, sy; int sat;
         double vzz = project(Mf, TR, vx, vy, vz, ofx, ofy, v, &sx, &sy, &sat);
         moby_mf_bound_check(M, Mf, TR, vx, vy, vz, ofx, ofy, v, sx, sy, vzz);
+        const double fsx = sx, fsy = sy;   /* the float projection, before the GTE mirror */
         int unr = moby_gte_near_fixup(Mf, TR, vx, vy, vz, vzz, ofx, ofy, v, &sx, &sy);
         /* The Z-buffer needs FULL-WORLD view-Z so mobys sort vs terrain / Spyro /
          * each other. project's mac3 is in the m_scale-adjusted world/4 scale
          * (C2_TR = (stored<<2)>>m_scale, stored is world/4), so multiply by
          * 2^m_scale to reach full-world (at m_scale 2, mac3 x4 is the camera Z).
-         * Sign-preserving, so emit_wtri's vz<=0 near cull still holds; sx/sy and
-         * the saturation flag keep the unscaled GTE-faithful mac3 (vz is depth-only). */
+         * sx/sy and the saturation flag keep the unscaled GTE-faithful mac3
+         * (vz is depth-only). */
         int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
         out[i].sx = (float)sx; out[i].sy = (float)sy;
         /* depth_k is 1 except for a sized record of a rec_tr_final cull, whose
@@ -1921,7 +1972,8 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
          * ground it touches. 127 world units < one OT slot: it can flip only
          * pairs og calls a tie. */
         if (ot_centre > 0.0) fvz -= OPENPETE_MOBY_TIE_PULL_VZ;
-        if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
+        { const double fl = moby_floor_depth(fvz, vzz * (double)(1 << ds), depth_k);
+          if (fl < rec_minfvz) rec_minfvz = fl; }
         out[i].kvz = (float)((vzz + vz_bias) * (double)(1 << ds) * depth_k);
         out[i].vz = (float)fvz; out[i].sat = sat; out[i].unr = unr;
         moby_otk_vertex(&otr, itr, M, vx, vy, vz, v->ofx, v->ofy, (int)v->H_canon, &out[i]);
@@ -1931,6 +1983,7 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
          * consistent. (Any positive multiple works - interpolation sees ratios
          * only - so the 1<<ds normalizer just keeps it in depth units.) */
         out[i].tvz = (float)(vzz * (double)(1 << ds));
+        moby_vert_homog(&out[i], fsx, fsy, vzz, ofx, ofy, (double)(1 << ds));
         /* rotated vertex offset Mf.v = viewPos-TR -- the specular env-UV input. */
         { double e1, e2, e3;
           ngte_mac_f(Mf, vx, vy, vz, &e1, &e2, &e3);
@@ -4517,7 +4570,7 @@ static int trail_replay_admit(CPUState* cpu, uint32_t* recs, uint32_t* mobys, in
  * Filled by the independent face-stream walk (below). The walk is
  * jitter-free (exact word0 indices) where a screen-proximity match against
  * the captured prims would jitter. */
-typedef struct { float sx, sy, vz; int u, v; uint32_t rgb;
+typedef struct { float sx, sy, vz; float u, v; uint32_t rgb;
                  float ex, ey, ez; float tvz; float kvz; } ntri_vert;  /* vz=depth; u,v=texel; ex/ey/ez=env-UV input;
                  tvz = the same vertex's UNSHIFTED view-Z, the perspective W (see
                  openpete_scene_vert.pvz): vz carries the OT-slot pull, which can
@@ -4759,7 +4812,7 @@ int moby_face_emit(int fresh, int bit0, int bit0_unconditional,
  * packed side by side every increment would bounce the line between cores. */
 typedef struct {
     _Alignas(64) int faces;
-    int emitted, oor, skip, sprite, strip, fresh_g, fresh_t, quad, nearstraddle;
+    int emitted, oor, skip, sprite, strip, fresh_g, fresh_t, quad, nearbehind;
     int align_lo, align_hi, desync;
     int coinc_pairs, coinc_pulls;   /* moby_coincident_pull: matches, faces pulled */
     /* Engagement census of the per-face special-material hook: one count per
@@ -4800,28 +4853,406 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
                              int ua, int va, int ub, int vb, int uc, int vc,
                              int tex, int tpx, int tpy, int clx, int cly, int bpp, int blend);
 
-/** @brief Append one float triangle to the current emit target, unless the near-plane cull drops it.
+/* A walk triangle's material: texture page, CLUT, depth and blend code. */
+typedef struct { int tex, tpx, tpy, clx, cly, bpp, blend; } mn_mat;
+
+/* ---- near-camera census (OPENPETE_MOBY_NEAR_CENSUS) ----------------------
+ * Per moby and feed key: emitted faces, the faces with a vertex in the GTE
+ * divide-overflow regime (unr), the faces with a vertex whose emitted screen
+ * position is more than 0.01 px from the float projection of its view-space
+ * point (pinned), the largest such distance over every emitted vertex, and
+ * the near-plane verdicts: faces cut, faces wholly behind the plane, faces
+ * whose pinned screen box exceeds the GPU's 1023 x 511 primitive extent
+ * (ext), faces with a vertex at or behind the eye, tvz <= 0 (eye), and faces whose
+ * clipped screen winding is opposite to the pinned winding the face test
+ * read (flip), and the triangles the face test drops on the pinned
+ * positions that the same test keeps on the true facing (lost), with those
+ * whose near-clipped true projection overlaps the view (lostvis); drawnvis
+ * applies the same overlap test to the regime faces drawn, its control. The table is keyed on the feed key (openpete_feed_key_now),
+ * the counter --screenshot-on-frame targets: the value `<key>` prints every
+ * moby with a nonzero regime count and the sum at that key; `all` prints the
+ * sum at every key. The census forces the walk serial (walk_dbg_env). */
+typedef struct {
+    uint32_t moby;
+    int faces, unr, pinned, cut, behind, ext, eye, flip, lost, lostvis, drawnvis;
+    double err;
+} mnear_row_t;
+#define MNEAR_ROWS 1024
+static mnear_row_t s_mnear[MNEAR_ROWS];
+static int s_mnear_n;
+static unsigned s_mnear_key = ~0u;
+static int s_mnear_ext;         /* the last regime face exceeded the GPU primitive extent */
+static long s_mnear_at = -1;   /* -1 unparsed, 0 off, 1 every key, else the key */
+
+/** @brief Whether OPENPETE_MOBY_NEAR_CENSUS is set, parsed once.
+ * @return Nonzero when the census is on. */
+static int mnear_on(void) {
+    if (s_mnear_at < 0) {
+        const char* e = getenv("OPENPETE_MOBY_NEAR_CENSUS");
+        if (!e || !*e || *e == '0') s_mnear_at = 0;
+        else if (!strcmp(e, "all")) s_mnear_at = 1;
+        else { s_mnear_at = strtol(e, NULL, 10); if (s_mnear_at < 1) s_mnear_at = 1; }
+    }
+    return s_mnear_at != 0;
+}
+
+/** @brief Print the finished feed key's census when it is the one asked for, and empty the table. */
+static void mnear_flush(void) {
+    const int pick = s_mnear_at == 1 || (unsigned long)s_mnear_at == s_mnear_key;
+    if (pick && s_mnear_n > 0) {
+        mnear_row_t sum = { 0u, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0 };
+        int nm = 0;
+        for (int i = 0; i < s_mnear_n; i++) {
+            const mnear_row_t* r = &s_mnear[i];
+            sum.faces += r->faces; sum.unr += r->unr; sum.pinned += r->pinned;
+            sum.cut += r->cut; sum.behind += r->behind; sum.ext += r->ext;
+            sum.eye += r->eye; sum.flip += r->flip;
+            sum.lost += r->lost; sum.lostvis += r->lostvis; sum.drawnvis += r->drawnvis;
+            if (r->err > sum.err) sum.err = r->err;
+            nm += r->unr > 0;
+            if (s_mnear_at == 1 || !(r->unr || r->ext || r->eye)) continue;
+            fprintf(stderr, "[mnear key=%u] moby=%08X faces=%d unr=%d pinned=%d maxerr=%.4f "
+                    "cut=%d behind=%d ext=%d eye=%d flip=%d lost=%d lostvis=%d\n", s_mnear_key,
+                    r->moby, r->faces, r->unr, r->pinned, r->err, r->cut, r->behind, r->ext,
+                    r->eye, r->flip, r->lost, r->lostvis);
+        }
+        fprintf(stderr, "[mnear-sum key=%u] mobys=%d unr_mobys=%d faces=%d unr=%d pinned=%d "
+                "maxerr=%.4f cut=%d behind=%d ext=%d eye=%d flip=%d lost=%d lostvis=%d drawnvis=%d\n",
+                s_mnear_key, s_mnear_n, nm, sum.faces, sum.unr, sum.pinned, sum.err, sum.cut,
+                sum.behind, sum.ext, sum.eye, sum.flip, sum.lost, sum.lostvis, sum.drawnvis);
+    }
+    s_mnear_n = 0;
+}
+
+/** @brief The census row of the moby being walked, opening a new table when the feed key moved on.
+ * @return The row, or NULL when the census is off or the table is full. */
+static mnear_row_t* mnear_row(void) {
+    if (!mnear_on()) return NULL;
+    const unsigned key = openpete_feed_key_now();
+    if (key != s_mnear_key) { mnear_flush(); s_mnear_key = key; }
+    for (int i = s_mnear_n - 1; i >= 0; i--)
+        if (s_mnear[i].moby == s_cur_moby_key) return &s_mnear[i];
+    if (s_mnear_n >= MNEAR_ROWS) return NULL;
+    mnear_row_t* r = &s_mnear[s_mnear_n++];
+    memset(r, 0, sizeof *r);
+    r->moby = s_cur_moby_key;
+    return r;
+}
+
+/** @brief Count one face that reached the near-plane policy: its pinned screen box and its eye-plane verdict.
+ *
+ * @param p The face's three vertices, as the walk projected them. */
+static void mnear_face(const proj_xy* const p[3]) {
+    mnear_row_t* r = mnear_row();
+    if (!r) return;
+    float xlo = p[0]->sx, xhi = p[0]->sx, ylo = p[0]->sy, yhi = p[0]->sy;
+    int le0 = 0;
+    for (int k = 0; k < 3; k++) {
+        xlo = fminf(xlo, p[k]->sx); xhi = fmaxf(xhi, p[k]->sx);
+        ylo = fminf(ylo, p[k]->sy); yhi = fmaxf(yhi, p[k]->sy);
+        le0 |= p[k]->tvz <= 0.0f;
+    }
+    s_mnear_ext = xhi - xlo > 1023.0f || yhi - ylo > 511.0f;
+    r->ext += s_mnear_ext;
+    r->eye += le0;
+}
+
+/** @brief Count one emitted face: its regime flag and each vertex's distance from the float projection of its view-space point.
+ *
+ * At the key asked for, a face with a vertex in the regime is printed:
+ * moby, face key, material, and per vertex the screen position, tvz, fed
+ * depth, texture coordinates and colour.
+ * @param p The emitted vertices; sx, sy are what the scene receives.
+ * @param uv Their texture coordinates.
+ * @param col Their colour words.
+ * @param m The face's material. */
+static void mnear_store(const proj_xy* const p[3], const float uv[3][2], const uint32_t col[3],
+                        const mn_mat* m) {
+    mnear_row_t* r = mnear_row();
+    if (!r) return;
+    if ((unsigned long)s_mnear_at == s_mnear_key && s_mnear_at > 1 &&
+        (p[0]->unr | p[1]->unr | p[2]->unr)) {
+        fprintf(stderr, "[mnear-face key=%u] ext=%d moby=%08X fkey=%08X tex=%d tp=(%d,%d) clut=(%d,%d) bpp=%d blend=%d",
+                s_mnear_key, s_mnear_ext, s_cur_moby_key, s_emit_fkey, m->tex, m->tpx, m->tpy, m->clx, m->cly,
+                m->bpp, m->blend);
+        for (int k = 0; k < 3; k++)
+            fprintf(stderr, " v%d=(%.1f,%.1f w=%.2f vz=%.1f uv=%.2f,%.2f c=%06X unr=%d)", k,
+                    p[k]->sx, p[k]->sy, p[k]->tvz, p[k]->vz, uv[k][0], uv[k][1],
+                    col[k] & 0xFFFFFFu, p[k]->unr);
+        fputc('\n', stderr);
+    }
+    double e = 0.0;
+    for (int k = 0; k < 3; k++) {
+        const double w = p[k]->tvz;
+        const double d = w > 0.0 ? hypot(p[k]->sx - p[k]->hx / w, p[k]->sy - p[k]->hy / w) : INFINITY;
+        if (d > e) e = d;
+    }
+    r->faces++;
+    r->unr += (p[0]->unr | p[1]->unr | p[2]->unr) != 0;
+    r->pinned += e > 0.01;
+    if (isfinite(e) && e > r->err) r->err = e;
+}
+
+/** @brief Append one float triangle to the current emit target as it stands.
  *
  * The target is the thread's t_out: the global s_gout arrays for a serial walk
- * or a worker slab for a parallel one; a full target drops the call. A triangle
- * with any vertex at view-Z <= 0 is dropped, since the float projection divides
- * by the raw Z and a vertex behind the camera would invert. A triangle with a
- * vertex flagged unr (in the GTE divide-overflow regime, its screen position
- * pinned by moby_gte_near_fixup) is dropped when its screen box exceeds 1023 x
- * 511 px, the class the GPU discards; that drop counts into nearstraddle.
- *
- * A kept triangle stores its per-triangle side data from the walk's
- * thread-local state (s_cur_ui, s_cur_front, s_cur_moby_key, s_cur_moby_dofs,
+ * or a worker slab for a parallel one; a full target drops the call. The
+ * triangle stores its per-triangle side data from the walk's thread-local
+ * state (s_cur_ui, s_cur_front, s_cur_moby_key, s_cur_moby_dofs,
  * s_cur_moby_cls, s_emit_fkey, s_emit_special, s_emit_otk, s_emit_tmix), a
  * mangle flag when any vertex is unr or sat, and the integer SXY of each
- * vertex. It then resets s_emit_otk to -1 and s_emit_tmix to 0; a dropped
- * triangle leaves both unchanged.
+ * vertex, then resets s_emit_otk to -1 and s_emit_tmix to 0; a dropped call
+ * leaves both unchanged.
+ * @param p The three vertices, screen position final.
+ * @param uv Their texture coordinates.
+ * @param col Their colour words.
+ * @param m The material. */
+static void emit_wtri_store(const proj_xy* const p[3], const float uv[3][2],
+                            const uint32_t col[3], const mn_mat* m) {
+    mn_out* O = t_out;
+    if (O->n >= O->cap) return;
+    if (s_mnear_at) mnear_store(p, uv, col, m);
+    O->ui[O->n] = (uint8_t)s_cur_ui;       /* HUD/UI tag for this tri (current record) */
+    O->front[O->n] = (uint8_t)s_cur_front;    /* cutscene actor (front-pass eligible) */
+    O->moby[O->n] = s_cur_moby_key;           /* face identity: moby address */
+    O->dofs[O->n] = s_cur_moby_dofs;
+    O->mangle[O->n] = (uint8_t)((p[0]->unr || p[1]->unr || p[2]->unr ||
+                                 p[0]->sat || p[1]->sat || p[2]->sat) ? 1 : 0);
+    O->fkey[O->n] = s_emit_fkey;
+    O->special[O->n] = s_emit_special;
+    O->otk[O->n] = s_emit_otk;
+    O->single[O->n] = s_cur_single;
+    O->wbk[O->n] = s_cur_wbk;
+    for (int k = 0; k < 3; k++) {
+        O->isxy[O->n][2 * k] = p[k]->iv.sx; O->isxy[O->n][2 * k + 1] = p[k]->iv.sy;
+    }
+    s_emit_otk = -1;
+    O->cls[O->n] = s_cur_moby_cls;            /* provenance tag for mod shaders */
+    ntri_t* t = &O->tri[O->n++];
+    for (int k = 0; k < 3; k++)
+        t->v[k] = (ntri_vert){ p[k]->sx, p[k]->sy, p[k]->vz, uv[k][0], uv[k][1], col[k],
+                               p[k]->ex, p[k]->ey, p[k]->ez, p[k]->tvz, p[k]->kvz };
+    t->textured = m->tex; t->tpage_x = m->tpx; t->tpage_y = m->tpy;
+    t->clut_x = m->clx; t->clut_y = m->cly; t->bpp = m->bpp; t->blend = m->blend;
+    t->tmix = s_emit_tmix;
+    s_emit_tmix = 0;
+    t_diag->emitted++;
+}
+
+/** @brief Whether one output corner of a moby near clip projects beyond NGTE_CLIP_PROJ_LIMIT from the pass view's centre.
+ *
+ * Only a corner on the plane is tested: a crossing, or an input corner whose
+ * tvz equals zc, since only those move with zc.
+ * @param ctx The clip's three input vertices (const proj_xy* const[3]).
+ * @param r The output corner.
+ * @param zc The plane, in tvz units.
+ * @return 1 when the corner projects beyond the bound, else 0. */
+static int moby_clip_beyond(const void* ctx, const ngte_clip_ref* r, double zc) {
+    const proj_xy* const* p = (const proj_xy* const*)ctx;
+    const proj_xy* A = p[r->a];
+    const proj_xy* B = p[r->b];
+    if (!r->cross && (double)A->tvz != zc) return 0;
+    const double hx = A->hx + r->t * (B->hx - A->hx);
+    const double hy = A->hy + r->t * (B->hy - A->hy);
+    return fabs(hx / zc - s_view.ofx) > NGTE_CLIP_PROJ_LIMIT ||
+           fabs(hy / zc - s_view.ofy) > NGTE_CLIP_PROJ_LIMIT;
+}
+
+/** @brief Build one output corner of a moby near clip.
+ *
+ * An input corner is copied. A crossing takes its edge's first corner's
+ * record (paint key, integer SXY, flags) with the homogeneous position, W,
+ * colour and UV from ngte_clip_lerp of the edge at the plane and the depth,
+ * key depth and rotated offset at the same parameter, all affine in view
+ * space; it is flagged unr. A corner flagged unr takes the float projection
+ * of its view-space point, hx / tvz and hy / tvz, in place of the pinned
+ * position; any other corner keeps its float projection as computed.
+ * @param p The clip's three input vertices.
+ * @param uv Their texture coordinates.
+ * @param col Their colour words.
+ * @param r The output corner.
+ * @param zc The plane, in tvz units.
+ * @param o Receives the vertex.
+ * @param ouv Receives its texture coordinates.
+ * @param oc Receives its colour word. */
+static void moby_clip_vertex(const proj_xy* const p[3], const float uv[3][2],
+                             const uint32_t col[3], const ngte_clip_ref* r, double zc,
+                             proj_xy* o, float ouv[2], uint32_t* oc) {
+    const proj_xy* A = p[r->a];
+    *o = *A;
+    ouv[0] = uv[r->a][0]; ouv[1] = uv[r->a][1];
+    *oc = col[r->a];
+    if (r->cross) {
+        const proj_xy* B = p[r->b];
+        const ngte_cvert ca = { .m1 = A->hx, .m2 = A->hy, .m3 = A->tvz, .rgb = col[r->a],
+                                .u = uv[r->a][0], .v = uv[r->a][1] };
+        const ngte_cvert cb = { .m1 = B->hx, .m2 = B->hy, .m3 = B->tvz, .rgb = col[r->b],
+                                .u = uv[r->b][0], .v = uv[r->b][1] };
+        const ngte_cvert x = ngte_clip_lerp(ca, cb, zc);
+        const float t = (float)r->t;
+        o->hx = (float)x.m1; o->hy = (float)x.m2; o->tvz = (float)zc;
+        o->vz  = A->vz  + t * (B->vz  - A->vz);
+        o->kvz = A->kvz + t * (B->kvz - A->kvz);
+        o->ex  = A->ex  + t * (B->ex  - A->ex);
+        o->ey  = A->ey  + t * (B->ey  - A->ey);
+        o->ez  = A->ez  + t * (B->ez  - A->ez);
+        ouv[0] = x.u; ouv[1] = x.v;
+        *oc = x.rgb | (col[r->a] & 0xFF000000u);
+        o->unr = 1;
+    }
+    if (o->unr) { o->sx = o->hx / o->tvz; o->sy = o->hy / o->tvz; }
+}
+
+/** @brief The facing value of a triangle from its homogeneous screen positions.
+ *
+ * det[hx hy w] is H^2 times the determinant of the view-space points, so
+ * its sign is the triangle's true facing on either side of the eye, the
+ * sign the float NCLIP gives a triangle wholly in front.
+ * @param a The first vertex.
+ * @param b The second vertex.
+ * @param c The third vertex.
+ * @return The determinant. */
+static double mnear_true_nclip(const proj_xy* a, const proj_xy* b, const proj_xy* c) {
+    const double ax = a->hx, ay = a->hy, aw = a->tvz, bx = b->hx, by = b->hy, bw = b->tvz;
+    const double cx = c->hx, cy = c->hy, cw = c->tvz;
+    return ax * (by * cw - bw * cy) - ay * (bx * cw - bw * cx) + aw * (bx * cy - by * cx);
+}
+
+/** @brief Whether a triangle's near-clipped true projection overlaps the pass view.
+ * @param t The three vertices.
+ * @return 1 when a clipped part's screen box overlaps the view, else 0. */
+static int mnear_tri_visible(const proj_xy* const t[3]) {
+    const double z[3] = { t[0]->tvz, t[1]->tvz, t[2]->tvz };
+    ngte_clip_ref ref[4];
+    double zc = MOBY_NEAR_W;
+    int clipped = 0;
+    const int n = ngte_near_clip_tri(z, MOBY_NEAR_W, moby_clip_beyond, t, ref, &zc, &clipped);
+    if (n < 3) return 0;
+    double xlo = 1e30, xhi = -1e30, ylo = 1e30, yhi = -1e30;
+    for (int k = 0; k < n; k++) {
+        const proj_xy* A = t[ref[k].a];
+        const proj_xy* B = t[ref[k].b];
+        const double w = ref[k].cross ? zc : A->tvz;
+        const double x = (A->hx + ref[k].t * (B->hx - A->hx)) / w;
+        const double y = (A->hy + ref[k].t * (B->hy - A->hy)) / w;
+        xlo = fmin(xlo, x); xhi = fmax(xhi, x); ylo = fmin(ylo, y); yhi = fmax(yhi, y);
+    }
+    return xhi >= s_view.xlo && xlo <= s_view.xhi && yhi >= 0.0 && ylo <= 2.0 * s_view.ofy;
+}
+
+/** @brief Count one near-clipped face into the census: cut, wholly behind, or screen winding flipped against the pinned winding.
+ * @param p The face's input vertices, at their pinned positions.
+ * @param q The clip's output vertices.
+ * @param n The output count, 0 when the face lies behind the plane.
+ * @param clipped Nonzero when a corner was cut. */
+static void mnear_clip(const proj_xy* const p[3], const proj_xy* q, int n, int clipped) {
+    mnear_row_t* r = mnear_row();
+    if (!r) return;
+    if (n < 3) { r->behind++; return; }
+    r->cut += clipped != 0;
+    r->drawnvis += mnear_tri_visible(p);
+    const double a0 = tri_nclip(p[0]->sx, p[0]->sy, p[1]->sx, p[1]->sy, p[2]->sx, p[2]->sy);
+    const double a1 = tri_nclip(q[0].sx, q[0].sy, q[1].sx, q[1].sy, q[2].sx, q[2].sy);
+    r->flip += (a0 > 0.0 && a1 < 0.0) || (a0 < 0.0 && a1 > 0.0);
+}
+
+/** @brief Count a regime face's triangles the face test drops on the pinned positions but keeps on the true facing.
+ *
+ * The test is moby_face_emit, the walk's emit tree, run on the true facing
+ * values (mnear_true_nclip times the record's face sign); a triangle it
+ * emits that the walk's verdict did not counts as lost, and as lostvis when
+ * its near-clipped true projection overlaps the view.
+ * @param v The face's four vertices, v[3] NULL without a fourth.
+ * @param fsign The record's face sign.
+ * @param fresh The face's fresh flag.
+ * @param bit0 The face's bit 0.
+ * @param emit_a The walk's first-triangle verdict.
+ * @param emit_b The walk's second-triangle verdict.
+ * @param b_is_v3tri Nonzero when the walk's second triangle is (v3, v1, v2). */
+static void mnear_select(const proj_xy* const v[4], int fsign, int fresh, int bit0,
+                         int emit_a, int emit_b, int b_is_v3tri) {
+    mnear_row_t* r = mnear_row();
+    if (!r) return;
+    const double n1 = fsign * mnear_true_nclip(v[0], v[1], v[2]);
+    const double n2 = v[3] ? fsign * mnear_true_nclip(v[3], v[1], v[2]) : -1.0;
+    int ord[2][3];
+    const int nt = moby_face_emit(fresh, bit0, 0, n1, n2, v[3] != NULL, ord);
+    for (int i = 0; i < nt; i++) {
+        const int code = ord[i][0] == 0 ? 0 : (ord[i][0] == 3 ? 1 : 2);   /* (0,1,2) (3,1,2) (1,3,2) */
+        const int had = code == 0 ? emit_a : (emit_b && (code == 1) == (b_is_v3tri != 0));
+        if (had) continue;
+        r->lost++;
+        const proj_xy* const t[3] = { v[ord[i][0]], v[ord[i][1]], v[ord[i][2]] };
+        r->lostvis += mnear_tri_visible(t);
+    }
+}
+
+/** @brief Emit a triangle with a vertex in the GTE divide-overflow regime, clipped in view space at the near plane.
+ *
+ * The face's shape is the projection of its geometry: the triangle is
+ * clipped against tvz >= MOBY_NEAR_W (ngte_near_clip_tri, with the
+ * projection bound moby_clip_beyond), each output corner built by
+ * moby_clip_vertex, and the polygon fanned from corner 0 into
+ * emit_wtri_store, each part keeping the face's paint key and texel fog
+ * row. A face wholly behind the plane (every tvz below MOBY_NEAR_W, tested
+ * first, since a re-clip only raises the plane) is dropped and counts into
+ * nearbehind. The face test that selected the face read the pinned screen
+ * positions, as the game's NCLIP does.
+ * @param p The three vertices.
+ * @param uv Their texture coordinates.
+ * @param col Their colour words.
+ * @param m The material. */
+static void emit_wtri_near(const proj_xy* const p[3], const float uv[3][2],
+                           const uint32_t col[3], const mn_mat* m) {
+    if (s_mnear_at) mnear_face(p);
+    if (p[0]->tvz < MOBY_NEAR_W && p[1]->tvz < MOBY_NEAR_W && p[2]->tvz < MOBY_NEAR_W) {
+        if (s_mnear_at) mnear_clip(p, NULL, 0, 0);
+        t_diag->nearbehind++;
+        return;
+    }
+    const double z[3] = { p[0]->tvz, p[1]->tvz, p[2]->tvz };
+    ngte_clip_ref ref[4];
+    double zc = MOBY_NEAR_W;
+    int clipped = 0;
+    const int n = ngte_near_clip_tri(z, MOBY_NEAR_W, moby_clip_beyond, p, ref, &zc, &clipped);
+    proj_xy q[4];
+    float quv[4][2];
+    uint32_t qc[4];
+    for (int k = 0; k < n; k++) moby_clip_vertex(p, uv, col, &ref[k], zc, &q[k], quv[k], &qc[k]);
+    if (s_mnear_at) mnear_clip(p, q, n, clipped);
+    if (n < 3) { t_diag->nearbehind++; return; }
+    const int32_t otk = s_emit_otk;
+    const uint8_t tmix = s_emit_tmix;
+    for (int k = 2; k < n; k++) {
+        const proj_xy* const T[3] = { &q[0], &q[k - 1], &q[k] };
+        const float tuv[3][2] = { { quv[0][0], quv[0][1] }, { quv[k - 1][0], quv[k - 1][1] },
+                                  { quv[k][0], quv[k][1] } };
+        const uint32_t tc[3] = { qc[0], qc[k - 1], qc[k] };
+        s_emit_otk = otk; s_emit_tmix = tmix;
+        emit_wtri_store(T, tuv, tc, m);
+    }
+}
+
+/** @brief Append one float triangle to the current emit target, through the water-plane split and the near clip.
+ *
+ * A face its record's water plane splits (t_emit_wp) is cut there first
+ * (emit_wtri_wplane), each part re-entering here. A triangle with a vertex
+ * flagged unr (in the GTE divide-overflow regime: its screen position is
+ * pinned by moby_gte_near_fixup, and its view Z may be at or behind the eye)
+ * goes through the near clip (emit_wtri_near); any other triangle has every
+ * view Z above H/2 and is stored as it stands (emit_wtri_store).
  * @param a The first projected vertex.
  * @param b The second projected vertex.
  * @param c The third projected vertex.
  * @param ca The first vertex colour word.
  * @param cb The second vertex colour word.
  * @param cc The third vertex colour word.
+ * @param ua The first vertex's U.
+ * @param va The first vertex's V.
+ * @param ub The second vertex's U.
+ * @param vb The second vertex's V.
+ * @param uc The third vertex's U.
+ * @param vc The third vertex's V.
  * @param tex Nonzero for a textured triangle.
  * @param tpx The texture page X origin.
  * @param tpy The texture page Y origin.
@@ -4842,69 +5273,13 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
         t_emit_wp = wp;
         return;
     }
-    mn_out* O = t_out;
-    if (O->n >= O->cap) return;
-    /* NEAR-PLANE CULL: drop any triangle with a vertex at/behind the camera
-     * (view-Z <= 0). The .s relies on the GTE perspective divide + NCLIP to
-     * reject behind-camera prims; our float project() does a raw H/Z, so a
-     * negative Z flips the vertex (sign inverts both screen axes) and hurls it
-     * to the top of the view. Without this, a moby that passes behind the camera
-     * - e.g. the gem value-popup the player charges THROUGH - renders inverted
-     * ("upside down") at screen top. Matches the .s (it draws nothing for a
-     * fully-behind moby). Cheap whole-triangle cull (no near-plane clipping):
-     * mobys rarely straddle the near plane, and a 1-frame early disappear beats
-     * a flipped explosion. */
-    if (a->vz <= 0.0f || b->vz <= 0.0f || c->vz <= 0.0f) return;
-    /* NEAR-PLANE STRADDLE: a face with a vertex inside the GTE divide-overflow
-     * regime got that vertex's screen position from the hardware-clamped path
-     * (moby_gte_near_fixup), so it is pinned to the ±1024 SXY window rather
-     * than the true perspective point - the face's shape is no longer the one
-     * the camera sees. The GPU is what resolves this on hardware: it discards
-     * any primitive spanning more than 1023 px horizontally or 511 vertically,
-     * which is exactly the class the clamp produces. Mirror that and the
-     * straddling face drops, as it does on PSX; without it the face survives
-     * with one corner slammed to the window edge and sweeps the frame (mobys
-     * the camera passes through - the 1-frame whole-screen flash).
-     *
-     * Gated on the flag so ordinary geometry is untouched: a legitimately huge
-     * near face (or a wide face under Hor+ reveal, whose true X exceeds the
-     * PSX screen by design) never enters the regime and never sees this test. */
-    if (a->unr || b->unr || c->unr) {
-        float xlo = a->sx, xhi = a->sx, ylo = a->sy, yhi = a->sy;
-        if (b->sx < xlo) xlo = b->sx;
-        if (b->sx > xhi) xhi = b->sx;
-        if (c->sx < xlo) xlo = c->sx;
-        if (c->sx > xhi) xhi = c->sx;
-        if (b->sy < ylo) ylo = b->sy;
-        if (b->sy > yhi) yhi = b->sy;
-        if (c->sy < ylo) ylo = c->sy;
-        if (c->sy > yhi) yhi = c->sy;
-        if (xhi - xlo > 1023.0f || yhi - ylo > 511.0f) { t_diag->nearstraddle++; return; }
-    }
-    O->ui[O->n] = (uint8_t)s_cur_ui;       /* HUD/UI tag for this tri (current record) */
-    O->front[O->n] = (uint8_t)s_cur_front;    /* cutscene actor (front-pass eligible) */
-    O->moby[O->n] = s_cur_moby_key;           /* face identity: moby address */
-    O->dofs[O->n] = s_cur_moby_dofs;
-    O->mangle[O->n] = (uint8_t)((a->unr || b->unr || c->unr ||
-                                 a->sat || b->sat || c->sat) ? 1 : 0);
-    O->fkey[O->n] = s_emit_fkey;
-    O->special[O->n] = s_emit_special;
-    O->otk[O->n] = s_emit_otk;
-    O->single[O->n] = s_cur_single;
-    O->wbk[O->n] = s_cur_wbk;
-    O->isxy[O->n][0] = a->iv.sx; O->isxy[O->n][1] = a->iv.sy;
-    O->isxy[O->n][2] = b->iv.sx; O->isxy[O->n][3] = b->iv.sy;
-    O->isxy[O->n][4] = c->iv.sx; O->isxy[O->n][5] = c->iv.sy;
-    s_emit_otk = -1;
-    O->cls[O->n] = s_cur_moby_cls;            /* provenance tag for mod shaders */
-    ntri_t* t = &O->tri[O->n++];
-    t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz, a->kvz};
-    t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez, b->tvz, b->kvz};
-    t->v[2]=(ntri_vert){c->sx,c->sy,c->vz,uc,vc,cc, c->ex,c->ey,c->ez, c->tvz, c->kvz};
-    t->textured=tex;t->tpage_x=tpx;t->tpage_y=tpy;t->clut_x=clx;t->clut_y=cly;t->bpp=bpp;t->blend=blend;
-    t->tmix = s_emit_tmix;
-    s_emit_tmix = 0;
-    t_diag->emitted++;
+    const proj_xy* const p[3] = { a, b, c };
+    const float uv[3][2] = { { (float)ua, (float)va }, { (float)ub, (float)vb },
+                             { (float)uc, (float)vc } };
+    const uint32_t col[3] = { ca, cb, cc };
+    const mn_mat m = { tex, tpx, tpy, clx, cly, bpp, blend };
+    if (a->unr || b->unr || c->unr) emit_wtri_near(p, uv, col, &m);
+    else emit_wtri_store(p, uv, col, &m);
 }
 
 /** @brief A projected vertex's signed distance to its record's water plane.
@@ -5003,7 +5378,7 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
                              uint32_t ca, uint32_t cb, uint32_t cc,
                              int ua, int va, int ub, int vb, int uc, int vc,
                              int tex, int tpx, int tpy, int clx, int cly, int bpp, int blend) {
-    enum { AT_VZ, AT_TVZ, AT_KVZ, AT_EX, AT_EY, AT_EZ, AT_U, AT_V, AT_N };
+    enum { AT_VZ, AT_TVZ, AT_KVZ, AT_EX, AT_EY, AT_EZ, AT_U, AT_V, AT_HX, AT_HY, AT_N };
     proj_xy* const src[3] = { a, b, c };
     const uint32_t col[3] = { ca, cb, cc };
     const int uu[3] = { ua, ub, uc }, vv[3] = { va, vb, vc };
@@ -5014,6 +5389,7 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
         in[k].at[AT_VZ] = p->vz; in[k].at[AT_TVZ] = p->tvz; in[k].at[AT_KVZ] = p->kvz;
         in[k].at[AT_EX] = p->ex; in[k].at[AT_EY] = p->ey; in[k].at[AT_EZ] = p->ez;
         in[k].at[AT_U] = uu[k]; in[k].at[AT_V] = vv[k];
+        in[k].at[AT_HX] = p->hx; in[k].at[AT_HY] = p->hy;
         in[k].pd = moby_wplane_dist(wp, p); in[k].rgb = col[k]; in[k].idx = k;
     }
     int np, nn;
@@ -5022,6 +5398,9 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
     for (int k = 0; k < nn; k++) neg[k].rgb = wplane_shade(wp->fc, wp->ir0, neg[k].rgb);
     const int32_t otk = s_emit_otk;
     const uint8_t tmix = s_emit_tmix;
+    /* Every part of a face with a pinned corner takes the near clip: a cut
+     * point's screen position mixes its edge's pinned corner in. */
+    const int unr = a->unr | b->unr | c->unr;
     for (int part = 0; part < 2; part++) {
         const wplane_vert_t* P = part ? neg : pos;
         const int m = part ? nn : np;
@@ -5033,6 +5412,8 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
             q[k].kvz = (float)P[k].at[AT_KVZ];
             q[k].ex = (float)P[k].at[AT_EX]; q[k].ey = (float)P[k].at[AT_EY];
             q[k].ez = (float)P[k].at[AT_EZ];
+            q[k].hx = (float)P[k].at[AT_HX]; q[k].hy = (float)P[k].at[AT_HY];
+            q[k].unr = unr;
         }
         for (int k = 2; k < m; k++) {
             s_emit_otk = otk; s_emit_tmix = tmix;
@@ -5145,6 +5526,7 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
          * and the translation zero; only the divide is left to do. */
         double vzz = project(MOBY_IDENT_F, NULL, p[k][0], p[k][1], p[k][2],
                              ofx, ofy, view, &sx, &sy, &sat);
+        moby_vert_homog(&q[k], sx, sy, vzz, ofx, ofy, 1.0);
         int unr = moby_gte_near_fixup(MOBY_IDENT_F, NULL, p[k][0], p[k][1], p[k][2],
                                       vzz, ofx, ofy, view, &sx, &sy);
         q[k].sx = (float)sx; q[k].sy = (float)sy;
@@ -6533,6 +6915,10 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             int ot_bk = moby_face_otkey(&s_proj[base], F, p0, p1, p2, p3, fsign);
             rt_add(RT_KEY, rt0, 1);
             ltop = moby_otk_top_entry(&s_proj[base].otk, ot_bk, ltop);
+            if (s_mnear_at && (p0->unr || p1->unr || p2->unr || (p3 && p3->unr))) {
+                const proj_xy* const fv[4] = { p0, p1, p2, p3 };
+                mnear_select(fv, fsign, fresh, (int)F->bit0, emit_a, emit_b, b_is_v3tri);
+            }
             if (!emit_a && !emit_b) continue;
 
             /* per-vertex colour: cbase indexed by the cached w1 fields. DPCS-faded
@@ -6852,7 +7238,7 @@ static int walk_dbg_env(void) {
     static int v = -1;
     if (v < 0)
         v = (getenv("OPENPETE_MOBY_CLASSDBG") || getenv("OPENPETE_MOBY_FADEDBG") ||
-             getenv("OPENPETE_MOBY_CLERP_DBG")) ? 1 : 0;
+             getenv("OPENPETE_MOBY_CLERP_DBG") || mnear_on()) ? 1 : 0;
     return v;
 }
 
@@ -7064,7 +7450,7 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         s_wdiag[0].oor += D->oor;     s_wdiag[0].skip += D->skip;
         s_wdiag[0].sprite += D->sprite; s_wdiag[0].strip += D->strip;
         s_wdiag[0].fresh_g += D->fresh_g; s_wdiag[0].fresh_t += D->fresh_t;
-        s_wdiag[0].quad += D->quad;   s_wdiag[0].nearstraddle += D->nearstraddle;
+        s_wdiag[0].quad += D->quad;   s_wdiag[0].nearbehind += D->nearbehind;
         s_wdiag[0].align_lo += D->align_lo; s_wdiag[0].align_hi += D->align_hi;
         s_wdiag[0].desync += D->desync;
         s_wdiag[0].coinc_pairs += D->coinc_pairs; s_wdiag[0].coinc_pulls += D->coinc_pulls;
@@ -7312,7 +7698,7 @@ static void compare_walk_vs_prims(void) {
                         w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->bpp, w->blend,
                         (unsigned)s_wtri_special[wi]);
                 for (int k = 0; k < 3; k++)
-                    fprintf(stderr, " (%.0f,%.0f)%06X[%d,%d]{%.1f,%.1f,%.1f}",
+                    fprintf(stderr, " (%.0f,%.0f)%06X[%.2f,%.2f]{%.1f,%.1f,%.1f}",
                             w->v[k].sx, w->v[k].sy, w->v[k].rgb & 0xFFFFFFu,
                             w->v[k].u, w->v[k].v, w->v[k].ex, w->v[k].ey, w->v[k].ez);
                 fprintf(stderr, "\n");
@@ -7511,13 +7897,13 @@ static void compare_walk_vs_prims(void) {
         wmatch?wcost_sum/wmatch:0.0);
     fprintf(stderr,
         "[moby-walk2 vbl=%u] "
-        "shapes{freshG=%d freshT=%d strip=%d sprite=%d skip=%d quad=%d oor=%d nearstraddle=%d} "
+        "shapes{freshG=%d freshT=%d strip=%d sprite=%d skip=%d quad=%d oor=%d nearbehind=%d} "
         "align{lo=%d hi=%d desync=%d} | nclip matched{-=%d +=%d} unmatched{-=%d +=%d} "
         "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d wdup=%d/%d primQ=%d primT=%d walkQ=%d luma=w%.0f/p%.0f "
         "| special_faces=%d/%d/%d bit4_faces=%d coincident=%d/%d\n",
         openpete_frame,
         s_wdiag[0].fresh_g, s_wdiag[0].fresh_t, s_wdiag[0].strip, s_wdiag[0].sprite,
-        s_wdiag[0].skip, s_wdiag[0].quad, s_wdiag[0].oor, s_wdiag[0].nearstraddle,
+        s_wdiag[0].skip, s_wdiag[0].quad, s_wdiag[0].oor, s_wdiag[0].nearbehind,
         s_wdiag[0].align_lo, s_wdiag[0].align_hi, s_wdiag[0].desync,
         neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn, wdup,wn,
         prim_quad, prim_tri, s_wdiag[0].quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0,
@@ -9711,7 +10097,7 @@ static void moby_tri_debug(void) {
                 s_wtri_front[i], s_wtri_ui[i], s_wtri_dofs[i], s_wtri_mangle[i],
                 (int)s_wtri_contest[i], s_nrank[i], s_wtri_otk[i]);
         for (int k = 0; k < 3; k++)
-            fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%.1f,%d,%d,%06X", k,
+            fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%.1f,%.2f,%.2f,%06X", k,
                     w->v[k].sx, w->v[k].sy, w->v[k].vz, w->v[k].tvz,
                     w->v[k].u, w->v[k].v, w->v[k].rgb & 0xFFFFFF);
         fprintf(stderr, " ck=%.1f", moby_tri_contest_key(i, 0));
@@ -12845,6 +13231,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * what the real Z-buffer needs. */
             double vzz = project((const float (*)[3])Mf,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,rv,
                                  &sx,&sy,&sat);
+            moby_vert_homog(&out[n], sx, sy, vzz, mofx, mofy, vz_scale);
             int unr = moby_gte_near_fixup((const float (*)[3])Mf, TR, (double)VX,(double)VY,(double)VZ, vzz,
                                           mofx, mofy, rv, &sx, &sy);
             if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
@@ -12855,7 +13242,8 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             /* One-slot tie pull - see the regular walk's twin above. The
              * pedestal discs (dofs 0) rely on it for the ground they touch. */
             if (ot_centre > 0.0) fvz -= OPENPETE_MOBY_TIE_PULL_VZ;
-            if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
+            { const double fl = moby_floor_depth(fvz, vzz * vz_scale, 1.0);
+              if (fl < rec_minfvz) rec_minfvz = fl; }
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat; out[n].unr=unr;
             out[n].tvz=(float)(vzz*vz_scale);            /* pre-bias: the perspective W */
             out[n].kvz=out[n].tvz;                        /* key depth: no pull, no lift */
@@ -12865,7 +13253,8 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             n++;
         }
         /* Near-floor lift, per moby (see moby_decode_project's twin): uniform,
-         * never a per-vertex flatten. Positive-vz verts only set the floor. */
+         * never a per-vertex flatten; a vertex nearer than the near clip
+         * plane sets the floor at the plane (moby_floor_depth). */
         if (rec_minfvz < 1.0 && rec_minfvz > -1e29) {
             float lift = (float)(1.0 - rec_minfvz);
             for (int vi = sv_off; vi < n; vi++) out[vi].vz += lift;
@@ -13169,6 +13558,7 @@ static proj_xy metal_plane_vertex(const metal_tri* t, mclip_pt p) {
     o.ex = (float)(wa * a->ex + wb * b->ex + wc * c->ex);
     o.ey = (float)(wa * a->ey + wb * b->ey + wc * c->ey);
     o.ez = (float)(wa * a->ez + wb * b->ez + wc * c->ez);
+    o.hx = o.sx * o.tvz; o.hy = o.sy * o.tvz;
     o.sat = a->sat | b->sat | c->sat; o.unr = a->unr | b->unr | c->unr;
     o.iv.sx = (int16_t)lrint(p.x); o.iv.sy = (int16_t)lrint(p.y);
     o.iv.sz = (int32_t)lrint(o.vz);

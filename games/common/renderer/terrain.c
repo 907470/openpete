@@ -1338,24 +1338,6 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
     if (m->textured) W->tex_tris++;
 }
 
-/* Max distance (PSX px) a near-clip CROSSING vertex may project from the screen
- * centre. A face straddling the eye plane clipped at s_nearz (16 world units)
- * puts its crossing verts essentially AT the eye - they project 20k+ px
- * offscreen, and rasterizers (llvmpipe AND hardware) drop the resulting sliver
- * even though its on-screen wedge is large (the face disappears while the
- * camera is on its plane). Everything
- * beyond this bound is far outside any visible frame (±~600 PSX px at 32:9),
- * so re-clipping until crossing verts land inside it trims only invisible
- * geometry: the wedge's bounding EDGES are the projections of the same 3D
- * lines regardless of where the cut lands along them. The doubling loop also
- * bounds the accepted radius from BELOW (~0.4×LIMIT, the crossing slides
- * ~half the distance per doubling), so the closing cut can never enter the
- * frame: 0.4×2048 = 819 px > the widest supported visible half-extent
- * (32:9 ≈ 683 PSX px). llvmpipe still under-rasters slivers this long (a
- * software-raster artifact - hardware draws them exactly); don't judge the
- * wedge's full extent on a WSLg screenshot. */
-#define CLIP_PROJ_LIMIT 2048.0f
-
 static uint32_t tn_water_rgb(uint32_t c, double m3);
 
 /** @brief Fades a near-path triangle's three nodes when its face takes the heavy fog or the second walk's fade.
@@ -1381,19 +1363,34 @@ static void tn_hqfog_nodes(const tn_wctx* W, ngte_cvert v[3]) {
     }
 }
 
+/** @brief Whether one output corner of a terrain near clip projects beyond NGTE_CLIP_PROJ_LIMIT from the screen centre.
+ *
+ * Only a corner on the plane is tested: a crossing, or an input corner whose
+ * m3 equals zc, since only those move with zc.
+ * @param ctx The clip's three input corners (ngte_cvert[3]).
+ * @param r The output corner.
+ * @param zc The plane depth.
+ * @return 1 when the corner projects beyond the bound, else 0. */
+static int tn_clip_beyond(const void* ctx, const ngte_clip_ref* r, double zc) {
+    const ngte_cvert* in = (const ngte_cvert*)ctx;
+    const ngte_cvert v = r->cross ? ngte_clip_lerp(in[r->a], in[r->b], zc) : in[r->a];
+    if (v.m3 != zc) return 0;
+    float sx, sy;
+    proj_screen(v.m1, v.m2, v.m3, &sx, &sy);
+    return fabsf(sx - (float)s_ofx) > NGTE_CLIP_PROJ_LIMIT ||
+           fabsf(sy - (float)s_ofy) > NGTE_CLIP_PROJ_LIMIT;
+}
+
 /** @brief Near-plane clips a camera-space triangle and pushes the result.
  *
- * Sutherland-Hodgman against the plane m3 >= zc: 0 vertices behind gives 1
- * triangle, 1 gives a quad (2 triangles, fanned from out[0]), 2 give 1
- * triangle, 3 drop the face and count dbg_behind. zc starts at s_nearz; when
- * a crossing vertex still projects beyond CLIP_PROJ_LIMIT from the screen
- * centre, the whole face is re-clipped at a doubled zc, at most 16 times
- * (crossing projections shrink about 1/zc, and a face that ends fully behind
- * the raised plane lay entirely inside the invisible band). A face that never
- * crosses is pushed on round 0. A clipped push counts dbg_clipped. Under
- * emit_hqfog_on each vertex first takes terrain_fog_blend of its near (rgb)
- * and far (rgbf) colours at its own depth, so a cut interpolates fogged
- * colours as the retained cache's vertex stage does.
+ * ngte_near_clip_tri against the plane m3 >= s_nearz, with the projection
+ * bound tn_clip_beyond: 0 vertices behind gives 1 triangle, 1 gives a quad
+ * (2 triangles, fanned from corner 0), 2 give 1 triangle, 3 drop the face
+ * and count dbg_behind. A crossing corner is ngte_clip_lerp of its edge. A
+ * clipped push counts dbg_clipped. Under emit_hqfog_on each vertex first
+ * takes terrain_fog_blend of its near (rgb) and far (rgbf) colours at its
+ * own depth, so a cut interpolates fogged colours as the retained cache's
+ * vertex stage does.
  * @param W The walk context receiving the triangles.
  * @param a The first vertex.
  * @param b The second vertex.
@@ -1402,32 +1399,17 @@ static void tn_hqfog_nodes(const tn_wctx* W, ngte_cvert v[3]) {
 static void clip_push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const tmat* m) {
     ngte_cvert in[3] = { a, b, c };
     tn_hqfog_nodes(W, in);
-    double zc = s_nearz;
-    for (int round = 0; ; round++) {
-        ngte_cvert out[4]; int nout = 0; int clipped = 0;
-        for (int i = 0; i < 3; i++) {
-            ngte_cvert cur = in[i], nxt = in[(i + 1) % 3];
-            int curIn = cur.m3 >= zc, nxtIn = nxt.m3 >= zc;
-            if (curIn) out[nout++] = cur;
-            if (curIn != nxtIn && nout < 4) { out[nout++] = ngte_clip_lerp(cur, nxt, zc); clipped = 1; }
-        }
-        if (nout < 3) { W->dbg_behind++; return; } /* fully behind the near plane */
-        if (clipped && round < 16) {
-            int sane = 1;
-            for (int i = 0; i < nout && sane; i++) {
-                if (out[i].m3 != zc) continue;    /* only crossing verts move with zc */
-                float sx, sy;
-                proj_screen(out[i].m1, out[i].m2, out[i].m3, &sx, &sy);
-                if (fabsf(sx - (float)s_ofx) > CLIP_PROJ_LIMIT ||
-                    fabsf(sy - (float)s_ofy) > CLIP_PROJ_LIMIT) sane = 0;
-            }
-            if (!sane) { zc *= 2.0; continue; }
-        }
-        if (clipped) W->dbg_clipped++;
-        push_tri(W, out[0], out[1], out[2], m);         /* fan the clipped polygon */
-        if (nout == 4) push_tri(W, out[0], out[2], out[3], m);
-        return;
-    }
+    const double z[3] = { in[0].m3, in[1].m3, in[2].m3 };
+    ngte_clip_ref ref[4];
+    double zc; int clipped;
+    const int nout = ngte_near_clip_tri(z, s_nearz, tn_clip_beyond, in, ref, &zc, &clipped);
+    if (nout < 3) { W->dbg_behind++; return; } /* fully behind the near plane */
+    ngte_cvert out[4];
+    for (int i = 0; i < nout; i++)
+        out[i] = ref[i].cross ? ngte_clip_lerp(in[ref[i].a], in[ref[i].b], zc) : in[ref[i].a];
+    if (clipped) W->dbg_clipped++;
+    push_tri(W, out[0], out[1], out[2], m);         /* fan the clipped polygon */
+    if (nout == 4) push_tri(W, out[0], out[2], out[3], m);
 }
 
 /** @brief Emits one triangle of a sector's projected vertices through the near-plane clip.

@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: c7bdb95d2cd3acb1681ad168f0e37c95349d6bcc
+# head: 6c3246471e602cdac058ed592a8207261a5999b7
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -100,14 +100,13 @@ games/common/renderer/moby.c	build_shaded_walk_tris	99	0
 games/common/renderer/moby.c	capture_gte	49	0	
 games/common/renderer/moby.c	compare_and_report	90	0	
 games/common/renderer/moby.c	compare_walk_vs_prims	251	0	
-games/common/renderer/moby.c	emit_wtri	27	0	
 games/common/renderer/moby.c	hex_dump	35	0	
 games/common/renderer/moby.c	moby_build_validate	51	0	
-games/common/renderer/moby.c	moby_decode_project_body	75	0	
+games/common/renderer/moby.c	moby_decode_project_body	74	0	
 games/common/renderer/moby.c	moby_native_pass	49	0	
 games/common/renderer/moby.c	moby_reextract_body	52	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
-games/common/renderer/moby.c	project_all_shaded	167	0	
+games/common/renderer/moby.c	project_all_shaded	166	0	
 games/common/renderer/moby.c	reextract_record_pass	98	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_pcol_scratch_check	27	0	
@@ -115,7 +114,7 @@ games/common/renderer/moby.c	shaded_verify	48	0
 games/common/renderer/moby.c	special_census_face	38	0	
 games/common/renderer/moby.c	specular_env_calibrate	47	0	
 games/common/renderer/moby.c	walk_prologue	38	0	
-games/common/renderer/moby.c	walk_records	356	0	
+games/common/renderer/moby.c	walk_records	362	0	
 games/common/renderer/moby_game_spyro23.c	s23_decode_faces_stride	56	0	
 games/common/renderer/moby_game_spyro23.c	s23_env_uv	40	0	
 games/common/renderer/moby_game_spyro23.c	s23_simple_decode	98	0	
@@ -132,7 +131,6 @@ games/common/renderer/player_game_spyro23.c	s23_part_record	28	0
 games/common/renderer/reextract_spyro23.c	player_records_replay	48	0	
 games/common/renderer/shadow.c	shadow_moby_compare	61	0	
 games/common/renderer/shadow_player.c	shadow_player_compare	70	0	
-games/common/renderer/terrain.c	clip_push_tri	35	0	
 games/common/renderer/terrain.c	fp_begin	28	0	
 games/common/renderer/terrain.c	fp_hit_tri	31	0	
 games/common/renderer/terrain.c	portal_rim_classify	53	0	
