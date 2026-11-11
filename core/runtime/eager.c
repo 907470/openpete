@@ -82,6 +82,10 @@
 #define EAGER_MAX_TARGETS 128
 #define EAGER_COST_WARMUP 8
 #define EAGER_HEADROOM_RUNS 8
+/* A free span gives back one scene after this many consecutive spans that
+ * finished with EAGER_COUNT_SPARE scenes of room. */
+#define EAGER_COUNT_RUNS 16
+#define EAGER_COUNT_SPARE 2
 static struct {
     int       active;                 /* the present thread owns the display */
     int       n, i;                   /* planned targets, next to produce */
@@ -109,6 +113,10 @@ static struct {
     unsigned  span_held;              /* spans planned above the standing level for an isolated shortfall */
     unsigned  produced_inter;         /* of `produced`, the sub-tick re-extracts */
     int       span_cut;               /* this span ended with targets unproduced */
+    op_eager_count_t count;           /* the free span's count controller */
+    int       span_free;              /* the open span was planned with no display grid */
+    int       spare;                  /* scenes the guard would still have started when the open span's plan finished */
+    op_time_t produce_end;            /* the open span's update-VBL sim deadline */
     unsigned  canon_frame;            /* openpete_frame at the last canonical, 0 after a discontinuity */
 } s_eager = { .ladder = { .level = 1, .since_short = EAGER_HEADROOM_RUNS }, .level = 1 };
 
@@ -343,7 +351,8 @@ static void eager_span_slots(op_time_t now, op_time_t first, op_time_t span_end,
  *
  * OPENPETE_EAGER_DBG=1 writes the plan line on a cut span, a change of the
  * span's level, a span planned above the standing level (std=), or a tick
- * that started half a tick or more past its deadline (late=).
+ * that started half a tick or more past its deadline (late=); short= is the
+ * free span's count shortfall below afford.
  * 2 or more also writes one span line per plan: the offsets from now of the
  * render-grid slot passed in (in), the span's first display instant, its end
  * after the lag extension and the previous span's last target, the lag, the
@@ -370,9 +379,9 @@ static void eager_plan_dbg(op_time_t now, op_time_t first_in, op_time_t end_in, 
     if (dbg <= 0) return;
     if (s_eager.span_cut || s_eager.level != s_eager.dbg_level || s_eager.level != s_eager.ladder.level ||
         s_eager.tick_late > 0) {
-        fprintf(stderr, "[eager f=%u] plan: slots=%d budget=%.2fms tail=%.3fms afford=%d level=%d std=%d cut=%d lag=%.2fms vbl=%.2fms late=%.2fms\n",
+        fprintf(stderr, "[eager f=%u] plan: slots=%d budget=%.2fms tail=%.3fms afford=%d level=%d std=%d short=%d cut=%d lag=%.2fms vbl=%.2fms late=%.2fms\n",
                 openpete_frame, sp->ns, (double)budget / 1e6, (double)eager_tail_cost() / 1e6, afford,
-                s_eager.level, s_eager.ladder.level, s_eager.span_cut, (double)s_eager.lag / 1e6, (double)s_eager.vbl_ema / 1e6,
+                s_eager.level, s_eager.ladder.level, s_eager.count.short_by, s_eager.span_cut, (double)s_eager.lag / 1e6, (double)s_eager.vbl_ema / 1e6,
                 (double)s_eager.tick_late / 1e6);
         s_eager.dbg_level = s_eager.level;
     }
@@ -570,6 +579,27 @@ static op_time_t eager_span_fill(int afford, op_time_t grid_period, eager_span_t
     return p;
 }
 
+/** @brief Plan a free span: step the count controller on the previous free span, re-space this one to its count, and set level 1.
+ *
+ * With no display grid there is no slot to skip, so the divisor ladder
+ * does not run: a cut previous free span (not one planned after a stalled
+ * tick start) plans one scene fewer, and a run of spans that finished with
+ * room gives one back (op_eager_count_step). The span plans afford less the
+ * controller's shortfall, evenly spaced (eager_span_fill). A pinned level
+ * (OPENPETE_EAGER_LEVEL) still decimates the filled slots.
+ * @param afford The scenes the budget affords, at least 1.
+ * @param grid_period The render grid period in nanoseconds.
+ * @param sp The span, enumerated by eager_span_slots; its first, slots and ns are rewritten.
+ * @return The span's period in nanoseconds. */
+static op_time_t eager_free_span(int afford, op_time_t grid_period, eager_span_t *sp)
+{
+    if (s_eager.span_free && s_eager.world_live)
+        op_eager_count_step(&s_eager.count, s_eager.span_cut && !s_eager.span_late, s_eager.spare,
+                            EAGER_COUNT_RUNS, EAGER_COUNT_SPARE);
+    if (!s_eager.pinned) s_eager.level = 1;
+    return eager_span_fill(op_eager_count_plan(&s_eager.count, afford), grid_period, sp);
+}
+
 /** @brief Write the EAGER_PLAN pace record of the span just planned: the fields of the OPENPETE_EAGER_DBG plan line, on every span.
  * @param now The plan instant.
  * @param sp The planned span.
@@ -605,8 +635,9 @@ static void eager_plan_record(op_time_t now, const eager_span_t *sp, op_time_t p
  * before the cost is measured. Enumerates the slots with eager_span_slots
  * (span_end raised to first and extended by the lag, continuing after the
  * previous span's last target). Estimates how many scenes fit
- * before prod_end (eager_afford); without vsync re-spaces the span to that
- * many evenly spaced slots (eager_span_fill). Moves the level (eager_ladder_step),
+ * before prod_end (eager_afford). Without vsync plans a free span
+ * (eager_free_span: afford less the count controller's shortfall, evenly
+ * spaced, at level 1); otherwise moves the level (eager_ladder_step).
  * Records whether the span follows a stalled tick start. Stores every
  * level-th slot (policy 0) or afford evenly
  * spaced instants (policy 1) in s_eager.target, sets last_target and counts
@@ -658,9 +689,11 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
      * exists to prevent. */
     op_time_t budget;
     const int afford = eager_afford(now, prod_end, sp.ns, &budget);
-    if (free_grid) period = eager_span_fill(afford, grid_period, &sp);
+    if (free_grid) period = eager_free_span(afford, grid_period, &sp);
+    else if (!s_eager.pinned) eager_ladder_step(sp.ns, afford);
     const int ns = sp.ns;
-    if (!s_eager.pinned) eager_ladder_step(ns, afford);
+    s_eager.span_free = free_grid;
+    s_eager.spare = 0;
     eager_plan_dbg(now, first_in, span_end, period, &lat, &sp, budget, afford);
     eager_plan_record(now, &sp, period, budget, afford);
     s_eager.span_cut = 0;
@@ -749,6 +782,25 @@ static void eager_produce_one(op_time_t t, int canonical)
     if (s_eager.cost_n < EAGER_COST_WARMUP) s_eager.cost_n++;
 }
 
+/** @brief Record how many more scenes the produce guard would have started when the span's plan finished.
+ *
+ * Before the update VBL (a deadline short of produce_end) the span's second
+ * window is still to come, so the room is at least
+ * OP_EAGER_LADDER_MAX_AFFORD. After it, the guard starts a scene while its
+ * start plus the tail cost is at or before the deadline, so the room is 1
+ * plus the mean costs that fit in the rest, or 0. Read by the free span's
+ * count controller at the next plan.
+ * @param now The instant the plan's last scene finished.
+ * @param deadline The deadline the produce call ran under.
+ * @param tail The per-scene tail cost the guard used. */
+static void eager_note_spare(op_time_t now, op_time_t deadline, op_time_t tail)
+{
+    if (deadline < s_eager.produce_end) { s_eager.spare = OP_EAGER_LADDER_MAX_AFFORD; return; }
+    const op_time_t room = deadline - now;
+    const op_time_t ema = s_eager.cost_ema > 0 ? s_eager.cost_ema : 1;
+    s_eager.spare = room < tail ? 0 : 1 + (int)((room - tail) / ema);
+}
+
 /** @brief Produce the span's planned scenes in order while they fit before deadline.
  *
  * The canonical scene, first of the span, is always produced. A later scene
@@ -756,7 +808,8 @@ static void eager_produce_one(op_time_t t, int canonical)
  * instant is more than half a period past; the walk
  * stops when the scene ring has one free slot or less, or when the tail
  * cost of one more scene would pass the deadline, and resumes from the same
- * scene on the next call. The checks run between scenes only.
+ * scene on the next call. The checks run between scenes only. When the
+ * plan's last scene finishes, eager_note_spare records the room left.
  * @param deadline Time by which production must stop.
  * @param period Render-grid period in nanoseconds.
  * @return The number of scenes produced. */
@@ -782,6 +835,7 @@ static int eager_produce(op_time_t deadline, op_time_t period)
         }
         eager_produce_one(t, canonical);
         s_eager.i++; made++;
+        if (s_eager.i == s_eager.n) eager_note_spare(op_now(), deadline, tail);
     }
     return made;
 }
@@ -836,6 +890,7 @@ void eager_canonical(op_time_t now, op_time_t slot, op_time_t period,
     }
     s_eager.anchor_age = now - anchor;
     eager_plan(now, first, period, span_end, prod_end);
+    s_eager.produce_end = produce_end;
     /* The canonical scene, then as much of the span as fits
      * before the update VBL is due - the latter only while
      * the world is live. */

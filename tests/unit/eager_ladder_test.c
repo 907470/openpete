@@ -20,6 +20,16 @@
  * floor(len / tail) slots; that count against afford is the negative
  * control, which halves the plan.
  *
+ * The count rows are 240 consecutive spans of two levels from Windows runs
+ * with the guard-window price (vsync off, the same flags): per span the
+ * price the run planned, the sum price the live cost estimate gives
+ * (op_eager_ladder_afford, reconstructed from the run's scene costs and
+ * equal to the logged afford wherever that price ran), and the capacity, the
+ * scenes a replay of the produce guard on the span's recorded costs starts.
+ * A span is cut when it plans more than its capacity. The vsync rows are
+ * spans of the vsync-on runs with that price that it planned below the
+ * slot count, where the sum price stays at or above it.
+ *
  * `eager_ladder_test replay` prints the per-row table. */
 
 #include "openpete_eager_ladder.h"
@@ -240,6 +250,163 @@ static void test_free(int print)
     }
 }
 
+static const unsigned char k_stone_hill_sum[] = {
+        22, 22, 22, 23, 22, 22, 22, 21, 23, 22, 22, 22, 22, 21, 22, 21, 21, 22, 21, 22, 19, 21, 21, 20,
+        21, 21, 23, 23, 22, 22, 22, 23, 23, 22, 23, 23, 22, 22, 22, 23, 21, 21, 22, 21, 21, 22, 23, 22,
+        23, 23, 22, 23, 19, 17, 20, 22, 22, 22, 23, 22, 21, 22, 24, 20, 22, 22, 21, 23, 21, 21, 23, 22,
+        21, 21, 20, 21, 22, 23, 24, 23, 22, 22, 22, 24, 24, 21, 19, 21, 20, 22, 21, 23, 22, 23, 24, 23,
+        21, 22, 23, 23, 24, 23, 22, 22, 22, 24, 23, 24, 23, 23, 23, 21, 21, 21, 22, 23, 23, 22, 21, 19,
+        23, 23, 23, 23, 20, 21, 23, 23, 22, 24, 23, 23, 22, 22, 22, 22, 22, 23, 23, 24, 21, 20, 21, 22,
+        21, 21, 23, 22, 22, 22, 22, 19, 17, 21, 22, 22, 20, 22, 23, 23, 23, 23, 22, 22, 23, 22, 21, 22,
+        21, 22, 22, 22, 21, 21, 21, 21, 21, 21, 22, 23, 21, 21, 22, 21, 19, 19, 21, 23, 22, 22, 22, 24,
+        22, 22, 20, 21, 21, 22, 22, 22, 22, 22, 22, 20, 21, 20, 21, 22, 21, 22, 22, 23, 23, 21, 19, 22,
+        21, 22, 19, 22, 21, 21, 22, 23, 21, 22, 23, 23, 22, 23, 20, 23, 20, 21, 22, 22, 21, 22, 22, 22,
+};
+static const unsigned char k_stone_hill_win[] = {
+        20, 22, 20, 22, 21, 22, 22, 20, 22, 20, 20, 21, 20, 20, 21, 20, 20, 22, 20, 21, 18, 20, 20, 20,
+        20, 20, 22, 22, 20, 20, 22, 22, 22, 22, 22, 22, 20, 21, 22, 22, 20, 20, 22, 20, 20, 20, 22, 22,
+        22, 22, 22, 22, 18, 16, 19, 22, 20, 20, 22, 22, 20, 21, 22, 18, 20, 20, 20, 22, 20, 20, 22, 20,
+        20, 20, 19, 20, 20, 22, 22, 22, 20, 21, 21, 22, 22, 20, 18, 20, 20, 20, 20, 22, 21, 22, 22, 22,
+        20, 21, 22, 22, 22, 22, 21, 21, 22, 22, 22, 23, 22, 22, 22, 20, 20, 20, 20, 22, 22, 20, 20, 18,
+        22, 22, 22, 22, 19, 20, 22, 22, 21, 22, 22, 22, 20, 20, 22, 20, 21, 22, 22, 22, 20, 20, 20, 20,
+        20, 20, 22, 22, 20, 20, 20, 18, 16, 20, 20, 22, 19, 20, 22, 22, 22, 22, 22, 22, 22, 22, 20, 21,
+        20, 22, 20, 20, 20, 20, 20, 20, 20, 20, 20, 22, 20, 20, 20, 20, 18, 18, 20, 22, 20, 22, 22, 24,
+        20, 22, 19, 20, 20, 20, 20, 22, 21, 21, 21, 18, 20, 19, 20, 22, 20, 20, 21, 22, 22, 20, 18, 20,
+        20, 22, 18, 20, 20, 20, 21, 22, 20, 20, 22, 22, 21, 22, 19, 22, 20, 20, 20, 20, 20, 20, 20, 20,
+};
+static const unsigned char k_stone_hill_cap[] = {
+        22, 20, 22, 22, 22, 22, 21, 22, 20, 22, 22, 21, 20, 22, 21, 20, 22, 21, 22, 18, 22, 19, 20, 20,
+        20, 24, 22, 22, 20, 22, 22, 22, 22, 21, 22, 22, 22, 22, 22, 21, 20, 22, 20, 22, 20, 21, 22, 23,
+        23, 22, 22, 19, 16, 22, 22, 22, 22, 22, 21, 21, 22, 23, 19, 21, 22, 21, 22, 21, 20, 22, 21, 20,
+        20, 19, 21, 22, 21, 22, 22, 21, 22, 22, 22, 23, 21, 18, 20, 21, 21, 20, 22, 22, 22, 22, 22, 21,
+        22, 23, 22, 24, 22, 22, 22, 22, 22, 22, 23, 22, 22, 22, 21, 20, 20, 22, 22, 22, 22, 20, 19, 21,
+        21, 22, 22, 21, 20, 22, 22, 22, 24, 22, 22, 22, 20, 22, 21, 22, 22, 22, 23, 21, 20, 20, 22, 20,
+        20, 22, 22, 22, 20, 20, 20, 16, 20, 21, 22, 21, 21, 22, 22, 22, 22, 22, 22, 22, 22, 21, 22, 21,
+        21, 20, 22, 20, 20, 20, 20, 20, 21, 22, 21, 21, 20, 21, 20, 18, 18, 22, 22, 22, 22, 22, 24, 21,
+        22, 19, 22, 20, 22, 22, 22, 22, 22, 21, 20, 20, 19, 20, 21, 21, 22, 22, 22, 22, 20, 19, 21, 21,
+        21, 19, 22, 21, 20, 22, 22, 20, 22, 22, 22, 22, 22, 20, 22, 20, 20, 22, 21, 20, 22, 22, 22, 22,
+};
+static const unsigned char k_hurricos_sum[] = {
+        24, 26, 24, 24, 18, 19, 18, 20, 17, 20, 19, 21, 17, 19, 19, 21, 23, 26, 23, 27, 24, 27, 24, 27,
+        24, 28, 23, 25, 22, 25, 23, 25, 22, 25, 22, 25, 23, 27, 23, 26, 24, 26, 24, 25, 24, 27, 25, 28,
+        24, 25, 24, 26, 25, 29, 25, 26, 23, 26, 22, 24, 22, 25, 23, 25, 23, 27, 23, 26, 22, 24, 22, 24,
+        22, 23, 20, 24, 20, 26, 22, 24, 20, 23, 22, 24, 22, 23, 20, 23, 21, 26, 22, 24, 22, 25, 22, 25,
+        22, 25, 23, 25, 22, 27, 21, 25, 22, 25, 24, 26, 24, 27, 24, 27, 24, 27, 23, 27, 22, 25, 24, 27,
+        25, 28, 24, 27, 24, 27, 23, 26, 23, 26, 24, 26, 23, 26, 24, 27, 22, 25, 22, 25, 24, 26, 23, 26,
+        24, 25, 23, 26, 24, 26, 23, 26, 23, 26, 24, 27, 22, 26, 23, 28, 24, 28, 25, 27, 19, 20, 19, 20,
+        20, 20, 19, 21, 19, 20, 20, 22, 23, 27, 23, 25, 23, 26, 24, 27, 25, 25, 23, 27, 22, 26, 22, 26,
+        23, 26, 23, 25, 24, 26, 23, 25, 22, 27, 24, 25, 22, 25, 23, 25, 23, 26, 23, 27, 24, 26, 22, 24,
+        22, 24, 22, 24, 22, 24, 22, 25, 23, 26, 23, 26, 23, 25, 22, 25, 21, 24, 23, 26, 23, 26, 23, 25,
+};
+static const unsigned char k_hurricos_win[] = {
+        23, 24, 22, 23, 17, 18, 16, 18, 16, 18, 18, 19, 16, 18, 17, 19, 22, 24, 22, 25, 23, 25, 23, 25,
+        23, 26, 22, 23, 21, 23, 22, 24, 21, 24, 21, 23, 21, 25, 22, 25, 23, 25, 23, 24, 23, 26, 24, 27,
+        22, 23, 23, 24, 24, 27, 23, 25, 22, 25, 20, 23, 21, 24, 22, 23, 22, 25, 22, 24, 21, 23, 20, 22,
+        20, 22, 18, 23, 19, 23, 21, 23, 19, 21, 20, 22, 20, 21, 18, 22, 20, 24, 20, 22, 21, 23, 21, 24,
+        20, 23, 21, 23, 21, 26, 20, 23, 20, 23, 22, 25, 22, 25, 23, 26, 23, 26, 22, 25, 20, 23, 22, 25,
+        23, 26, 22, 25, 23, 26, 21, 25, 22, 24, 22, 25, 22, 25, 22, 25, 21, 24, 21, 23, 22, 24, 22, 24,
+        22, 24, 22, 25, 22, 25, 22, 25, 22, 25, 22, 25, 20, 24, 21, 26, 23, 26, 24, 25, 17, 18, 18, 19,
+        18, 19, 18, 19, 18, 19, 19, 21, 22, 25, 22, 23, 22, 24, 23, 25, 23, 23, 22, 25, 21, 25, 21, 24,
+        22, 25, 22, 24, 22, 24, 22, 24, 20, 25, 22, 24, 21, 24, 21, 24, 22, 24, 22, 25, 22, 25, 21, 22,
+        21, 23, 21, 22, 21, 23, 21, 24, 21, 25, 22, 24, 22, 23, 21, 23, 20, 22, 22, 24, 21, 24, 22, 24,
+};
+static const unsigned char k_hurricos_cap[] = {
+        25, 23, 24, 17, 19, 18, 19, 17, 19, 18, 20, 17, 19, 18, 21, 23, 25, 22, 27, 23, 26, 24, 24, 24,
+        27, 22, 25, 21, 25, 22, 25, 21, 25, 22, 24, 23, 26, 22, 27, 24, 25, 23, 25, 23, 27, 25, 27, 23,
+        24, 24, 25, 24, 28, 24, 25, 22, 25, 21, 24, 21, 25, 22, 25, 22, 25, 23, 25, 21, 23, 21, 23, 21,
+        23, 20, 23, 20, 25, 21, 23, 20, 22, 21, 23, 21, 23, 20, 22, 20, 25, 20, 23, 22, 25, 21, 25, 21,
+        25, 22, 24, 21, 26, 22, 25, 22, 25, 23, 27, 23, 27, 24, 25, 24, 25, 23, 27, 21, 25, 24, 27, 24,
+        27, 22, 25, 24, 26, 22, 27, 22, 25, 23, 25, 22, 27, 23, 26, 22, 24, 22, 25, 23, 25, 22, 25, 23,
+        25, 22, 25, 22, 25, 23, 26, 22, 27, 23, 27, 21, 27, 22, 27, 24, 27, 24, 27, 17, 19, 18, 21, 19,
+        20, 18, 20, 18, 20, 19, 21, 23, 26, 22, 25, 22, 24, 24, 27, 24, 25, 22, 25, 21, 25, 22, 25, 22,
+        26, 22, 25, 23, 25, 22, 24, 22, 27, 23, 25, 22, 25, 22, 25, 23, 25, 22, 25, 24, 25, 22, 23, 22,
+        24, 21, 23, 21, 25, 21, 24, 21, 25, 22, 25, 22, 25, 22, 25, 20, 23, 22, 24, 22, 24, 22, 25, 22,
+};
+
+/* Count rows: level, the guard-window price as planned, the sum price, the guard replay's capacity. */
+static const struct { const char *level; const unsigned char *win, *sum, *cap; } k_count[] = {
+    { "s1 stone_hill", k_stone_hill_win, k_stone_hill_sum, k_stone_hill_cap },
+    { "s2 hurricos",   k_hurricos_win,   k_hurricos_sum,   k_hurricos_cap },
+};
+#define COUNT_SPANS 240
+
+/** @brief Check the count controller's transitions: a cut costs one scene, a clean run with room gives one back, a run at the edge does not. */
+static void test_count_steps(void)
+{
+    op_eager_count_t c;
+    memset(&c, 0, sizeof c);
+    check(op_eager_count_plan(&c, 20) == 20, "count: plans afford with no shortfall");
+    op_eager_count_step(&c, 1, 0, 16, 2);
+    check(op_eager_count_plan(&c, 20) == 19, "count: a cut plans one fewer");
+    for (int i = 0; i < 15; i++) op_eager_count_step(&c, 0, 2, 16, 2);
+    check(c.short_by == 1, "count: fifteen clean spans give nothing back");
+    op_eager_count_step(&c, 0, 2, 16, 2);
+    check(c.short_by == 0, "count: the sixteenth gives one back");
+    op_eager_count_step(&c, 1, 0, 16, 2);
+    for (int i = 0; i < 40; i++) op_eager_count_step(&c, 0, 1, 16, 2);
+    check(c.short_by == 1, "count: spans finishing at the guard's edge hold the count");
+    c.short_by = 30;
+    check(op_eager_count_plan(&c, 20) == 1, "count: at least one scene");
+}
+
+/** @brief Replay the count rows: the guard-window price as planned cuts 10% or more, the sum price under the count controller 4% or less at 18 or more scenes per span.
+ * @param print Nonzero to print the table. */
+static void test_count(int print)
+{
+    if (print) printf("level          window(cut%% scenes)  count(cut%% scenes)\n");
+    for (size_t i = 0; i < sizeof k_count / sizeof k_count[0]; i++) {
+        int cut_w = 0, cut_c = 0, made_w = 0, made_c = 0;
+        op_eager_count_t c;
+        memset(&c, 0, sizeof c);
+        for (int q = 0; q < COUNT_SPANS; q++) {
+            const int cap = k_count[i].cap[q];
+            const int w = k_count[i].win[q];
+            cut_w += w > cap; made_w += w < cap ? w : cap;
+            const int plan = op_eager_count_plan(&c, k_count[i].sum[q]);
+            cut_c += plan > cap; made_c += plan < cap ? plan : cap;
+            op_eager_count_step(&c, plan > cap, cap - plan, 16, 2);
+        }
+        if (print) printf("%-14s %6.1f %6.2f          %6.1f %6.2f\n", k_count[i].level,
+                          100.0 * cut_w / COUNT_SPANS, (double)made_w / COUNT_SPANS,
+                          100.0 * cut_c / COUNT_SPANS, (double)made_c / COUNT_SPANS);
+        char what[112];
+        snprintf(what, sizeof what, "count %s: cut on %d of %d spans, at most 4%%", k_count[i].level, cut_c, COUNT_SPANS);
+        check(cut_c * 25 <= COUNT_SPANS, what);
+        snprintf(what, sizeof what, "count %s: %d scenes over %d spans, at least 18 per span", k_count[i].level, made_c, COUNT_SPANS);
+        check(made_c >= 18 * COUNT_SPANS, what);
+        snprintf(what, sizeof what, "control %s: the guard-window price cut on %d of %d spans", k_count[i].level, cut_w, COUNT_SPANS);
+        check(cut_w * 10 >= COUNT_SPANS, what);
+    }
+}
+
+/* Vsync rows: level, budget, cost mean and deviation (ns), slots, the guard-window price's afford. */
+static const struct { const char *level; int64_t budget, ema, dev; int slots, win; } k_vsync[] = {
+    { "s1 artisans", 29467016, 1617053, 147642, 17, 16 }, /* 47 such spans; 6 below the slots under both prices */
+    { "s1 stone_hill", 29610348, 1690336, 134932, 16, 15 }, /* 1 such spans; 0 below the slots under both prices */
+    { "s1 town_square", 29995630, 1896535, 171202, 14, 13 }, /* 17 such spans; 0 below the slots under both prices */
+    { "s2 autumn_plains", 28813499, 1745028, 57675, 16, 14 }, /* 356 such spans; 812 below the slots under both prices */
+    { "s2 glimmer", 29122517, 1654951, 133751, 16, 15 }, /* 43 such spans; 0 below the slots under both prices */
+    { "s2 hurricos", 27811836, 1458175, 146656, 17, 16 }, /* 1 such spans; 0 below the slots under both prices */
+    { "s2 summer_forest", 29049638, 1238888, 95358, 16, 15 }, /* 324 such spans; 0 below the slots under both prices */
+    { "s3 cloud_spires", 28817531, 1707839, 96489, 16, 14 }, /* 435 such spans; 626 below the slots under both prices */
+    { "s3 sunny_villa", 28414182, 1946463, 144050, 14, 12 }, /* 134 such spans; 1062 below the slots under both prices */
+    { "s3 sunrise_spring", 27709429, 1572376, 118516, 16, 15 }, /* 659 such spans; 515 below the slots under both prices */
+};
+
+/** @brief Check the vsync rows: the sum price keeps every span the guard-window price put below its slot count at need 1. */
+static void test_vsync(void)
+{
+    for (size_t i = 0; i < sizeof k_vsync / sizeof k_vsync[0]; i++) {
+        const int a = op_eager_ladder_afford(k_vsync[i].budget, k_vsync[i].ema, k_vsync[i].dev);
+        op_eager_ladder_t s = fresh();
+        char what[112];
+        snprintf(what, sizeof what, "vsync %s: afford %d keeps %d slots at need 1", k_vsync[i].level, a, k_vsync[i].slots);
+        check(op_eager_ladder_step(&s, k_vsync[i].slots, a, 0, WINDOW) == 1, what);
+        snprintf(what, sizeof what, "control %s: the guard-window price %d was below %d slots", k_vsync[i].level, k_vsync[i].win, k_vsync[i].slots);
+        check(k_vsync[i].win < k_vsync[i].slots, what);
+    }
+}
+
 /** @brief Run the checks; `replay` also prints the recorded-row table.
  * @param argc Argument count.
  * @param argv Arguments.
@@ -251,6 +418,9 @@ int main(int argc, char **argv)
     test_replay(argc > 1 && !strcmp(argv[1], "replay"));
     test_fill();
     test_free(argc > 1 && !strcmp(argv[1], "replay"));
+    test_count_steps();
+    test_count(argc > 1 && !strcmp(argv[1], "replay"));
+    test_vsync();
     printf("eager_ladder_test: %s\n", g_fail ? "FAIL" : "PASS");
     return g_fail;
 }

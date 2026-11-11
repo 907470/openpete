@@ -124,4 +124,50 @@ static inline int64_t op_eager_ladder_fill(int64_t len, int afford, int64_t floo
     return period;
 }
 
+/* A free span's count controller: with no display grid the span plans
+ * afford - short_by evenly spaced scenes, and short_by is the estimate's
+ * measured overreach. Initialise zeroed. */
+typedef struct {
+    int short_by;   /* scenes planned below afford */
+    int clean;      /* consecutive spans that finished with room to spare */
+} op_eager_count_t;
+
+/** @brief Return the scenes a free span plans: afford less the controller's shortfall, at least 1.
+ * @param c The controller.
+ * @param afford The scenes the budget affords.
+ * @return The scene count. */
+static inline int op_eager_count_plan(const op_eager_count_t *c, int afford)
+{
+    const int n = afford - c->short_by;
+    return n < 1 ? 1 : n;
+}
+
+/** @brief Move the free-span count controller for the span just closed.
+ *
+ * A cut span (one the produce guard left with scenes unproduced) plans one
+ * scene fewer from the next span on. A span that produced its plan with
+ * room for at least need_spare more scenes extends a clean run; window
+ * consecutive such spans give back one scene. A span that produced its
+ * plan with less room than that ends the run without moving the count:
+ * the plan sits at the guard's edge, and probing past it would cut. The
+ * divisor ladder's standing raise has no counterpart: with no grid a
+ * shortfall of one scene costs one scene, not every second one.
+ * @param c The controller.
+ * @param cut Nonzero when the span was cut by its own cost.
+ * @param spare The further scenes the guard would have started when the plan finished; ignored when cut.
+ * @param window The clean run that gives back one scene, in spans.
+ * @param need_spare The room a span must leave to count as clean, in scenes. */
+static inline void op_eager_count_step(op_eager_count_t *c, int cut, int spare, int window, int need_spare)
+{
+    if (cut) {
+        if (c->short_by < OP_EAGER_LADDER_MAX_AFFORD) c->short_by++;
+        c->clean = 0;
+        return;
+    }
+    if (spare < need_spare) { c->clean = 0; return; }
+    if (++c->clean < window) return;
+    c->clean = 0;
+    if (c->short_by > 0) c->short_by--;
+}
+
 #endif /* OPENPETE_EAGER_LADDER_H */
