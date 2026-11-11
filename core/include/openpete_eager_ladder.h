@@ -49,53 +49,6 @@ static inline int op_eager_ladder_afford(int64_t budget, int64_t ema, int64_t de
     return n < 1 ? 1 : n;
 }
 
-/** @brief Return how many scenes the produce guard admits in one production window.
- *
- * The guard starts a scene only while its start plus the per-scene tail
- * bound lies at or before the window's end, and checks between scenes, so
- * the window admits 1 + m scenes, m the largest count whose summed cost
- * (priced as in op_eager_ladder_afford, without its floor of 1) fits the
- * window less one tail; none when the window is shorter than the tail.
- * @param window The window's length in nanoseconds.
- * @param ema The per-scene production cost mean in nanoseconds.
- * @param dev The per-scene production cost mean absolute deviation in nanoseconds.
- * @param tail The guard's per-scene tail bound in nanoseconds.
- * @return The number of scenes admitted, 0 to OP_EAGER_LADDER_MAX_AFFORD. */
-static inline int op_eager_ladder_window(int64_t window, int64_t ema, int64_t dev, int64_t tail)
-{
-    if (window < tail || window <= 0) return 0;
-    if (ema <= 0) return OP_EAGER_LADDER_MAX_AFFORD;
-    const int64_t room = window - tail;
-    int m = 0;
-    while (m < OP_EAGER_LADDER_MAX_AFFORD - 1) {
-        const double k = (double)(m + 1);
-        if (k * (double)ema + 2.0 * sqrt(k) * (double)dev > (double)room) break;
-        m++;
-    }
-    return m + 1;
-}
-
-/** @brief Return how many scenes a span's two production windows admit together, at least 1.
- *
- * A span is produced in two windows split by the update VBL: from the plan
- * to the guard's stop before that VBL, and from the instant production
- * resumes after it to the guard's stop before the next tick. Each window
- * loses the part of a scene its guard refuses at the end, so the count is
- * the sum of op_eager_ladder_window over the two, not the fit of their sum.
- * The canonical scene is produced whatever the guard says, hence the floor.
- * @param w1 The first window in nanoseconds.
- * @param w2 The second window in nanoseconds; 0 or less when there is none.
- * @param ema The per-scene production cost mean in nanoseconds.
- * @param dev The per-scene production cost mean absolute deviation in nanoseconds.
- * @param tail The guard's per-scene tail bound in nanoseconds.
- * @return The number of scenes afforded, 1 to OP_EAGER_LADDER_MAX_AFFORD. */
-static inline int op_eager_ladder_afford_windows(int64_t w1, int64_t w2, int64_t ema, int64_t dev, int64_t tail)
-{
-    int n = op_eager_ladder_window(w1, ema, dev, tail) + op_eager_ladder_window(w2, ema, dev, tail);
-    if (n > OP_EAGER_LADDER_MAX_AFFORD) n = OP_EAGER_LADDER_MAX_AFFORD;
-    return n < 1 ? 1 : n;
-}
-
 /** @brief Move the ladder for a span of ns slots of which afford scenes fit, and return the level that span plans at.
  *
  * A shortfall is a span whose estimate needs a higher level than the

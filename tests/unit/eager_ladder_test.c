@@ -20,13 +20,6 @@
  * floor(len / tail) slots; that count against afford is the negative
  * control, which halves the plan.
  *
- * The window rows are cut spans of the same levels after the free-span
- * sizing (Windows, the same flags; 17-18% of spans cut). A replay of the
- * produce loop's rule (a scene starts only while start + tail is at or
- * before its window's end) on each span's recorded scene costs reproduces
- * the count it produced; the logged afford, the sum price over one budget,
- * exceeds it, and the window price does not.
- *
  * `eager_ladder_test replay` prints the per-row table. */
 
 #include "openpete_eager_ladder.h"
@@ -247,86 +240,6 @@ static void test_free(int print)
     }
 }
 
-/* Window records: one cut level-1 span per level (its plan's implied
- * deviation, (tail - mean cost) / 3, inside the runs' logged 0.05-0.12 ms):
- * budget, update-VBL cost, tail, this span's delay from the update VBL's
- * deadline to its next scene, the run's median of that delay, the logged
- * afford, the scenes produced, and the scene costs in order, ms. */
-static const struct {
-    const char *level; double budget, vbl, tail, resume, resume_med; int afford, produced, n; double cost[32];
-} k_win[] = {
-    { "s1 artisans", 29.721, 0.058, 1.653, 0.170, 0.172, 20, 18, 18, { 1.559, 1.513, 1.486, 1.472, 1.592, 1.489, 1.443, 1.401, 1.516, 1.567, 1.521, 1.517, 1.455, 1.439, 1.452, 1.398, 1.471, 1.399 } },
-    { "s1 stone_hill", 29.749, 0.057, 1.511, 0.172, 0.178, 23, 20, 20, { 1.221, 1.331, 1.292, 1.345, 1.378, 1.349, 1.351, 1.425, 1.457, 1.467, 1.437, 1.408, 1.292, 1.283, 1.270, 1.273, 1.254, 1.284, 1.268, 1.304 } },
-    { "s1 town_square", 29.966, 0.047, 1.440, 0.157, 0.162, 24, 23, 23, { 1.218, 1.082, 1.057, 1.087, 1.090, 1.075, 1.066, 1.222, 1.168, 1.308, 1.303, 1.300, 1.265, 1.311, 1.290, 1.224, 1.257, 1.235, 1.240, 1.171, 1.142, 1.136, 1.126 } },
-    { "s2 autumn_plains", 28.780, 0.054, 2.059, 0.361, 0.366, 15, 14, 14, { 1.836, 1.785, 1.721, 1.740, 1.725, 1.826, 1.929, 1.813, 1.782, 1.746, 1.794, 1.738, 1.760, 1.749 } },
-    { "s2 glimmer", 29.299, 0.047, 1.646, 0.366, 0.368, 20, 19, 19, { 1.397, 1.266, 1.313, 1.399, 1.330, 1.433, 1.513, 1.518, 1.475, 1.538, 1.476, 1.471, 1.457, 1.501, 1.412, 1.448, 1.455, 1.306, 1.263 } },
-    { "s2 hurricos", 29.072, 0.048, 1.342, 0.390, 0.402, 25, 24, 24, { 1.104, 1.124, 1.133, 1.107, 1.098, 1.186, 1.204, 1.178, 1.202, 1.204, 1.184, 1.223, 1.196, 1.227, 1.180, 1.230, 1.139, 1.109, 1.168, 1.100, 1.103, 1.122, 1.213, 1.144 } },
-    { "s2 summer_forest", 29.105, 0.055, 1.372, 0.463, 0.396, 24, 23, 23, { 1.391, 1.107, 1.095, 1.076, 1.131, 1.150, 1.135, 1.182, 1.254, 1.239, 1.254, 1.140, 1.125, 1.203, 1.207, 1.148, 1.054, 1.055, 1.122, 1.124, 1.084, 1.128, 1.111 } },
-    { "s3 cloud_spires", 28.798, 0.047, 1.845, 0.553, 0.464, 17, 16, 16, { 1.733, 1.572, 1.577, 1.560, 1.590, 1.619, 1.727, 1.820, 1.714, 1.586, 1.616, 1.594, 1.594, 1.694, 1.729, 1.519 } },
-    { "s3 sunny_villa", 28.465, 0.054, 2.075, 0.451, 0.467, 15, 14, 14, { 1.778, 1.860, 1.893, 1.871, 1.955, 1.937, 2.001, 2.049, 2.137, 2.003, 1.835, 1.769, 1.828, 1.814 } },
-    { "s3 sunrise_spring", 27.808, 0.074, 1.881, 0.505, 0.469, 17, 16, 16, { 1.983, 1.602, 1.521, 1.521, 1.535, 1.510, 1.677, 1.693, 1.616, 1.556, 1.537, 1.995, 1.828, 1.575, 1.546, 1.489 } },
-};
-
-/** @brief Replay the produce guard over a span's two windows on recorded scene costs and return the scenes it starts.
- *
- * The first scene always starts, at 0; every later one only while its start
- * plus tail is at or before the end of the window it starts in. The second
- * window opens at start2, or when the first window's last scene ends if later.
- * @param end1 The first window's end, from the plan instant.
- * @param start2 The second window's start.
- * @param end2 The second window's end.
- * @param cost The scene costs in order.
- * @param n The number of costs; the replay starts no more scenes than this.
- * @param tail The guard's tail bound.
- * @return The scenes started. */
-static int guard_replay(int64_t end1, int64_t start2, int64_t end2, const int64_t *cost, int n, int64_t tail)
-{
-    int64_t t = cost[0];
-    int k = 1;
-    while (k < n && t + tail <= end1) t += cost[k++];
-    if (t < start2) t = start2;
-    while (k < n && t + tail <= end2) t += cost[k++];
-    return k;
-}
-
-/** @brief Replay the window rows: the guard reproduces the recorded count, the logged afford exceeds it, the window price does not.
- * @param print Nonzero to print the table. */
-static void test_windows(int print)
-{
-    const int64_t vbl_period = 16714882;   /* 37609 / 2250000 s */
-    const int64_t guard_ns = 500000;
-    if (print) printf("level              produced guard logged-afford windows\n");
-    for (size_t i = 0; i < sizeof k_win / sizeof k_win[0]; i++) {
-        int64_t cost[32], sum = 0;
-        for (int q = 0; q < k_win[i].n; q++) { cost[q] = (int64_t)(k_win[i].cost[q] * MS); if (q) sum += cost[q]; }
-        const int64_t ema = sum / (k_win[i].n - 1), tail = (int64_t)(k_win[i].tail * MS);
-        const int64_t dev = (tail - ema) / 3;
-        const int64_t prod_end = (int64_t)((k_win[i].budget + k_win[i].vbl + 1.0) * MS);
-        const int64_t produce_end = prod_end - vbl_period;
-        /* A span the guard would let run on gets one more scene at the mean cost. */
-        cost[k_win[i].n] = ema;
-        const int g = guard_replay(produce_end - guard_ns, produce_end + (int64_t)(k_win[i].resume * MS),
-                                   prod_end - guard_ns, cost, k_win[i].n + 1, tail);
-        const int win = op_eager_ladder_afford_windows(produce_end - guard_ns,
-                                                       prod_end - guard_ns - (produce_end + (int64_t)(k_win[i].resume_med * MS)),
-                                                       ema, dev, tail);
-        if (print) printf("%-18s %8d %5d %13d %7d\n", k_win[i].level, k_win[i].produced, g, k_win[i].afford, win);
-        char what[112];
-        snprintf(what, sizeof what, "calibration %s: the guard replay starts the %d scenes recorded (got %d)",
-                 k_win[i].level, k_win[i].produced, g);
-        check(g == k_win[i].produced, what);
-        snprintf(what, sizeof what, "window %s: priced %d, at most the %d produced and at least one fewer",
-                 k_win[i].level, win, k_win[i].produced);
-        check(win <= k_win[i].produced && win >= k_win[i].produced - 1, what);
-        snprintf(what, sizeof what, "control %s: the logged afford %d planned past the %d produced",
-                 k_win[i].level, k_win[i].afford, k_win[i].produced);
-        check(k_win[i].afford > k_win[i].produced, what);
-    }
-    check(op_eager_ladder_window(MS, 2 * MS, 0, 2 * MS) == 0, "window: one shorter than the tail admits none");
-    check(op_eager_ladder_window(MS, 2 * MS, 0, MS) == 1, "window: one tail long admits the first scene");
-    check(op_eager_ladder_afford_windows(0, 0, MS, 0, MS) == 1, "windows: the canonical floor");
-}
-
 /** @brief Run the checks; `replay` also prints the recorded-row table.
  * @param argc Argument count.
  * @param argv Arguments.
@@ -338,7 +251,6 @@ int main(int argc, char **argv)
     test_replay(argc > 1 && !strcmp(argv[1], "replay"));
     test_fill();
     test_free(argc > 1 && !strcmp(argv[1], "replay"));
-    test_windows(argc > 1 && !strcmp(argv[1], "replay"));
     printf("eager_ladder_test: %s\n", g_fail ? "FAIL" : "PASS");
     return g_fail;
 }
