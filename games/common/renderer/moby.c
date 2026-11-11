@@ -14054,11 +14054,8 @@ static long s_occl_f[4];   /* feeder-side pre-query outcomes: ui-exempt / no-cac
  * once they age: left unconfirmed, the verdict alternates on a host-timed
  * period. */
 static int s_occl_fallback;
-/* The provisional admission occl_confirm may still overturn: the moby, and
- * the hold table and epoch its visible verdict went into. */
+/* The provisional admission occl_confirm may still overturn. */
 static uint32_t s_occl_prov_moby;
-static struct occl_hold* s_occl_prov_t;
-static uint32_t s_occl_prov_ep;
 static long s_occl_confirmed;   /* provisional admissions a decode's bounds culled */
 
 /* Per-leg cull census (OPENPETE_REEXTRACT_FEEDDBG), index 1 = the canonical
@@ -14307,7 +14304,7 @@ static void oic_report(void) {
  * first re-extract of an epoch with neither): the hook pass of the next tick
  * runs under the in-flight epoch the lag leg's scene still carries. */
 #define OCCL_HOLD_N 2048
-typedef struct occl_hold {
+typedef struct {
     struct { uint32_t moby, epoch; uint8_t culled; } e[OCCL_HOLD_N];
     uint32_t epoch;
 } occl_hold_t;
@@ -14403,7 +14400,6 @@ static int occl_verdict(CPUState* cpu, uint32_t moby, const occl_box_t* b,
         occl_hold_put(rex, moby, epoch, culled);
     }
     s_occl_prov_moby = (held && !culled && s_occl_fallback) ? moby : 0u;
-    s_occl_prov_t = held; s_occl_prov_ep = epoch;
     s_occl_leg_seen[leg]++;
     if (culled) s_occl_leg_culled[leg]++;
     if (oic_on()) oic_note(moby, epoch, canon, culled);
@@ -14432,9 +14428,14 @@ static int occl_confirm_on(void) {
  * verdict was a fallback admission (s_occl_prov_moby), the decode's vertices
  * are stored in the cache as at any extraction (occl_cache_update) and the
  * moby is decided again on them: the rect a hidden moby's decode measures
- * culls it, so it is dropped this present and its verdict is held culled for
- * the rest of the epoch, as a cached verdict would have been. Any other
- * verdict, or OPENPETE_OCCL_CONFIRM=0, leaves the admission as it is.
+ * culls it, and it is dropped from the scene this decode feeds. The verdict
+ * held for the epoch (occl_verdict) stays the admission: it also serves
+ * presents under another camera, such as a held cut replaying tick N-1's
+ * queue under tick N-1's view, where the moby can be on screen, and the
+ * decode's bounds describe this present's camera only. The next decision
+ * reads the bounds stored here. A grid refusal (none, suspended, stale,
+ * camera out of bound) culls nothing. OPENPETE_OCCL_CONFIRM=0 leaves every
+ * admission as it is.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param p The decode's projected vertices.
@@ -14449,7 +14450,6 @@ static int occl_confirm(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
     if (!prov || n <= 0 || !occl_confirm_on()) return 0;
     occl_cache_update(cpu, moby, p, n, tr, header);
     if (!occl_record_decide(cpu, moby)) return 0;
-    occl_hold_put(s_occl_prov_t, moby, s_occl_prov_ep, 1);
     s_occl_confirmed++;
     return 1;
 }
