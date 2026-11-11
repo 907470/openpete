@@ -1628,6 +1628,7 @@ static int mc_refresh(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int 
     if (mc_still(mb->mid) != 1) return 1;
     if (mc_faces_changed(ep, e, mb, k, same)) return 2;
     if (!same) return s_rs_wb && e->wb_ok && e->nwc != 3 * mb->nt;
+    if (e->nwc != 3 * mb->nt) return 1;   /* changed triangle count: mc_corner_delta reports topo or no corners */
     int topo = 0;
     const double d = s_rs_wb && e->wb_ok ? mc_corner_delta(ep, e, mb, &topo) : -1.0;
     return topo || d != 0.0;
