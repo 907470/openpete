@@ -242,3 +242,9 @@ autumn_plains@notch | pos=(105146, 109794, 31699) yaw=-1937 pitch=160 | | --aspe
 # door is closed from a level start and the contest is present there too.
 # Blessed pre-fix.
 autumn_plains@doorkey | pos=(101952, 143650, 32010) yaw=-1055 pitch=-275 | | --aspect 4:3
+# icy_speedway igloo: the igloo (a moby, 38 textured faces) close up; 27 of
+# its faces have a vertex inside the GTE divide-overflow regime, whose screen
+# position is the GTE's capped divide pinned to the 1024 window while the
+# vertex keeps its true view Z as the perspective divisor, so the texture
+# bends across the face (playtest report). Blessed pre-fix.
+icy_speedway | pos=(62236, 86740, 17376) yaw=2548 pitch=111
