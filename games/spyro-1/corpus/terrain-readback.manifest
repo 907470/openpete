@@ -18,3 +18,13 @@ artisans | pos=(100000, 50000, 12000) yaw=512 pitch=-100
 # anim/near and cell/anim: the camera on sector 175 outside poly-anim
 # sector 127's sphere, looking at it.
 artisans | pos=(127163, 44805, 16096) yaw=1053 pitch=60
+# Second anim/near, cell/anim and cut/cut poses: tools/terrain_readback_poses.py
+# over the sector dump of the row above (OPENPETE_TERRAIN_FP32_EMU slot
+# vertices, the readback's anim-arena slots), the camera 250 units above the
+# vertex of a static slot that shares world vertices with a poly-anim slot,
+# about 2500 units beyond the anim slot's vertex radius, looking at its
+# centroid.
+# Anim slot 352 against static slot 362 (14 shared vertices).
+artisans | pos=(103040, 85344, 6410) yaw=-124 pitch=31
+# Anim slot 352 against static slot 4 (10 shared vertices).
+artisans | pos=(131200, 90448, 10202) yaw=-1680 pitch=190

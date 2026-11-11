@@ -422,6 +422,23 @@ precise vec3 cam_rel(ivec3 w) {
  * (c - p) * a with c - p an exact float integer, so a vertex that does not
  * move (c == p) yields p exactly, with or without FMA, and so the same
  * value as cam_rel gives its static neighbour. */
+#ifdef TERRAIN_SECDELTA
+/* The control's form: the sector's camera operand (cam_rel's sd, rounded at
+ * ulp(|origin - camera|)) plus the lerp of the sector-local differences,
+ * rounded again at ulp(|v|), so a moving vertex two sectors share can round
+ * apart as cam_rel's control does for a static one; with wp == wc it is
+ * cam_rel's control value exactly. */
+precise vec3 cam_rel_lerp(ivec3 wp, ivec3 wc, float a) {
+    precise vec3 sd = vec3(float(g.cam_int_x4.y - ctl_wo.y) + g.cam_frac_x4.y,
+                           float(g.cam_int_x4.z - ctl_wo.z) + g.cam_frac_x4.z,
+                           float(ctl_wo.x - g.cam_int_x4.x) - g.cam_frac_x4.x);
+    const ivec3 lp = wp - ctl_wo, lc = wc - ctl_wo;
+    precise vec3 p = vec3(float(-lp.y), float(-lp.z), float(lp.x));
+    precise vec3 c = vec3(float(-lc.y), float(-lc.z), float(lc.x));
+    precise vec3 v = (sd + (p + (c - p) * a)) * 0.25;
+    return v;
+}
+#else
 precise vec3 cam_rel_lerp(ivec3 wp, ivec3 wc, float a) {
     precise vec3 p = vec3(float(g.cam_int_x4.y - wp.y), float(g.cam_int_x4.z - wp.z),
                           float(wp.x - g.cam_int_x4.x));
@@ -432,6 +449,7 @@ precise vec3 cam_rel_lerp(ivec3 wp, ivec3 wc, float a) {
                           l.z - g.cam_frac_x4.x) * 0.25;
     return v;
 }
+#endif
 #endif
 /* ngte_mac on the camera-relative operand v (cam_rel): MAC = (M*v)/4096,
  * the /4096 as an exact multiply. */
@@ -510,6 +528,22 @@ vec2 hq_snap_screen(int node, vec3 TL, vec3 TR, vec3 BL, vec3 BR, vec3 m)
     return vec2(rx, ry);
 }
 
+/* NODE_MID: the mean of two camera-space nodes, (a + b) * 0.5. */
+#if defined(TERRAIN_SECDELTA) && defined(TERRAIN_READBACK)
+/* The readback control's per-triangle parity, set in main: a quad's second
+ * triangle, inverted on every other cell of a 4x4 grid (a checkerboard) and
+ * on every odd sub-triangle of a split triangle, so the two triangles of one
+ * cell and neighbouring cells or sub-triangles take opposite parities.
+ * cv_lerp_n reverses its cut order on it; a cell vertex with it set
+ * (ctl_alt) takes its node means as a + (b - a) * 0.5, so a node two
+ * triangles share can round apart. */
+bool ctl_rev = false;
+bool ctl_alt = false;
+#define NODE_MID(a, b) (ctl_alt ? (a) + ((b) - (a)) * 0.5 : ((a) + (b)) * 0.5)
+#else
+#define NODE_MID(a, b) (((a) + (b)) * 0.5)
+#endif
+
 /* ---- 4x4 near cells (terrain.c nc4_* mirrors) ----------------------------
  * A tier-4 face (face_near_tier4) draws as a 5x5 node grid, 16 cells. A
  * cell vertex carries its cell in mat_near1 (bit 31 set, cell in bits 0-3)
@@ -518,9 +552,9 @@ vec2 hq_snap_screen(int node, vec3 TL, vec3 TR, vec3 BL, vec3 BR, vec3 m)
 precise vec3 nc4_pt(vec3 a, vec3 b, int k) {
     if (k == 0) return a;
     if (k == 4) return b;
-    precise vec3 m = (a + b) * 0.5;
+    precise vec3 m = NODE_MID(a, b);
     if (k == 2) return m;
-    precise vec3 q = ((k == 1 ? a : b) + m) * 0.5;
+    precise vec3 q = NODE_MID((k == 1 ? a : b), m);
     return q;
 }
 precise vec3 nc4_node(int r, int c, vec3 TL, vec3 TR, vec3 BL, vec3 BR) {
@@ -606,20 +640,20 @@ precise vec3 nt4_node(int n, vec3 A, vec3 B, vec3 C) {
     if (n == 0) return A;
     if (n == 4) return B;
     if (n == 14) return C;
-    precise vec3 m2 = (A + B) * 0.5, m9 = (A + C) * 0.5, m11 = (B + C) * 0.5;
+    precise vec3 m2 = NODE_MID(A, B), m9 = NODE_MID(A, C), m11 = NODE_MID(B, C);
     if (n == 2) return m2;
     if (n == 9) return m9;
     if (n == 11) return m11;
     precise vec3 r;
-    if      (n == 1)  r = (A + m2) * 0.5;
-    else if (n == 3)  r = (B + m2) * 0.5;
-    else if (n == 5)  r = (A + m9) * 0.5;
-    else if (n == 12) r = (C + m9) * 0.5;
-    else if (n == 8)  r = (B + m11) * 0.5;
-    else if (n == 13) r = (C + m11) * 0.5;
-    else if (n == 6)  r = (A + m11) * 0.5;
-    else if (n == 7)  r = (B + m9) * 0.5;
-    else              r = (C + m2) * 0.5;   /* node 10 */
+    if      (n == 1)  r = NODE_MID(A, m2);
+    else if (n == 3)  r = NODE_MID(B, m2);
+    else if (n == 5)  r = NODE_MID(A, m9);
+    else if (n == 12) r = NODE_MID(C, m9);
+    else if (n == 8)  r = NODE_MID(B, m11);
+    else if (n == 13) r = NODE_MID(C, m11);
+    else if (n == 6)  r = NODE_MID(A, m11);
+    else if (n == 7)  r = NODE_MID(B, m9);
+    else              r = NODE_MID(C, m2);   /* node 10 */
     return r;
 }
 
@@ -1390,6 +1424,13 @@ struct cvx { vec3 m; ivec3 c; ivec3 q; vec2 uv; vec2 os; bool ov; vec2 fl; };
  * shared cut position is bit-identical only with one canonical order. */
 cvx cv_lerp_n(cvx a, cvx b, float zc) {
     if (a.m.z >= zc) { cvx sw = a; a = b; b = sw; }
+#if defined(TERRAIN_SECDELTA) && defined(TERRAIN_READBACK)
+    /* The readback's control reverses the order on the triangles ctl_rev
+     * marks, so two triangles of one sector that share a crossing edge cut
+     * it from opposite ends and can round apart, which the per-sector camera
+     * operand cannot make them do. */
+    if (ctl_rev) { cvx sw = a; a = b; b = sw; }
+#endif
     precise float t = (zc - a.m.z) / (b.m.z - a.m.z);
     t = dsel(t < 0.0, 0.0, dsel(t > 1.0, 1.0, t));
     precise float px = a.m.x + t * (b.m.x - a.m.x);
@@ -2031,6 +2072,11 @@ void main()
     bool ist2 = ist && tsub >= 16;            /* a tier-2 sub-triangle      */
     bool fillPass = (pc.pass_sel == 1);
     bool keyPass  = (pc.pass_sel == 2);
+#if defined(TERRAIN_SECDELTA) && defined(TERRAIN_READBACK)
+    ctl_rev = ((f16 & 0x2000u) != 0u)
+           != (ist ? (tsub & 1) != 0 : is4 && ((cell ^ (cell >> 2)) & 1) != 0);
+    ctl_alt = is4 && ctl_rev;
+#endif
 
     if ((sf & SF_DRAWN) == 0u) { kill_vert(); return; }
     /* Plain vs near-variant chunk sets: a slot holds both, and the sector's

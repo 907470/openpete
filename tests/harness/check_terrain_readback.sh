@@ -9,13 +9,18 @@
 # beside the screenshot; native_terrain_cache.c
 # openpete_tercache_readback_record):
 #   f32  the shipped fp32 stages: expected 0 mismatches
-#   ctl  the per-sector rounding control (OPENPETE_TERRAIN_SECDELTA=1): its
-#        camera operand is rounded per sector, so a vertex two sectors share
-#        can round apart; expected nonzero, the proof the instrument sees a
-#        disagreement
+#   ctl  the control (OPENPETE_TERRAIN_SECDELTA=1, terrain.vert): the camera
+#        operand of cam_rel and cam_rel_lerp is rounded per sector, so a
+#        vertex two sectors share can round apart; a near-plane cut takes
+#        its endpoints in reverse order on every other triangle, and a cell
+#        node of such a triangle takes its means as a + (b - a) * 0.5, so a
+#        cut or node two triangles of one sector share can round apart;
+#        expected nonzero on every family pair, the proof the comparison of
+#        that pair can fail
 # tools/terrain_readback.py pairs the written vertices by readback key and
 # counts, per family pair (plain/plain, plain/anim, plain/near, anim/near,
-# cell/near, cell/anim, cell/cell, cut/cut, then any other pair present),
+# cell/near, cell/anim, cell/cell, cut/cut, then any other pair present:
+# anim/anim, near/near, plain/cell),
 # the pairs compared and the pairs whose gl_Position bits differ, and of
 # each the pairs drawn by two different sectors (xsec); `same` compares a
 # leg's two captures.
@@ -43,8 +48,9 @@
 #       [--stride=K] [--manifest=PATH] [--lods "original extended"]
 #       [--jitter=J] [--carve-out=PAIR[,PAIR...]] [--out DIR] [--build-dir=DIR]
 # The poses are the game's games/<game>/corpus/terrain-readback.manifest
-# (name | pose | start): rows chosen so that every named family pair meets
-# on screen. --manifest names another freecam manifest; --stride=K keeps
+# (name | pose | start, and carve-out rows): rows chosen so that every named
+# family pair meets on screen; tools/terrain_readback_poses.py enumerates
+# anim/near candidates from a sector dump. --manifest names another freecam manifest; --stride=K keeps
 # every K-th selected row.
 #
 # OPENPETE_BIN=<path to openpete.exe> drives a Windows build instead (a
@@ -52,12 +58,20 @@
 # the disc and output paths are absolute Linux paths, which the exe opens
 # through the WSL share it is started from).
 #
-# Exit 0 PASS: every f32 pair agrees, every leg's two captures agree, the
-# control disagrees somewhere, and every named family pair was compared at
-# least once over the run (a pair named by --carve-out excepted). 1 FAIL:
-# an f32 mismatch, a nondeterministic leg, or a missing capture. 2 VACUOUS:
-# no row, the control found no mismatch, or a named pair was never compared.
-# 64 SKIP (no binary, disc or numpy).
+# Grading is per family pair (tools/terrain_readback.py grade): a pair is
+# engaged when the f32 arm compared it and the control mismatched on it;
+# compared under a control that never mismatched it is blind, and a named
+# pair no leg compared is unseen. A manifest row
+#   carve-out | <pair> | <reason>
+# (or --carve-out=PAIR) excuses a blind or unseen pair; the reason is printed
+# with the pair's verdict and names the code that makes the control blind.
+# The per-pair lines give the poses that compared the pair and those whose
+# control mismatched on it.
+#
+# Exit 0 PASS: every f32 pair agrees, every leg's two captures agree, and
+# every pair is engaged or carved out. 1 FAIL: an f32 mismatch, a
+# nondeterministic leg, or a missing capture. 2 VACUOUS: no row, or a pair
+# blind or unseen without a carve-out. 64 SKIP (no binary, disc or numpy).
 set -u
 
 # Unattended launcher: every run this script starts is silenced.
@@ -138,10 +152,15 @@ leg() {  # tag level pose start lod control(0|1)
 
 # The manifest is read into arrays before any run: a child that inherits the
 # loop's stdin would eat the rows it has not reached yet.
-LEVELS=(); POSES=(); SLUGS=(); STARTS=(); nrow=0
+LEVELS=(); POSES=(); SLUGS=(); STARTS=(); CARVE_PAIRS=(); CARVE_WHY=(); nrow=0
 while IFS='|' read -r name pose start _; do
     name="$(echo "$name" | tr -d ' \t')"
     [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
+    if [[ "$name" == carve-out ]]; then
+        CARVE_PAIRS+=("$(echo "$pose" | tr -d ' \t')")
+        CARVE_WHY+=("$(echo "$start" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')")
+        continue
+    fi
     pose="$(echo "$pose" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     [[ -z "$pose" ]] && continue
     start="$(echo "$start" | tr -d ' \t')"
@@ -155,8 +174,10 @@ done < "$MAN"
 echo "[readback] game=$PG_GAME rows=${#SLUGS[@]} manifest=$MAN jitter=$JITTER"
 [[ ${#SLUGS[@]} -gt 0 ]] || { echo "[readback] game=$PG_GAME rows=0 verdict=VACUOUS"; exit 2; }
 
-declare -A F32_C=() F32_M=() CTL_C=() CTL_M=() F32_X=() CTL_X=() CTL_XM=()
-NAMED="plain/plain plain/anim plain/near anim/near cell/near cell/anim cell/cell cut/cut"
+CARVES=()
+for c in ${CARVE//,/ }; do CARVES+=(--carve "$c=named by --carve-out"); done
+for i in "${!CARVE_PAIRS[@]}"; do CARVES+=(--carve "${CARVE_PAIRS[$i]}=${CARVE_WHY[$i]}"); done
+LEGS=()
 missing=0 nondet=0 rows=0
 for i in "${!SLUGS[@]}"; do
     for lod in $LODS; do
@@ -174,44 +195,28 @@ for i in "${!SLUGS[@]}"; do
             fi
             same="$(python3 "$TOOL" same "$OUT/${base}__r1-readback.bin" "$OUT/${base}__r2-readback.bin")"
             [[ "$same" == same=1* ]] || nondet=$((nondet + 1))
+            rm -f "${OUT:?}/$base.pairs"
             python3 "$TOOL" pairs "$OUT/${base}__r1-readback.bin" --detail 3 > "$OUT/$base.pairs"
             head -1 "$OUT/$base.pairs" | sed "s/^/[readback] row=${SLUGS[$i]} lod=$lod arm=$arm $same /"
-            while read -r p c m x xm; do
-                p="${p#pair=}"; c="${c#compared=}"; m="${m#mismatch=}"
-                x="${x#xsec=}"; xm="${xm#xsec_mismatch=}"
-                echo "[readback] row=${SLUGS[$i]} lod=$lod arm=$arm pair=$p compared=$c" \
-                     "mismatch=$m xsec=$x xsec_mismatch=$xm"
-                if [[ $arm == f32 ]]; then
-                    F32_C[$p]=$(( ${F32_C[$p]:-0} + c )); F32_M[$p]=$(( ${F32_M[$p]:-0} + m ))
-                    F32_X[$p]=$(( ${F32_X[$p]:-0} + x ))
-                else
-                    CTL_C[$p]=$(( ${CTL_C[$p]:-0} + c )); CTL_M[$p]=$(( ${CTL_M[$p]:-0} + m ))
-                    CTL_X[$p]=$(( ${CTL_X[$p]:-0} + x )); CTL_XM[$p]=$(( ${CTL_XM[$p]:-0} + xm ))
-                fi
-            done < <(grep '^pair=' "$OUT/$base.pairs")
+            grep '^pair=' "$OUT/$base.pairs" | sed "s/^/[readback] row=${SLUGS[$i]} lod=$lod arm=$arm /"
+            LEGS+=("${SLUGS[$i]}:$lod:$arm:$OUT/$base.pairs")
         done
     done
 done
 
-f32_mis=0 ctl_mis=0 unengaged="" seen=""
-for p in $NAMED "${!F32_C[@]}"; do
-    [[ " $seen " == *" $p "* ]] && continue
-    seen="$seen $p"
-    echo "[readback] game=$PG_GAME total pair=$p f32_compared=${F32_C[$p]:-0}" \
-         "f32_xsec=${F32_X[$p]:-0} f32_mismatch=${F32_M[$p]:-0} ctl_compared=${CTL_C[$p]:-0}" \
-         "ctl_mismatch=${CTL_M[$p]:-0} ctl_xsec_mismatch=${CTL_XM[$p]:-0}"
-    f32_mis=$((f32_mis + ${F32_M[$p]:-0})); ctl_mis=$((ctl_mis + ${CTL_M[$p]:-0}))
-    if [[ " $NAMED " == *" $p "* && ${F32_C[$p]:-0} -eq 0 && ",$CARVE," != *",$p,"* ]]; then
-        unengaged="$unengaged $p"
-    fi
-done
+# Per family pair: a pair is engaged only when the control mismatched on it;
+# compared with a control that never mismatched it is blind (VACUOUS) unless
+# the manifest carves it out with its reason.
+grade="$(python3 "$TOOL" grade --game "$PG_GAME" "${CARVES[@]}" "${LEGS[@]}")"
+grc=$?
+echo "$grade"
 verdict=PASS rc=0
-if [[ $f32_mis -ne 0 || $nondet -ne 0 || $missing -ne 0 ]]; then
+if [[ $grc -eq 1 || $nondet -ne 0 || $missing -ne 0 ]]; then
     verdict=FAIL rc=1
-elif [[ $ctl_mis -eq 0 || -n "$unengaged" ]]; then
+elif [[ $grc -ne 0 ]]; then
     verdict=VACUOUS rc=2
 fi
-echo "[readback] game=$PG_GAME rows=$rows f32_mismatch=$f32_mis ctl_mismatch=$ctl_mis" \
-     "nondeterministic=$nondet missing=$missing unengaged=${unengaged:- none}" \
-     "carve_out=${CARVE:-none} verdict=$verdict"
+summary="$(tail -n 1 <<<"$grade")"
+echo "[readback] game=$PG_GAME rows=$rows nondeterministic=$nondet missing=$missing" \
+     "pairs=${summary#*pairs=} verdict=$verdict"
 exit $rc

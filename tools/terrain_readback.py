@@ -30,6 +30,22 @@ operations to the same operands. A killed vertex writes neither texel.
       Compares the multisets of (family, key, position) of two dumps of one
       pose. Prints same=1 or same=0 and the element counts. Exit 0 when the
       same, 1 otherwise.
+
+  grade [--game G] [--carve PAIR=REASON]... LEG...
+      Grades a run per family pair. Each LEG is POSE:LOD:ARM:PAIRS_FILE, a
+      `pairs` output of the f32 or ctl arm. Per pair, summed over the legs:
+      the poses that compared it, the f32 compared, xsec and mismatch
+      counts, the ctl compared and mismatch counts, and the poses whose ctl
+      leg mismatched on it. A pair's verdict:
+        FAIL     an f32 mismatch;
+        engaged  compared and the control mismatched on it;
+        blind    compared, the control never mismatched: a zero f32 count
+                 there is not shown able to fail;
+        unseen   a named pair no leg compared;
+        carve-out  blind or unseen and named by --carve with its reason.
+      Prints one line per pair (the named pairs, then any other compared)
+      and a summary line, verdict FAIL (any f32 mismatch), VACUOUS (a
+      blind or unseen pair) or PASS. Exit 0 PASS, 1 FAIL, 2 VACUOUS.
 """
 import struct
 import sys
@@ -193,8 +209,83 @@ def cmd_same(a, b):
     return 0 if same else 1
 
 
+def read_pairs(path):
+    """Return {family pair: (compared, mismatch, xsec, xsec_mismatch)} from a `pairs` output."""
+    out = {}
+    for ln in open(path):
+        if not ln.startswith("pair="):
+            continue
+        kv = dict(t.split("=", 1) for t in ln.split())
+        out[kv["pair"]] = tuple(int(kv[k]) for k in ("compared", "mismatch", "xsec",
+                                                     "xsec_mismatch"))
+    return out
+
+
+def cmd_grade(game, carve, legs):
+    """Print the per family pair verdict table of a run and return the exit code."""
+    keys = ("poses", "f32_c", "f32_x", "f32_m", "ctl_c", "ctl_m", "ctl_xm", "ctl_poses")
+    acc = {}
+    seen_pose = {}
+    for leg in legs:
+        pose, lod, arm, path = leg.split(":", 3)
+        for name, (c, m, x, xm) in read_pairs(path).items():
+            a = acc.setdefault(name, dict.fromkeys(keys, 0))
+            if arm == "f32":
+                a["f32_c"] += c; a["f32_x"] += x; a["f32_m"] += m
+                if c and pose not in seen_pose.setdefault((name, "f32"), set()):
+                    seen_pose[(name, "f32")].add(pose); a["poses"] += 1
+            else:
+                a["ctl_c"] += c; a["ctl_m"] += m; a["ctl_xm"] += xm
+                if m and pose not in seen_pose.setdefault((name, "ctl"), set()):
+                    seen_pose[(name, "ctl")].add(pose); a["ctl_poses"] += 1
+    names = NAMED + sorted(n for n in acc if n not in NAMED and acc[n]["f32_c"])
+    fail = vac = 0
+    bad = []
+    for name in names:
+        a = acc.get(name, dict.fromkeys(keys, 0))
+        if a["f32_m"]:
+            v = "FAIL"
+        elif a["f32_c"] and a["ctl_m"]:
+            v = "engaged"
+        else:
+            v = "blind" if a["f32_c"] else "unseen"
+            if name in carve:
+                v = "carve-out"
+        fail += v == "FAIL"
+        if v in ("blind", "unseen"):
+            vac += 1
+            bad.append(f"{name}:{v}")
+        why = f" reason=\"{carve[name]}\"" if v == "carve-out" else ""
+        print(f"[readback] game={game} pair={name} poses={a['poses']} "
+              f"f32_compared={a['f32_c']} f32_xsec={a['f32_x']} f32_mismatch={a['f32_m']} "
+              f"ctl_compared={a['ctl_c']} ctl_mismatch={a['ctl_m']} "
+              f"ctl_xsec_mismatch={a['ctl_xm']} ctl_poses={a['ctl_poses']} verdict={v}{why}")
+    f32_m = sum(a["f32_m"] for a in acc.values())
+    ctl_m = sum(a["ctl_m"] for a in acc.values())
+    verdict = "FAIL" if fail else ("VACUOUS" if vac else "PASS")
+    print(f"[readback] game={game} pairs={len(names)} f32_mismatch={f32_m} ctl_mismatch={ctl_m} "
+          f"not_engaged={','.join(bad) or 'none'} pair_verdict={verdict}")
+    return {"PASS": 0, "FAIL": 1, "VACUOUS": 2}[verdict]
+
+
 def main(argv):
     """Dispatch the subcommand."""
+    if argv and argv[0] == "grade":
+        game, carve, legs = "?", {}, []
+        it = iter(argv[1:])
+        for a in it:
+            if a == "--game":
+                game = next(it)
+            elif a == "--carve":
+                p, _, why = next(it).partition("=")
+                carve[p] = why
+            else:
+                legs.append(a)
+        try:
+            return cmd_grade(game, carve, legs)
+        except (OSError, ValueError, KeyError) as e:
+            print(f"terrain_readback: {e}", file=sys.stderr)
+            return 1
     if len(argv) >= 2 and argv[0] == "pairs":
         detail = 0
         if "--detail" in argv:

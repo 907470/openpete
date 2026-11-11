@@ -20,3 +20,13 @@ idol_springs | pos=(115428, 98127, 14292) yaw=-1135 pitch=160
 # cell/anim and anim/near: the camera on sector 17 outside poly-anim
 # sector 75's sphere.
 summer_forest | pos=(111280, 54073, 30016) yaw=46 pitch=60
+# Second anim/near, cell/anim and cut/cut poses: tools/terrain_readback_poses.py
+# over a sector dump at the named pose topdown (OPENPETE_TERRAIN_FP32_EMU
+# slot vertices, the readback's anim-arena slots), extended LOD: the camera
+# 250 units above the vertex of a static slot that shares world vertices
+# with a poly-anim slot, about 2500 units beyond the anim slot's vertex
+# radius, looking at its centroid.
+# Anim slot 119 against static slot 232 (25 shared vertices).
+summer_forest | pos=(50976, 67584, 48442) yaw=0 pitch=181
+# Anim slot 70 against static slot 240 (20 shared vertices).
+summer_forest | pos=(55056, 86944, 47354) yaw=-1835 pitch=209
