@@ -2601,6 +2601,8 @@ static const knob_desc_t g_builtin_debug[] = {
         "Retain near-plane env-anim colour sectors on the GPU clip-fan path (default 1 = GPU, 0 = CPU walk)."),
     ENVROW_LATCHED("MOBY_SNAP_CARRY", "Debug", "1",
         "Carry each moby's snap planes from the tick's resolve onto sub-tick presents under the moved camera (default 1; 0 = resolve again on every present)."),
+    ENVROW_LATCHED("OCCL_CONFIRM", "Debug", "1",
+        "Confirm a moby occlusion admission that was not decided on bounds decoded this VBL against the bounds of the decode that follows (default 1; 0 = keep the admission)."),
     ENVROW_LATCHED("UI_UNDER_PLAYER", "Debug", "1",
         "Draw 2D the game links behind the player's ordering-table slot before the player (default 1; 0 = all 2D over the player)."),
     ENVROW_LATCHED("TC_BAKE_BUDGET_US", "Debug", "1000",

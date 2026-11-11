@@ -403,6 +403,27 @@ uint32_t* moby_rec_append(uint32_t* addr) {
     return w;
 }
 
+/** @brief Drop the last appended record, leaving the copy as it was before that moby_rec_append.
+ *
+ * The terminator moves back over the dropped slot. Does nothing when no
+ * record is appended. */
+static void moby_rec_append_pop(void) {
+    if (!s_rec_snap_words || s_rec_snap_appended <= 0) return;
+    const uint32_t sw = game_layout.moby.rec_stride / 4u;
+    s_rec_snap_appended--;
+    const uint32_t n = s_rec_snap_queued + (uint32_t)s_rec_snap_appended;
+    s_rec_snap[n * sw] = 0u;
+    s_rec_snap_words = n * sw + 1u;
+}
+
+/** @brief The guest address the last appended record answers to, or 0 when none is appended.
+ * @return The address. */
+static uint32_t moby_rec_last_appended(void) {
+    if (!s_rec_snap_words || s_rec_snap_appended <= 0) return 0u;
+    const uint32_t n = s_rec_snap_queued + (uint32_t)s_rec_snap_appended - 1u;
+    return s_rec_snap_base + n * game_layout.moby.rec_stride;
+}
+
 int moby_rec_holds_moby(CPUState* cpu, uint32_t moby) {
     if (!s_rec_snap_words || !moby_game.read_record) return 0;
     const uint32_t stride = game_layout.moby.rec_stride;
@@ -3331,6 +3352,10 @@ static int tier_dbg_on(void);
 static int occl_record_culled(CPUState* cpu, uint32_t moby);
 static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
                               const double tr[3], uint32_t header);
+static int occl_confirm(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
+                        const double tr[3], uint32_t header);
+static uint32_t s_occl_prov_moby;   /* defined with the occlusion cache */
+static int occl_confirm_on(void);
 /* OPENPETE_MOBY_OCCL_VERIFY bracket for cull sites ahead of the occlusion
  * block: begin() returns 1 when the audit wants the record extracted anyway,
  * end() re-queries the freshly refreshed bounds and reports a wrong verdict. */
@@ -3410,7 +3435,8 @@ static int append_revealed_regular(CPUState* cpu) {
  * @param f The moby's record fields under the pass's camera.
  * @param ver_check Nonzero when the occlusion verifier audits this record.
  * @param zsf4_out Receives the record's ZSF4 verdict, also when the decode yields none.
- * @return The projected vertex count appended, 0 when the decode yields none. */
+ * @return The projected vertex count appended, 0 when the decode yields none,
+ *         -1 when the decode's own bounds show the moby occluded (occl_confirm). */
 static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver_check, int* zsf4_out) {
     *zsf4_out = 1024;
     if (!ver_check && moby_native_late_spawned(m)) return 0;   /* a late present shows tick N-1's set */
@@ -3441,6 +3467,7 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
       pose_hold_end(got);
       if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
     if (got <= 0) return 0;
+    if (!ver_check && occl_confirm(cpu, m, s_proj + off, got, f->TR_frac, f->header)) return -1;
     if (ver_check) occl_verify_end(m, s_proj + off, got);
     else occl_cache_update(cpu, m, s_proj + off, got, f->TR_frac, f->header);
     for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
@@ -3666,21 +3693,21 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * A culled reveal still publishes into the hysteresis set: admission
          * stands, only the drawing is skipped, and dropping it from the set
          * would narrow t4e next present and strobe the threshold. */
-        int ver_check = 0;
-        if (occl_record_culled(cpu, m)) {
-            ver_check = occl_verify_begin(m);
-            if (!ver_check) {
-                s_occl_seen++; s_occl_culled++;
-                if (occl_rev_n < MAX_RECORDS) occl_rev[occl_rev_n++] = pub;
-                TRC("skip=occluded");
-                m += game_layout.moby.array_stride; continue;
-            }
-        }
+        /* got -1: hidden, by the cached verdict or by the decode's own
+         * bounds (reveal_emit_record). */
         s_occl_seen++;
-        if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
-        int rzsf4 = 0;
-        int got = reveal_emit_record(cpu, m, &f, ver_check, &rzsf4);
-        if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += game_layout.moby.array_stride; continue; }
+        int ver_check = 0, rzsf4 = 0, got = -1;
+        if (!occl_record_culled(cpu, m) || (ver_check = occl_verify_begin(m))) {
+            if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
+            got = reveal_emit_record(cpu, m, &f, ver_check, &rzsf4);
+        }
+        if (got < 0) {
+            s_occl_culled++;
+            if (occl_rev_n < MAX_RECORDS) occl_rev[occl_rev_n++] = pub;
+            TRC("skip=occluded");
+            m += game_layout.moby.array_stride; continue;
+        }
+        if (got == 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += game_layout.moby.array_stride; continue; }
         TRC("REVEALED got=%d zsf4=%d spec_solo=%d", got, rzsf4, (int)s_recs[s_nrecs - 1].spec_solo);
         if (revealed < MAX_RECORDS) revlist[revealed] = pub;
         revealed++;
@@ -3836,6 +3863,38 @@ static unsigned moby_precull_drawn(CPUState* cpu, uint32_t m, uint32_t head) {
     return cpu->read_byte(m + game_layout.moby.drawn_off);
 }
 
+/** @brief Decode the animated record a reveal just appended for a moby and drop it when the decode's bounds show it occluded.
+ *
+ * The record is decoded as the regular pass decodes a queued one
+ * (record_zsf4, the cull's matrix, moby_project_record) into scratch, and
+ * occl_confirm decides on those vertices. A record it culls is removed from
+ * the copy (moby_rec_append_pop); one it keeps stays for the pass to walk.
+ * Does nothing unless the moby's verdict was a provisional admission.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address the record was appended for.
+ * @return 1 when the record was dropped as occluded, else 0. */
+static int moby_reveal_confirm(CPUState* cpu, uint32_t m) {
+    OP_PROF_ACCUM_SCOPE("mcan.reveal_confirm");
+    static proj_xy buf[1024];
+    const uint32_t rec = moby_rec_last_appended();
+    moby_record_t R;
+    if (s_occl_prov_moby != m || !occl_confirm_on() || !rec || !moby_game.read_record(cpu, rec, &R) || R.moby != m) {
+        s_occl_prov_moby = 0u;
+        return 0;
+    }
+    float Mf[3][3];
+    if (!moby_canon_row_scale(cpu, rec, &R, Mf)) moby_canon_mf(cpu, &R, Mf);
+    int zsf4 = record_zsf4(cpu, &R);
+    const int got = moby_project_record(cpu, &R, (const float (*)[3])Mf, &zsf4, buf, 1024);
+    double tr[3];
+    const double* trp = NULL;
+    if (!game_layout.moby.rec_tr_final && R.moby >= 0x80000000u) { build_moby_record_tr(cpu, R.moby, tr); trp = tr; }
+    else if (moby_record_centre_final(cpu, R.moby, R.header, tr)) trp = tr;
+    if (!occl_confirm(cpu, m, buf, got, trp, R.header)) return 0;
+    moby_rec_append_pop();
+    return 1;
+}
+
 /** @brief The widened-view clause of the reveal for one live moby.
  *
  * The cull tests an animated moby against a 4:3 cone, so under a wider or
@@ -3876,6 +3935,7 @@ static int moby_reveal_widened(CPUState* cpu, uint32_t m, uint32_t head, double 
                            openpete_frame, m, (int)why);
         return 0;
     }
+    if (moby_reveal_confirm(cpu, m)) { (*occl)++; return 0; }
     moby_rec_append_note(m);
     if (drawn == 1u) (*requeued)++;
     if (trace) fprintf(stderr, "[moby-trace vbl=%u] %08X REVEALED wide drawn=%u\n",
@@ -3891,6 +3951,8 @@ typedef struct {
     long requeued;
     long canon_absent, canon_boxed;
     long sector_seen, sector_occl;
+    long cand;        /* mobys offered to the occlusion test */
+    long confirmed;   /* provisional admissions their decode's bounds culled */
     int  added, wide_added, sector_added;
 } moby_reveal_census_t;
 
@@ -3920,6 +3982,7 @@ static int moby_reveal_sector_only(CPUState* cpu, uint32_t m, unsigned drawn,
     const moby_wide_verdict_t g = moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0, 1);
     if (g != (kind == MOBY_REVEAL_ANIMATED ? MOBY_WIDE_CANONICAL : MOBY_WIDE_OTHER_KIND)) return 0;
     c->sector_seen++;
+    c->cand++;
     const int trace = moby_trace_target() && m == moby_trace_target();
     if (occl_record_culled(cpu, m)) {
         c->occl++; c->sector_occl++;
@@ -3928,6 +3991,10 @@ static int moby_reveal_sector_only(CPUState* cpu, uint32_t m, unsigned drawn,
     }
     moby_reveal_reason_t why = MOBY_REVEAL_OK;
     if (!moby_game.reveal_record(cpu, m, kind, &why)) { c->declined[why]++; return 0; }
+    if (kind == MOBY_REVEAL_ANIMATED && moby_reveal_confirm(cpu, m)) {
+        c->occl++; c->sector_occl++; c->confirmed++;
+        return 0;
+    }
     moby_rec_append_note(m);
     c->sector_added++;
     if (trace) fprintf(stderr, "[moby-trace vbl=%u] %08X REVEALED sector\n", openpete_frame, m);
@@ -3983,10 +4050,13 @@ static void moby_reveal_extended(CPUState* cpu, uint32_t m, uint32_t head,
      * the 16-bit IR range. */
     moby_cull_centre(cpu, m, cam, (const int (*)[3])s_view.cam_M, 0, d, v);
     if (v[2] <= 0) return;                  /* behind the camera plane */
+    c->cand++;
     if (occl_record_culled(cpu, m)) { c->occl++; return; }
     moby_reveal_reason_t why = MOBY_REVEAL_OK;
-    if (moby_game.reveal_record(cpu, m, kind, &why)) { c->added++; moby_rec_append_note(m); }
-    else c->declined[why]++;
+    if (!moby_game.reveal_record(cpu, m, kind, &why)) { c->declined[why]++; return; }
+    if (kind == MOBY_REVEAL_ANIMATED && moby_reveal_confirm(cpu, m)) { c->occl++; c->confirmed++; return; }
+    c->added++;
+    moby_rec_append_note(m);
 }
 
 /** @brief Print one [moby-reveal] line with a candidate walk's census to stderr.
@@ -4016,6 +4086,22 @@ static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_
             c->sector_seen, c->sector_occl, c->sector_added);
 }
 
+/** @brief Print one canonical reveal walk's [reveal-census] line while OPENPETE_REVEAL_CENSUS is nonzero (read once).
+ *
+ * The line carries the VBL, the feed key, the kind, the mobys offered to the
+ * occlusion test, those it culled, the records appended and the provisional
+ * admissions a decode's bounds culled. A sub-tick walk prints nothing.
+ * @param c The walk's tallies.
+ * @param kind The model kind the walk covered. */
+static void reveal_census_print(const moby_reveal_census_t* c, moby_reveal_kind_t kind) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_REVEAL_CENSUS"); on = (e && *e && *e != '0'); }
+    if (!on || s_in_reextract) return;
+    fprintf(stderr, "[reveal-census vbl=%u key=%u kind=%s] cand=%ld occl=%ld added=%d confirmed=%ld\n",
+            openpete_frame, openpete_feed_key_now(), kind == MOBY_REVEAL_ANIMATED ? "anim" : "simple",
+            c->cand, c->occl, c->added + c->wide_added + c->sector_added, c->confirmed);
+}
+
 int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
     if (!moby_game.cull_box_threshold || !moby_game.reveal_record) return 0;
     const double widen = moby_native_view_widen();
@@ -4039,6 +4125,7 @@ int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
         if (openpete_no_lod) moby_reveal_extended(cpu, m, head, kind, &c);
     }
     if (moby_verify_enabled()) moby_reveal_census_print(&c, kind, wide ? widen : 1.0);
+    reveal_census_print(&c, kind);
     moby_kind_census(s_in_reextract ? "sub" : "canon",
                      kind == MOBY_REVEAL_ANIMATED ? "anim-reveal" : "simple-reveal",
                      c.added + c.wide_added + c.sector_added, c.occl, 0, 0);
@@ -13957,6 +14044,22 @@ static unsigned occl_slot(uint32_t moby) {
 }
 
 static long s_occl_f[4];   /* feeder-side pre-query outcomes: ui-exempt / no-cache / stale-cache / refreshed */
+/* Set by occl_record_decide: its last visible verdict was not taken on bounds
+ * a decode measured at this VBL (no cached bounds, an unusable anchor, the
+ * rect occl_refresh_bounds rebuilt, or cached bounds inflated for their age).
+ * Every one of those rects grows with the age of the last decode, and that
+ * age is set by when the last scene decoded the moby, which the host's
+ * present timing decides. A moby the fresh bounds cull passes the wider
+ * rect, is decoded, is culled while its bounds are fresh and passes again
+ * once they age: left unconfirmed, the verdict alternates on a host-timed
+ * period. */
+static int s_occl_fallback;
+/* The provisional admission occl_confirm may still overturn: the moby, and
+ * the hold table and epoch its visible verdict went into. */
+static uint32_t s_occl_prov_moby;
+static struct occl_hold* s_occl_prov_t;
+static uint32_t s_occl_prov_ep;
+static long s_occl_confirmed;   /* provisional admissions a decode's bounds culled */
 
 /* Per-leg cull census (OPENPETE_REEXTRACT_FEEDDBG), index 1 = the canonical
  * re-extract leg, 0 = an intermediate one. Both legs of one canonical epoch
@@ -14060,20 +14163,25 @@ static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* 
  * own-motion allowance; without a usable anchor the moby is extracted. The
  * query rect inflates by 8 px plus the bounds' age times the camera pan and
  * the moby's own-motion allowance, and the depth by a margin scaled the same
- * way.
+ * way. A visible verdict not taken on bounds a decode measured at this VBL
+ * (no entry, no anchor, the rebuilt rect, or cached bounds whose inflation
+ * grew with their age) sets s_occl_fallback: such a verdict is provisional
+ * until occl_confirm tests the bounds of the decode that follows it.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @return 1 when the moby is hidden behind nearer world depth, else 0. */
 static int occl_record_decide(CPUState* cpu, uint32_t moby) {
+    s_occl_fallback = 0;
     if (moby_is_hud(moby)) { s_occl_f[0]++; return 0; }   /* HUD/UI: drawn over the scene, never occluded */
     const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
-    if (e->moby != moby) { s_occl_f[1]++; return 0; }   /* no cached bounds -> extract (refreshes) */
+    if (e->moby != moby) { s_occl_f[1]++; s_occl_fallback = 1; return 0; }   /* no cached bounds -> extract (refreshes) */
     unsigned age = openpete_frame - e->tick;
     float rx0 = e->x0, ry0 = e->y0, rx1 = e->x1, ry1 = e->y1, rvz = e->vz_min;
     float own;
-    if (age > 2u) {
+    const int refreshed = age > 2u;
+    if (refreshed) {
         if (!occl_refresh_bounds(cpu, moby, e, &rx0, &ry0, &rx1, &ry1, &rvz))
-            { s_occl_f[2]++; return 0; }            /* no usable anchor -> extract (refreshes) */
+            { s_occl_f[2]++; s_occl_fallback = 1; return 0; }   /* no usable anchor -> extract (refreshes) */
         s_occl_f[3]++;
         /* The refreshed rect is built around the moby's CURRENT origin and hard-
          * bounded by its model radius, so no own-motion allowance is owed - only
@@ -14101,6 +14209,7 @@ static int occl_record_decide(CPUState* cpu, uint32_t moby) {
     int culled = openpete_native_occl_query(rx0 - inf, ry0 - inf,
                                             rx1 + inf, ry1 + inf,
                                             rvz - vzs * aged, &qcam);
+    s_occl_fallback = !culled && (refreshed || age > 0u);
     return culled;
 }
 
@@ -14198,7 +14307,7 @@ static void oic_report(void) {
  * first re-extract of an epoch with neither): the hook pass of the next tick
  * runs under the in-flight epoch the lag leg's scene still carries. */
 #define OCCL_HOLD_N 2048
-typedef struct {
+typedef struct occl_hold {
     struct { uint32_t moby, epoch; uint8_t culled; } e[OCCL_HOLD_N];
     uint32_t epoch;
 } occl_hold_t;
@@ -14266,6 +14375,8 @@ static int occl_decide(CPUState* cpu, uint32_t moby, const occl_box_t* b) {
  *        NULL to decide from the occlusion cache (occl_record_decide).
  * @param hook The hold table of the game-hook pass's scene.
  * @param rex The hold table of the lag leg's re-extract.
+ * A fresh visible verdict from occl_record_decide's fallback is marked
+ * provisional (s_occl_prov_moby) for occl_confirm.
  * @return 1 when culled, else 0. */
 static int occl_verdict(CPUState* cpu, uint32_t moby, const occl_box_t* b,
                         occl_hold_t* hook, occl_hold_t* rex) {
@@ -14273,20 +14384,26 @@ static int occl_verdict(CPUState* cpu, uint32_t moby, const occl_box_t* b,
     const int leg = g_openpete_canon_lag_leg ? 1 : 0;
     const int canon = leg || !s_in_reextract;
     int culled, found = 0;
+    occl_hold_t* held = NULL;   /* the table a fresh verdict went into */
+    s_occl_fallback = 0;
     if (canon) {
         culled = occl_decide(cpu, moby, b);
-        occl_hold_put(leg ? rex : hook, moby, epoch, culled);
+        held = leg ? rex : hook;
+        occl_hold_put(held, moby, epoch, culled);
     } else if (rex->epoch == epoch) {
         const int i = occl_hold_find(rex, moby, &found);
         culled = found ? (int)rex->e[i].culled : occl_decide(cpu, moby, b);
-        if (!found) occl_hold_put(rex, moby, epoch, culled);
+        if (!found) { held = rex; occl_hold_put(rex, moby, epoch, culled); }
     } else if (spyro_native_canon_epoch_fresh(hook->epoch)) {
         const int i = occl_hold_find(hook, moby, &found);
         culled = found ? (int)hook->e[i].culled : 0;
     } else {
         culled = occl_decide(cpu, moby, b);
+        held = rex;
         occl_hold_put(rex, moby, epoch, culled);
     }
+    s_occl_prov_moby = (held && !culled && s_occl_fallback) ? moby : 0u;
+    s_occl_prov_t = held; s_occl_prov_ep = epoch;
     s_occl_leg_seen[leg]++;
     if (culled) s_occl_leg_culled[leg]++;
     if (oic_on()) oic_note(moby, epoch, canon, culled);
@@ -14299,6 +14416,42 @@ static int occl_verdict(CPUState* cpu, uint32_t moby, const occl_box_t* b,
  * @return 1 when culled, else 0. */
 static int occl_record_culled(CPUState* cpu, uint32_t moby) {
     return occl_verdict(cpu, moby, NULL, &s_hold_hook, &s_hold_rex);
+}
+
+/** @brief Whether a provisional admission is confirmed against its decode's bounds: on unless OPENPETE_OCCL_CONFIRM is 0, read once.
+ * @return Nonzero when on. */
+static int occl_confirm_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_OCCL_CONFIRM"); on = !(e && e[0] == '0'); }
+    return on;
+}
+
+/** @brief Re-decide a provisionally admitted moby on the bounds of its own decode, and hold a culled verdict for the epoch.
+ *
+ * Runs right after the decode that followed occl_record_culled. When that
+ * verdict was a fallback admission (s_occl_prov_moby), the decode's vertices
+ * are stored in the cache as at any extraction (occl_cache_update) and the
+ * moby is decided again on them: the rect a hidden moby's decode measures
+ * culls it, so it is dropped this present and its verdict is held culled for
+ * the rest of the epoch, as a cached verdict would have been. Any other
+ * verdict, or OPENPETE_OCCL_CONFIRM=0, leaves the admission as it is.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param p The decode's projected vertices.
+ * @param n Their count.
+ * @param tr The decode's view-space translation, or NULL.
+ * @param header The AnimationHeader whose radius byte bounds the model.
+ * @return 1 when the decode's bounds cull the moby, else 0. */
+static int occl_confirm(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
+                        const double tr[3], uint32_t header) {
+    const int prov = s_occl_prov_moby == moby && moby != 0u;
+    s_occl_prov_moby = 0u;
+    if (!prov || n <= 0 || !occl_confirm_on()) return 0;
+    occl_cache_update(cpu, moby, p, n, tr, header);
+    if (!occl_record_decide(cpu, moby)) return 0;
+    occl_hold_put(s_occl_prov_t, moby, s_occl_prov_ep, 1);
+    s_occl_confirmed++;
+    return 1;
 }
 
 /** @brief Whether the second-kind occlusion test runs: on unless OPENPETE_MOBY_SIMPLE_OCCL is 0, read once.
@@ -16031,6 +16184,16 @@ static void rex_bug_record(CPUState* cpu, int is_spec, int n_loop) {
     }
 }
 
+/** @brief Count one record the sub-tick pass's occlusion cull dropped and list its moby for the regular pass's reveal dedup.
+ * @param moby The Moby address.
+ * @param is_spec Nonzero on the specular pass, which keeps no list.
+ * @param list The pass's culled mobys, appended to while below MAX_RECORDS.
+ * @param n Their count, updated. */
+static void occl_pass_culled(uint32_t moby, int is_spec, uint32_t* list, int* n) {
+    s_occl_culled++;
+    if (!is_spec && *n < MAX_RECORDS) list[(*n)++] = moby;
+}
+
 /** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or "SP").
  *
  * The pass rebuilds each record's fields from gamestate under the present's
@@ -16082,11 +16245,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         int ver_check = 0;              /* verify mode: audit this moby post-extract */
         if (occl_record_culled(cpu, mobys[i])) {
             ver_check = occl_verify_begin(mobys[i]);   /* extract anyway and audit */
-            if (!ver_check) {
-                s_occl_culled++;
-                if (!is_spec && culled_n < MAX_RECORDS) culled_moby[culled_n++] = mobys[i];
-                continue;
-            }
+            if (!ver_check) { occl_pass_culled(mobys[i], is_spec, culled_moby, &culled_n); continue; }
         }
         moby_fields f;
         double gpf_frac = -1.0;
@@ -16214,6 +16373,10 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             }
         }
         moby_late_trace(cpu, mobys[i], s_proj + off, got);
+        if (!ver_check && occl_confirm(cpu, mobys[i], s_proj + off, got, f.TR_frac, f.header)) {
+            occl_pass_culled(mobys[i], is_spec, culled_moby, &culled_n);
+            continue;
+        }
         if (ver_check) occl_verify_end(mobys[i], s_proj + off, got);
         else occl_cache_update(cpu, mobys[i], s_proj + off, got, f.TR_frac, f.header);
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;

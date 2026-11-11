@@ -1630,6 +1630,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Extended-LOD reveal stability: the spyro-2 summer_forest spawn pose,
+    # windowed, fails while the reveal's appended record count changes across
+    # 60 canonical ticks (a moby admitted on the occlusion cache's rebuilt
+    # rect, culled once its decode refreshes the cache, admitted again when it
+    # ages) or a deterministic sub-tick capture differs with the occlusion
+    # confirmation switched off. Headless runs build no occlusion grid, so no
+    # headless gate reaches it. Runs under xvfb-run without a display; skips
+    # (exit 64) without either, or without a binary, disc or PIL.
+    add_test(NAME moby_reveal_stability_spyro-2
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_reveal_stability.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(moby_reveal_stability_spyro-2 PROPERTIES
+        LABELS "presentation;moby;windowed"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Display ownership under eager production: the Spyro 2 attract demo with
     # OPENPETE_IDENT_AUDIT=300 borrows the display from the present thread
     # once per canonical present; no device call may come from a thread that
