@@ -11038,6 +11038,62 @@ static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
     }
 }
 
+/* The moby-against-moby tie order. The S2 and S3 moby draws splice each
+ * record's local bucket chains at the tail of every world ordering-table
+ * bucket they fill (S2 mobydraw.s 0x8004539C-0x80045488 and the second model
+ * kind's 0x80047F00-0x80048014; S3 func_80031124 0x80032020-0x800320B4), in
+ * the order of the cull's record queue, so within one world bucket a record
+ * queued later paints over an earlier one. Two mobys whose faces coincide
+ * carry per-pixel keys that differ only by projection rounding, and the
+ * contest's strict compare then follows the sign of that rounding. Each
+ * opaque face's key is pulled MOBY_TIE_STEP world nearer per record spliced
+ * into its world bucket before its own (its splice ordinal, at most
+ * MOBY_TIE_MAX_ORD), so the later record holds a coincident pixel. The pull
+ * spans at most 7/8 world, so it changes the verdict between two faces only
+ * where their keys at the pixel differ by less than the difference of their
+ * pulls. Faces past the cap share the cap's pull and keep the depth order
+ * among themselves; a pair of faces in different world buckets whose keys
+ * meet within the spread at a bucket boundary is ordered by its pulls, not
+ * by the bucket. The step is a power of two and far above the float key's
+ * resolution (2^-8 world at the 32768-world key ceiling). */
+#define MOBY_TIE_STEP    0.125
+#define MOBY_TIE_MAX_ORD 7
+#define MOBY_TIE_BUCKETS 0x800   /* the largest world table, S1's 2048 buckets */
+
+/* One world bucket's splice state in the current scene: the moby whose
+ * faces the emit last stamped in it, that moby's ordinal, and the count of
+ * mobys seen. stamp is the scene epoch + 1, so a zeroed entry is stale. */
+typedef struct { unsigned stamp; uint32_t moby; uint8_t ord, n; } moby_tie_bucket_t;
+static moby_tie_bucket_t s_tie_bk[MOBY_TIE_BUCKETS];
+
+/** @brief The splice ordinal of walk triangle i's moby in its world bucket, at most MOBY_TIE_MAX_ORD.
+ *
+ * The ordinal counts the mobys the scene's emits put in that bucket before
+ * this one. The emits feed the records in the game's queue order and a
+ * moby's faces contiguously, so the first face of a moby in a bucket names
+ * its place in that bucket's tail splices; its other faces there take the
+ * same ordinal. The count runs across every emit into one scene
+ * (openpete_native_scene_epoch), as the game's splices run across its draw
+ * calls. A face with no world bucket
+ * and a face of a record the extended-LOD reveal appended (the game splices
+ * no prim of it) take 0 and leave the count unchanged.
+ * @param i Walk triangle index.
+ * @return The ordinal, 0 to MOBY_TIE_MAX_ORD. */
+static int moby_tie_ordinal(int i) {
+    const int b = s_wtri_wbk[i];
+    const uint32_t mob = s_wtri_moby[i];
+    if (b < 0 || b >= MOBY_TIE_BUCKETS || moby_walk_tri_host_added(mob)) return 0;
+    const unsigned stamp = openpete_native_scene_epoch() + 1u;
+    moby_tie_bucket_t* e = &s_tie_bk[b];
+    if (e->stamp != stamp) { e->stamp = stamp; e->moby = mob; e->ord = 0; e->n = 1; return 0; }
+    if (e->moby != mob) {
+        e->moby = mob;
+        e->ord = e->n < MOBY_TIE_MAX_ORD ? e->n : MOBY_TIE_MAX_ORD;
+        if (e->n < MOBY_TIE_MAX_ORD) e->n++;
+    }
+    return e->ord;
+}
+
 /** @brief Stamp a walk face's ordering-table key: koff on an opaque ACTOR face, skey on a blended one.
  *
  * A face is keyed while moby_face_key_on and key resolve are on, when it is
@@ -11048,10 +11104,12 @@ static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
  * images and the contest, and the snap draws its sunk part in front of the
  * terrain whose key sorts behind it, as it does the opaque faces under it.
  * An opaque face also carries its moby-against-moby key offset akc, -128 x
- * m_DepthOffset (0 for a true-depth class): its ordering view-Z at any
+ * m_DepthOffset less the tie step times its splice ordinal
+ * (moby_tie_ordinal; 0 for a true-depth class): its ordering view-Z at any
  * pixel plus akc is its key there, so two faces of equal offsets compare
- * the depths they store, tie pull included; every opaque face but the
- * key-order class rasters it per pixel (akpx).
+ * the depths they store, tie pull included, and two coincident faces of
+ * one world bucket resolve to the record the game splices later; every
+ * opaque face but the key-order class rasters it per pixel (akpx).
  * @param i Walk triangle index.
  * @param cat The face's scene category.
  * @param stbit moby_walk_state_bit, for the class lists.
@@ -11067,7 +11125,8 @@ static void moby_face_stamp_key(int i, int cat, uint32_t stbit, openpete_scene_t
     /* Embedded-PROP classes: rendered whole from every angle. */
     t->prop = moby_class_is_prop(s_wtri_cls[i]);
     t->key_order = moby_class_draws_by_key(s_wtri_cls[i], stbit);
-    t->akc = td ? 0.0f : (float)(-OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i]);
+    t->akc = td ? 0.0f : (float)(-OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i] -
+                                 MOBY_TIE_STEP * moby_tie_ordinal(i));
     t->akpx = !t->key_order;
 }
 
