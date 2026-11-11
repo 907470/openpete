@@ -4,6 +4,7 @@
 #ifndef OPENPETE_BUGREPORT_INTERNAL_H
 #define OPENPETE_BUGREPORT_INTERNAL_H
 
+#include "openpete_audio_feed_report.h"
 #include "openpete_bugrec.h"
 #include "openpete_bugthumbs.h"
 
@@ -109,6 +110,7 @@ typedef struct br_job {
     uint8_t* subtick;           /* the sub-tick present ring's image (subtick.bin) */
     size_t   subtick_len, subtick_n;
     int64_t  press_present_ns;  /* the present clock at the press */
+    openpete_audio_feed_snap_t* audio;  /* the audio feed's counters and event ring (audio-feed.txt) */
     int      note_wanted;       /* the press asks the tester for a note */
     char*    note;              /* the saved note, or NULL */
     char     note_state[32];    /* saved, skipped, off, no text input, not shown, ... */

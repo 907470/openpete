@@ -8,6 +8,11 @@
 #           induces near VBL 1260 and the level is playable near VBL 1360,
 #           both after the session's first anchor)
 #   plain   no launch flag, press at VBL 900 (the title)
+#   audio   as plain, on the audio feed's synthetic device
+#           (OPENPETE_AUDIO_FEED_SIM=0.0,1, the virtual clock) with the host
+#           slowed to 0.96x from paced VBL 200 for 600 VBLs
+#           (OPENPETE_PACE_INJECT_US=16536,1,200,600), so the feed primes,
+#           the host slips and the time stretch engages before the press
 # and seven replays:
 #   skip         the skip bundle as written
 #   skip-late    the skip bundle with its manifest's anchor seq set to 2:
@@ -25,20 +30,26 @@
 #                screenshot so the terrain audit runs
 #   env-refused  OPENPETE_BUGREPORT_REPLAY_ENV naming OPENPETE_PLAYER_POSE
 #
+# Every recording runs under --mute 1.
+#
 # Instrument: the replay's verdict line (`bug-report-replay: IDENTICAL |
 # DIVERGED | REFUSED ...`), its `launch flags kept|dropped` line, the level
 # skip's `[skip-to-level] induced` line, and the audit's `[tsc-audit] total`
-# line.
+# line; `tools/bugreport.py audio` over each recording's audio-feed.txt
+# (exit 3 when the feed played data and holds no event).
 #
 # Pass criterion: skip IDENTICAL with the launch flags kept and the skip
 # induced in the replay; mods IDENTICAL; mods-held DIVERGED on
 # game-extra:modsave; skip-late DIVERGED with the launch flags dropped and
 # no induction; plain IDENTICAL with no launch line; env IDENTICAL with an
 # `env kept OPENPETE_TERRAIN_TSC_AUDIT` line and a `[tsc-audit] total` line
-# whose hits are nonzero; env-refused exit 64 naming OPENPETE_PLAYER_POSE.
+# whose hits are nonzero; env-refused exit 64 naming OPENPETE_PLAYER_POSE;
+# every recording's audio-feed.txt parses (exit 0, not VACUOUS) and states
+# mute=1; the audio recording's names device=synthetic, has played data,
+# and holds a nonzero event count with a prime, a slip and a stretch.
 #
 # Verdict line:
-#   [bugreport-replay] skip=.. skip-late=.. plain=.. mods=.. mods-held=.. env=.. env-refused=.. verdict=PASS|FAIL
+#   [bugreport-replay] skip=.. skip-late=.. plain=.. mods=.. mods-held=.. env=.. env-refused=.. audio=<events> verdict=PASS|FAIL
 #
 # Usage: tests/harness/check_bugreport_replay.sh [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL, 64 SKIP (binary or disc missing).
@@ -64,9 +75,12 @@ mkdir -p "$OUT"
 PG_CAPTURE_TIMEOUT=600
 
 # record TAG AT [args...]: one headless run pressing at feed key AT; prints the bundle path.
+# REC_ENV holds extra environment for the recording.
+REC_ENV=()
 record() {
     local tag="$1" at="$2"; shift 2
-    PG_CAPTURE_ENV=("XDG_DATA_HOME=$OUT/xdg-$tag" "OPENPETE_BUGREPORT_AT=$at" "OPENPETE_BUGREPORT_NOTE=0")
+    PG_CAPTURE_ENV=("XDG_DATA_HOME=$OUT/xdg-$tag" "OPENPETE_BUGREPORT_AT=$at" "OPENPETE_BUGREPORT_NOTE=0"
+                    "${REC_ENV[@]}")
     pg_capture "$OUT/rec-$tag.log" "" -- --game "$GAME" --mute 1 --frame-limit $((at + 20)) "$@" </dev/null ||
         return 1
     local z
@@ -94,11 +108,42 @@ verdict() {
 fail=()
 skip_zip="$(record skip 1500 --skip-to-level summer_forest)" || fail+=("skip recording failed (see $OUT/rec-skip.log)")
 plain_zip="$(record plain 900)" || fail+=("plain recording failed (see $OUT/rec-plain.log)")
+REC_ENV=("OPENPETE_AUDIO_FEED_SIM=0.0,1" "OPENPETE_PACE_INJECT_US=16536,1,200,600")
+audio_zip="$(record audio 900)" || fail+=("audio recording failed (see $OUT/rec-audio.log)")
+REC_ENV=()
 if (( ${#fail[@]} )); then
     printf 'bugreport-replay: %s\n' "${fail[@]}"
     echo "[bugreport-replay] verdict=FAIL"
     exit 1
 fi
+
+# audio_check TAG BUNDLE [KIND...]: the bundle's audio-feed.txt reads (not
+# VACUOUS) and states mute=1; with KINDs, it names the synthetic device,
+# played data and holds each KIND. Sets HELD to the held event count.
+audio_check() {
+    local tag="$1" bundle="$2"; shift 2
+    local out="$OUT/audio-$tag.txt" rc
+    python3 -I tools/bugreport.py audio "$bundle" >"$out" 2>&1
+    rc=$?
+    HELD=0
+    (( rc == 0 )) || { fail+=("audio $tag: bugreport.py audio exit $rc (see $out)"); return; }
+    grep -q '^audio-feed.txt v1: mute=1 ' "$out" || fail+=("audio $tag: no mute=1 in the header")
+    HELD="$(grep -oE 'events [0-9]+ held' "$out" | grep -oE '[0-9]+')"
+    HELD="${HELD:-0}"
+    if (( $# )); then
+        grep -q ' device=synthetic ' "$out" || fail+=("audio $tag: device is not synthetic")
+        grep -qE 'data_out=[1-9]' "$out" || fail+=("audio $tag: the feed played no data")
+        (( HELD > 0 )) || fail+=("audio $tag: VACUOUS: no event held")
+        local k
+        for k in "$@"; do
+            grep -qE "^ +-?[0-9.]+ +[0-9]+ +[0-9]+ $k " "$out" || fail+=("audio $tag: no $k event")
+        done
+    fi
+}
+audio_check skip "$skip_zip"
+audio_check plain "$plain_zip"
+audio_check audio "$audio_zip" prime slip stretch
+n_audio="$HELD"
 
 REPLAY_ENV=()
 replay skip "$skip_zip"
@@ -196,5 +241,5 @@ if (( ${#fail[@]} )); then
     printf 'bugreport-replay: %s\n' "${fail[@]}"
     res=FAIL
 fi
-echo "[bugreport-replay] skip=$v_skip skip-late=$v_late plain=$v_plain mods=$v_mods mods-held=$v_held env=$v_env env-refused=$v_ref verdict=$res"
+echo "[bugreport-replay] skip=$v_skip skip-late=$v_late plain=$v_plain mods=$v_mods mods-held=$v_held env=$v_env env-refused=$v_ref audio=$n_audio verdict=$res"
 [[ "$res" == PASS ]]

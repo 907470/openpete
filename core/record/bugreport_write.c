@@ -1056,6 +1056,16 @@ static int write_zip(const br_job_t* j, const br_members_t* m, const wbuf_t* man
     return rc;
 }
 
+/** @brief Append one line and its newline to a text buffer (an audio feed report sink).
+ * @param ud The buffer (wbuf_t).
+ * @param line The line. */
+static void wb_line(void* ud, const char* line)
+{
+    wbuf_t* w = (wbuf_t*)ud;
+    wb_puts(w, line);
+    wb_put(w, "\n", 1);
+}
+
 /** @brief Add the press's in-memory copies and the staged reports as members.
  * @param m The members.
  * @param j The job. */
@@ -1073,6 +1083,9 @@ static void add_press_members(br_members_t* m, br_job_t* j)
         br_members_add_copy(m, "pace-coarse.bin", j->pace_coarse, j->pace_coarse_len, BRM_BINARY);
     if (j->hang) br_members_add_copy(m, "hang/rings.bin", j->hang, j->hang_len, BRM_BINARY);
     if (j->subtick) br_members_add_copy(m, "subtick.bin", j->subtick, j->subtick_len, BRM_BINARY);
+    wbuf_t au = {0};
+    openpete_audio_feed_text(j->audio, wb_line, &au);
+    if (au.b) br_members_add(m, "audio-feed.txt", (uint8_t*)au.b, au.n, BRM_TEXT);
     wbuf_t rep = {0};
     wb_puts(&rep, "# sim thread, at the press\n");
     wb_puts(&rep, j->reports);
@@ -1183,6 +1196,7 @@ void br_job_free(br_job_t* j)
     free(j->input);
     free(j->hang);
     free(j->subtick);
+    openpete_audio_feed_snap_free(j->audio);
     openpete_bugthumbs_free(j->thumbs, j->thumbs_n);
     free(j->note);
     free(j->reports);

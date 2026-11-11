@@ -43,6 +43,15 @@ one present is flagged MULTI, a paired record drawn off its lerp OFFLERP,
 and a record on its lerp neither; a ring with no flag exits 0, one with a
 flag exits 2; an extracted subtick.bin reads like the bundle.
 
+Audio feed: a synthetic audio-feed.txt of five events (a prime, a slip,
+a stretch edge, an underrun and a periodic sample) gives `info` its mute,
+device, event counts by kind, underruns and stretch engages; `audio` lists
+the events with the ratio in cents, `--kind` and `--no-ticks` select, an
+extracted audio-feed.txt reads like the bundle; a feed that played data
+with no event held exits 3 (VACUOUS); a bundle without the member says so;
+a row with a missing field is refused (exit 64); `corpus` fills the audio
+columns.
+
 Replay: the fallback route runs a stub executable (a script printing the
 flag's verdict line, not openpete) and passes its verdict and exit code
 through. Archive lookup: EXE-SHA256SUMS lines parse into (hash, artifact,
@@ -279,6 +288,105 @@ class Subtick(Base):
         rc, out, err = run("subtick", f, "--key", "0x80010000")
         self.assertEqual(rc, 2, out + err)
         self.assertIn("subtick.bin v1: 3 presents over 0.004 s, 5 drawn records", out)
+
+
+AUDIO_EVENTS = [
+    "-2.000 600 6144 prime headless -p- 1.000000 1.0000 1.000000 5200 1.0000 5897 0 0 0.020 5897 5200.0",
+    "-1.500 630 28160 tick headless -p- 1.000000 1.0000 1.000000 5100 1.0000 900 0 0 0.030 27000 0.0",
+    "-0.500 690 70000 slip headless -p- 0.999000 0.9600 1.000000 2663 0.7500 737 0 4 5.487 69000 4.0",
+    "-0.500 690 70000 stretch headless -ps 0.999000 0.9600 1.000000 2663 0.7500 737 0 4 5.487 69000 0.0",
+    "-0.400 696 74000 UNDERRUN headless --s 0.999000 0.9600 1.000000 1000 0.9600 1474 1 4 5.503 73000 0.0",
+]
+
+
+def audio_txt(events=AUDIO_EVENTS, data_out=70000, held=None, mute=1):
+    hdr = ["# audio-feed.txt: test", "version=1", f"mute={mute}", "device=synthetic", "snapshot_wall_ns=5000000000",
+           "snapshot_present_ns=1", "snapshot_vbl=700", "counters=read", "ring=2048",
+           f"events_total={len(events)}", f"events_held={len(events) if held is None else held}", "events_skipped=0"]
+    if mute:
+        hdr.append("note=muted: the SPU output was silenced")
+    cnt = ["spu: reverb_cycles=0 reverb_in=0 noise=0 pmon=0 sweep=0 host_plays=0 host_clip_frames=0 host_stream_frames=0",
+           "feed: pushed=80000 held=1000 overflow=0 consumed=75000 periods=73 underruns=1 primes=1 target=5200 "
+           "depth_min=900 p01=1000 p50=4000 p99=4600 ratio=0.99900 rate=1.00000",
+           f"feed: accounting: pushed=80000 = taken=79000 + overflow=0 + discarded=0 + fifo=1000 (residual 0); "
+           f"consumed=75000 = data_out={data_out} + silence_out={75000 - data_out}",
+           "feed: pitch: pumps=300 median=+0.00c p99=1.50c max=-1.73c",
+           "feed: drift: drift=1.000000 (+0.0 ppm) speed=0.9600 fits=0 refits=2 behind_used=5.5 behind_dropped=0.0",
+           "feed: stretch: hops=40 engages=1 on=1 corr_p01=0.80 corr_p50=0.97",
+           "feed: phase headless: pushed=80000 held=0 overflow=0 underruns=1 primes=1",
+           "feed: now: device=synthetic hold=0 playing=0 phase=headless tag=700 queued=0 fifo=1474 depth_s=1000 "
+           "stretch_on=1 st_rate=0.9600 nominal=1.0000 slips=4 behind=5.503 events=5",
+           "# events, oldest first: t_s vbl consumed event phase flags ratio speed drift depth_s st_rate fifo "
+           "underruns slips behind pushed value"]
+    return ("\n".join(hdr + cnt + list(events)) + "\n").encode()
+
+
+class Audio(Base):
+    def bundle(self, txt=None, name="a.zip"):
+        mem = members()
+        mem["audio-feed.txt"] = audio_txt() if txt is None else txt
+        return write_bundle(self.d / name, mem, manifest(mem))
+
+    def test_info_line(self):
+        rc, out, err = run("info", self.bundle(), "--archive", self.arch)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("audio: mute=1 device=synthetic; 5 events over 1.6 s (UNDERRUN 1, prime 1, slip 1, stretch 1, "
+                      "tick 1); underruns 1 primes 1 stretch engages 1 on=1 speed 0.9600 pitch p99 1.50", out)
+
+    def test_list(self):
+        rc, out, err = run("audio", self.bundle(), "--no-ticks")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("audio-feed.txt v1: mute=1 device=synthetic counters=read; events 5 held of 5 recorded", out)
+        self.assertIn("note: muted: the SPU output was silenced", out)
+        self.assertIn("feed: stretch: hops=40 engages=1", out)
+        self.assertIn("events (4 of 5 listed)", out)
+        self.assertIn("   -0.500     690      70000 slip         headless  -p-   -1.732  0.9600", out)
+        self.assertNotIn(" tick ", out)
+        rc, out, err = run("audio", self.bundle(), "--kind", "UNDERRUN,prime", "--last", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("events (1 of 5 listed)", out)
+        self.assertIn(" UNDERRUN ", out)
+        self.assertNotIn(" prime ", out.split("events (")[1])
+
+    def test_extracted_member(self):
+        f = self.d / "audio-feed.txt"
+        f.write_bytes(audio_txt())
+        rc, out, err = run("audio", f)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("events (5 of 5 listed)", out)
+
+    def test_vacuous(self):
+        rc, out, err = run("audio", self.bundle(audio_txt(events=[])))
+        self.assertEqual(rc, 3, out + err)
+        self.assertIn("VACUOUS: the feed played data and the ring holds no event", out)
+        rc, out, err = run("audio", self.bundle(audio_txt(events=[], data_out=0), "silent.zip"))
+        self.assertEqual(rc, 0, out + err)
+
+    def test_absent_and_malformed(self):
+        z = write_bundle(self.d / "old.zip")
+        rc, out, err = run("info", z, "--archive", self.arch)
+        self.assertIn("audio: no audio-feed.txt", out)
+        rc, out, err = run("audio", z)
+        self.assertEqual(rc, 3, out + err)
+        bad = audio_txt(events=AUDIO_EVENTS[:-1] + [AUDIO_EVENTS[-1].rsplit(" ", 1)[0]])
+        rc, out, err = run("audio", self.bundle(bad, "bad.zip"))
+        self.assertEqual(rc, 64, out + err)
+        self.assertIn("refused: audio-feed.txt: event row with 16 fields", err)
+        rc, out, err = run("info", self.bundle(bad, "bad2.zip"), "--archive", self.arch)
+        self.assertIn("audio: unreadable", out)
+
+    def test_corpus_columns(self):
+        corp = self.d / "corpus"
+        corp.mkdir()
+        self.bundle(name="corpus/bug-spyro-1-a.zip")
+        tsv = self.d / "c.tsv"
+        rc, out, err = run("corpus", corp, "--tsv", tsv)
+        self.assertEqual(rc, 0, out + err)
+        lines = tsv.read_text().splitlines()
+        row = dict(zip(lines[0].split("\t"), lines[1].split("\t")))
+        self.assertEqual((row["audio_device"], row["audio_mute"], row["audio_events"], row["audio_underruns"],
+                          row["audio_stretch_engages"], row["audio_pitch_p99_c"]),
+                         ("synthetic", "1", "5", "1", "1", "1.50"))
 
 
 class ThumbsNote(Base):

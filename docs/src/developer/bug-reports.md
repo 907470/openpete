@@ -33,6 +33,7 @@ these records existed; the reader still reads its pace ring.
 | `screen.png`, `thumbs/NNN.png` | the presented image at the press; the thumbnail ring, oldest first |
 | `pace-coarse.bin` | the coarse session ring: one row per second since the pace ring was armed (rows merge pairwise and the span doubles when 8192 rows fill), folded from every pace record: VBLs and the not-live ones, presents, repeats, sheds, slips, the longest present interval, the TICK_SPLIT sums, the EAGER_PLAN slots, scenes, cuts and highest level, the GPU_FRAME sum and maximum (layout in `core/include/openpete_pace_log.h`, `OP_PACE_CR_*`) |
 | `subtick.bin` | the sub-tick present ring: the last 1024 re-extracted presents (2.13 s at 480 Hz) with kind, alpha, the tick stamps they lerp between and the scene ring slot, and per drawn object record its pairing key, class, pairing verdict, the snapshot pair's prev and curr positions, angles and roll stamps, and the screen centroid and world position it was drawn at (layout in `core/include/openpete_bugrec_subtick.h`) |
+| `audio-feed.txt` | the audio device feed at the press: mute and device state, its counters (the exit summary's `spu:` and `feed:` lines and a `feed: now:` state line), and its event ring of the last 2048 events (layout under [Audio feed record](#audio-feed-record)) |
 | `reports.txt`, `pace-census.txt`, `summary.txt` | the subsystem reports at the press and at the screenshot; their pace lines; the state summary |
 | `config.txt`, `keymap.txt`, `config-files/`, `env.txt`, `argv.txt` | `--config-report`, `--keys-report`, the raw config tiers, the `OPENPETE_*` environment, the command line |
 | `device.txt`, `devices.txt` | Vulkan device, displays, system; the input devices |
@@ -78,6 +79,63 @@ ring (131072 records), which then holds 30 s at about 2600 records per
 second. The coarse ring is 1 MiB in memory (8192 rows of 128 B) and
 writes only its used rows: 450 KB raw for an hour.
 
+## Audio feed record
+
+PsyCross's device feed (`third_party/PsyCross/src/audio/PsyX_SPUFeed.cpp`)
+records every timeline event, the events `OPENPETE_AUDIO_FEED_LOG` writes,
+into a ring of the last 2048 (`PSYX_SPUFEED_EVENTS`) whether or not the log
+is open: `tick` (a sample every 250 ms of device time; the feed log's name,
+not a sim tick), `phase`, `hold`, `release`, `prime`, `UNDERRUN`, `drain`
+(data ran out while held), `OVERFLOW`, `overflow-end`, `lag-drop`,
+`step-drop`, `stretch`, `stretch-end` and `slip` (the host's slip count
+rose).
+
+Threads: the event is recorded by the thread that raises it, under the
+feed's mutex, which that thread already holds: the audio consumer thread
+(`audio` role) for samples, primes, underruns, drains, drops, holds,
+releases, stretch edges and slips; the sim thread (the producer) for
+overflows and phase changes. OpenAL's mixer thread never touches the feed.
+The press reads the ring on the sim thread without a lock: each 112 B slot
+carries a sequence word (odd while written, even naming its event), and a
+slot rewritten during the copy is skipped and counted
+(`events_skipped`). Recording stores 14 words and reads the clock; it
+allocates and prints nothing. The counters are read under the feed's
+mutex (the exit summary's call), except at a fatal exit off the sim's
+thread, where the file says `counters=not read`.
+
+Sizing: over 51 feed logs of earlier audio work (15 to 218 s each),
+non-sample events run at 1 to 10 per minute in steady play; the worst 60 s
+window held 464 (an overflow starting and ending at each push under an
+injected stall) and the worst 5 s window 159. With the 4 samples per
+second the ring covers 8.5 min of steady play, 2.9 min at the worst 60 s
+rate and 57 s at the worst 5 s rate sustained. The ring is 229 KiB of
+memory; a full ring is about 195 KB of text (95 B per row).
+
+`audio-feed.txt` (version 1): `key=value` header lines (`version`, `mute`,
+`device` openal, synthetic or none, `snapshot_wall_ns`,
+`snapshot_present_ns`, `snapshot_vbl`, `counters`, `ring`, `events_total`,
+`events_held`, `events_skipped`, and `note` lines stating a mute or a
+missing device); the counter lines; then one row per event, oldest first:
+
+| Column | Content |
+| --- | --- |
+| `t_s` | seconds before the snapshot (`SDL_GetTicksNS`, the events' clock) |
+| `vbl` | the host's VBL count the feed last received (`openpete_vbl_device`) |
+| `consumed` | frames the device had consumed: the device clock |
+| `event`, `phase` | the event name; the host's phase (`boot`, `skip`, `unlocked`, `paused`, `live`, `headless`) |
+| `flags` | `h` held, `p` data playing, `s` time stretch engaged; `-` when not |
+| `ratio` | input frames per output frame; the reader shows it in cents |
+| `speed`, `drift` | the measured producer speed against real time; producer-time frames per device frame |
+| `depth_s`, `st_rate`, `fifo` | the smoothed queued depth in output frames; the stretch rate; FIFO frames |
+| `underruns`, `slips`, `behind` | underruns so far; the host's slip periods; sim periods the producer is behind real time |
+| `pushed` | frames the producer had pushed |
+| `value` | `lag-drop`, `step-drop`: output frames dropped; `slip`: slip periods added; `prime`: the depth target; `OVERFLOW`, `overflow-end`: frames dropped on overflow so far; `hold`, `release`: frames discarded so far; else 0 |
+
+A muted run (`--mute 1` or the overlay) still runs the feed on the
+silenced SPU output; `mute=1` and a `note` line say so. A run whose audio
+device did not open holds only `phase` events; `device=none` and a `note`
+line say so.
+
 ## Reading a bundle: `tools/bugreport.py`
 
 The reader treats a bundle as untrusted input: members are read by name
@@ -92,6 +150,7 @@ python3 -I tools/bugreport.py replay BUNDLE [--exe PATH] [--disc CUE] [--archive
                                      [--work DIR] [--timeout S] [--dry-run] [-- EXTRA...]
 python3 -I tools/bugreport.py subtick BUNDLE [--class C] [--key K] [--last N] [--max-keys N]
                                       [--tol-px PX] [--tol-world W]
+python3 -I tools/bugreport.py audio BUNDLE [--kind K,...] [--last N] [--no-ticks]
 python3 -I tools/bugreport.py perf BUNDLE [--rows]
 python3 -I tools/bugreport.py corpus PATH... [--tsv OUT] [--quiet]
 python3 -I tools/bugreport.py diff-hashes A B
@@ -123,6 +182,13 @@ python3 -I tools/bugreport.py diff-hashes A B
   `--tol-world` (default 2) world units from both its lerp and its curr
   position; exit 2 when either flag fires. `info` prints the ring's
   one-line summary.
+- `audio` reads `audio-feed.txt` (BUNDLE may be the extracted member):
+  the header and its notes, the counter lines, and the events with the
+  ratio in cents; `--kind` lists the named events only, `--no-ticks`
+  leaves out the samples, `--last` keeps the last N. Exit 3 (VACUOUS)
+  when the feed played data and the ring holds no event. `info` prints a
+  one-line summary: mute, device, events by kind, underruns, primes,
+  stretch engages, producer speed and pitch p99.
 - `perf` reads the performance records (BUNDLE may be an extracted
   `pace.oppl`): the manifest's `records` field; over the pace ring the
   present rate over the window and over its last 10 s, the present
@@ -138,8 +204,9 @@ python3 -I tools/bugreport.py diff-hashes A B
   and writes one TSV row per bundle: name, error, build, commit, game,
   level, trigger, platform, GPU, driver, refresh, present mode,
   fullscreen, `--render-fps`, eager, swapchain extent, enabled mods, the
-  note's first 80 characters, the records it holds, and the `perf`
-  rollups. A bundle without a record kind leaves its columns empty; a
+  note's first 80 characters, the records it holds, the `perf`
+  rollups, and the audio feed's device, mute, event count, underruns,
+  stretch engages, producer speed and pitch p99. A bundle without a record kind leaves its columns empty; a
   bundle that does not open gets a row with the reason. The summary
   counts bundles per record kind, gives the median rollups per game and
   GPU, and lists the five bundles whose last 10 s present rate is

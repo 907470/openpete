@@ -19,6 +19,9 @@ what you did, what you expected, and what you saw instead).
   seconds before it
 - where each character and object was drawn in the last 1024 pictures
   (about 2 seconds at 480 Hz)
+- the sound output's counters and its last 2048 events: where the sound
+  started, stopped with a gap, was time-stretched because the game ran
+  slower than real time, or changed its pitch, and whether sound was muted
 - the end of this run's log and of the previous run's log
 - your settings (the `--config-report` output and your `openpete.toml`
   files) and key bindings (the `--keys-report` output)

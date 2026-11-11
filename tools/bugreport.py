@@ -38,6 +38,15 @@ Subcommands:
       OPENPETE_BUGREPORT_GPU) and the coarse session rows
       (pace-coarse.bin). A bundle without a record prints that it holds
       none. BUNDLE may also be an extracted pace.oppl.
+  audio BUNDLE [--kind K] [--last N] [--no-ticks]
+      The audio device feed at the press (audio-feed.txt): mute and device
+      state, the feed's counters, and its event ring (primes, underruns,
+      drains, overflows, drops, stretch edges, slips, holds, phase changes,
+      a sample every 250 ms of device time) with each event's offset before
+      the press, VBL, device frames, ratio in cents, producer speed, drift,
+      depth and stretch rate. Exit 3 (VACUOUS) when the feed played data
+      and the ring holds no event. BUNDLE may also be an extracted
+      audio-feed.txt.
   corpus PATH... [--tsv OUT] [--quiet]
       One row per bundle over directories (every bug-*.zip inside) and
       bundle paths: build, game, level, GPU, refresh, present mode, mods,
@@ -63,6 +72,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -127,6 +137,14 @@ SUB_PATHS = {0: "eager", 1: "inline", 2: "repeat"}
 SUB_VERDICTS = {0: "paired", 1: "newborn", 2: "dying", 3: "held"}
 SUB_F_SPEC, SUB_F_GHOST, SUB_F_REFPREV, SUB_F_NOOBJ, SUB_F_WORLD, SUB_F_UNSHOWN = 1, 2, 4, 8, 16, 32
 SUB_KF = {0: "snap", 1: "lerp", 2: "hold", 3: "?"}
+
+# audio-feed.txt (core/host/audio_feed_report.c), layout version 1.
+AUDIO_VERSION = 1
+AUDIO_COLS = ("t_s", "vbl", "consumed", "event", "phase", "flags", "ratio", "speed", "drift", "depth_s",
+              "st_rate", "fifo", "underruns", "slips", "behind", "pushed", "value")
+AUDIO_INT_COLS = {"vbl", "consumed", "fifo", "underruns", "slips", "pushed"}
+AUDIO_TEXT_COLS = {"event", "phase", "flags"}
+AUDIO_KV_RE = re.compile(r"([A-Za-z_0-9]+)=(-?[0-9][0-9.e+-]*|[A-Za-z_]+)")
 
 VERDICT_RE = re.compile(r"bug-report-replay:\s*(IDENTICAL|DIVERGED|REFUSED)\b.*")
 
@@ -703,6 +721,90 @@ def subtick_line(b):
             + f"; MULTI {len(multi)} OFFLERP {len(off)} (python3 -I tools/bugreport.py subtick)")
 
 
+def audio_parse(text):
+    """Parse audio-feed.txt into (header, counters, events): header key=value lines (`note` a list), the
+    `spu:`/`feed:` counter fields keyed `<line>.<key>` (`feed.pushed`, `feed.accounting.data_out`,
+    `feed.now.device`, ...), and one dict per event row with AUDIO_COLS typed."""
+    hdr, cnt, evs = {"note": []}, {}, []
+    for ln in text.splitlines():
+        if not ln.strip() or ln.startswith("#"):
+            continue
+        if ln.startswith(("spu:", "feed:")):
+            head, _sep, rest = ln.partition(": ")
+            sub = rest.split(":", 1)[0] if re.match(r"^[a-z]+:", rest) else ""
+            pre = head + ("." + sub if sub and not sub.startswith("phase") else "")
+            if sub.startswith("phase"):
+                continue
+            for k, v in AUDIO_KV_RE.findall(rest):
+                cnt.setdefault(f"{pre}.{k}", v)
+            continue
+        if "=" in ln.split(" ", 1)[0]:
+            k, v = ln.split("=", 1)
+            if k == "note":
+                hdr["note"].append(v)
+            else:
+                hdr[k] = v
+            continue
+        f = ln.split()
+        if len(f) != len(AUDIO_COLS):
+            raise BundleError(f"audio-feed.txt: event row with {len(f)} fields, want {len(AUDIO_COLS)}: {ln[:80]}")
+        try:
+            evs.append({c: (v if c in AUDIO_TEXT_COLS else int(v) if c in AUDIO_INT_COLS else float(v))
+                        for c, v in zip(AUDIO_COLS, f)})
+        except ValueError:
+            raise BundleError(f"audio-feed.txt: unparseable event row: {ln[:80]}")
+    if "version" not in hdr:
+        raise BundleError("audio-feed.txt: no version line")
+    if int(hdr["version"]) != AUDIO_VERSION:
+        raise BundleError(f"audio-feed.txt: version {hdr['version']}, this reader knows {AUDIO_VERSION}")
+    if len(evs) != int(hdr.get("events_held", -1)):
+        raise BundleError(f"audio-feed.txt: {len(evs)} event rows, header says {hdr.get('events_held')}")
+    return hdr, cnt, evs
+
+
+def audio_played(cnt):
+    """Output frames of data the device played (0 when the counters were not read)."""
+    try:
+        return int(cnt.get("feed.accounting.data_out", 0))
+    except ValueError:
+        return 0
+
+
+def audio_load(arg):
+    """The audio-feed.txt text of a bundle or of an extracted member; None when a bundle holds none."""
+    p = Path(arg)
+    if p.suffix == ".txt" and p.is_file():
+        return p.read_text(errors="replace")
+    b = Bundle(arg)
+    return b.text("audio-feed.txt")
+
+
+def audio_line(b):
+    """The info line for the audio feed: mute, device, events by kind and span, underruns, stretch, pitch."""
+    txt = b.text("audio-feed.txt")
+    if txt is None:
+        return "audio: no audio-feed.txt (written by builds that record the feed's event ring)"
+    try:
+        hdr, cnt, evs = audio_parse(txt)
+    except BundleError as e:
+        return f"audio: unreadable ({e})"
+    kinds = {}
+    for e in evs:
+        kinds[e["event"]] = kinds.get(e["event"], 0) + 1
+    span = (evs[-1]["t_s"] - evs[0]["t_s"]) if evs else 0.0
+    line = (f"audio: mute={hdr.get('mute')} device={hdr.get('device')}; {len(evs)} events over {span:.1f} s ("
+            + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) + ")")
+    if "feed.pushed" not in cnt:
+        line += "; counters: " + ("no frame pushed or consumed" if cnt else "not read")
+    else:
+        line += (f"; underruns {cnt.get('feed.underruns', '?')} primes {cnt.get('feed.primes', '?')} "
+                 f"stretch engages {cnt.get('feed.stretch.engages', '?')} on={cnt.get('feed.stretch.on', '?')} "
+                 f"speed {cnt.get('feed.drift.speed', '?')} pitch p99 {cnt.get('feed.pitch.p99', '?')}")
+    if audio_played(cnt) and not evs:
+        line += "; VACUOUS: the feed played data and holds no event"
+    return line + " (python3 -I tools/bugreport.py audio)"
+
+
 def records_line(b):
     """The `info` line naming the performance records a bundle holds, with the `perf` command."""
     have = []
@@ -1085,6 +1187,7 @@ def cmd_info(args):
         w(f"  {st.upper()} {name}: {det}")
     w(thumbs_line(b, m))
     w(subtick_line(b))
+    w(audio_line(b))
     if b.has("pace.oppl"):
         ps = pace_summary(b.read("pace.oppl"))
         if "error" in ps:
@@ -1361,6 +1464,43 @@ def cmd_subtick(args):
     return EXIT_DIVERGED if (multi or off) else EXIT_OK
 
 
+def cmd_audio(args):
+    txt = audio_load(args.bundle)
+    if txt is None:
+        print("no audio-feed.txt in this bundle")
+        return EXIT_VACUOUS
+    hdr, cnt, evs = audio_parse(txt)
+    o = []
+    w = o.append
+    w(f"audio-feed.txt v{hdr['version']}: mute={hdr.get('mute')} device={hdr.get('device')} "
+      f"counters={hdr.get('counters')}; events {hdr.get('events_held')} held of {hdr.get('events_total')} "
+      f"recorded (ring {hdr.get('ring')}, {hdr.get('events_skipped')} skipped at the copy); "
+      f"snapshot at VBL {hdr.get('snapshot_vbl')}")
+    for n in hdr["note"]:
+        w("note: " + n)
+    for ln in txt.splitlines():
+        if ln.startswith(("spu:", "feed:")):
+            w(ln)
+    sel = [e for e in evs if (not args.kind or e["event"] in args.kind.split(","))
+           and not (args.no_ticks and e["event"] == "tick")]
+    if args.last:
+        sel = sel[-args.last:]
+    w(f"events ({len(sel)} of {len(evs)} listed): t_s before the snapshot, VBL, device frames, ratio in cents")
+    w(f"{'t_s':>9} {'vbl':>7} {'consumed':>10} {'event':<12} {'phase':<9} {'fl':<3} {'cents':>8} {'speed':>7} "
+      f"{'drift':>9} {'depth':>6} {'st_rate':>7} {'fifo':>6} {'undr':>4} {'slips':>5} {'behind':>7} {'value':>9}")
+    for e in sel:
+        cents = 1200.0 * math.log2(e["ratio"]) if e["ratio"] > 0 else float("nan")
+        w(f"{e['t_s']:9.3f} {e['vbl']:7d} {e['consumed']:10d} {e['event']:<12} {e['phase']:<9} {e['flags']:<3} "
+          f"{cents:+8.3f} {e['speed']:7.4f} {e['drift']:9.6f} {e['depth_s']:6.0f} {e['st_rate']:7.4f} "
+          f"{e['fifo']:6d} {e['underruns']:4d} {e['slips']:5d} {e['behind']:7.3f} {e['value']:9.1f}")
+    rc = EXIT_OK
+    if audio_played(cnt) and not evs:
+        w("VACUOUS: the feed played data and the ring holds no event")
+        rc = EXIT_VACUOUS
+    print("\n".join(o))
+    return rc
+
+
 def perf_source(arg):
     """(pace bytes or None, coarse bytes or None, manifest or None) of a bundle or an extracted pace log."""
     pth = Path(arg)
@@ -1448,7 +1588,9 @@ CORPUS_COLS = ("bundle", "error", "build", "commit", "game", "level", "trigger",
                    "split_" + n for n, _s, _h in SPLIT_FIELDS) + (
                "plans", "plan_slots", "plan_afford", "plan_scenes", "plan_level_p50", "plan_level_max",
                "plan_cut_frac", "gpu_frames", "gpu_p50", "gpu_p99", "coarse_s", "coarse_span_s",
-               "coarse_pres_p10", "coarse_pres_p50", "coarse_pres_p90", "coarse_pres_first", "coarse_pres_last")
+               "coarse_pres_p10", "coarse_pres_p50", "coarse_pres_p90", "coarse_pres_first", "coarse_pres_last",
+               "audio_device", "audio_mute", "audio_events", "audio_underruns", "audio_stretch_engages",
+               "audio_speed", "audio_pitch_p99_c")
 
 
 def tsv_cell(v):
@@ -1505,9 +1647,25 @@ def corpus_row(path):
             row.update(coarse_rollup(rows))
         except BundleError as e:
             errs.append(str(e))
+    row.update(audio_row(b, errs))
     if errs:
         row["error"] = "; ".join(errs)
     return row
+
+
+def audio_row(b, errs):
+    """The corpus row's audio columns from audio-feed.txt; empty for a bundle without one, an error in `errs`."""
+    txt = b.text("audio-feed.txt")
+    if txt is None:
+        return {}
+    try:
+        hdr, cnt, evs = audio_parse(txt)
+    except BundleError as e:
+        errs.append(str(e))
+        return {}
+    return {"audio_device": hdr.get("device"), "audio_mute": hdr.get("mute"), "audio_events": len(evs),
+            "audio_underruns": cnt.get("feed.underruns"), "audio_stretch_engages": cnt.get("feed.stretch.engages"),
+            "audio_speed": cnt.get("feed.drift.speed"), "audio_pitch_p99_c": cnt.get("feed.pitch.p99")}
 
 
 def corpus_paths(args):
@@ -1625,6 +1783,11 @@ def main(argv=None):
     p = sub.add_parser("perf", help="performance records: pace rollups, CPU split, planner, GPU, coarse rows")
     p.add_argument("bundle", help="a bundle, or an extracted pace.oppl")
     p.add_argument("--rows", action="store_true", help="also print the coarse rows as TSV")
+    p = sub.add_parser("audio", help="the audio feed at the press: mute and device state, counters, event ring")
+    p.add_argument("bundle", help="a bundle, or an extracted audio-feed.txt")
+    p.add_argument("--kind", help="comma-separated event names to list (prime,UNDERRUN,stretch,slip,...)")
+    p.add_argument("--last", type=int, default=0, help="list only the last N selected events")
+    p.add_argument("--no-ticks", action="store_true", help="leave out the 250 ms periodic samples")
     p = sub.add_parser("corpus", help="one TSV row per bundle over directories and paths, and a text summary")
     p.add_argument("paths", nargs="+", help="directories (every bug-*.zip inside) and bundle paths")
     p.add_argument("--tsv", help="write the TSV here instead of standard output")
@@ -1634,7 +1797,7 @@ def main(argv=None):
     p.add_argument("b")
     args = ap.parse_args(argv)
     fn = {"info": cmd_info, "extract": cmd_extract, "replay": cmd_replay, "subtick": cmd_subtick,
-          "perf": cmd_perf, "corpus": cmd_corpus, "diff-hashes": cmd_diff}[args.cmd]
+          "audio": cmd_audio, "perf": cmd_perf, "corpus": cmd_corpus, "diff-hashes": cmd_diff}[args.cmd]
     try:
         return fn(args)
     except BundleError as e:

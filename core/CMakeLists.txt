@@ -270,6 +270,7 @@ add_library(openpete_core STATIC
     host/host_spawn.c
     host/window_restack.c
     host/audio_consumer.c
+    host/audio_feed_report.c
     host/music_override.c
     host/mod_sound.c
     host/sha256.c

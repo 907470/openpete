@@ -4,6 +4,7 @@
 // main pumps the window and a worker runs the loop; a build without PsyCross
 // opens a window that only clears and presents.
 
+#include "openpete_audio_feed_report.h"
 #include "openpete_bugreport.h"
 #include "openpete_bugreport_replay.h"
 #include "openpete.h"
@@ -943,79 +944,23 @@ extern void PsyX_SPUFeed_SetTap(const char* path);
 extern void PsyX_SPUFeed_SetTone(double hz);
 extern void PsyX_SPUFeed_Simulate(double drift, unsigned int seed, double start_stall);
 extern void PsyX_SPUFeed_SetNominalRate(double rate);
-#define PSYX_SPUFEED_PHASES 8
-typedef struct PsyX_SPUFeed_PhaseStats {
-    unsigned long long pushed, held, overflow, underruns, primes;
-} PsyX_SPUFeed_PhaseStats;
-typedef struct PsyX_SPUFeed_Stats {
-    unsigned long long pushed, held, overflow, consumed, pulls, underruns, primes;
-    int target, depth_min, depth_p01, depth_p50, depth_p99;
-    double ratio, rate;
-    unsigned long long taken, discarded;
-    unsigned int fifo;
-    unsigned long long data_out, silence_out;
-    unsigned long long pitch_n;
-    double pitch_med_c, pitch_p99_c, pitch_max_c;
-    unsigned long long out_hash;
-    unsigned long long tap_frames;
-    PsyX_SPUFeed_PhaseStats phase[PSYX_SPUFEED_PHASES];
-    char phase_name[PSYX_SPUFEED_PHASES][16];
-    double drift, speed;
-    unsigned long long drift_fits, drift_refits;
-    double slips_used, slips_dropped;
-    unsigned long long st_hops, st_engages;
-    int st_on;
-    double st_corr_p01, st_corr_p50;
-} PsyX_SPUFeed_Stats;
 extern void PsyX_SPUFeed_SetPhase(int phase, const char* name, int tag);
 extern void PsyX_SPUFeed_SetLog(const char* path);
-extern void PsyX_SPUFeed_GetStats(PsyX_SPUFeed_Stats* out);
-extern void PsyX_SPUAL_FeatureStats(unsigned long long* reverb_cycles, unsigned long long* reverb_in,
-                                    unsigned long long* noise, unsigned long long* pmon,
-                                    unsigned long long* sweep);
-extern void PsyX_SPUAL_HostStats(unsigned long long* plays, unsigned long long* clip_frames,
-                                 unsigned long long* stream_frames);
+
+/** @brief Log one line of the audio feed's exit summary at info level.
+ * @param ud Unused.
+ * @param line The line. */
+static void audio_feed_log_line(void* ud, const char* line) {
+    (void)ud;
+    OPL_INFO_F("audio", "%s", line);
+}
 
 /** @brief Log the SPU's feature engagement and host-input counters, then the device feed's counters (frames pushed, held and consumed, device periods, underruns, primes, the depth target and percentiles, the rate estimate), its frame accounting, its drift and producer speed, its time stretch, and its per-phase counters, at exit. */
 static void audio_feed_exit_summary(void) {
     OP_ROLE_ASSERT(sim);
-    unsigned long long rc = 0, ri = 0, nz = 0, pm = 0, sw = 0, hp = 0, hf = 0, hs = 0;
-    PsyX_SPUAL_FeatureStats(&rc, &ri, &nz, &pm, &sw);
-    PsyX_SPUAL_HostStats(&hp, &hf, &hs);
-    OPL_INFO_F("audio", "spu: reverb_cycles=%llu reverb_in=%llu noise=%llu pmon=%llu sweep=%llu "
-               "host_plays=%llu host_clip_frames=%llu host_stream_frames=%llu",
-               rc, ri, nz, pm, sw, hp, hf, hs);
-    PsyX_SPUFeed_Stats st;
-    PsyX_SPUFeed_GetStats(&st);
-    if (!st.pulls && !st.pushed) return;
-    OPL_INFO_F("audio", "feed: pushed=%llu held=%llu overflow=%llu consumed=%llu periods=%llu "
-               "underruns=%llu primes=%llu target=%d depth_min=%d p01=%d p50=%d p99=%d "
-               "ratio=%.5f rate=%.5f",
-               st.pushed, st.held, st.overflow, st.consumed, st.pulls, st.underruns, st.primes,
-               st.target, st.depth_min, st.depth_p01, st.depth_p50, st.depth_p99,
-               st.ratio, st.rate);
-    OPL_INFO_F("audio", "feed: accounting: pushed=%llu = taken=%llu + overflow=%llu + discarded=%llu "
-               "+ fifo=%u (residual %lld); consumed=%llu = data_out=%llu + silence_out=%llu",
-               st.pushed, st.taken, st.overflow, st.discarded, st.fifo,
-               (long long)(st.pushed - st.taken - st.overflow - st.discarded - st.fifo),
-               st.consumed, st.data_out, st.silence_out);
-    OPL_INFO_F("audio", "feed: pitch: pumps=%llu median=%+.2fc p99=%.2fc max=%+.2fc",
-               st.pitch_n, st.pitch_med_c, st.pitch_p99_c, st.pitch_max_c);
-    OPL_INFO_F("audio", "feed: drift: drift=%.6f (%+.1f ppm) speed=%.4f fits=%llu refits=%llu "
-               "behind_used=%.1f behind_dropped=%.1f",
-               st.drift, (1.0 / st.drift - 1.0) * 1e6, st.speed, st.drift_fits, st.drift_refits,
-               st.slips_used, st.slips_dropped);
-    OPL_INFO_F("audio", "feed: stretch: hops=%llu engages=%llu on=%d corr_p01=%.2f corr_p50=%.2f",
-               st.st_hops, st.st_engages, st.st_on, st.st_corr_p01, st.st_corr_p50);
-    OPL_INFO_F("audio", "feed: out_hash=%016llx data_out=%llu tap_frames=%llu", st.out_hash, st.data_out,
-               st.tap_frames);
-    for (int i = 0; i < PSYX_SPUFEED_PHASES; i++) {
-        const PsyX_SPUFeed_PhaseStats* p = &st.phase[i];
-        if (!p->pushed && !p->held) continue;
-        OPL_INFO_F("audio", "feed: phase %s: pushed=%llu held=%llu overflow=%llu underruns=%llu primes=%llu",
-                   st.phase_name[i][0] ? st.phase_name[i] : "?", p->pushed, p->held, p->overflow,
-                   p->underruns, p->primes);
-    }
+    openpete_audio_feed_snap_t* snap = openpete_audio_feed_snapshot(1, 0);
+    openpete_audio_feed_counters(snap, audio_feed_log_line, NULL);
+    openpete_audio_feed_snap_free(snap);
 }
 
 /* PsyCross's GL window - created by PsyX_Initialise. We need it so --headless
