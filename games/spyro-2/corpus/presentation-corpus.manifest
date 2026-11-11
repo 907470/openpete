@@ -199,6 +199,10 @@ crush-intro-cut-mobys|2170|2||2174,2175,2176,2177,2178|--skip-to-cutscene crush_
 # intermediate leg shows the previous tick whole while the banners lerp. 1912
 # is the last sixteenth-step interval before the first placed segment.
 summer-forest-moneybags-fall|1910|2||1912,1914,1916,1918,1920,1922|--skip-to-cutscene summer_forest
+# sunny_beach_intro cutscene, VBL 2776-2786: two mobys draw the chest on
+# coincident faces; native shows the plain box (class 10) until 2786 and the
+# studded chest (class 17) from 2788, the guest the chest throughout.
+sunny-beach-intro-chest-tie|2772|2||2776,2780,2784,2786,2787,2788|--skip-to-cutscene sunny_beach_intro
 # attract-demo-spawn-jump: a class 0x1e3 moby placed without a marker the
 # native path reads (named residual); the sub-tick view lerps across it.
 # Blessed pre-fix.
