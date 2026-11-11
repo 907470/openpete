@@ -2988,8 +2988,14 @@ static knob_src_t knob_src_from_config(const knob_desc_t *k) {
     return KNOB_SRC_CLI;
 }
 
+/* Set by the first knob_registry_init (knob_registry_inited). */
+static int s_registry_inited;
+
+int knob_registry_inited(void) { return s_registry_inited; }
+
 void knob_registry_init(const struct openpete_options *opts) {
     g_opts = opts;
+    s_registry_inited = 1;
 
     size_t n;
     knob_desc_t *ks = knob_registry(&n);
@@ -3192,17 +3198,9 @@ static int knob_bool_word(const char *v) {
     return -1;
 }
 
-/** @brief Whether two config-vocabulary values of a row are the same setting.
- *
- * Bools compare by truth ("off" equals "0"), two values that both parse
- * whole as numbers compare numerically ("90" equals "90.0"), anything else
- * by exact text. An unparseable bool is unequal to everything.
- * @param k The row.
- * @param a One value.
- * @param b The other.
- * @return 1 when equal, else 0. */
-static int knob_config_values_equal(const knob_desc_t *k, const char *a,
-                                    const char *b) {
+/* Documented at the declaration in openpete_knobs.h. */
+int knob_config_values_equal(const knob_desc_t *k, const char *a,
+                             const char *b) {
     if (k->type == KNOB_BOOL) {
         const int x = knob_bool_word(a), y = knob_bool_word(b);
         return x >= 0 && x == y;

@@ -196,6 +196,14 @@ knob_desc_t *knob_registry(size_t *count);
  * has none. The dev UI calls it at init, after openpete_options_parse.
  * @param opts Parsed options; the pointer is kept and must outlive the registry. */
 void knob_registry_init(const struct openpete_options *opts);
+/** @brief Report whether knob_registry_init has run in this process.
+ *
+ * The overlay's init runs it only when a window exists; a headless run's
+ * other readers of boot values (the bug-report knob record) run it
+ * themselves when this returns 0.
+ * @return 1 after the first knob_registry_init, else 0. */
+int knob_registry_inited(void);
+
 /** @brief Counter bumped on every env var write by a live registry row.
  *
  * A consumer that caches an env knob re-reads it when the epoch changes,
@@ -252,6 +260,17 @@ void knob_value_str(const knob_desc_t *k, char *buf, size_t cap);
  *         a NULL or action row, a row with no config schema entry, or a
  *         placeholder. */
 int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap);
+
+/** @brief Whether two config-vocabulary values of a row are the same setting.
+ *
+ * Bools compare by truth ("off" equals "0"), two values that both parse
+ * whole as numbers compare numerically ("90" equals "90.0"), anything else
+ * by exact text. An unparseable bool is unequal to everything.
+ * @param k The row.
+ * @param a One value.
+ * @param b The other.
+ * @return 1 when equal, else 0. */
+int knob_config_values_equal(const knob_desc_t *k, const char *a, const char *b);
 
 /** @brief Settle the named rows in openpete.toml's [saved] zone and write the file once.
  *

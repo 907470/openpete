@@ -52,6 +52,13 @@ with no event held exits 3 (VACUOUS); a bundle without the member says so;
 a row with a missing field is refused (exit 64); `corpus` fills the audio
 columns.
 
+Knobs: a synthetic knobs.txt with a renderer knob changed live, a sim knob
+changed and back, a knob off its default and an unchanged one gives `info`
+the live change on the line after the bundle line, with its time, tick, boot
+value, default and class, the changed-and-back knob with its change count,
+and the off-default knob, and leaves the unchanged one out; a bundle without
+the member says so on the same line; `replay` prints the run's knob lines.
+
 Replay: the fallback route runs a stub executable (a script printing the
 flag's verdict line, not openpete) and passes its verdict and exit code
 through. Archive lookup: EXE-SHA256SUMS lines parse into (hash, artifact,
@@ -652,6 +659,58 @@ class Pace(unittest.TestCase):
 
     def test_bad_magic(self):
         self.assertIn("error", br.pace_summary(b"\0" * 80))
+
+
+KNOBS_TXT = ("# knobs.txt v1\n"
+             "session\tfirst_frame=1\tchanges=2\tkept=2\tdropped=0\n"
+             "knob\taspect\trender\t16:9\t16:9\tauto\tcli\tD\t3\t0\t-\n"
+             "knob\tterrain_visibility\trender\tgame\tfrustum\tfrustum\tdefault\tLDC\t0\t1\t2557@85.512\n"
+             "knob\tfreecam\tsim\toff\toff\t-\tdefault\tC\t0\t2\t2600@87.000\n"
+             "knob\tssaa\trender\t1\t1\t1\tdefault\t-\t0\t0\t-\n"
+             "change\t2557\t5110\t2557\t85.512\tterrain_visibility\tfrustum\tgame\t1\t0\n"
+             "change\t2600\t5196\t2600\t87.000\tfreecam\toff\toff\t1\t0\n").encode()
+
+
+class Knobs(Base):
+    def test_info_names_live_change_first(self):
+        mem = members()
+        mem["knobs.txt"] = KNOBS_TXT
+        rc, out, err = run("info", write_bundle(self.d / "k.zip", mem, manifest(mem)), "--archive", self.arch)
+        self.assertEqual(rc, 0, out + err)
+        lines = out.splitlines()
+        self.assertEqual(lines[1], "knob changed live: terrain_visibility = game (changed live at 85.5 s, "
+                                   "frame 2557; boot frustum, default frustum; render)")
+        self.assertIn("knob changed live: freecam = off (changed live at 87.0 s, frame 2600, back to its boot "
+                      "value after 2 change(s); boot off, default -; sim)", out)
+        self.assertIn("knobs off default: aspect=16:9 (default auto, cli)", out)
+        self.assertNotIn("ssaa", out)
+        k = br.knobs_parse(KNOBS_TXT.decode())
+        self.assertEqual(k["session"]["dropped"], "0")
+        self.assertEqual([c["frame"] for c in k["changes"]], [2557, 2600])
+
+    def test_info_without_member(self):
+        rc, out, _ = run("info", write_bundle(self.d / "b.zip"), "--archive", self.arch)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.splitlines()[1].split(":")[0], "knobs")
+        self.assertIn("knobs: no knobs.txt (written before the member)", out)
+
+    def test_replay_prints_knob_lines(self):
+        z = write_bundle(self.d / "b.zip")
+        disc = self.d / "d.cue"
+        disc.write_text("x")
+        stub = self.d / "stub-openpete"
+        stub.write_text("#!/bin/sh\n"
+                        "# Stub: stands in for openpete --bug-report-replay; prints knob lines and a verdict.\n"
+                        "echo 'bug-report-replay: knob terrain_visibility = game applied at the anchor load "
+                        "(frame 2100; set live before the anchor; boot value frustum)'\n"
+                        "echo 'bug-report-replay: knobs: 1 changed after boot, 1 applied (1 at the anchor load, "
+                        "0 at their tick), 0 not applied'\n"
+                        "echo 'bug-report-replay: IDENTICAL rows=1900'\nexit 0\n")
+        stub.chmod(0o755)
+        rc, out, err = run("replay", z, "--exe", stub, "--disc", disc, "--work", self.d / "w", "--archive", self.arch)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("bug-report-replay: knob terrain_visibility = game applied at the anchor load", out)
+        self.assertIn("bug-report-replay: knobs: 1 changed after boot, 1 applied", out)
 
 
 class Replay(Base):

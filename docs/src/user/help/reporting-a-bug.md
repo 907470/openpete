@@ -25,6 +25,10 @@ what you did, what you expected, and what you saw instead).
 - the end of this run's log and of the previous run's log
 - your settings (the `--config-report` output and your `openpete.toml`
   files) and key bindings (the `--keys-report` output)
+- the value of every setting at the press and at the start of the session,
+  with each change made during the session (in the settings menu, the
+  developer overlay or with a key) and the time it was made, saved or not;
+  a developer's replay of the zip uses the display settings you had
 - the graphics card and driver, the displays, the processor, the
   controllers and the operating system
 - every enabled mod with its files, and a list of every installed mod

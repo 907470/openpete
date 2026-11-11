@@ -20,6 +20,7 @@
 #include "openpete_host_input.h"
 #include "openpete_host_trace.h"
 #include "openpete_bugrec.h"
+#include "openpete_bugreport.h"
 #include "openpete_bugreport_replay.h"
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
@@ -660,6 +661,7 @@ static void host_tick_outputs(const host_session_t* S, const host_iter_t* it) OP
         const uint64_t* per = NULL;
         const uint64_t total = openpete_bugrec_hash_tick(openpete_frame, vbl, &per);
         openpete_bugreport_replay_tick(openpete_frame, vbl, total, per);
+        openpete_bugknobs_poll(S->opts);
         if (S->out.hash_log)
             gameplay_hash_log_emit(S->out.hash_log, openpete_frame, vbl, total, per);
     }

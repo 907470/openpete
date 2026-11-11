@@ -118,6 +118,7 @@ typedef struct br_job {
     size_t   reports_len;
     char*    summary;
     char*    env;               /* every set OPENPETE_* variable */
+    char*    knobs;             /* knobs.txt: the knob registry's values and live changes */
     char     pace_env[2048];    /* the pacing environment block at the press */
     br_mod_t* mods;
     int      nmods;
@@ -282,6 +283,30 @@ int br_disc_sha(const char* path, char out[65]);
  * @param len Receives the length.
  * @return 0, or -1 when the file cannot be read. */
 int br_read_file(const char* path, uint8_t** out, size_t* len);
+
+/** @brief Read the bundle's knobs.txt at the anchor load and apply the live values the session had there.
+ *
+ * Each `render` row that changed after boot is set through this build's
+ * registry setter to its value at the anchor: the old value of its first
+ * change after the anchor, else its value at the press; a row whose value
+ * there equals its boot value is left, since the replay boots on the
+ * tester's configuration. The changes after the anchor wait for
+ * br_knobs_replay_tick. Rows of the other classes that changed are printed
+ * as not applied with the reason. A bundle without the member is printed
+ * and changes nothing. OPENPETE_BUGREPORT_REPLAY_KNOBS=0 applies nothing
+ * and prints each row it would have applied.
+ * @param scratch The replay's scratch directory.
+ * @param anchor_frame The anchor's tick.
+ * @return 1 when changes after the anchor were dropped from the bundle's
+ *   ring (the replay is labelled knobs-partial), else 0. */
+int br_knobs_replay_load(const char* scratch, unsigned anchor_frame);
+
+/** @brief Apply each recorded change of a `render` row whose tick is reached, once, in order.
+ * @param frame The committed tick (openpete_frame). */
+void br_knobs_replay_tick(unsigned frame);
+
+/** @brief Print the knob summary line: rows changed after boot, applied at the anchor load and at their tick, not applied; nothing before the load. */
+void br_knobs_replay_report(void);
 
 #ifdef __cplusplus
 }

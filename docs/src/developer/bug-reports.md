@@ -36,6 +36,7 @@ these records existed; the reader still reads its pace ring.
 | `audio-feed.txt` | the audio device feed at the press: mute and device state, its counters (the exit summary's `spu:` and `feed:` lines and a `feed: now:` state line), and its event ring of the last 2048 events (layout under [Audio feed record](#audio-feed-record)) |
 | `reports.txt`, `pace-census.txt`, `summary.txt` | the subsystem reports at the press and at the screenshot; their pace lines; the state summary |
 | `config.txt`, `keymap.txt`, `config-files/`, `env.txt`, `argv.txt` | `--config-report`, `--keys-report`, the raw config tiers, the `OPENPETE_*` environment, the command line |
+| `knobs.txt` | every knob registry row at the press with its boot value, default and flags, and each change of a live row after boot with its tick (layout under [Knob record](#knob-record)) |
 | `device.txt`, `devices.txt` | Vulkan device, displays, system; the input devices |
 | `log.txt`, `log-prev.txt`, `hang/`, `crash/` | the log tails of this run and the previous one, the hang dumps and minidump the previous run's log names |
 | `mods.txt`, `mods/<id>/` | every installed mod with per-file SHA-256; every enabled mod's files, its loaded object and its effective config rows |
@@ -136,6 +137,80 @@ silenced SPU output; `mute=1` and a `note` line say so. A run whose audio
 device did not open holds only `phase` events; `device=none` and a `note`
 line say so.
 
+## Knob record
+
+`config.txt` is the boot decision table: the value each knob took at boot
+and the config layer it won at. A knob changed after boot, through the dev
+overlay, the settings menu or a hotkey, is in no member but `knobs.txt`.
+Mods have no call that sets a host knob; a mod's own config is in
+`mods/<id>/`.
+
+The recorder samples the registry on every committed tick after fast
+boot, on the sim thread: at the first tick it records every row's value as
+its boot value (the knob registry is initialized there when no window ran
+the overlay's init); after it, it reads each live row's getter (a numeric
+row's number, a string row's text, the `OPENPETE_*` rows only when the
+registry's environment epoch moved) and records each change with the tick,
+VBL, feed key and seconds since SDL init. Reading the getters covers every
+route a value moves by. The press samples once more. The newest 256
+changes are kept; the `session` line counts the dropped ones.
+
+`knobs.txt` (version 1) is tab-separated, one record per line, `#` lines
+are comments:
+
+```
+session first_frame=1 changes=3 kept=3 dropped=0
+knob    <id> <class> <value> <boot> <default> <source> <flags> <raw> <changes> <last frame@s>
+change  <frame> <vbl> <feed_key> <t_s> <id> <old> <value> <old_raw> <raw>
+```
+
+`value`, `boot` and `default` use the flag's words where the row has a
+flag (else the overlay's); `default` is `(decided: ...)` for a row whose
+default the program decides. `source` is the layer the boot value won at,
+the `won at` column of `config.txt`. Flags: `L` the value differs from the
+boot value, `D` it differs from the declared default, `C` the row changed
+after boot (`C` without `L`: it changed back). `raw` is the number the
+row's setter takes (`-` for a string row). Action rows (buttons) have no
+line. The member is a text member: a path value is redacted by the rule
+above (home to `~`, a path outside home to its basename) and the user and
+host names as a whole path component; no other knob value holds a device
+or personal name.
+
+The class decides what `--bug-report-replay` does with a change:
+
+| Class | Rows | Replay |
+| --- | --- | --- |
+| `render` | every live row not named below: renderer state, which a live row's setter alone may write | applied |
+| `host` | `fullscreen`, `vsync`, `render_fps`, `tick_scale`, `runahead`, `rewind`, `mute`, `sfx`, `music`, `vibration`, `mouse`, `pad_unfocused`, `mouse_sensitivity`, `log_level`, `log_format`, `save_mismatch_toast`, `record_fps_overlay`, `state_slot` | not applied: the replay's own headless, muted, flat-out run decides window, pacing, audio, input and logging |
+| `sim` | `freecam`, `camlock`, `pause` | not applied: they act on the sim's timeline (the free camera freezes the player update, the camera lock writes the camera, pause stops the ticks); the movie and the hash compare cover the run |
+| `latched` | every restart-only row | not applied: read at boot, and the replay boots on the tester's argv, config and environment; its value is its boot value |
+| `env` | the `OPENPETE_*` variable rows | not applied from `knobs.txt`: `env.txt` holds the press value, set from the replay's start |
+| `follow` | `warp_level` | not sampled after boot: the level warp's selection follows the player's level |
+
+At the anchor load the replay sets each `render` row that changed after
+boot to its value at the anchor (the old value of its first change after
+the anchor, else its press value) through this build's setter, when that
+differs from its boot value; each change after the anchor is applied at
+the replayed tick equal to its recorded tick. The recorder sees a change
+at the first sample after the setter ran, and a renderer setter's value is
+latched at the next tick's start in both runs, so an applied change can
+land one tick later than the tester's. A change of another class is
+printed as not applied with its reason. The lines on stderr:
+
+```
+bug-report-replay: knob <id> = <value> applied at the anchor load (frame F; set live before the anchor; boot value B)
+bug-report-replay: knob <id> = <value> applied at frame F (changed live at frame F, T s, from OLD)
+bug-report-replay: knob <id> = <value> not applied (<class>: <reason>)
+bug-report-replay: knobs: N changed after boot, A applied (L at the anchor load, T at their tick), M not applied
+bug-report-replay: knobs: the bundle has no knobs.txt (written before the member): ...
+```
+
+A bundle written before the member replays as before, on the tester's
+boot configuration. When the ring dropped changes after the anchor, the
+replay is labelled `knobs-partial`. A live row writes renderer or host
+state only, so an applied change moves the picture and not the gameplay
+hashes; a change that did move them would show as DIVERGED.
+
 ## Reading a bundle: `tools/bugreport.py`
 
 The reader treats a bundle as untrusted input: members are read by name
@@ -156,7 +231,11 @@ python3 -I tools/bugreport.py corpus PATH... [--tsv OUT] [--quiet]
 python3 -I tools/bugreport.py diff-hashes A B
 ```
 
-- `info` prints the summary a reader starts from: build, exe SHA-256,
+- `info` prints the summary a reader starts from: first each knob changed
+  live after boot (`knob changed live: terrain_visibility = game (changed
+  live at 85.5 s, frame 2557; boot frustum, default frustum; render)`), the
+  knobs whose value differs from the declared default, or that the bundle
+  has no `knobs.txt`; then build, exe SHA-256,
   game, disc, stamps, mods, press and anchor counters, the state summary,
   taint counts, members and the hash check, redaction findings, a pace
   summary over the last 30 s of present records, the last `--log-lines`
@@ -165,7 +244,7 @@ python3 -I tools/bugreport.py diff-hashes A B
 - `extract` writes every member under DIR and verifies each against the
   manifest.
 - `replay` runs the route `info` names and prints the run's
-  `bug-report-replay:` verdict line. The run's output goes to
+  `bug-report-replay: knob` lines and its verdict line. The run's output goes to
   `<work>/replay.log`; `--work` defaults to `bugreport-replay/<bundle stem>`
   under the working directory. `--disc` defaults to
   `games/<game>/<game>/build/<manifest disc>`. `--timeout` defaults to
@@ -338,7 +417,13 @@ records two Spyro 2 bundles headless under `OPENPETE_BUGREPORT_AT`, one
 with `--skip-to-level`, and requires IDENTICAL replays of both, DIVERGED
 with the launch flags dropped when the skip bundle's `anchor.seq` is set to
 2, an `OPENPETE_BUGREPORT_REPLAY_ENV` instrument's output under the replay,
-and the refusal of `OPENPETE_PLAYER_POSE` there.
+and the refusal of `OPENPETE_PLAYER_POSE` there. Its knobs case records a
+bundle with three renderer knobs set live and not saved (two before the
+anchor, one after it, under `OPENPETE_BUGREPORT_KNOB_AT`) and requires the
+replay to apply all three, a native screenshot at feed key 4390 equal to
+the recording's, the same screenshot to differ under
+`OPENPETE_BUGREPORT_REPLAY_KNOBS=0`, zero applied knobs to read VACUOUS,
+and the bundle without `knobs.txt` to replay IDENTICAL.
 
 ## Release archive
 
@@ -364,6 +449,8 @@ that file alone; an artifact with no `EXE-SHA256SUMS` line is not found.
 | Variable | Effect |
 | --- | --- |
 | `OPENPETE_BUGREPORT_AT=N` | press at feed key N |
+| `OPENPETE_BUGREPORT_KNOB_AT=K:id=value,...` | at feed key K, set knob registry row `id` to `value` through its setter (an enum row's value name, `on`/`off`, or a number), as a dev overlay edit would; logged as `bugreport: harness knob` |
+| `OPENPETE_BUGREPORT_REPLAY_KNOBS=0` | the replay applies no live knob value from `knobs.txt` and prints each it would have applied |
 | `OPENPETE_BUGREPORT_NOTE` | `0`: never ask for the note; `1`: ask on an `OPENPETE_BUGREPORT_AT` press too. Unset: ask on a key press only |
 | `OPENPETE_BUGREC_ANCHOR_AT=K1,K2,...` | take an extra anchor at each feed key, beside the 30 s cadence |
 | `OPENPETE_BUGREC_DUMP_AT=N`, `OPENPETE_BUGREC_DUMP_DIR=D` | at feed key N, write the recorder's contents to D: `anchor-<i>.state`, `.card<N>.mcr`, `.modsave`, `.seg.bk2` and `.txt` per anchor, `hashes.csv`, `hosttrace.bin`, `pace.bin`, `input-events.csv`, `devices.txt`, `recorder.txt`. The first without the second logs an error and dumps nothing |
@@ -374,9 +461,9 @@ that file alone; an artifact with no `EXE-SHA256SUMS` line is not found.
 | `OPENPETE_BUGREPORT_REPLAY_DIR`, `OPENPETE_BUGREPORT_REPLAY_SITE_WAIT`, `OPENPETE_BUGREPORT_REPLAY_WINDOWED` | the replay's scratch directory, park-wait cap (above), and a set value runs the replay in a window instead of headless |
 | `OPENPETE_BUGREPORT_REPLAY_ENV=A,B=V,...` | instrument variables the replay keeps: `NAME` keeps the developer's value, `NAME=VALUE` sets one; set after `env.txt`, each printed as `env kept`. Refused (exit 64): a name outside `OPENPETE_*`, a harness trigger the replay drops, an unset name, and a variable whose consumer writes guest RAM, feeds the pad or the CD timing, or loads mods (`OPENPETE_PLAYER_POSE`, `OPENPETE_FREECAM*`, `OPENPETE_CAMLOCK*`, `OPENPETE_CUSTOM_WARP`, `OPENPETE_SKIP_*`, `OPENPETE_LOAD_DELAY`, `OPENPETE_INPUT_*`, `OPENPETE_SYNTH_PADS`, `OPENPETE_MOUSE*`, `OPENPETE_DEVUI_INJECT_MOUSE`, `OPENPETE_REWIND_*`, `OPENPETE_MODS`, `OPENPETE_MODS_DIR`, `OPENPETE_MOD_CHANNEL_MASK`, `OPENPETE_MOD_HOT_RELOAD`, the `*_POKE` fault injectors, `OPENPETE_MODSAVE_FAULT_*`). A kept variable not on that list is unverified as neutral; the row and press-state compares report it if it is not |
 
-A replay drops `OPENPETE_BUGREPORT_AT`, `OPENPETE_BUGREC_ANCHOR_AT`,
-`OPENPETE_BUGREC_DUMP_AT` and `OPENPETE_BUGREC_DUMP_DIR` from the
-tester's environment.
+A replay drops `OPENPETE_BUGREPORT_AT`, `OPENPETE_BUGREPORT_KNOB_AT`,
+`OPENPETE_BUGREC_ANCHOR_AT`, `OPENPETE_BUGREC_DUMP_AT` and
+`OPENPETE_BUGREC_DUMP_DIR` from the tester's environment.
 
 Feed keys count yields on Spyro the Dragon and VBLs on Spyro 2 and 3, as
 `--frame-limit` does ([Unattended runs](unattended-runs.md)).

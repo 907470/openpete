@@ -766,14 +766,15 @@ static int rp_dev_args(rp_argv_t* a, int argc, char** argv)
 /* ---- the environment --------------------------------------------------- */
 
 /* env.txt variables the replay does not set: the harness triggers that
- * would write a bundle, take extra anchors, dump the ring, exec a handoff
- * or end the run early, the injected host input (the movie carries the
+ * would write a bundle, set a knob (knobs.txt carries the change and its
+ * tick), take extra anchors, dump the ring, exec a handoff or end the run
+ * early, the injected host input (the movie carries the
  * pad it produced), and the config file the tiers replace. */
 static const char* const k_env_drop[] = {
     "OPENPETE_BUGREPORT_AT", "OPENPETE_BUGREC_ANCHOR_AT", "OPENPETE_BUGREC_DUMP_AT",
     "OPENPETE_BUGREC_DUMP_DIR", "OPENPETE_HANDOFF_AT", "OPENPETE_FRAME_LIMIT", "OPENPETE_CONFIG",
     "OPENPETE_LOG_FILE", "OPENPETE_MOUSE_INJECT", "OPENPETE_MOUSE_INJECT_RAW",
-    "OPENPETE_DEVUI_INJECT_MOUSE",
+    "OPENPETE_DEVUI_INJECT_MOUSE", "OPENPETE_BUGREPORT_KNOB_AT",
 };
 
 /** @brief Report whether a variable is one of k_env_drop's harness triggers. */
@@ -1297,7 +1298,9 @@ static const uint64_t* rp_row(unsigned frame)
 
 void openpete_bugreport_replay_tick(unsigned frame, int vbl, uint64_t total, const uint64_t* per) OP_REQUIRES(sim)
 {
-    if (!R.on || !R.loaded || R.done || frame <= R.anchor_frame || frame > R.press_frame) return;
+    if (!R.on || !R.loaded || R.done) return;
+    br_knobs_replay_tick(frame);
+    if (frame <= R.anchor_frame || frame > R.press_frame) return;
     const uint64_t* r = rp_row(frame);
     if (!r) return;
     R.rows_compared++;
@@ -1474,6 +1477,7 @@ void openpete_bugreport_replay_step(const CPUState* cpu) OP_REQUIRES(sim)
         R.loaded = 1;
         bk2_feed_hold(0);
         rp_cards_restore();
+        if (br_knobs_replay_load(R.scratch, R.anchor_frame)) rp_label("knobs-partial");
         OPL_INFO_F("bugreport", "replay: anchor loaded at frame %u after %u park-site and %u CD-queue "
                    "wait(s); the segment plays from consume %u", openpete_frame, R.load_site_waits,
                    R.load_cd_waits, R.anchor_consume);
@@ -1500,6 +1504,7 @@ static const char* rp_sections_term(void)
 int openpete_bugreport_replay_exit(int rc)
 {
     if (!R.on) return rc;
+    br_knobs_replay_report();
     const char* lab = R.labels[0] ? R.labels : "none";
     /* A fatal bundle has no press sections: its verdict names the trigger. */
     char fat[64] = "";

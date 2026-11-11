@@ -95,6 +95,7 @@ add_library(openpete_core STATIC
     runtime/eager.c
     runtime/host_session.c
     runtime/host_bugreport.c
+    runtime/host_bugknobs.c
     runtime/host_pacer.c
     runtime/host_input_tick.c
     runtime/host_trace.c
@@ -119,6 +120,7 @@ add_library(openpete_core STATIC
     record/bugrec_subtick.c
     record/bugreport_redact.c
     record/bugreport_replay.c
+    record/bugreport_replay_knobs.c
     record/bugreport_write.c
     record/bugreport_thumbs.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c

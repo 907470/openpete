@@ -456,6 +456,8 @@ int openpete_bugreport_press(const CPUState* cpu, const openpete_options_t* opts
     j->reports = openpete_log_capture_end(&j->reports_len);
     stage_report(j, "config.txt", openpete_config_report);
     stage_report(j, "keymap.txt", openpete_keymap_report);
+    openpete_bugknobs_poll(opts);
+    j->knobs = openpete_bugknobs_text();
     j->summary = press_summary(cpu);
     j->env = press_env();
     host_session_pace_env(j->pace_env, sizeof j->pace_env);
@@ -639,6 +641,7 @@ static int fatal_worker(void* p)
     br_job_t* j = (br_job_t*)p;
     stage_report(j, "config.txt", openpete_config_report);
     stage_report(j, "keymap.txt", openpete_keymap_report);
+    j->knobs = openpete_bugknobs_text();
     j->env = press_env();
     press_args(j, s_bp.opts);
     snprintf(j->log_path, sizeof j->log_path, "%s", openpete_log_file_path());

@@ -13,7 +13,13 @@
 #           slowed to 0.96x from paced VBL 200 for 600 VBLs
 #           (OPENPETE_PACE_INJECT_US=16536,1,200,600), so the feed primes,
 #           the host slips and the time stretch engages before the press
-# and seven replays:
+#   knobs   as skip, under --renderer vk --aspect 16:9 and --no-config (no
+#           change is saved), press at VBL 4400, with knob changes from the
+#           harness schedule OPENPETE_BUGREPORT_KNOB_AT: terrain_visibility
+#           = game and hide_player = on at feed key 1400 (before the
+#           bundle's anchor, the session's second) and dither = on at 3000
+#           (after it); a native screenshot at feed key 4390
+# and ten replays:
 #   skip         the skip bundle as written
 #   skip-late    the skip bundle with its manifest's anchor seq set to 2:
 #                the replay drops the launch flags (negative control)
@@ -29,6 +35,14 @@
 #                OPENPETE_BUGREPORT_REPLAY_ENV, rendering one native
 #                screenshot so the terrain audit runs
 #   env-refused  OPENPETE_BUGREPORT_REPLAY_ENV naming OPENPETE_PLAYER_POSE
+#   knobs        the knobs bundle, a native screenshot at feed key 4390
+#   knobs-off    as knobs under OPENPETE_BUGREPORT_REPLAY_KNOBS=0 (negative
+#                control: the live values are not applied)
+#   knobs-old    the knobs bundle without knobs.txt and its manifest entry,
+#                the shape a bundle written before the member has, a native
+#                screenshot at feed key 4390 (the tester's argv names
+#                --renderer vk, which a headless run without a screenshot
+#                request refuses: no display path)
 #
 # Every recording runs under --mute 1.
 #
@@ -36,7 +50,9 @@
 # DIVERGED | REFUSED ...`), its `launch flags kept|dropped` line, the level
 # skip's `[skip-to-level] induced` line, and the audit's `[tsc-audit] total`
 # line; `tools/bugreport.py audio` over each recording's audio-feed.txt
-# (exit 3 when the feed played data and holds no event).
+# (exit 3 when the feed played data and holds no event); `tools/bugreport.py
+# info` over the knobs bundle; the replay's `knob` and `knobs:` lines; the
+# decoded pixels of the screenshots at feed key 4390.
 #
 # Pass criterion: skip IDENTICAL with the launch flags kept and the skip
 # induced in the replay; mods IDENTICAL; mods-held DIVERGED on
@@ -46,10 +62,19 @@
 # whose hits are nonzero; env-refused exit 64 naming OPENPETE_PLAYER_POSE;
 # every recording's audio-feed.txt parses (exit 0, not VACUOUS) and states
 # mute=1; the audio recording's names device=synthetic, has played data,
-# and holds a nonzero event count with a prime, a slip and a stretch.
+# and holds a nonzero event count with a prime, a slip and a stretch;
+# `info` of the knobs bundle names each of the three knobs as changed live;
+# knobs IDENTICAL with terrain_visibility and hide_player applied at the
+# anchor load and dither at its tick, and its screenshot equal to the
+# recording's (zero knobs applied reads VACUOUS); knobs-off IDENTICAL with
+# zero applied and a screenshot that differs from the recording's (equal
+# means the case cannot fail); knobs-old IDENTICAL with the `no knobs.txt`
+# line and a screenshot equal to knobs-off's, and `info` naming the member
+# absent.
 #
 # Verdict line:
-#   [bugreport-replay] skip=.. skip-late=.. plain=.. mods=.. mods-held=.. env=.. env-refused=.. audio=<events> verdict=PASS|FAIL
+#   [bugreport-replay] skip=.. skip-late=.. plain=.. mods=.. mods-held=.. env=.. env-refused=.. audio=<events>
+#                      knobs=<applied>|VACUOUS knobs-off=<verdict>/<capture> knobs-old=.. verdict=PASS|FAIL
 #
 # Usage: tests/harness/check_bugreport_replay.sh [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL, 64 SKIP (binary or disc missing).
@@ -110,6 +135,10 @@ skip_zip="$(record skip 1500 --skip-to-level summer_forest)" || fail+=("skip rec
 plain_zip="$(record plain 900)" || fail+=("plain recording failed (see $OUT/rec-plain.log)")
 REC_ENV=("OPENPETE_AUDIO_FEED_SIM=0.0,1" "OPENPETE_PACE_INJECT_US=16536,1,200,600")
 audio_zip="$(record audio 900)" || fail+=("audio recording failed (see $OUT/rec-audio.log)")
+REC_ENV=("OPENPETE_BUGREPORT_KNOB_AT=1400:terrain_visibility=game,1400:hide_player=on,3000:dither=on")
+knobs_zip="$(record knobs 4400 --skip-to-level summer_forest --renderer vk --aspect 16:9 \
+    --screenshot-on-frame 4390 --screenshot-native-only --screenshot-output "$OUT/knobs-rec__{n}.png")" ||
+    fail+=("knobs recording failed (see $OUT/rec-knobs.log)")
 REC_ENV=()
 if (( ${#fail[@]} )); then
     printf 'bugreport-replay: %s\n' "${fail[@]}"
@@ -236,10 +265,97 @@ v_ref="$(verdict "$LOG")"
 grep -q 'REFUSED OPENPETE_BUGREPORT_REPLAY_ENV: OPENPETE_PLAYER_POSE' "$LOG" ||
     fail+=("env-refused: no refusal naming OPENPETE_PLAYER_POSE")
 
+# png_cmp A B: "equal", or "differ <bytes>" over the decoded image data, or "missing".
+png_cmp() {
+    python3 -I - "$1" "$2" <<'PY'
+import struct, sys, zlib
+def pixels(p):
+    try:
+        d = open(p, "rb").read()
+    except OSError:
+        return None
+    i, idat, head = 8, b"", b""
+    while i + 8 <= len(d):
+        n = struct.unpack(">I", d[i:i + 4])[0]
+        kind, body = d[i + 4:i + 8], d[i + 8:i + 8 + n]
+        if kind == b"IHDR":
+            head = body
+        elif kind == b"IDAT":
+            idat += body
+        i += 12 + n
+    return head, zlib.decompress(idat)
+a, b = pixels(sys.argv[1]), pixels(sys.argv[2])
+if a is None or b is None:
+    print("missing")
+elif a == b:
+    print("equal")
+else:
+    print("differ", sum(x != y for x, y in zip(a[1], b[1])) + abs(len(a[1]) - len(b[1])))
+PY
+}
+
+python3 -I tools/bugreport.py info "$knobs_zip" >"$OUT/info-knobs.txt" 2>&1 || fail+=("knobs: info exit $?")
+for k in "terrain_visibility = game" "hide_player = on" "dither = on"; do
+    grep -q "^knob changed live: $k (changed live at " "$OUT/info-knobs.txt" ||
+        fail+=("knobs: info names no live change '$k'")
+done
+
+REPLAY_ENV=()
+replay knobs "$knobs_zip" --screenshot-on-frame 4390 --screenshot-native-only \
+    --screenshot-output "$OUT/knobs-on__{n}.png"
+v_knobs="$(verdict "$LOG")"
+[[ "$v_knobs" == IDENTICAL ]] || fail+=("knobs: $v_knobs, want IDENTICAL")
+for k in "terrain_visibility = game applied at the anchor load" "hide_player = on applied at the anchor load" \
+         "dither = on applied at frame"; do
+    grep -q "bug-report-replay: knob $k" "$LOG" || fail+=("knobs: no '$k' line")
+done
+n_knobs="$(grep -oE 'bug-report-replay: knobs: [0-9]+ changed after boot, [0-9]+ applied' "$LOG" |
+           grep -oE '[0-9]+ applied' | grep -oE '[0-9]+')"
+if (( ${n_knobs:-0} == 0 )); then
+    fail+=("knobs: VACUOUS: the bundle holds live changes and the replay applied none")
+    n_knobs=VACUOUS
+fi
+c_on="$(png_cmp "$OUT/knobs-rec__4390-vk.png" "$OUT/knobs-on__4390-vk.png")"
+[[ "$c_on" == equal ]] || fail+=("knobs: the replay's screenshot is $c_on against the recording's")
+
+REPLAY_ENV=("OPENPETE_BUGREPORT_REPLAY_KNOBS=0")
+replay knobs-off "$knobs_zip" --screenshot-on-frame 4390 --screenshot-native-only \
+    --screenshot-output "$OUT/knobs-off__{n}.png"
+v_koff="$(verdict "$LOG")"
+[[ "$v_koff" == IDENTICAL ]] || fail+=("knobs-off: $v_koff, want IDENTICAL")
+grep -q 'bug-report-replay: knobs: 3 changed after boot, 0 applied' "$LOG" || fail+=("knobs-off: knobs applied")
+c_off="$(png_cmp "$OUT/knobs-rec__4390-vk.png" "$OUT/knobs-off__4390-vk.png")"
+[[ "$c_off" == differ* ]] ||
+    fail+=("knobs-off: the screenshot is $c_off against the recording's: the case cannot fail")
+
+# The knobs bundle as a bundle written before the member: no knobs.txt, no manifest entry.
+python3 -I - "$knobs_zip" "$OUT/knobs-old.zip" <<'PY'
+import json, sys, zipfile
+src = zipfile.ZipFile(sys.argv[1])
+m = json.loads(src.read("manifest.json"))
+m["members"] = [x for x in m["members"] if x["name"] != "knobs.txt"]
+with zipfile.ZipFile(sys.argv[2], "w", zipfile.ZIP_DEFLATED) as out:
+    for n in src.namelist():
+        if n == "manifest.json":
+            out.writestr(n, json.dumps(m))
+        elif n != "knobs.txt":
+            out.writestr(n, src.read(n))
+PY
+REPLAY_ENV=()
+replay knobs-old "$OUT/knobs-old.zip" --screenshot-on-frame 4390 --screenshot-native-only \
+    --screenshot-output "$OUT/knobs-old__{n}.png"
+v_kold="$(verdict "$LOG")"
+c_old="$(png_cmp "$OUT/knobs-off__4390-vk.png" "$OUT/knobs-old__4390-vk.png")"
+[[ "$c_old" == equal ]] || fail+=("knobs-old: the screenshot is $c_old against knobs-off's")
+[[ "$v_kold" == IDENTICAL ]] || fail+=("knobs-old: $v_kold, want IDENTICAL")
+grep -q 'bug-report-replay: knobs: the bundle has no knobs.txt' "$LOG" || fail+=("knobs-old: no 'no knobs.txt' line")
+python3 -I tools/bugreport.py info "$OUT/knobs-old.zip" 2>&1 | grep -q '^knobs: no knobs.txt' ||
+    fail+=("knobs-old: info does not name knobs.txt absent")
+
 res=PASS
 if (( ${#fail[@]} )); then
     printf 'bugreport-replay: %s\n' "${fail[@]}"
     res=FAIL
 fi
-echo "[bugreport-replay] skip=$v_skip skip-late=$v_late plain=$v_plain mods=$v_mods mods-held=$v_held env=$v_env env-refused=$v_ref audio=$n_audio verdict=$res"
+echo "[bugreport-replay] skip=$v_skip skip-late=$v_late plain=$v_plain mods=$v_mods mods-held=$v_held env=$v_env env-refused=$v_ref audio=$n_audio knobs=$n_knobs knobs-off=$v_koff/${c_off// /:} knobs-old=$v_kold verdict=$res"
 [[ "$res" == PASS ]]

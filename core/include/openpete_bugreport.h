@@ -101,6 +101,28 @@ void openpete_bugreport_display_service(int shot_ok) OP_REQUIRES(sim);
  * once when nothing is pending. */
 void openpete_bugreport_main_poll(void);
 
+/** @brief Record the knob registry's values on a committed tick: every row's value at the first call, then each live row's change with the tick it was seen at.
+ *
+ * Covers every route a live value moves by (the dev overlay, the settings
+ * menu, a hotkey), since it reads each row's getter rather than hooking the
+ * setters: numeric rows compare the getter's number each call, string rows
+ * their text, and the OPENPETE_* rows only when the registry's env epoch
+ * moved. Runs knob_registry_init first when no window ran it. Applies the
+ * harness schedule OPENPETE_BUGREPORT_KNOB_AT=KEY:id=value[,...] (a row set
+ * through its setter once the feed key reaches KEY) before it samples.
+ * Host-side only: it calls getters and, for the schedule, a live row's
+ * setter, which writes renderer or host state.
+ * @param opts The run options, for knob_registry_init. */
+void openpete_bugknobs_poll(const struct openpete_options* opts) OP_REQUIRES(sim);
+
+/** @brief Write knobs.txt from the last sample: one `knob` line per registry row (value, boot value, default, boot source, flags, class) and one `change` line per recorded change.
+ *
+ * Reads only the recorder's own copies, so a fatal exit off the sim
+ * thread may call it; the press samples first (openpete_bugknobs_poll).
+ * @return The text (heap; the caller frees it), or NULL when out of
+ *   memory or before the first sample. */
+char* openpete_bugknobs_text(void);
+
 /** @brief Wait for an in-flight bundle to finish and release it; called at session close. */
 void openpete_bugreport_shutdown(void) OP_REQUIRES(sim);
 

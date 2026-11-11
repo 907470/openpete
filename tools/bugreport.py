@@ -9,7 +9,10 @@ It needs the Python 3 standard library only and runs under `python3 -I`.
 Subcommands:
 
   info BUNDLE [--log-lines N]
-      The summary a reader starts from: build, commit, exe SHA-256, game,
+      The summary a reader starts from: first the knobs changed live after
+      boot (knobs.txt: id, value, the session time and tick of the last
+      change, boot value, default, replay class) and the knobs whose value
+      differs from the declared default, then build, commit, exe SHA-256, game,
       disc, ROM stamp, codegen stamp and march, mods, the press and anchor
       counters and the anchor's age, the state summary, taint counts, the
       member list with sizes and the hash check, redaction findings, a pace
@@ -23,7 +26,9 @@ Subcommands:
       SHA-256 (the archive's EXE-SHA256SUMS) the manifest names, unpacked
       into the work directory, when the release archive holds it, else
       `--bug-report-replay` on the given or the repository's linux-release
-      build. Prints the run's `bug-report-replay:` verdict line.
+      build. Prints the run's `bug-report-replay: knob` lines (each live
+      value applied at the anchor load or at its tick, or not applied and
+      why) and its verdict line.
   subtick BUNDLE [--class C] [--key K] [--last N] [--tol-px PX] [--tol-world W]
       The sub-tick present ring (subtick.bin): per object class the records
       drawn over the held presents, then per record the drawn screen and
@@ -825,6 +830,52 @@ def records_line(b):
     return "perf records: " + ", ".join(have) + " (python3 -I tools/bugreport.py perf)"
 
 
+def knobs_parse(text):
+    """knobs.txt: the session fields, the `knob` rows and the `change` rows (tab-separated); @return a dict."""
+    session, rows, changes = {}, [], []
+    for line in text.splitlines():
+        f = line.split("\t")
+        if f[0] == "session":
+            session = dict(x.split("=", 1) for x in f[1:] if "=" in x)
+        elif f[0] == "knob" and len(f) >= 11:
+            frame, _, t = f[10].partition("@")
+            rows.append({"id": f[1], "cls": f[2], "value": f[3], "boot": f[4], "default": f[5],
+                         "source": f[6], "flags": f[7], "raw": f[8], "changes": int(f[9]) if f[9].isdigit() else 0,
+                         "last_frame": int(frame) if frame.isdigit() else None,
+                         "last_t": float(t) if t else None})
+        elif f[0] == "change" and len(f) >= 10:
+            changes.append({"frame": int(f[1]) if f[1].isdigit() else 0, "t": f[4], "id": f[5],
+                            "old": f[6], "value": f[7]})
+    return {"session": session, "rows": rows, "changes": changes}
+
+
+def knobs_lines(b):
+    """The `info` lines of knobs.txt: each knob changed live after boot, with its time, then the knobs whose value differs from the declared default."""
+    text = b.text("knobs.txt")
+    if text is None:
+        return ["knobs: no knobs.txt (written before the member): the values of knobs changed live are unknown; "
+                "config.txt holds the boot decisions"]
+    k = knobs_parse(text)
+    live = [r for r in k["rows"] if "C" in r["flags"] or "L" in r["flags"]]
+    out = []
+    for r in live:
+        when = (f"changed live at {r['last_t']:.1f} s, frame {r['last_frame']}" if r["last_t"] is not None
+                else "differs from its boot value")
+        back = "" if "L" in r["flags"] else f", back to its boot value after {r['changes']} change(s)"
+        out.append(f"knob changed live: {r['id']} = {r['value']} ({when}{back}; boot {r['boot']}, "
+                   f"default {r['default']}; {r['cls']})")
+    if not live:
+        out.append("knobs changed live: none")
+    dflt = [r for r in k["rows"] if "D" in r["flags"] and r not in live]
+    if dflt:
+        out.append("knobs off default: " + ", ".join(f"{r['id']}={r['value']} (default {r['default']}, {r['source']})"
+                                                       for r in dflt))
+    s = k["session"]
+    if s.get("dropped", "0") != "0":
+        out.append(f"knobs: {s.get('dropped')} older change(s) dropped from the ring of {s.get('kept')}")
+    return out
+
+
 def note_line(b, m):
     """The tester's note, or why there is none."""
     txt = b.text("notes.txt")
@@ -1109,6 +1160,7 @@ def cmd_info(args):
     if trig != "press":
         w(f"trigger {trig}: written at a fatal exit on the {m.get('exit_thread') or '?'} thread; "
           "no press.state or screen.png; hang/ holds that run's dump")
+    o.extend(knobs_lines(b))
     w(note_line(b, m))
     w(f"build {m.get('build_version')} tagged={m.get('build_tagged')} commit {m.get('build_commit')}")
     w(f"exe_sha256 {m.get('exe_sha256')}")
@@ -1387,6 +1439,9 @@ def cmd_replay(args):
     text = log.read_text("utf-8", "replace")
     found = [mt.group(0) for mt in VERDICT_RE.finditer(text)]
     print(f"exit {rc}; log {log}")
+    for line in text.splitlines():
+        if "bug-report-replay: knob" in line:
+            print(line[line.index("bug-report-replay: knob"):])
     if "unknown arg: --bug-report-replay" in text:
         print(f"refused: {cmd[0]} predates --bug-report-replay; pass --exe a build that has it")
         return EXIT_REFUSED
