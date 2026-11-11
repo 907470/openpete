@@ -1424,7 +1424,7 @@ typedef struct {
     int      idx[4];
     int      tri;
     uint32_t f0, f1;
-    int8_t   tex_abr;   /* the textured face's page ABR, -1 untextured */
+    int8_t   tex_abr;   /* the page ABR of a face emitted textured, else -1 */
     int8_t   semi;      /* an emitted untextured semi-transparent face */
 } s23_abr_face;
 
@@ -1457,11 +1457,16 @@ static void s23_abr_begin(void) {
  *
  * Every face is noted, drawn natively or not, since a textured primitive the
  * draw keeps sets the GPU texture page whatever the native winding test
- * decides.
+ * decides. The draw emits a textured GT3/GT4 only on the standard branch
+ * with the texture bit set: word 1 bit 1 sends the face to the flat-lit
+ * branch (S2 mobydraw.s 0x80047C4C/0x80047C9C, S3 0x800348D0/0x80034920),
+ * which emits an untextured F3/F4 whatever the texture bit says, so a flat
+ * face sets no page; the standard branch takes the GT code when word 1 is
+ * negative (S2 0x800478EC/0x80047AFC, S3 0x80034570/0x80034780).
  * @param cpu The guest CPU state, read only.
  * @param fp The face's address; word 3 carries the texture page of a textured face.
  * @param f0 Face word 0.
- * @param f1 Face word 1; its sign is the textured flag.
+ * @param f1 Face word 1; its sign is the textured flag, bit 1 the flat-lit material.
  * @param idx The face's four vertex indices.
  * @param tri 1 for a triangle.
  * @return The face's index in the record. */
@@ -1472,7 +1477,7 @@ static int s23_abr_note_face(CPUState* cpu, uint32_t fp, uint32_t f0, uint32_t f
     memcpy(F->idx, idx, sizeof F->idx);
     F->tri = tri; F->f0 = f0; F->f1 = f1; F->semi = 0;
     F->tex_abr = -1;
-    if ((int32_t)f1 < 0) {
+    if ((int32_t)f1 < 0 && !(f1 & 2u)) {
         ngte_tpage t;
         ngte_decode_tpage((cpu->read_word(fp + 0x0Cu) >> 16) & 0x7FFFu, 0u, 0u, &t);
         F->tex_abr = (int8_t)t.abr;
