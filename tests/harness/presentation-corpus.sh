@@ -51,6 +51,11 @@
 # integer, float or boolean) unless it holds a character outside [0-9.+-],
 # which is written as a quoted string.
 #
+# A row boots with a committed memory card in slot 1 with the launch token
+# PRESENTATION_CARD1=<path>, which the harness consumes: each leg copies the
+# card to its own directory and passes --card1 with the copy, so a write the
+# run makes never reaches the committed image.
+#
 # Exit: 0 = all captures produced, 1 = a capture is missing (hard failure) or
 #           the corpus manifest is missing (the message names the path),
 #       64 = SKIP (binary / disc / Vulkan loader missing),
@@ -199,11 +204,12 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   # A launch token PRESENTATION_LEG_TIMEOUT=N is the harness's, not the run's:
   # it raises this row's leg bound to N seconds (never lowers it) and is not
   # passed to the binary.
-  local leg_timeout="$LEG_TIMEOUT" e mod_spec=""; local -a run_env=()
+  local leg_timeout="$LEG_TIMEOUT" e mod_spec="" card_src=""; local -a run_env=()
   for e in "${ROW_ENV[@]}"; do
     if [[ "$e" =~ ^PRESENTATION_LEG_TIMEOUT=([0-9]+)$ ]]; then
       (( BASH_REMATCH[1] > leg_timeout )) && leg_timeout="${BASH_REMATCH[1]}"
     elif [[ "$e" == PRESENTATION_MOD=* ]]; then mod_spec="${e#PRESENTATION_MOD=}"
+    elif [[ "$e" == PRESENTATION_CARD1=* ]]; then card_src="${e#PRESENTATION_CARD1=}"
     else run_env+=("$e"); fi
   done
   local tag; tag="$(lod_tag "$lod")"
@@ -222,6 +228,11 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
     mod_args=(--mods-dir "$legdir/mods" --mods "${mod_spec%%:*}")
   fi
   local -a run_args=() row_args=(); local ra card1=0
+  if [[ -n "$card_src" ]]; then
+    cp -- "$card_src" "$legdir/card1.mcr" ||
+      { echo "  PRESENTATION_CARD1: cannot copy $card_src"; rm -rf -- "${legdir:?}"; return 1; }
+    row_args+=(--card1 "$legdir/card1.mcr"); card1=1
+  fi
   for ra in "${ROW_ARGS[@]}"; do
     row_args+=("${ra//\{legdir\}/$legdir}"); [[ "$ra" == --card1 ]] && card1=1
   done

@@ -226,6 +226,9 @@ glimmer-gem-lamps|2500|80||2503,2571,2579|PRESENTATION_MOD=debug-flags:test.appl
 # the buffer it shows, the world under the card box.
 s2-create-save|1022|82||1022,1104|--card1 {legdir}/card1.mcr --no-card2
 #
+# s2-load-save@idol-talisman: Idol Springs portal talisman (class 0x0D9) within view depth 0x800 resolved its flat semi faces to averaging, not additive (card: scripts/make_s2_progress_card.py).
+s2-load-save@idol-talisman|2100|2||2100|PRESENTATION_CARD1=games/spyro-2/cards/idol-springs-talisman.mcr --player-pose 120133,78440,37124 OPENPETE_FREECAM_POSE=121646,76475,37070,1452,60 OPENPETE_FREECAM_AT_VBL=2000
+#
 # idol-springs-level-entry: the level entry from Summer Forest into Idol
 # Springs, ending on the loading screen's treasure tally (VBL ~2960-3460; the
 # gems fly 2980-3160). The movie ends at 2596 and the row samples the game
