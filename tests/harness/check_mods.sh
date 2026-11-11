@@ -959,12 +959,16 @@ for v in m1 m2; do
         bad "$v: fixture never engaged, or a field resolved to nothing"
     fi
 done
-if cmp -s "$WORK/vh-stock-vk.png" "$WORK/vh-mode1-vk.png"; then
+if [ ! -s "$WORK/vh-stock-vk.png" ] || [ ! -s "$WORK/vh-mode1-vk.png" ]; then
+    bad "mode 1 (handles in place): not compared (a capture is missing)"
+elif cmp -s "$WORK/vh-stock-vk.png" "$WORK/vh-mode1-vk.png"; then
     ok "mode 1 (handles in place): pixel-identical to stock"
 else
     bad "mode 1 (handles in place): DIFFERS from stock"
 fi
-if cmp -s "$WORK/vh-stock-vk.png" "$WORK/vh-mode2-vk.png"; then
+if [ ! -s "$WORK/vh-stock-vk.png" ] || [ ! -s "$WORK/vh-mode2-vk.png" ]; then
+    bad "mode 2 (streams in the arena): not compared (a capture is missing)"
+elif cmp -s "$WORK/vh-stock-vk.png" "$WORK/vh-mode2-vk.png"; then
     ok "mode 2 (streams in the arena): pixel-identical to stock"
 else
     bad "mode 2 (streams in the arena): DIFFERS from stock"

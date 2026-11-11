@@ -21,7 +21,7 @@
 # counts pixels whose face identity or coverage differs; the tool's line
 # also gives holes (terrain in the base, background in the arm), reverse
 # holes, the change in isolated-identity pixels, and identity changes
-# interior to faces. --repeat=2 captures every leg twice and reports a leg
+# interior to faces. --repeat=2 captures every leg twice and fails on a leg
 # whose two captures differ. Every cache leg runs with the first-touch bake
 # budget off (OPENPETE_TC_BAKE_BUDGET_US=off), so the arena placement, and
 # with it each face's identity, is the same in every leg of a pose.
@@ -35,8 +35,11 @@
 #
 # Engagement: a row whose base capture shows no face (faces + walked == 0),
 # or whose leg logged no retained sectors (secs > 0 on a [tgpu-cen] line),
-# is VACUOUS. The control's summed pxdiff must be nonzero or the run is
-# VACUOUS as a whole (a blind detector, not a pass).
+# is VACUOUS; its line ends VACUOUS(<reading>). The control's summed pxdiff
+# must be nonzero or the run is VACUOUS as a whole (a blind detector, not a
+# pass). A leg that ends without its capture is LEG-FAILED (after one retry
+# when the launch itself failed), its pairs print MISSING and are not
+# compared, and a run with a failed leg reads INCOMPLETE, never PASS.
 #
 # OPENPETE_BIN=<path to openpete.exe> drives a Windows build instead (a
 # hardware device: headless, --input-lock, knobs forwarded through WSLENV).
@@ -72,9 +75,10 @@
 # continues where it stopped; without it every leg's outputs are removed
 # before it runs.
 #
-# Exit 0 when every engaged row reads fast_cov == 0 (--holes: the summed
-# holes are at most --max-holes and no row is IMPURE), 1 when any does not
-# or the run is VACUOUS, 64 SKIP (no binary, disc or PIL).
+# Exit 0 when every leg captured and every engaged row reads fast_cov == 0
+# (--holes: the summed holes are at most --max-holes and no row is IMPURE),
+# 1 when any does not or the run is VACUOUS or INCOMPLETE, 64 SKIP (no
+# binary, disc or PIL).
 set -u
 
 # Unattended launcher: every run this script starts is silenced.
@@ -186,10 +190,11 @@ leg() {  # tag level pose start lod control(0|1) lto faceid [kind: holes|walk]
         # WSLENV (scripts/lib/wslenv.sh); the run is headless and takes no
         # input.
         wslenv_forward OPENPETE_VIBRATION=0 "${env[@]}"
+        local rc=0
         op_own_run env "${WSLENV_ARGS[@]}" timeout -k 10 900 "$PG_BIN" --headless --input-lock \
-            --no-config --disc "$DISC_ABS" --disc-cache 0 "${args[@]}" >"$log" 2>&1
-        [[ -f "$OUT/$tag-vk.png" ]]
-        return
+            --no-config --disc "$DISC_ABS" --disc-cache 0 "${args[@]}" >"$log" 2>&1 || rc=$?
+        [[ -f "$OUT/$tag-vk.png" ]] || return $(( rc ? rc : 1 ))
+        return 0
     fi
     PG_CAPTURE_ENV=("${env[@]}")
     PG_CAPTURE_TIMEOUT=900
@@ -213,12 +218,44 @@ while IFS='|' read -r name pose start _; do
     STARTS+=("${START:-${start:-$PG_FREECAM_START}}")
 done < "$MAN"
 
-run_line() {
-    local tag i lod prec lto fid kind
-    IFS='|' read -r tag i lod prec lto fid kind <<<"$1"
-    leg "$tag" "${LEVELS[$i]}" "${POSES[$i]}" "${STARTS[$i]}" "$lod" "$prec" "$lto" "$fid" "$kind" ||
-        echo "[hole-census] leg=$tag NO-CAPTURE"
+# A leg whose run ends without its capture is retried once when the launch
+# itself failed: the WSL interop accept timeout that stops a Windows exe
+# before it starts (UtilAcceptVsock ... accept4 failed), or a process that
+# exited without writing a log line. A leg still without its capture is
+# LEG-FAILED, with the run's exit status and the log's last line; the
+# compare step counts it as failed, never as a difference.
+leg_log_unlaunched() {  # log
+    [[ ! -s "$1" ]] || grep -qE 'UtilAcceptVsock|accept4 failed' "$1"
 }
+run_line() {
+    local tag i lod prec lto fid kind rc=0 retry=""
+    IFS='|' read -r tag i lod prec lto fid kind <<<"$1"
+    leg "$tag" "${LEVELS[$i]}" "${POSES[$i]}" "${STARTS[$i]}" "$lod" "$prec" "$lto" "$fid" "$kind" || rc=$?
+    if [[ $rc -ne 0 ]] && leg_log_unlaunched "$OUT/$tag.log"; then
+        echo "[hole-census] leg=$tag RETRY rc=$rc (launch failed: $(leg_last_line "$OUT/$tag.log"))"
+        retry=" retried=1"; rc=0
+        leg "$tag" "${LEVELS[$i]}" "${POSES[$i]}" "${STARTS[$i]}" "$lod" "$prec" "$lto" "$fid" "$kind" || rc=$?
+    fi
+    [[ $rc -eq 0 ]] && return 0
+    echo "[hole-census] leg=$tag LEG-FAILED rc=$rc$retry last: $(leg_last_line "$OUT/$tag.log")"
+}
+leg_last_line() {  # log: its last non-empty line, or a note when there is none
+    local l
+    l="$(grep -v '^[[:space:]]*$' "$1" 2>/dev/null | tail -1)"
+    echo "${l:-<empty log>}"
+}
+# The output a leg line names, for the failed-leg count after run_legs.
+leg_output() {  # leg line
+    local tag kind
+    IFS='|' read -r tag _ _ _ _ _ kind <<<"$1"
+    if [[ "$kind" == walk ]]; then echo "$OUT/$tag.tri"; else echo "$OUT/$tag-vk.png"; fi
+}
+count_failed() {  # file of leg lines: legs without their output
+    local n=0 line
+    while IFS= read -r line; do [[ -s "$(leg_output "$line")" ]] || n=$((n + 1)); done < "$1"
+    echo "$n"
+}
+RESUME_NOTE="(--resume reruns only the legs without a capture)"
 run_legs() {  # file of leg lines, run JOBS at a time
     local -a lines
     mapfile -t lines < "$1"
@@ -239,6 +276,7 @@ if [[ $HOLES == 1 ]]; then
     done
     [[ -f "$LEGS" ]] || { echo "[hole-census] game=$PG_GAME rows=0 verdict=VACUOUS"; exit 1; }
     run_legs "$LEGS"
+    failed="$(count_failed "$LEGS")"
     WALKS="$OUT/legs-walk.txt"; rm -f "${OUT:?}/legs-walk.txt"
     rows=0 vac=0 impure=0 missing=0 t_pins=0 t_holes=0 t_px=0
     declare -A ROWLINE=()
@@ -251,13 +289,13 @@ if [[ $HOLES == 1 ]]; then
             secs="$(secs_of "$OUT/$tag.log")"
             if [[ "$line" == MISSING* ]]; then
                 missing=$((missing + 1))
-                echo "[hole-census] row=${SLUGS[$i]} lod=$lod MISSING"
+                echo "[hole-census] row=${SLUGS[$i]} lod=$lod MISSING (leg failed)"
                 continue
             fi
             fc=$(( $(kv faces) + $(kv walked) ))
             note=""
             if [[ $fc -eq 0 ]]; then
-                vac=$((vac + 1)); note=" VACUOUS"
+                vac=$((vac + 1)); note=" VACUOUS(faces+walked=0)"
             elif [[ $(kv foreign) -ne 0 ]]; then
                 impure=$((impure + 1)); note=" IMPURE"
             else
@@ -296,13 +334,15 @@ if [[ $HOLES == 1 ]]; then
         done
     done
     verdict=PASS
-    [[ $t_holes -gt $MAXHOLES || $impure -ne 0 || $missing -ne 0 ]] && verdict=FAIL
+    [[ $t_holes -gt $MAXHOLES || $impure -ne 0 ]] && verdict=FAIL
     [[ $vac -eq $rows ]] && verdict=VACUOUS
+    [[ $missing -ne 0 && $verdict != FAIL ]] && verdict=INCOMPLETE
+    resume=""; [[ $missing -ne 0 ]] && resume=" $RESUME_NOTE"
     summary=""
     for c in $(printf '%s\n' "${!CLS[@]}" | sort); do summary+=" $c=${CLS[$c]}"; done
     echo "[hole-census] game=$PG_GAME mode=holes control=$HPREC rows=$rows vacuous=$vac impure=$impure" \
-         "missing=$missing pins=$t_pins holes=$t_holes hole_px=$t_px${summary:+ classes:$summary}" \
-         "verdict=$verdict"
+         "missing=$missing failed=$failed pins=$t_pins holes=$t_holes hole_px=$t_px${summary:+ classes:$summary}" \
+         "verdict=$verdict${resume}"
     [[ $verdict == PASS ]]
     exit
 fi
@@ -323,6 +363,7 @@ done
 [[ -f "$LEGS" ]] || { echo "[hole-census] game=$PG_GAME rows=0 verdict=VACUOUS"; exit 1; }
 
 run_legs "$LEGS"
+failed="$(count_failed "$LEGS")"
 
 rows=0 vac=0 bad=0 ctl_px=0 ctl_iso=0 fast_px=0 fast_cov=0 nondet=0
 for i in "${!SLUGS[@]}"; do
@@ -334,6 +375,9 @@ for i in "${!SLUGS[@]}"; do
             for r in $(seq 2 "$REPEAT"); do
                 for prec in 0 1; do
                     p="$OUT/${SLUGS[$i]}__${lod}__${lto}__p${prec}__r"
+                    # A missing capture is a failed leg (LEG-FAILED above),
+                    # not a difference between two captures.
+                    [[ -f "${p}1-vk.png" && -f "${p}$r-vk.png" ]] || continue
                     if ! cmp -s "${p}1-vk.png" "${p}$r-vk.png"; then
                         echo "[hole-census] row=${SLUGS[$i]} lod=$lod lto=$lto arm=p$prec repeat=$r NONDETERMINISTIC"
                         nondet=$((nondet + 1))
@@ -347,13 +391,20 @@ for i in "${!SLUGS[@]}"; do
             [[ $lto == fast && " $LTOS " == *" lto "* ]] && pairs+=("fast|$lto_base|$base")
             for pr in "${pairs[@]}"; do
                 IFS='|' read -r arm_name b a <<<"$pr"
-                line="$(python3 "$TOOL" census "$b-vk.png" "$a-vk.png")" || line="MISSING"
-                echo "[hole-census] row=${SLUGS[$i]} lod=$lod lto=$lto arm=$arm_name secs=${secs:-0} $line"
-                [[ "$line" == MISSING* ]] && { bad=$((bad + 1)); continue; }
+                if [[ ! -f "$b-vk.png" || ! -f "$a-vk.png" ]]; then
+                    echo "[hole-census] row=${SLUGS[$i]} lod=$lod lto=$lto arm=$arm_name MISSING (leg failed)"
+                    continue
+                fi
+                line="$(python3 "$TOOL" census "$b-vk.png" "$a-vk.png")" || line="TOOL-ERROR"
+                [[ "$line" == TOOL-ERROR ]] && { bad=$((bad + 1)); echo "[hole-census] row=${SLUGS[$i]} lod=$lod lto=$lto arm=$arm_name TOOL-ERROR"; continue; }
                 hs="$(sed -n 's/.* pxdiff=\([0-9]*\) .*/\1/p' <<<"$line")"
                 iso="$(sed -n 's/.*iso_d=\(-\?[0-9]*\).*/\1/p' <<<"$line")"
                 fc="$(sed -n 's/^faces=\([0-9]*\) walked=\([0-9]*\).*/\1 \2/p' <<<"$line")"
-                if [[ $(( ${fc% *} + ${fc#* } )) -eq 0 || "${secs:-0}" -eq 0 ]]; then
+                why=""
+                [[ $(( ${fc% *} + ${fc#* } )) -eq 0 ]] && why="faces+walked=0"
+                [[ "${secs:-0}" -eq 0 ]] && why="${why:+$why,}secs=0"
+                echo "[hole-census] row=${SLUGS[$i]} lod=$lod lto=$lto arm=$arm_name secs=${secs:-0} $line${why:+ VACUOUS($why)}"
+                if [[ -n "$why" ]]; then
                     [[ $arm_name == ctl ]] && vac=$((vac + 1)); continue
                 fi
                 if [[ $arm_name == fast ]]; then
@@ -369,8 +420,10 @@ for i in "${!SLUGS[@]}"; do
     done
 done
 verdict=PASS
-[[ $bad -ne 0 ]] && verdict=FAIL
+[[ $bad -ne 0 || $nondet -ne 0 ]] && verdict=FAIL
 [[ $ctl_px -eq 0 || $vac -eq $rows ]] && verdict=VACUOUS
-echo "[hole-census] game=$PG_GAME rows=$rows vacuous=$vac fast_cov=$fast_cov fast_px=$fast_px" \
-     "ctl_px=$ctl_px ctl_iso_d=$ctl_iso nondeterministic=$nondet verdict=$verdict"
+[[ $failed -ne 0 && $verdict != FAIL ]] && verdict=INCOMPLETE
+resume=""; [[ $failed -ne 0 ]] && resume=" $RESUME_NOTE"
+echo "[hole-census] game=$PG_GAME rows=$rows vacuous=$vac failed=$failed fast_cov=$fast_cov fast_px=$fast_px" \
+     "ctl_px=$ctl_px ctl_iso_d=$ctl_iso nondeterministic=$nondet verdict=$verdict$resume"
 [[ $verdict == PASS ]]

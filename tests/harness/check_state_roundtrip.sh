@@ -407,7 +407,9 @@ run "$RA_MOVIE" "$OUT/ra-clean.csv" \
 OPENPETE_RA_PREDICT_CHECK=1 \
 run "$RA_MOVIE" "$OUT/ra-on.csv" --runahead 2 \
     || { echo "  runahead run FAILED"; fail=1; }
-if cmp -s "$OUT/ra-clean.csv" "$OUT/ra-on.csv"; then
+if [ ! -s "$OUT/ra-clean.csv" ] || [ ! -s "$OUT/ra-on.csv" ]; then
+    echo "  runahead(2): not compared (a run wrote no trace) FAIL"; fail=1
+elif cmp -s "$OUT/ra-clean.csv" "$OUT/ra-on.csv"; then
     echo "  runahead(2): real timeline byte-identical PASS"
 else
     echo "  runahead(2): real timeline DIVERGED FAIL"; fail=1
