@@ -13,6 +13,13 @@
  * as the negative control: on the recorded rows they must hold the
  * canonical-only level where the current ones fall to two scenes per span.
  *
+ * The free-span rows are the EAGER_PLAN records of Windows runs with vsync
+ * off and --render-fps 10000 (RTX 4090, 2560x1440, extended LOD, spawn
+ * poses): the per-span median slots, afford and tail cost. The grid there
+ * was floored at the tail cost, which gives a continuing span of length len
+ * floor(len / tail) slots; that count against afford is the negative
+ * control, which halves the plan.
+ *
  * `eager_ladder_test replay` prints the per-row table. */
 
 #include "openpete_eager_ladder.h"
@@ -176,6 +183,63 @@ static void test_replay(int print)
     check(settled_old_one >= rows - 3, "control: the old ladder settles canonical-only on most rows");
 }
 
+/** @brief Check the free-span arithmetic: count instants fit len, the floor lowers the count, at least one. */
+static void test_fill(void)
+{
+    int n = 0;
+    int64_t p = op_eager_ladder_fill(33 * MS, 22, 0, 1, &n);
+    check(n == 22 && p == 33 * MS / 22 && 22 * p <= 33 * MS, "fill: 22 after the anchor, last within the span");
+    p = op_eager_ladder_fill(33 * MS, 22, 0, 0, &n);
+    check(n == 22 && p == 33 * MS / 21 && 21 * p <= 33 * MS, "fill: 22 from the start, 21 gaps");
+    p = op_eager_ladder_fill(33 * MS, 22, 3 * MS, 1, &n);
+    check(n == 11 && p == 3 * MS, "fill: the floor lowers the count to 11");
+    p = op_eager_ladder_fill(33 * MS, 22, 3 * MS, 0, &n);
+    check(n == 12 && p == 3 * MS, "fill: the floor from the start, 12 with the fencepost");
+    p = op_eager_ladder_fill(0, 5, 2 * MS, 1, &n);
+    check(n == 1 && p == 2 * MS, "fill: an empty span holds one instant");
+    p = op_eager_ladder_fill(10 * MS, 1, 0, 0, &n);
+    check(n == 1 && p == 10 * MS, "fill: one instant from the start");
+}
+
+/* Free-span records (vsync off): level, median slots, afford and tail ms. */
+static const struct { const char *level; int ns, afford; double tail; } k_free[] = {
+    { "s1 stone_hill",    23, 22, 1.531 }, { "s1 artisans",    22, 20, 1.590 },
+    { "s2 summer_forest", 25, 24, 1.364 }, { "s2 hurricos",    25, 24, 1.404 },
+    { "s3 sunny_villa",   16, 14, 2.190 }, { "s3 cloud_spires", 18, 16, 1.903 },
+};
+
+/** @brief Replay the free-span rows: the tail-floored grid halves the plan, the filled span plans afford at level 1.
+ *
+ * Each row is held for 2 * WINDOW spans from a fresh ladder. The span length
+ * is ns + 1/2 tail periods, which the tail-floored grid enumerates as ns
+ * continuing slots.
+ * @param print Nonzero to print the table. */
+static void test_free(int print)
+{
+    if (print) printf("level             ns afford  old(level planned)  new(slots level planned)\n");
+    for (size_t i = 0; i < sizeof k_free / sizeof k_free[0]; i++) {
+        const int64_t tail = (int64_t)(k_free[i].tail * 1e6 + 0.5);
+        const int64_t len = k_free[i].ns * tail + tail / 2;
+        const int a = k_free[i].afford;
+        int n = 0;
+        op_eager_ladder_fill(len, a, 0, 1, &n);
+        op_eager_ladder_t so = fresh(), sn = fresh();
+        int lo = 1, ln = 1;
+        for (int r = 0; r < 2 * WINDOW; r++) {
+            lo = op_eager_ladder_step(&so, (int)(len / tail), a, 0, WINDOW);
+            ln = op_eager_ladder_step(&sn, n, a, 0, WINDOW);
+        }
+        const int ko = ((int)(len / tail) + lo - 1) / lo, kn = (n + ln - 1) / ln;
+        if (print) printf("%-17s %2d %3d        %d %3d               %3d %d %3d\n",
+                          k_free[i].level, k_free[i].ns, a, lo, ko, n, ln, kn);
+        char what[96];
+        snprintf(what, sizeof what, "free %s: level 1, planned within one of afford %d (got %d)", k_free[i].level, a, kn);
+        check(ln == 1 && kn >= a - 1 && kn <= a, what);
+        snprintf(what, sizeof what, "control %s: the tail-floored grid plans at level 2", k_free[i].level);
+        check(lo == 2 && ko <= (k_free[i].ns + 1) / 2, what);
+    }
+}
+
 /** @brief Run the checks; `replay` also prints the recorded-row table.
  * @param argc Argument count.
  * @param argv Arguments.
@@ -185,6 +249,8 @@ int main(int argc, char **argv)
     test_afford();
     test_steps();
     test_replay(argc > 1 && !strcmp(argv[1], "replay"));
+    test_fill();
+    test_free(argc > 1 && !strcmp(argv[1], "replay"));
     printf("eager_ladder_test: %s\n", g_fail ? "FAIL" : "PASS");
     return g_fail;
 }

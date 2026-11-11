@@ -91,4 +91,37 @@ static inline int op_eager_ladder_step(op_eager_ladder_t *s, int ns, int afford,
     return s->level;
 }
 
+/** @brief Return the period that spaces a free span's affordable scenes evenly over its length, and their count.
+ *
+ * A free span is one with no display grid to stay on (no vsync): its
+ * instants are placed by the budget alone. With after nonzero the span
+ * continues the previous one and its instants are start + k * period for k
+ * = 1 .. count, the last at or before start + len; otherwise the first is at
+ * start and the instants are start + k * period for k = 0 .. count - 1. The
+ * count is afford, lowered until the period is at least floor_ns (the
+ * render rate cap or the display side's per-scene cost), and at least 1. The period is
+ * the largest whole nanosecond that fits count instants in len, so a span
+ * of count instants never asks the ladder for a level above 1.
+ * @param len The span's length in nanoseconds, from its anchor to its last admissible instant.
+ * @param afford The scenes the budget affords, at least 1.
+ * @param floor_ns The least period in nanoseconds, or 0 for none.
+ * @param after Nonzero when the anchor is the previous span's last instant, which this span does not repeat.
+ * @param count Receives the number of instants, at least 1.
+ * @return The period in nanoseconds, at least 1. */
+static inline int64_t op_eager_ladder_fill(int64_t len, int afford, int64_t floor_ns, int after, int *count)
+{
+    if (len < 0) len = 0;
+    int n = afford < 1 ? 1 : afford;
+    if (floor_ns > 0) {
+        const int64_t fit = len / floor_ns + (after ? 0 : 1);   /* instants at floor_ns spacing */
+        if (fit < n) n = fit < 1 ? 1 : (int)fit;
+    }
+    const int gaps = after ? n : n - 1;
+    int64_t period = gaps > 0 ? len / gaps : len;
+    if (period < floor_ns) period = floor_ns;
+    if (period < 1) period = 1;
+    *count = n;
+    return period;
+}
+
 #endif /* OPENPETE_EAGER_LADDER_H */

@@ -281,8 +281,9 @@ static void eager_shed_unplanned(op_time_t first, op_time_t span_end,
 #define EAGER_PUBLISH_LEAD_NS 2000000
 /* The present thread's fitted vblank lattice, when targets go on it. */
 typedef struct { int on; int64_t base; double period; } eager_lattice_t;
-/* One span's display instants, as eager_span_slots enumerates them. */
-typedef struct { op_time_t first, end; int ns; op_time_t slots[EAGER_MAX_TARGETS]; } eager_span_t;
+/* One span's display instants, as eager_span_slots enumerates them; prev is
+ * the previous span's last target when this span continues it, else 0. */
+typedef struct { op_time_t first, end, prev; int ns; op_time_t slots[EAGER_MAX_TARGETS]; } eager_span_t;
 
 /** @brief Enumerate the display instants of one span from its first render-grid slot.
  *
@@ -290,9 +291,10 @@ typedef struct { op_time_t first, end; int ns; op_time_t slots[EAGER_MAX_TARGETS
  * EAGER_PUBLISH_LEAD_NS past now) when one is fitted, extends span_end by the
  * lag and, when the previous span's last target plus a period lies past
  * first, continues on the previous span's grid (unless it drifted a whole
- * period from this one). The slots step period from first through span_end;
- * a span holds at least the slot at first. Reads s_eager.lag and
- * s_eager.last_target and writes nothing else.
+ * period from this one), recording that target as the span's prev. The
+ * slots step period from first through span_end; a span holds at least the
+ * slot at first. Reads s_eager.lag and s_eager.last_target and writes
+ * nothing else.
  * @param now The plan instant.
  * @param first The span's first render-grid slot.
  * @param span_end The instant the next tick lands.
@@ -321,7 +323,9 @@ static void eager_span_slots(op_time_t now, op_time_t first, op_time_t span_end,
      * through the next tick's execution - but it is not time in which to
      * produce them. eager_plan's `prod_end` is that separate quantity. */
     span_end += s_eager.lag;
+    out->prev = 0;
     if (s_eager.last_target && s_eager.last_target + period > first) {
+        out->prev = s_eager.last_target;
         op_time_t f = s_eager.last_target + period;
         /* the old span's grid, unless it drifted a whole slot from ours */
         if (f - first > period) f = first + ((f - first) / period) * period;
@@ -490,12 +494,16 @@ static void eager_lag_update(void)
  * number of refreshes; otherwise, on a vsynced display slower than the
  * render grid, a whole number of render slots per refresh. The result never
  * falls below the scene production tail cost (250 us before it is
- * measured) or the present thread's cost.
+ * measured) or the present thread's cost. Without vsync there is no display
+ * grid: the span is free, and eager_span_fill re-spaces its slots once the
+ * budget is known.
  * @param period The render grid period in nanoseconds.
  * @param lat The vblank lattice.
  * @param grid_period Receives the display grid period before the cost floor.
+ * @param free_grid Receives nonzero when no display grid constrains the span's instants.
  * @return The planned grid period in nanoseconds. */
-static op_time_t eager_grid_period(op_time_t period, const eager_lattice_t *lat, op_time_t *grid_period)
+static op_time_t eager_grid_period(op_time_t period, const eager_lattice_t *lat, op_time_t *grid_period,
+                                   int *free_grid)
 {
     const float hz = openpete_native_display_refresh_hz();
     if (lat->on) {
@@ -522,13 +530,44 @@ static op_time_t eager_grid_period(op_time_t period, const eager_lattice_t *lat,
      * cannot hold and the burst cannot finish. Floor the grid at the
      * production cost; the ring's back-pressure below does the rest, and
      * the present thread shows the newest scene at whatever rate the GPU
-     * allows. */
+     * allows. This enumeration is provisional for a free span: its slot
+     * count prices the budget before the cost is measured and its prev
+     * anchors eager_span_fill. */
+    *free_grid = !lat->on && !openpete_native_display_vsync();
     *grid_period = period;
     op_time_t floor_ns = eager_tail_cost() ? eager_tail_cost() : 250000;
     const op_time_t pc = openpete_present_thread_cost_ns();
     if (pc > floor_ns) floor_ns = pc;
     if (period < floor_ns) period = floor_ns;
     return period;
+}
+
+/** @brief Re-space a free span's slots: as many as the budget affords, evenly over the span, and return their period.
+ *
+ * With no display grid the slot count is the planner's choice, and it is
+ * afford, bounded by EAGER_MAX_TARGETS and by a least period of the render
+ * grid's (the --render-fps cap) or the present thread's cost, whichever is
+ * longer, so the ladder is asked for level 1 whenever the estimate holds; a
+ * grid sized from a different cost than the budget's would offer a slot or
+ * two more than afford and halve the plan. A span
+ * that continues the previous one (prev set) places its slots after prev
+ * through the lag-extended end, so spans chain at one spacing; otherwise
+ * the first slot stays at first. op_eager_ladder_fill does the arithmetic.
+ * @param afford The scenes the budget affords, at least 1.
+ * @param grid_period The render grid period in nanoseconds.
+ * @param sp The span, enumerated by eager_span_slots; its first, slots and ns are rewritten.
+ * @return The span's period in nanoseconds. */
+static op_time_t eager_span_fill(int afford, op_time_t grid_period, eager_span_t *sp)
+{
+    const op_time_t start = sp->prev ? sp->prev : sp->first;
+    const op_time_t pc = openpete_present_thread_cost_ns();
+    int n;
+    const op_time_t p = op_eager_ladder_fill(sp->end - start, afford < EAGER_MAX_TARGETS ? afford : EAGER_MAX_TARGETS,
+                                             pc > grid_period ? pc : grid_period, sp->prev != 0, &n);
+    sp->first = sp->prev ? sp->prev + p : sp->first;
+    for (int q = 0; q < n; q++) sp->slots[q] = sp->first + p * q;
+    sp->ns = n;
+    return p;
 }
 
 /** @brief Write the EAGER_PLAN pace record of the span just planned: the fields of the OPENPETE_EAGER_DBG plan line, on every span.
@@ -566,7 +605,8 @@ static void eager_plan_record(op_time_t now, const eager_span_t *sp, op_time_t p
  * before the cost is measured. Enumerates the slots with eager_span_slots
  * (span_end raised to first and extended by the lag, continuing after the
  * previous span's last target). Estimates how many scenes fit
- * before prod_end (eager_afford) and moves the level (eager_ladder_step),
+ * before prod_end (eager_afford); without vsync re-spaces the span to that
+ * many evenly spaced slots (eager_span_fill). Moves the level (eager_ladder_step),
  * Records whether the span follows a stalled tick start. Stores every
  * level-th slot (policy 0) or afford evenly
  * spaced instants (policy 1) in s_eager.target, sets last_target and counts
@@ -598,12 +638,12 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
      * coarser of the two grids, phase-preserving. */
     eager_lattice_t lat = { 0, 0, 0.0 };
     op_time_t grid_period;            /* the display grid before the cost floor */
+    int free_grid;                    /* no display grid: the budget sizes the span */
     lat.on = openpete_native_display_vsync() &&
              openpete_present_thread_lattice(&lat.base, &lat.period);
-    period = eager_grid_period(period, &lat, &grid_period);
+    period = eager_grid_period(period, &lat, &grid_period, &free_grid);
     eager_span_t sp;
     eager_span_slots(now, first, span_end, period, &lat, &sp);
-    const int ns = sp.ns;
 
     /* Budget against what this thread has left of the span once the update
      * VBL has run, and against `prod_end` (the pacer grid instant the produce
@@ -617,7 +657,9 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
      * after a span was cut short, which is the oscillation the divisor ladder
      * exists to prevent. */
     op_time_t budget;
-    const int afford = eager_afford(now, prod_end, ns, &budget);
+    const int afford = eager_afford(now, prod_end, sp.ns, &budget);
+    if (free_grid) period = eager_span_fill(afford, grid_period, &sp);
+    const int ns = sp.ns;
     if (!s_eager.pinned) eager_ladder_step(ns, afford);
     eager_plan_dbg(now, first_in, span_end, period, &lat, &sp, budget, afford);
     eager_plan_record(now, &sp, period, budget, afford);
