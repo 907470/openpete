@@ -4856,6 +4856,18 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
 /* A walk triangle's material: texture page, CLUT, depth and blend code. */
 typedef struct { int tex, tpx, tpy, clx, cly, bpp, blend; } mn_mat;
 
+/** @brief Whether a face's pinned screen box exceeds the GPU's primitive extent, 1023 x 511 px, the class the PSX GPU discards.
+ * @param p The face's three vertices, at their pinned positions.
+ * @return 1 when the box exceeds the extent, else 0. */
+static int moby_pinned_extent(const proj_xy* const p[3]) {
+    float xlo = p[0]->sx, xhi = p[0]->sx, ylo = p[0]->sy, yhi = p[0]->sy;
+    for (int k = 1; k < 3; k++) {
+        xlo = fminf(xlo, p[k]->sx); xhi = fmaxf(xhi, p[k]->sx);
+        ylo = fminf(ylo, p[k]->sy); yhi = fmaxf(yhi, p[k]->sy);
+    }
+    return xhi - xlo > 1023.0f || yhi - ylo > 511.0f;
+}
+
 /* ---- near-camera census (OPENPETE_MOBY_NEAR_CENSUS) ----------------------
  * Per moby and feed key: emitted faces, the faces with a vertex in the GTE
  * divide-overflow regime (unr), the faces with a vertex whose emitted screen
@@ -4945,14 +4957,9 @@ static mnear_row_t* mnear_row(void) {
 static void mnear_face(const proj_xy* const p[3]) {
     mnear_row_t* r = mnear_row();
     if (!r) return;
-    float xlo = p[0]->sx, xhi = p[0]->sx, ylo = p[0]->sy, yhi = p[0]->sy;
     int le0 = 0;
-    for (int k = 0; k < 3; k++) {
-        xlo = fminf(xlo, p[k]->sx); xhi = fmaxf(xhi, p[k]->sx);
-        ylo = fminf(ylo, p[k]->sy); yhi = fmaxf(yhi, p[k]->sy);
-        le0 |= p[k]->tvz <= 0.0f;
-    }
-    s_mnear_ext = xhi - xlo > 1023.0f || yhi - ylo > 511.0f;
+    for (int k = 0; k < 3; k++) le0 |= p[k]->tvz <= 0.0f;
+    s_mnear_ext = moby_pinned_extent(p);
     r->ext += s_mnear_ext;
     r->eye += le0;
 }
@@ -5197,7 +5204,10 @@ static void mnear_select(const proj_xy* const v[4], int fsign, int fresh, int bi
  * row. A face wholly behind the plane (every tvz below MOBY_NEAR_W, tested
  * first, since a re-clip only raises the plane) is dropped and counts into
  * nearbehind. The face test that selected the face read the pinned screen
- * positions, as the game's NCLIP does.
+ * positions, as the game's NCLIP does. A face whose pinned screen box
+ * exceeds the GPU's primitive extent (moby_pinned_extent) is not emitted:
+ * the GPU draws no such primitive, so the game never shows that face, and a
+ * moby passing the camera (a collected gem) would otherwise cover the view.
  * @param p The three vertices.
  * @param uv Their texture coordinates.
  * @param col Their colour words.
@@ -5205,6 +5215,7 @@ static void mnear_select(const proj_xy* const v[4], int fsign, int fresh, int bi
 static void emit_wtri_near(const proj_xy* const p[3], const float uv[3][2],
                            const uint32_t col[3], const mn_mat* m) {
     if (s_mnear_at) mnear_face(p);
+    if (moby_pinned_extent(p)) return;
     if (p[0]->tvz < MOBY_NEAR_W && p[1]->tvz < MOBY_NEAR_W && p[2]->tvz < MOBY_NEAR_W) {
         if (s_mnear_at) mnear_clip(p, NULL, 0, 0);
         t_diag->nearbehind++;
