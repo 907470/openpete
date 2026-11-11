@@ -12,6 +12,7 @@
 #include "openpete_interp.h"          /* present-detail interpolation mode */
 #include "openpete_interp_objs.h"     /* present-detail tick stamp */
 #include "rhi.h"                      /* block-time phases */
+#include "openpete_fiber.h"           /* openpete_frame: the present injection's VBL window */
 
 #include <SDL3/SDL.h>
 
@@ -1465,19 +1466,23 @@ int64_t openpete_pace_inject_present(void)
 {
     static int     s_init;
     static int64_t s_us[3] = {0, 0, 1};   /* first, second, block */
+    static int64_t s_vbl[2] = {0, 0};     /* openpete_frame window [from, to); to 0: without end */
     static long    s_calls;
     if (!s_init) {
         s_init = 1;
         if (pace_env_ints("OPENPETE_PACE_INJECT_PRESENT_US", s_us, 3) == 1) s_us[1] = s_us[0];
         if (s_us[2] < 1) s_us[2] = 1;
+        pace_env_ints("OPENPETE_PACE_INJECT_PRESENT_VBL", s_vbl, 2);
         if (s_us[0] > 0 || s_us[1] > 0)
             OPL_WARN_F("pace",
                        "INJECTING %lld,%lld us (switching every %lld present(s)) into "
-                       "intermediate presents%s - shed-predicate fault injection, "
-                       "never a play path",
+                       "intermediate presents from VBL %lld to %lld (0: without end)%s - "
+                       "shed-predicate fault injection, never a play path",
                        (long long)s_us[0], (long long)s_us[1], (long long)s_us[2],
+                       (long long)s_vbl[0], (long long)s_vbl[1],
                        op_virtual_clock_active() ? " on the virtual clock" : "");
     }
+    if ((int64_t)openpete_frame < s_vbl[0] || (s_vbl[1] > 0 && (int64_t)openpete_frame >= s_vbl[1])) return 0;
     const int64_t us = s_us[(s_calls++ / s_us[2]) & 1];
     return us > 0 ? pace_stall(us) : 0;
 }

@@ -1613,11 +1613,14 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Eager decimation-level recovery after a stall: one windowed row (the
-    # spyro-3 icy-peak bk2, whose level entries each run one VBL far past its
-    # period) fails while the level stays above what the span budget needs
-    # for longer than one headroom run plus the stalled span. Eager
-    # production needs a window, so no headless gate reaches the planner.
+    # Eager decimation-level recovery after a stall: one windowed vsync-on row
+    # (the spyro-3 icy-peak bk2 with a 25 ms cost injected into every
+    # intermediate scene from VBL 2200 to 2320) fails while the level stays
+    # above its pre-stall value for more than 10 spans after the stall, or
+    # after a level-entry stall. Exit 2 (VACUOUS) when no span was raised:
+    # under Xvfb the present thread's cost floors the grid at one slot per
+    # span on a loaded host. Eager production needs a window, so no headless
+    # gate reaches the planner; eager_ladder_test replays a recorded stall.
     # Runs under xvfb-run without a display; skips (exit 64) without either,
     # or without a binary, disc, card or bk2.
     add_test(NAME eager_ladder_recovery_spyro-3

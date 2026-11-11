@@ -867,6 +867,10 @@ int64_t openpete_pace_inject(int paced) OP_REQUIRES(sim);
  * alternating per call): alternation gives the cost estimate a non-zero
  * deviation, and blocks of K calls move it between regimes in which the
  * predicate admits strictly, admits late, sheds, and probes.
+ * OPENPETE_PACE_INJECT_PRESENT_VBL=FROM[,TO] limits the injection to presents
+ * made while openpete_frame is at least FROM and below TO (TO 0 or absent:
+ * without end); a present outside the window spends nothing and does not
+ * advance the N/M switch.
  * The inline intermediate present and the eager producer's intermediate
  * scene each spend it inside the span logged as that present's
  * PRESENT_SPAN cost. Off the virtual clock the cost is a busy-wait; under

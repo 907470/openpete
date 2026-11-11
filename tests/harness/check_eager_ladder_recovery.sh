@@ -1,57 +1,80 @@
 #!/usr/bin/env bash
-# check_eager_ladder_recovery.sh - the eager decimation level returns to the
-# level the span budget affords within one headroom run after a stall.
+# check_eager_ladder_recovery.sh - the eager decimation ladder rises under an
+# injected production stall and settles back at its pre-stall level within a
+# bounded number of spans after the stall ends; a level-entry stall does not
+# hold the level either.
 #
 # Class: the eager planner divides each tick's span into display slots and
 # produces every level-th one, the level chosen from how many scenes the
-# span's budget affords. A level load runs one VBL far past its period. A
-# budget priced from the plan instant then reads the lateness that VBL left
-# as capacity (budget 0, one scene afforded), the level jumps to the slot
-# count, and a ladder that falls one level per headroom run (8 spans) shows
-# 480/level presents per second for seconds after every level entry. The row
-# fails while the level is held above what the plan's own budget needs for
-# longer than one headroom run plus the stalled span.
+# span's budget affords (the divisor ladder; vsync on). A stall raises the
+# level; the ladder must give it back once the spans afford level 1 again. A
+# ladder that holds the raised level (a budget priced from a stalled tick, a
+# fall that waits on more than one headroom run, a fall that never comes)
+# shows 480/level presents per second for seconds after every stall.
 #
-# Windowed only: eager production needs a window, so neither the
-# presentation golden nor the oracle (both headless) reaches the planner.
+# Path: --vsync 1 on both legs. With --vsync 0 a span is free (no display
+# grid) and the divisor ladder does not run. Under Xvfb the immediate and
+# mailbox present modes complete about one present per second
+# (vkQueuePresentKHR blocks 0.4-1.5 s with Xvfb idle), which leaves a free
+# span one slot and fills the scene ring; FIFO presents at 2-120 per second.
+# Xvfb reports no refresh rate, so the grid is the render grid floored at the
+# present thread's cost (render plus the blocking present step): one slot per
+# span whenever that cost passes about half a tick, as it does on a loaded
+# host at --tick-scale 1.
+#
+# Leg inject: --tick-scale TICK_SCALE (0.25) stretches the tick and the
+# render grid together, so a span holds 2-10 slots past the present thread's
+# cost floor. OPENPETE_PACE_INJECT_PRESENT_US=INJECT_US (100 ms: 25 ms, most
+# of an unscaled span's ~30 ms budget, stretched by 1 / TICK_SCALE) is spent
+# in every intermediate scene produced while openpete_frame is in [FROM, TO)
+# (OPENPETE_PACE_INJECT_PRESENT_VBL). The cost estimate then affords one or
+# two scenes a span, the guard cuts spans, and the ladder rises. After TO the
+# estimate decays toward the true cost and the level must fall.
+#
+# Leg entry: --tick-scale 1, no injection, through the level entry (VBL
+# ~1864 runs one update VBL ~47 ms, past half a tick). A span flagged late or
+# priced at budget 0 after the first WARMUP spans is a stall; one followed
+# within 4 spans by a level above the level before it must settle within
+# MAX_SPANS of the stall. A stretched tick would not classify the entry as a
+# stall, so this leg runs unscaled.
 #
 # Row: spyro-3 portal-117-midday-gardens-icy-peak.bk2 (the title loads slot 1
-# of a scratch copy of games/spyro-3/cards/117-percent.mcr; the level entry
-# at VBL ~1864 runs one update VBL ~47 ms; two later loads stall again).
+# of a scratch copy of games/spyro-3/cards/117-percent.mcr). The window
+# [2200, 2320) sits in icy-peak gameplay.
 #
-# Instrument: OPENPETE_EAGER_DBG=1 plan lines,
-#   [eager f=<vbl>] plan: slots=<n> budget=<ms>ms tail=<ms>ms afford=<n>
-#                   level=<n> [std=<n>] cut=<0|1> lag=<ms>ms vbl=<ms>ms [late=<ms>ms]
-# written on a cut span, a change of the span's level, a span planned above
-# the standing level std, or (where the build prints late=) a tick that
-# started late; level is the level the span planned at. A stall plan is one with budget=0.00ms (the
-# collapse) or late= at least half a tick. For each stall plan at VBL s the
-# base level is the level in force before s; recovery is the first later
-# plan line whose level is at most the base or at most the level its own
-# afford covers (ceil(slots / afford)); recovery spans = (that VBL - s) / 2, 0 when no line within 8
-# VBLs of s raises the level above the base. Lines are written on every
-# level change, so the level between two lines is the earlier line's.
+# Instrument: the pace log's EAGER_PLAN record, one per span (index =
+# openpete_frame, the span's level, slots, afford, cut and late flags), read
+# through tools/bugreport.py.
+#   base       the level of the last span planned before FROM.
+#   settle     the first span at or after TO from which every span planned
+#              in the next SETTLE_SPANS spans is at or below base.
+#   raised     spans planned at a level above base from FROM until settle.
+#   recovery   spans planned from TO up to settle.
 #
-# Pass: every stall plan recovers within MAX_SPANS (9: the stalled span's own
-# cut plus one 8-span headroom run). Engagement: at least one stall plan after
-# the first WARMUP VBLs of eager production, else VACUOUS. The steady level
-# change rate (changes per minute outside the 600 VBLs after each stall) is
-# reported, not gated: on a software rasteriser it measures host load.
+# Pass: inject raised > 0 and recovery <= MAX_SPANS; every raised entry-leg
+# stall settles within MAX_SPANS. MAX_SPANS = 10: one headroom run (8 clean
+# spans, EAGER_HEADROOM_RUNS in core/runtime/eager.c) after the cut the last
+# stale estimate reports one or two spans past TO. VACUOUS (exit 2): eager
+# production did not engage on the inject leg, no span was planned in its
+# window, or none was raised. The entry leg's stall count is reported; an
+# entry leg with no stall does not make the verdict VACUOUS.
 #
 # Every launch passes --input-lock --vibration 0 --background 1, so physical
 # input cannot reach the run and the window takes no focus. Without a display
-# the run is wrapped in xvfb-run when it is installed.
+# the runs are wrapped in xvfb-run when it is installed.
 #
 # Verdict line:
-#   [ladder-recovery] game=spyro-3 stalls=<n> worst_spans=<n> steady_changes_per_min=<x>
-#                     eager=<0|1> verdict=PASS|FAIL|VACUOUS log=<path>
+#   [ladder-recovery] game=spyro-3 window=<from>,<to> base=<n> raised=<n>
+#                     max_level=<n> recovery_spans=<n|never> max_spans=<n>
+#                     stalls=<n> stall_worst_spans=<n> verdict=PASS|FAIL|VACUOUS
 #
-# --analyze=LOG skips the run and grades an existing log of the same row
-# (one the Windows exe wrote, say).
+# --analyze=INJECT_PACE[,ENTRY_PACE] skips the runs and grades existing pace
+# logs of the same legs (ones the Windows exe wrote, say).
 #
 # Usage: tests/harness/check_eager_ladder_recovery.sh [--build-dir=DIR] [--out=DIR]
-#            [--render-fps=N] [--analyze=LOG]
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (no display, binary, disc or card).
+#            [--render-fps=N] [--inject-us=N] [--tick-scale=F] [--window=FROM,TO]
+#            [--analyze=INJECT_PACE[,ENTRY_PACE]]
+# Exit 0 PASS, 1 FAIL, 2 VACUOUS, 64 SKIP (no display, binary, disc or card).
 set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
@@ -63,29 +86,44 @@ export OPENPETE_VIBRATION=0
 
 OUT=""
 RENDER_FPS=480
+INJECT_US=100000
+TICK_SCALE=0.25
+WINDOW=2200,2320
 ANALYZE=""
 for a in "$@"; do
     case "$a" in
         --build-dir=*)  PG_BUILD_DIR="${a#--build-dir=}";;
         --out=*)        OUT="${a#--out=}";;
         --render-fps=*) RENDER_FPS="${a#--render-fps=}";;
+        --inject-us=*)  INJECT_US="${a#--inject-us=}";;
+        --tick-scale=*) TICK_SCALE="${a#--tick-scale=}";;
+        --window=*)     WINDOW="${a#--window=}";;
         --analyze=*)    ANALYZE="${a#--analyze=}";;
     esac
 done
+FROM="${WINDOW%,*}"
+TO="${WINDOW#*,}"
 
 GAME=spyro-3
 pg_resolve "$GAME"
 BK2=games/spyro-3/bk2/portal-117-midday-gardens-icy-peak.bk2
 CARD_SRC=games/spyro-3/cards/117-percent.mcr
-FRAME_LIMIT=4700
-MAX_SPANS=9
-WARMUP=120
+# --frame-limit counts VBLs from launch; openpete_frame trails it by the
+# ~573 VBLs before the guest's first frame: 3100 reaches frame ~2527, 2600
+# frame ~2027.
+INJECT_FRAME_LIMIT=3100
+ENTRY_FRAME_LIMIT=2600
+MAX_SPANS=10
+SETTLE_SPANS=16
+WARMUP=60
 ROW_RUNTIME=900
 ROW_TIMEOUT=960
 
 if [[ -n "$ANALYZE" ]]; then
-    [[ -s "$ANALYZE" ]] || { echo "ladder-recovery: FAIL (no log at $ANALYZE)"; exit 1; }
-    LOG="$ANALYZE"
+    PACE="${ANALYZE%%,*}"
+    ENTRY_PACE=""
+    [[ "$ANALYZE" == *,* ]] && ENTRY_PACE="${ANALYZE#*,}"
+    [[ -s "$PACE" ]] || { echo "ladder-recovery: FAIL (no pace log at $PACE)"; exit 1; }
 else
 [[ -x "$PG_BIN" ]] || { echo "ladder-recovery: SKIP (no binary at $PG_BIN)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "ladder-recovery: SKIP (no disc at $PG_DISC)"; exit 64; }
@@ -99,80 +137,100 @@ fi
 
 [[ -n "$OUT" ]] || OUT="${PG_BUILD_DIR:-build/linux-release}/ladder-recovery"
 mkdir -p "$OUT"
-LOG="$OUT/$GAME.log"
-CARD="$OUT/$GAME-card1.mcr"
-rm -f "$LOG" "$CARD"
-cp "$CARD_SRC" "$CARD"
+PACE="$OUT/$GAME-inject.oppl"
+ENTRY_PACE="$OUT/$GAME-entry.oppl"
+rm -f "$OUT/$GAME-inject.log" "$OUT/$GAME-entry.log" "$PACE" "$ENTRY_PACE" "$OUT/$GAME-card1.mcr"
 
-op_own_run env OPENPETE_VIBRATION=0 OPENPETE_EAGER_DBG=1 OPENPETE_TERRAIN_CACHE_FORCE=1 \
-    "${WRAP[@]}" timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
-    --no-config --disc "$PG_DISC" --card1 "$CARD" --no-card2 --mute 1 \
-    --vibration 0 --input-lock --background 1 \
-    --renderer vk --render-fps "$RENDER_FPS" --vsync 0 \
-    --bk2 "$BK2" --frame-limit "$FRAME_LIMIT" --max-runtime-seconds "$ROW_RUNTIME" \
-    </dev/null >"$LOG" 2>&1
-rc=$?
-[[ -s "$LOG" ]] || { echo "ladder-recovery: FAIL (no log, rc=$rc)"; exit 1; }
+# run_leg TAG FRAME_LIMIT TICK_SCALE [ENV...]: one windowed row; its log and
+# pace log are $OUT/$GAME-TAG.{log,oppl}.
+run_leg() {
+    local tag="$1" limit="$2" scale="$3"
+    shift 3
+    local card="$OUT/$GAME-card1.mcr" log="$OUT/$GAME-$tag.log" pace="$OUT/$GAME-$tag.oppl"
+    cp "$CARD_SRC" "$card"
+    op_own_run env OPENPETE_VIBRATION=0 OPENPETE_TERRAIN_CACHE_FORCE=1 "$@" \
+        "${WRAP[@]}" timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
+        --no-config --disc "$PG_DISC" --card1 "$card" --no-card2 --mute 1 \
+        --vibration 0 --input-lock --background 1 \
+        --renderer vk --render-fps "$RENDER_FPS" --vsync 1 --tick-scale "$scale" \
+        --bk2 "$BK2" --frame-limit "$limit" --max-runtime-seconds "$ROW_RUNTIME" \
+        --pace-log "$pace" </dev/null >"$log" 2>&1
+    local rc=$?
+    [[ -s "$log" && -s "$pace" ]] ||
+        { echo "ladder-recovery: FAIL ($tag leg wrote no log or pace log, rc=$rc; $log)"; exit 1; }
+}
+run_leg inject "$INJECT_FRAME_LIMIT" "$TICK_SCALE" \
+    OPENPETE_PACE_INJECT_PRESENT_US="$INJECT_US" OPENPETE_PACE_INJECT_PRESENT_VBL="$FROM,$TO"
+run_leg entry "$ENTRY_FRAME_LIMIT" 1
 fi
 
-read -r stalls worst rate eager <<<"$(awk -v warm="$WARMUP" '
-    function num(field,   v) { v = field; sub(/^[a-z]+=/, "", v); sub(/ms$/, "", v); return v + 0 }
-    /eager: engaged/ { eager = 1 }
-    /^\[eager f=[0-9]+\] plan: / {
-        f = $2; sub(/^f=/, "", f); sub(/\]$/, "", f); f += 0
-        late = -1
-        for (i = 3; i <= NF; i++) {
-            if ($i ~ /^slots=/)  sl = num($i)
-            if ($i ~ /^budget=/) bu = num($i)
-            if ($i ~ /^afford=/) af = num($i)
-            if ($i ~ /^level=/)  lv = num($i)
-            if ($i ~ /^late=/)   late = num($i)
-        }
-        n++; F[n] = f; S[n] = sl; A[n] = af; L[n] = lv
-        if (n == 1) first = f
-        if (f >= first + warm && (bu == 0 || late >= 16.7)) { ns++; ST[ns] = n }
-        last = f
-    }
-    function cover(k) { return A[k] >= 1 ? int((S[k] + A[k] - 1) / A[k]) : L[k] }
-    END {
-        worst = 0
-        for (j = 1; j <= ns; j++) {
-            k = ST[j]; s = F[k]
-            base = 1; for (q = 1; q < k; q++) base = L[q]
-            if (k == 1) base = 1
-            # The stall raises the level at its own plan (a collapsed budget)
-            # or at the next tick (the late span cut short): a raise written
-            # within 8 VBLs of the stall plan is counted to it.
-            up = 0
-            for (q = k; q <= n && F[q] <= s + 8; q++) if (L[q] > base) { up = q; break }
-            rec = 0
-            if (up) {
-                rec = -1
-                for (q = up + 1; rec < 0 && q <= n; q++)
-                    if (L[q] <= base || L[q] <= cover(q)) rec = int((F[q] - s) / 2)
-                if (rec < 0) rec = int((last - s) / 2) + 1
-            }
-            if (rec > worst) worst = rec
-            printf "  stall plan VBL %d: level %d (base %d), recovered in %d span(s)\n", s, L[k], base, rec > "/dev/stderr"
-        }
-        ch = 0; vbls = 0
-        for (q = 2; q <= n; q++) {
-            ex = 0
-            for (j = 1; j <= ns; j++) if (F[q] >= F[ST[j]] && F[q] - F[ST[j]] <= 600) ex = 1
-            if (!ex && F[q] >= first + warm && L[q] != L[q - 1]) ch++
-        }
-        span = last - first - warm; for (j = 1; j <= ns; j++) span -= 600
-        mins = span > 0 ? span / (2250000 / 37609) / 60 : 0
-        rate = (mins > 0) ? ch / mins : 0
-        printf "%d %d %.1f %d\n", ns, worst, rate, eager
-    }
-' "$LOG")"
+python3 - "$PACE" "$ENTRY_PACE" "$FROM" "$TO" "$MAX_SPANS" "$SETTLE_SPANS" "$WARMUP" "$GAME" <<'EOF'
+import sys
+sys.path.insert(0, "tools")
+import bugreport as br
 
-verdict=PASS
-if (( eager == 0 || stalls == 0 )); then
-    verdict=VACUOUS
-elif (( worst > MAX_SPANS )); then
-    verdict=FAIL
-fi
-echo "[ladder-recovery] game=$GAME render_fps=$RENDER_FPS stalls=$stalls worst_spans=$worst max_spans=$MAX_SPANS steady_changes_per_min=$rate eager=$eager verdict=$verdict log=$LOG"
-[[ "$verdict" == PASS ]]
+pace, entry_pace, frm, to, max_spans, settle_n, warmup, game = sys.argv[1:9]
+frm, to, max_spans, settle_n, warmup = int(frm), int(to), int(max_spans), int(settle_n), int(warmup)
+
+
+def plans(path):
+    """The EAGER_PLAN records of a pace log, decoded, in span order."""
+    _, recs = br.pace_records(open(path, "rb").read())
+    return [br.plan_decode(r) for r in recs if r[0] == br.PACE_EAGER_PLAN]
+
+
+def settle(P, start, base):
+    """Index into P of the first span at or after P[start] from which settle_n spans stay at or below base; None if the log ends first."""
+    for k in range(start, len(P)):
+        run = P[k:k + settle_n]
+        if len(run) < settle_n:
+            return None
+        if all(p["level"] <= base for p in run):
+            return k
+    return None
+
+
+verdict, why = "PASS", ""
+P = plans(pace)
+pre = [k for k, p in enumerate(P) if p["index"] < frm]
+win = [k for k, p in enumerate(P) if frm <= p["index"] < to]
+after = [k for k, p in enumerate(P) if p["index"] >= to]
+base = P[pre[-1]]["level"] if pre else 1
+raised, rec, maxl = 0, None, base
+if not P or not win:
+    verdict, why = "VACUOUS", "no span planned in the window" if P else "no EAGER_PLAN record (eager did not engage)"
+elif not after:
+    verdict, why = "FAIL", "the log ends before the window does"
+else:
+    s = settle(P, after[0], base)
+    rs = [p for p in P[win[0]:(s if s is not None else len(P))] if p["level"] > base]
+    raised = len(rs)
+    maxl = max([p["level"] for p in rs] or [base])
+    rec = None if s is None else s - after[0]
+    if raised == 0:
+        verdict, why = "VACUOUS", "no span from the window on planned above the base level"
+    elif rec is None or rec > max_spans:
+        verdict, why = "FAIL", "level not back at base within the bound"
+
+stalls, worst = 0, 0
+E = plans(entry_pace) if entry_pace else []
+for k, p in enumerate(E):
+    if k < warmup or not (p["late"] or p["budget"] <= 0.0):
+        continue
+    stalls += 1
+    b = E[k - 1]["level"]
+    if not any(q["level"] > b for q in E[k:k + 4]):
+        continue
+    s = settle(E, k, b)
+    spans = (s - k) if s is not None else len(E) - k
+    print(f"  stall span VBL {p['index']}: level raised above {b}, settled in {spans} span(s)", file=sys.stderr)
+    worst = max(worst, spans)
+    if spans > max_spans and verdict != "FAIL":
+        verdict, why = "FAIL", f"level-entry stall at VBL {p['index']} held the level {spans} spans"
+
+print(f"[ladder-recovery] game={game} window={frm},{to} base={base} raised={raised} max_level={maxl} "
+      f"recovery_spans={'never' if rec is None else rec} max_spans={max_spans} stalls={stalls} "
+      f"stall_worst_spans={worst} verdict={verdict}{' (' + why + ')' if why else ''} "
+      f"pace={pace}{',' + entry_pace if entry_pace else ''}")
+sys.exit({"PASS": 0, "FAIL": 1, "VACUOUS": 2}[verdict])
+EOF

@@ -407,6 +407,112 @@ static void test_vsync(void)
     }
 }
 
+/* The stall rows: 110 consecutive spans of a windowed Xvfb run (--vsync 1,
+ * --render-fps 480, the spyro-3 icy-peak bk2, llvmpipe) with 25 ms spent in
+ * every intermediate scene from VBL 2200 to 2320
+ * (OPENPETE_PACE_INJECT_PRESENT_US, OPENPETE_PACE_INJECT_PRESENT_VBL): per
+ * span its VBL, slots, afford, cut as the ladder receives it (the record's
+ * cut flag unless the span before it was late) and the level the run logged.
+ * Replaying them through op_eager_ladder_step reproduces every logged level.
+ * The controls step the same rows through a ladder that falls one level per
+ * headroom run and one that never falls; they are open loop (the afford and
+ * cut inputs are the ones the real ladder's levels produced). */
+static const struct { int f, ns, afford, cut, level; } k_stall[] = {
+    {2161, 2, 128, 0, 1}, {2163, 2, 128, 0, 1}, {2165, 2, 128, 0, 1}, {2167, 3, 128, 0, 1}, {2169, 2, 128, 0, 1}, {2171, 2, 128, 0, 1},
+    {2173, 3, 128, 0, 1}, {2175, 2, 128, 0, 1}, {2177, 2, 128, 0, 1}, {2179, 2, 128, 0, 1}, {2181, 3, 128, 0, 1}, {2183, 2, 128, 0, 1},
+    {2185, 2, 128, 0, 1}, {2187, 2, 128, 0, 1}, {2189, 2, 128, 0, 1}, {2191, 2, 128, 0, 1}, {2193, 2, 128, 0, 1}, {2195, 2, 128, 0, 1},
+    {2197, 2, 128, 0, 1}, {2199, 2, 128, 0, 1}, {2201, 2, 128, 0, 1}, {2203, 2,   9, 0, 1}, {2205, 2,   5, 0, 1}, {2207, 2,   3, 0, 1},
+    {2209, 2,   2, 0, 1}, {2211, 2,   2, 0, 1}, {2213, 2,   1, 0, 2}, {2215, 2,   2, 0, 1}, {2217, 2,   2, 1, 2}, {2219, 2,   2, 0, 2},
+    {2221, 2,   2, 0, 2}, {2223, 2,   3, 0, 2}, {2225, 2,   3, 0, 2}, {2227, 3,   3, 0, 2}, {2229, 1,   1, 0, 2}, {2231, 2,   2, 0, 2},
+    {2233, 3,   3, 0, 1}, {2235, 1,   3, 1, 1}, {2237, 3,   3, 0, 1}, {2239, 1,   1, 0, 1}, {2241, 2,   2, 0, 1}, {2243, 2,   3, 1, 2},
+    {2245, 2,   3, 0, 2}, {2247, 2,   3, 0, 2}, {2249, 3,   3, 0, 2}, {2251, 2,   4, 1, 3}, {2253, 3,   4, 0, 3}, {2255, 3,   4, 0, 3},
+    {2257, 3,   5, 0, 3}, {2259, 3,   5, 0, 3}, {2261, 3,   6, 0, 3}, {2263, 3,   6, 0, 3}, {2265, 3,   7, 0, 3}, {2267, 3,   7, 0, 1},
+    {2269, 2,   3, 1, 1}, {2271, 2,   4, 1, 2}, {2273, 3,   4, 0, 2}, {2275, 1,   1, 0, 2}, {2277, 2,   3, 0, 2}, {2279, 2,   3, 0, 2},
+    {2281, 2,   3, 0, 2}, {2283, 2,   3, 0, 2}, {2285, 3,   4, 0, 2}, {2287, 2,   4, 1, 3}, {2289, 3,   4, 0, 3}, {2291, 3,   5, 0, 3},
+    {2293, 3,   5, 0, 3}, {2295, 3,   6, 0, 3}, {2297, 3,   6, 0, 3}, {2299, 3,   7, 0, 3}, {2301, 3,   7, 0, 3}, {2303, 3,   8, 0, 1},
+    {2305, 2,   3, 1, 1}, {2307, 2,   4, 1, 2}, {2309, 3,   4, 0, 2}, {2311, 1,   1, 0, 2}, {2313, 2,   3, 0, 2}, {2315, 2,   3, 0, 2},
+    {2317, 2,   3, 0, 2}, {2319, 2,   3, 0, 2}, {2321, 3,   4, 0, 2}, {2323, 2,   4, 1, 3}, {2325, 3,   4, 0, 3}, {2327, 3,   5, 0, 3},
+    {2329, 3,   5, 0, 3}, {2331, 2,   5, 0, 3}, {2333, 3,   6, 0, 3}, {2335, 3,   7, 0, 3}, {2337, 2,   7, 0, 3}, {2339, 2,   8, 0, 1},
+    {2341, 3,   9, 0, 1}, {2343, 2,  12, 0, 1}, {2345, 2,  14, 0, 1}, {2347, 2,  16, 0, 1}, {2349, 2,  19, 0, 1}, {2351, 2,  21, 0, 1},
+    {2353, 2,  24, 0, 1}, {2355, 2,  27, 0, 1}, {2357, 2,  30, 0, 1}, {2359, 2,  34, 0, 1}, {2361, 2,  37, 0, 1}, {2363, 2,  40, 0, 1},
+    {2365, 2,  43, 0, 1}, {2367, 2,  48, 0, 1}, {2369, 2,  49, 0, 1}, {2371, 2,  54, 0, 1}, {2373, 2,  58, 0, 1}, {2375, 2,  62, 0, 1},
+    {2377, 2,  63, 0, 1}, {2379, 2,  68, 0, 1},
+};
+
+/* The stall row's window end, and the spans the level has to settle in after
+ * it: the cut the last stale estimate reports, then one headroom run. */
+#define STALL_END 2320
+#define STALL_MAX_SPANS 10
+#define STALL_SETTLE 16
+
+/** @brief Step a ladder variant: the current one (fall 0), one that falls one level per headroom run (1), or one that never falls (2).
+ * @param s The ladder state.
+ * @param ns The span's slot count.
+ * @param afford The scenes afforded.
+ * @param cut Nonzero after a cut span.
+ * @param fall The variant.
+ * @return The level the span plans at. */
+static int stall_step(op_eager_ladder_t *s, int ns, int afford, int cut, int fall)
+{
+    if (fall == 0) return op_eager_ladder_step(s, ns, afford, cut, WINDOW);
+    const int before = s->level;
+    op_eager_ladder_t t = *s;
+    const int lvl = op_eager_ladder_step(&t, ns, afford, cut, WINDOW);
+    if (t.level < before) {   /* the current ladder fell: the variant falls one level, or holds */
+        t.level = fall == 1 ? before - 1 : before;
+        *s = t;
+        return lvl < t.level ? t.level : lvl;
+    }
+    *s = t;
+    return lvl;
+}
+
+/** @brief Replay the stall rows through a ladder variant and return the spans from STALL_END until the level settles at 1.
+ * @param fall The variant (see stall_step).
+ * @param match Receives the rows whose replayed level equals the logged one.
+ * @param raised Receives the spans from VBL 2200 on planned above level 1.
+ * @return The spans to settle, or -1 when the rows end first. */
+static int stall_replay(int fall, int *match, int *raised)
+{
+    enum { N = sizeof k_stall / sizeof k_stall[0] };
+    int lvl[N];
+    op_eager_ladder_t s = fresh();
+    *match = *raised = 0;
+    for (int i = 0; i < N; i++) {
+        lvl[i] = stall_step(&s, k_stall[i].ns, k_stall[i].afford, k_stall[i].cut, fall);
+        *match += lvl[i] == k_stall[i].level;
+        *raised += k_stall[i].f >= 2200 && lvl[i] > 1;
+    }
+    int end = 0;
+    while (end < N && k_stall[end].f < STALL_END) end++;
+    for (int i = end; i + STALL_SETTLE <= N; i++) {
+        int ok = 1;
+        for (int q = i; q < i + STALL_SETTLE; q++) ok &= lvl[q] <= 1;
+        if (ok) return i - end;
+    }
+    return -1;
+}
+
+/** @brief Check the stall rows: the replay reproduces the logged levels, rises, and settles within STALL_MAX_SPANS; the controls do not. */
+static void test_stall(void)
+{
+    enum { N = sizeof k_stall / sizeof k_stall[0] };
+    int match, raised;
+    char what[112];
+    const int rec = stall_replay(0, &match, &raised);
+    snprintf(what, sizeof what, "stall: replay matches %d of %d logged levels", match, (int)N);
+    check(match == N, what);
+    snprintf(what, sizeof what, "stall: %d span(s) raised during the stall", raised);
+    check(raised > 0, what);
+    snprintf(what, sizeof what, "stall: settles %d span(s) after the stall (bound %d)", rec, STALL_MAX_SPANS);
+    check(rec >= 0 && rec <= STALL_MAX_SPANS, what);
+    const int one = stall_replay(1, &match, &raised);
+    snprintf(what, sizeof what, "control: a one-level fall settles in %d span(s), past the bound", one);
+    check(one < 0 || one > STALL_MAX_SPANS, what);
+    const int never = stall_replay(2, &match, &raised);
+    check(never < 0, "control: a ladder that never falls does not settle");
+}
+
 /** @brief Run the checks; `replay` also prints the recorded-row table.
  * @param argc Argument count.
  * @param argv Arguments.
@@ -421,6 +527,7 @@ int main(int argc, char **argv)
     test_count_steps();
     test_count(argc > 1 && !strcmp(argv[1], "replay"));
     test_vsync();
+    test_stall();
     printf("eager_ladder_test: %s\n", g_fail ? "FAIL" : "PASS");
     return g_fail;
 }
