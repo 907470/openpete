@@ -93,6 +93,9 @@ static struct {
     int       policy;                 /* 0 divisor, 1 greedy */
     op_time_t cost_ema, cost_dev; int cost_n;   /* per-scene production cost */
     op_time_t vbl_ema;                /* cost of a non-drawing VBL on this thread */
+    op_time_t produce_end;            /* the open span's update-VBL deadline: its first window ends before it */
+    op_time_t resume_ema;             /* produce_end to the first scene after it: the update VBL and the loop's turn */
+    int       resume_open;            /* the open span has not yet produced past produce_end */
     op_time_t tick_ema, tick_dev;     /* execution time of a drawing VBL (the tick) */
     op_time_t tick_late;              /* the last tick's start past its pacer deadline, when a stall */
     int       span_late;              /* the open span was planned after a stalled tick start */
@@ -397,25 +400,32 @@ static void eager_plan_dbg(op_time_t now, op_time_t first_in, op_time_t end_in, 
     fprintf(stderr, "%s\n", buf);
 }
 
-/** @brief Return how many scenes the span's production budget affords.
+/** @brief Return how many scenes the span's production windows afford.
  *
- * The budget runs from now, less the start lateness a stall left the tick
- * (tick_late), to prod_end, less the update VBL's mean cost and
- * EAGER_BUDGET_SAFETY_NS. A stall's lateness is not capacity: the produce
- * guard stops a late span at its deadline, and a budget priced from now
- * would read one load as the machine affording one scene, raising the
- * level to the slot count. The tick's own execution stays in the
- * budget, so a run of long ticks still prices the spans it shortens. Past
- * warmup the scenes are priced on their sum, N times the mean cost plus two
- * deviations of the sum, 2 * sqrt(N) deviations (op_eager_ladder_afford);
- * before it, on the per-scene tail, or one per slot before any cost exists.
- * OPENPETE_EAGER_AFFORD overrides the result, which is at least 1.
+ * The span starts at now, less the start lateness a stall left the tick
+ * (tick_late). A stall's lateness is not capacity: the produce guard stops
+ * a late span at its deadline, and a span priced from now would read one
+ * load as the machine affording one scene, raising the level to the slot
+ * count. The tick's own execution stays in the span, so a run of long
+ * ticks still prices the spans it shortens. Past warmup the scenes are
+ * priced as the produce guard admits them (op_eager_ladder_afford_windows):
+ * in the window from the start to EAGER_PRODUCE_GUARD_NS before produce_end
+ * (or prod_end, when earlier), and in the window from produce_end plus the
+ * measured resume time (the update VBL's mean cost until one is measured)
+ * to EAGER_PRODUCE_GUARD_NS before prod_end, each scene's start at least
+ * one tail cost before its window's end, the summed cost carrying two
+ * deviations of the sum. Before warmup the budget (the span less the update
+ * VBL's mean cost and EAGER_BUDGET_SAFETY_NS) is priced on the per-scene
+ * tail, or one per slot before any cost exists. OPENPETE_EAGER_AFFORD
+ * overrides the result, which is at least 1.
  * @param now The plan instant.
  * @param prod_end The pacer grid instant production must finish before.
+ * @param produce_end The update VBL's sim deadline, which splits the span's production.
  * @param ns The span's slot count.
  * @param budget_out Receives the budget in nanoseconds, floored at 0.
  * @return The number of scenes afforded. */
-static int eager_afford(op_time_t now, op_time_t prod_end, int ns, op_time_t *budget_out)
+static int eager_afford(op_time_t now, op_time_t prod_end, op_time_t produce_end, int ns,
+                        op_time_t *budget_out)
 {
     /* How many scenes fit is a question about their SUM, not about one of
      * them. `eager_tail_cost()` is a per-scene p99.7 bound, which is the right
@@ -429,12 +439,21 @@ static int eager_afford(op_time_t now, op_time_t prod_end, int ns, op_time_t *bu
      * only: the produce guard still stops at the deadline, and a cut span is
      * observed and answered by the ladder. */
     const op_time_t tail = eager_tail_cost();
-    op_time_t budget = prod_end - (now - s_eager.tick_late) - s_eager.vbl_ema - EAGER_BUDGET_SAFETY_NS;
+    const op_time_t start = now - s_eager.tick_late;
+    op_time_t budget = prod_end - start - s_eager.vbl_ema - EAGER_BUDGET_SAFETY_NS;
     if (budget < 0) budget = 0;
     *budget_out = budget;
     int afford;
     if (s_eager.cost_n >= EAGER_COST_WARMUP && s_eager.cost_ema > 0) {
-        afford = op_eager_ladder_afford(budget, s_eager.cost_ema, s_eager.cost_dev);
+        /* The sum of N scene costs fits one continuous budget, but the guard
+         * stops each of the span's two windows up to a tail cost early and
+         * production resumes only after the update VBL: priced as one sum,
+         * the span plans one or two scenes the guard then refuses. */
+        const op_time_t stop1 = (produce_end < prod_end ? produce_end : prod_end) - EAGER_PRODUCE_GUARD_NS;
+        const op_time_t resume = s_eager.resume_ema ? s_eager.resume_ema : s_eager.vbl_ema;
+        afford = op_eager_ladder_afford_windows(stop1 - start,
+                                                prod_end - EAGER_PRODUCE_GUARD_NS - (produce_end + resume),
+                                                s_eager.cost_ema, s_eager.cost_dev, tail);
     } else {
         afford = tail > 0 ? (int)(budget / tail) : ns;
     }
@@ -615,9 +634,10 @@ static void eager_plan_record(op_time_t now, const eager_span_t *sp, op_time_t p
  * @param first A render-grid instant at or after now.
  * @param period The render grid period in nanoseconds.
  * @param span_end The instant the next tick lands (alpha reaches 1).
- * @param prod_end The pacer grid instant production must finish before. */
+ * @param prod_end The pacer grid instant production must finish before.
+ * @param produce_end The update VBL's sim deadline, which splits the span's production. */
 static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
-                       op_time_t span_end, op_time_t prod_end)
+                       op_time_t span_end, op_time_t prod_end, op_time_t produce_end)
 {
     eager_close_span();   /* the previous span's books first */
     /* Precondition check: under eager the host loop keeps the render grid's
@@ -657,7 +677,7 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
      * after a span was cut short, which is the oscillation the divisor ladder
      * exists to prevent. */
     op_time_t budget;
-    const int afford = eager_afford(now, prod_end, sp.ns, &budget);
+    const int afford = eager_afford(now, prod_end, produce_end, sp.ns, &budget);
     if (free_grid) period = eager_span_fill(afford, grid_period, &sp);
     const int ns = sp.ns;
     if (!s_eager.pinned) eager_ladder_step(ns, afford);
@@ -749,6 +769,23 @@ static void eager_produce_one(op_time_t t, int canonical)
     if (s_eager.cost_n < EAGER_COST_WARMUP) s_eager.cost_n++;
 }
 
+/** @brief Measure the time from the open span's update-VBL deadline to its first scene after it, once per span.
+ *
+ * The first scene started at or past produce_end opens the span's second
+ * production window; the delay covers the update VBL and the host loop's
+ * turn back to production, which eager_afford charges that window. A delay
+ * of half a tick or more is a stall, not the steady cost, and is not
+ * learned.
+ * @param now The scene's start time. */
+static void eager_note_resume(op_time_t now)
+{
+    if (!s_eager.resume_open || now < s_eager.produce_end) return;
+    s_eager.resume_open = 0;
+    const op_time_t d = now - s_eager.produce_end;
+    if (d >= (op_time_t)g_openpete_tick_period_ns / 2) return;
+    s_eager.resume_ema = s_eager.resume_ema ? (s_eager.resume_ema * 7 + d) / 8 : d;
+}
+
 /** @brief Produce the span's planned scenes in order while they fit before deadline.
  *
  * The canonical scene, first of the span, is always produced. A later scene
@@ -756,7 +793,8 @@ static void eager_produce_one(op_time_t t, int canonical)
  * instant is more than half a period past; the walk
  * stops when the scene ring has one free slot or less, or when the tail
  * cost of one more scene would pass the deadline, and resumes from the same
- * scene on the next call. The checks run between scenes only.
+ * scene on the next call. The checks run between scenes only. An
+ * intermediate scene's start feeds eager_note_resume.
  * @param deadline Time by which production must stop.
  * @param period Render-grid period in nanoseconds.
  * @return The number of scenes produced. */
@@ -780,6 +818,7 @@ static int eager_produce(op_time_t deadline, op_time_t period)
                              openpete_frame, s_eager.i, s_eager.n, (double)(deadline - now) / 1e6, (double)tail / 1e6);
             break;
         }
+        if (!canonical) eager_note_resume(now);
         eager_produce_one(t, canonical);
         s_eager.i++; made++;
     }
@@ -835,12 +874,14 @@ void eager_canonical(op_time_t now, op_time_t slot, op_time_t period,
         prod_end = now + tp / 2 - s_eager.tick_ema;
     }
     s_eager.anchor_age = now - anchor;
-    eager_plan(now, first, period, span_end, prod_end);
+    eager_plan(now, first, period, span_end, prod_end, produce_end);
+    s_eager.produce_end = produce_end;
+    s_eager.resume_open = 1;
     /* The canonical scene, then as much of the span as fits
      * before the update VBL is due - the latter only while
      * the world is live. */
     s_eager.world_live = world_live;
-    eager_produce(world_live ? produce_end - 500000 : now, period);
+    eager_produce(world_live ? produce_end - EAGER_PRODUCE_GUARD_NS : now, period);
 }
 
 /* Documented at the declaration in eager.h. */

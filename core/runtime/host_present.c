@@ -795,7 +795,7 @@ static void present_between(host_session_t* S, const host_iter_t* it) OP_REQUIRE
     const op_time_t deadline = host_pacer_present_deadline(&S->pacer, it->sim_due);
     if (eager_active()) {
         if (eager_idle(host_world_live(S, it, op_now()), !it->did_present && native_re,
-                       deadline - 500000, host_pacer_render_period_ns(&S->pacer)))
+                       deadline - EAGER_PRODUCE_GUARD_NS, host_pacer_render_period_ns(&S->pacer)))
             host_trace_present(HT_P_EAGER_PRODUCE);
     } else if (native_intermediate) {
         present_inline_between(S, it, deadline, native_re);

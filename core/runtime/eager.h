@@ -9,6 +9,10 @@
 #include "openpete_frame_time_log.h"
 #include "openpete_time.h"
 
+/* The produce guard stops this long before each deadline it is given: the
+ * update VBL's sim deadline, then the next tick's. */
+#define EAGER_PRODUCE_GUARD_NS 500000
+
 /** @brief Report whether eager production holds the display (the present thread presents).
  * @return 1 while engaged, else 0. */
 int eager_active(void);
