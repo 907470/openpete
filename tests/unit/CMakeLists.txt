@@ -649,11 +649,27 @@ endif()
 # device (llvmpipe where no GPU is present): a vertex stage reading its
 # positions and colours from a retained storage buffer must reproduce the
 # expected image exactly on four frames that cover commit, persistence and
-# a same-frame rewrite (core/rhi/smoketest.c). Exit 77 without a device.
+# a same-frame rewrite, and a compute pass over a per-present input must
+# produce words read back exactly and vertex records a draw of the same
+# present reads (core/rhi/smoketest.c). Exit 77 without a device.
+# rhi_smoketest_compute_control: the compute case with a perturbed input;
+# passes only when every word and present mismatches.
+# rhi_smoketest_compute_off: OPENPETE_RHI_COMPUTE=0 makes the device report
+# compute unavailable; the compute case must skip with the pipeline create
+# refused while the other cases pass.
 if(TARGET rhi_smoketest)
     add_test(NAME rhi_smoketest_headless COMMAND rhi_smoketest --headless)
     set_tests_properties(rhi_smoketest_headless PROPERTIES LABELS "vulkan"
                          SKIP_RETURN_CODE 77 TIMEOUT 120)
+    add_test(NAME rhi_smoketest_compute_control COMMAND rhi_smoketest --compute-control)
+    set_tests_properties(rhi_smoketest_compute_control PROPERTIES LABELS "vulkan"
+                         SKIP_RETURN_CODE 77 TIMEOUT 120)
+    add_test(NAME rhi_smoketest_compute_off COMMAND rhi_smoketest --headless)
+    set_tests_properties(rhi_smoketest_compute_off PROPERTIES LABELS "vulkan"
+                         ENVIRONMENT "OPENPETE_RHI_COMPUTE=0"
+                         PASS_REGULAR_EXPRESSION "compute case: SKIP compute unavailable \\(OPENPETE_RHI_COMPUTE=0\\); pipeline create refused"
+                         FAIL_REGULAR_EXPRESSION "FAIL"
+                         TIMEOUT 120)
 endif()
 
 # rhi_memtype_candidates_test - the memory-type preference order behind the

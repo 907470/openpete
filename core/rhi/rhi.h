@@ -86,7 +86,7 @@ void rhi_set_present_mode_name(rhi_device *dev, const char *mode);
  * swapchain, the pipeline cache and the timer pools are created
  * (OPENPETE_VK_VALIDATION, OPENPETE_RHI_DEPTH_D24, OPENPETE_PRESENT_MODE,
  * OPENPETE_PRESENT_TIMING, OPENPETE_PACE_FLIP_LOG, OPENPETE_EAGER_LATTICE,
- * OPENPETE_PIPE_EXTS, OPENPETE_GPU_TIMERS, OPENPETE_RHI_BALLOON,
+ * OPENPETE_PIPE_EXTS, OPENPETE_GPU_TIMERS, OPENPETE_RHI_BALLOON, OPENPETE_RHI_COMPUTE,
  * OPENPETE_PIPELINE_CACHE_DIR, OPENPETE_PIPELINE_CACHE_COLD). Without a
  * lookup they are read with getenv. Process-global; call before rhi_create.
  * @param fn Returns a knob's value or NULL when unset; NULL restores getenv. */
@@ -596,7 +596,9 @@ uint64_t rhi_acquire_timeouts(const rhi_device *dev);
 uint32_t rhi_swapchain_image_count(const rhi_device *dev);
 /** @brief Write the device report: name, type, vendor and device ids, API and driver versions, the driver id, name and info, the enabled device extensions, the validation layer, present mode, swapchain extent, format, colour space and image count, and the offscreen extent.
  *
- * Read by the display's owner.
+ * Read by the display's owner. The last line gives the compute decision
+ * (rhi_compute_supported, and the reason when unavailable) and the queue
+ * flags and limits it read.
  * @param dev Device, or NULL.
  * @param buf Receives the text, one fact group per line.
  * @param cap Capacity of @p buf.
@@ -2468,6 +2470,252 @@ void         rhi_storage_bind(rhi_device *dev, rhi_storage *s, uint32_t set);
  * @param dev Device the buffer was created on.
  * @param s Buffer to destroy. */
 void         rhi_storage_destroy(rhi_device *dev, rhi_storage *s);
+
+/* ---- compute: dispatches over storage buffers, consumed in the same frame
+ * A compute pass runs inside a frame's command buffer, outside any render
+ * pass, on the graphics queue: rhi_compute_begin .. rhi_compute_end
+ * brackets rhi_compute_bind, rhi_compute_push, rhi_compute_dispatch and
+ * rhi_compute_barrier. Inputs are rhi_storage buffers the host commits
+ * (their writes reach the GPU at the frame's submit; no barrier is owed);
+ * outputs are rhi_gpu_buffer, device-local memory only the GPU writes.
+ * Synchronisation is stated by intent and recorded by the RHI:
+ *   - rhi_compute_begin orders the pass after every earlier read and write
+ *     of a buffer by any stage (draws, indirect reads, copies, dispatches),
+ *     this frame's and every earlier frame's, so a dispatch rewriting a
+ *     rhi_gpu_buffer each frame never overwrites bytes an unexecuted draw
+ *     of an earlier frame reads, and one copy of the buffer suffices;
+ *   - rhi_compute_barrier orders the dispatches after it after the writes
+ *     of the dispatches before it (a pass whose second dispatch reads the
+ *     first's output);
+ *   - rhi_compute_end makes the pass's writes visible to everything after
+ *     it in the frame: vertex and fragment storage reads
+ *     (rhi_gpu_buffer_bind), indirect-argument reads, and copies
+ *     (rhi_readback_cycle).
+ * Results reach the host through rhi_readback, a ring of
+ * RHI_FRAMES_IN_FLIGHT host-visible slots retrieved the frame the slot is
+ * reused, so no call waits on the GPU. GPU time is measured by bracketing
+ * dispatches with rhi_gpu_zone_begin and rhi_gpu_zone_end inside the pass.
+ *
+ * Availability: compute needs no device feature or extension; the device is
+ * created identically with or without it. rhi_compute_supported is false
+ * when the graphics queue the device uses lacks the compute bit, when a
+ * limit is below its floor (RHI_COMPUTE_MIN_*, RHI_COMPUTE_MAX_BINDINGS;
+ * each at or under the Vulkan 1.0 required limit, so a conformant device
+ * meets every one), or when OPENPETE_RHI_COMPUTE starts with 0 (the
+ * fallback's test knob, read at device creation). Then
+ * rhi_create_compute_pipeline returns NULL and rhi_compute_begin refuses,
+ * so a caller keeps its CPU path by testing the pipeline or
+ * rhi_compute_supported once; GPU buffers and readback rings stay usable.
+ *
+ * Threading: every entry point is the display owner's (rhi_display_claim),
+ * as the frame's command buffer is; rhi_compute_begin verifies the calling
+ * thread. Lifetime: the caller destroys a pipeline, set, buffer or readback
+ * after no unretired frame (one begun fewer than RHI_FRAMES_IN_FLIGHT
+ * frames ago) recorded a use of it, and before rhi_destroy. */
+#define RHI_COMPUTE_MAX_BINDINGS 4          /* storage bindings per pipeline, all at set 0 */
+#define RHI_COMPUTE_MIN_INVOCATIONS 64u     /* maxComputeWorkGroupInvocations and maxComputeWorkGroupSize[0] */
+#define RHI_COMPUTE_MIN_STORAGE_RANGE (1u << 27) /* maxStorageBufferRange */
+typedef struct rhi_compute_pipeline rhi_compute_pipeline;
+typedef struct rhi_compute_set rhi_compute_set;
+typedef struct rhi_gpu_buffer rhi_gpu_buffer;
+typedef struct rhi_readback rhi_readback;
+
+/** @brief Return whether the device runs compute passes.
+ *
+ * Decided once at device creation (see the section comment); false for
+ * NULL.
+ * @param dev Device, or NULL.
+ * @return true when compute pipelines can be created. */
+bool rhi_compute_supported(const rhi_device *dev);
+/** @brief Return why compute is unavailable, or "" when it is available.
+ *
+ * @param dev Device, or NULL.
+ * @return A static or device-owned string; "no device" for NULL. */
+const char *rhi_compute_unsupported_reason(const rhi_device *dev);
+
+/* A compute pipeline: one SPIR-V compute stage whose layout is set 0 =
+ * `bindings` dynamic storage-buffer bindings 0..bindings-1 (std430 blocks)
+ * and a push-constant block of `push_const_size` bytes. */
+typedef struct {
+    const char *comp_spv;        /* .spv name: OPENPETE_SHADER_DIR, else embedded */
+    uint32_t    bindings;        /* 1..RHI_COMPUTE_MAX_BINDINGS */
+    uint32_t    push_const_size; /* bytes, a multiple of 4, at most 128; 0 = none */
+} rhi_compute_pipeline_desc;
+/** @brief Create a compute pipeline through the device's pipeline cache.
+ *
+ * Compiled at the call, on the calling thread; compute pipelines take no
+ * part in the graphics pipeline registry, rebuilds or the precompile walk.
+ * @param dev Device.
+ * @param desc Stage name, binding count and push-constant size.
+ * @return The pipeline, or NULL when compute is unavailable, @p desc is out
+ *         of range, or the stage or the pipeline cannot be created (logged). */
+rhi_compute_pipeline *rhi_create_compute_pipeline(rhi_device *dev,
+                                                  const rhi_compute_pipeline_desc *desc);
+/** @brief Destroy a compute pipeline and its layouts; NULL is ignored.
+ *
+ * Its sets are destroyed first, by the caller.
+ * @param dev Device the pipeline was created on.
+ * @param pipe Pipeline to destroy. */
+void rhi_destroy_compute_pipeline(rhi_device *dev, rhi_compute_pipeline *pipe);
+
+/** @brief Create a storage buffer in device-local memory, written by compute passes and read by draws, dispatches and copies.
+ *
+ * Zero-filled at creation (a one-off transfer that waits for the queue).
+ * The host neither maps nor writes it. Usable as storage, as the source of
+ * indirect-draw arguments, and as a copy source and destination. Its own
+ * descriptor set over the single dynamic storage binding of
+ * rhi_create_ssbo's layout lets a draw read it (rhi_gpu_buffer_bind).
+ * Falls back to any memory type when no device-local type takes it.
+ * @param dev Device.
+ * @param bytes Size; at least 4.
+ * @return The buffer, or NULL on failure (logged). */
+rhi_gpu_buffer *rhi_gpu_buffer_create(rhi_device *dev, size_t bytes);
+/** @brief Return the size a GPU buffer was created with.
+ *
+ * @param b Buffer, or NULL.
+ * @return Bytes; 0 for NULL. */
+size_t rhi_gpu_buffer_size(const rhi_gpu_buffer *b);
+/** @brief Bind a GPU buffer at descriptor set index `set` of the bound graphics pipeline, for its vertex or fragment stage.
+ *
+ * The pipeline's layout holds the storage binding there (ssbo_set2 or
+ * ssbo_set7); the block is declared readonly. The data read is what the
+ * last rhi_compute_end before the draw made visible. Does nothing outside
+ * an active frame or without a bound pipeline.
+ * @param dev Device whose current frame records the bind.
+ * @param b Buffer.
+ * @param set Descriptor set index. */
+void rhi_gpu_buffer_bind(rhi_device *dev, rhi_gpu_buffer *b, uint32_t set);
+/** @brief Destroy a GPU buffer and its descriptor set; NULL is ignored.
+ *
+ * @param dev Device the buffer was created on.
+ * @param b Buffer to destroy. */
+void rhi_gpu_buffer_destroy(rhi_device *dev, rhi_gpu_buffer *b);
+
+/* One storage binding of a compute set: exactly one of the two members. */
+typedef struct {
+    rhi_storage    *storage; /* host-written input; a dispatch reads the contents committed at its bind */
+    rhi_gpu_buffer *gpu;     /* GPU-written buffer, bound whole */
+} rhi_compute_binding;
+/** @brief Create the descriptor set that feeds a compute pipeline's bindings 0..n-1.
+ *
+ * Built once over the buffers named; each bind (rhi_compute_bind) selects
+ * a rhi_storage's committed copy by dynamic offset, as rhi_storage_bind
+ * does, so the set is never rewritten.
+ * @param dev Device.
+ * @param pipe Pipeline whose layout the set follows.
+ * @param b Bindings, one per pipeline binding.
+ * @param n Their count; must equal the pipeline's binding count.
+ * @return The set, or NULL on a mismatch or allocation failure (logged). */
+rhi_compute_set *rhi_compute_set_create(rhi_device *dev, const rhi_compute_pipeline *pipe,
+                                        const rhi_compute_binding *b, uint32_t n);
+/** @brief Free a compute set; NULL is ignored.
+ *
+ * @param dev Device the set was created on.
+ * @param set Set to free. */
+void rhi_compute_set_destroy(rhi_device *dev, rhi_compute_set *set);
+
+/** @brief Open a compute pass in the current frame, ordered after every earlier use of every buffer.
+ *
+ * Records one global barrier (see the section comment). Refused when
+ * compute is unavailable, outside an active frame, inside a render pass
+ * (between a begin and an end of the offscreen pass or a render target),
+ * or inside an open compute pass; a refused begin makes the calls up to
+ * the next rhi_compute_end do nothing.
+ * @param dev Device whose current frame records the pass.
+ * @return true when the pass is open. */
+bool rhi_compute_begin(rhi_device *dev);
+/** @brief Bind a compute pipeline and its set for the dispatches that follow.
+ *
+ * Each rhi_storage binding reads the copy committed at this call; the bind
+ * stamps it with the frame serial, so rhi_storage_map does not hand that
+ * copy out until the frame retires. Does nothing outside an open pass.
+ * @param dev Device.
+ * @param pipe Pipeline.
+ * @param set Set created for @p pipe. */
+void rhi_compute_bind(rhi_device *dev, rhi_compute_pipeline *pipe, rhi_compute_set *set);
+/** @brief Write the bound compute pipeline's push constants.
+ *
+ * Does nothing outside an open pass, without a bound pipeline, or when
+ * @p size exceeds the pipeline's push-constant size.
+ * @param dev Device.
+ * @param data Bytes to write.
+ * @param size Byte count, a multiple of 4. */
+void rhi_compute_push(rhi_device *dev, const void *data, uint32_t size);
+/** @brief Record a dispatch of gx x gy x gz workgroups of the bound compute pipeline.
+ *
+ * Does nothing outside an open pass, without a bound pipeline and set, or
+ * with a zero count.
+ * @param dev Device.
+ * @param gx Workgroups in x.
+ * @param gy Workgroups in y.
+ * @param gz Workgroups in z. */
+void rhi_compute_dispatch(rhi_device *dev, uint32_t gx, uint32_t gy, uint32_t gz);
+/** @brief Order the dispatches that follow after the storage writes of the dispatches before.
+ *
+ * Does nothing outside an open pass.
+ * @param dev Device. */
+void rhi_compute_barrier(rhi_device *dev);
+/** @brief Close the compute pass, making its writes visible to every later draw, indirect read, dispatch and copy of the frame.
+ *
+ * Does nothing without an open pass.
+ * @param dev Device. */
+void rhi_compute_end(rhi_device *dev);
+/** @brief Return the number of dispatches recorded since the last frame began.
+ *
+ * The engagement count of a compute path.
+ * @param dev Device, or NULL.
+ * @return The count; 0 for NULL. */
+uint32_t rhi_compute_dispatches(const rhi_device *dev);
+
+/** @brief Create a readback ring: RHI_FRAMES_IN_FLIGHT host-visible slots of `bytes` bytes each.
+ *
+ * Prefers HOST_CACHED memory (fast CPU reads), always HOST_COHERENT.
+ * @param dev Device.
+ * @param bytes Capacity of one capture.
+ * @return The ring, or NULL on failure (logged). */
+rhi_readback *rhi_readback_create(rhi_device *dev, size_t bytes);
+/** @brief Take the capture the current frame slot holds, then queue this frame's copy of a GPU buffer range into the slot.
+ *
+ * The slot's capture was queued RHI_FRAMES_IN_FLIGHT frames ago and
+ * rhi_begin_frame waited its fence, so the call never waits on the GPU. A
+ * capture is copied to @p out when it fits @p out_cap, then the slot is
+ * emptied either way. The copy reads what the last rhi_compute_end before
+ * it made visible. Call outside a render pass and outside an open compute
+ * pass; does nothing outside an active frame.
+ * @param dev Device whose current frame records the copy.
+ * @param rb Ring.
+ * @param src Buffer to copy from, or NULL to only take the old capture.
+ * @param offset Byte offset into @p src.
+ * @param bytes Byte count; at most the ring's capacity and within @p src.
+ * @param out Destination of the old capture, or NULL to drop it.
+ * @param out_cap Capacity of @p out.
+ * @param out_serial Receives the frame serial the old capture was queued
+ *                   in; may be NULL.
+ * @return Bytes of the old capture written to @p out; 0 when the slot held
+ *         none or it did not fit. */
+size_t rhi_readback_cycle(rhi_device *dev, rhi_readback *rb, rhi_gpu_buffer *src,
+                          size_t offset, size_t bytes, void *out, size_t out_cap,
+                          uint64_t *out_serial);
+/** @brief Take the oldest capture still held by the ring, after rhi_wait_idle at the end of a run.
+ *
+ * For the last RHI_FRAMES_IN_FLIGHT captures, which no later frame
+ * retrieves. Refused inside an active frame. Call repeatedly until it
+ * returns 0.
+ * @param dev Device, idle.
+ * @param rb Ring.
+ * @param out Destination.
+ * @param out_cap Capacity of @p out.
+ * @param out_serial Receives the frame serial of the capture; may be NULL.
+ * @return Bytes written; 0 when the ring is empty or a frame is active. A
+ *         capture that does not fit @p out_cap is dropped and the next one
+ *         taken. */
+size_t rhi_readback_drain(rhi_device *dev, rhi_readback *rb, void *out, size_t out_cap,
+                          uint64_t *out_serial);
+/** @brief Free a readback ring; NULL is ignored.
+ *
+ * @param dev Device the ring was created on.
+ * @param rb Ring to free. */
+void rhi_readback_destroy(rhi_device *dev, rhi_readback *rb);
 
 /* ---- offscreen-as-input (the COMPOSITE postfx point) ----------------
  * rhi_bind_offscreen_tex: bind off_image as the sampler at `set` (inside a

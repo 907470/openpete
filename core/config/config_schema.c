@@ -224,6 +224,7 @@ static const cfg_device_row_t g_device[] = {
     { "OPENPETE_GPU_TIMERS",          CFG_DEVICE_FIXED },
     { "OPENPETE_BUGREPORT_GPU",       CFG_DEVICE_FIXED },
     { "OPENPETE_RHI_BALLOON",         CFG_DEVICE_FIXED },
+    { "OPENPETE_RHI_COMPUTE",         CFG_DEVICE_FIXED },
     { "--vsync",                      CFG_DEVICE_LIVE  },
     { "OPENPETE_PRESENT_MODE",        CFG_DEVICE_LIVE  },
 };

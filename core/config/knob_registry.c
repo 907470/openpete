@@ -2315,6 +2315,11 @@ static const knob_desc_t g_builtin_debug[] = {
         "1 = take the D24_UNORM_S8 depth format even where D32_SFLOAT_S8 is "
         "available, running the fallback's depth convention. Read at device "
         "creation."),
+    ENVROW_DEVICE("RHI_COMPUTE", "Debug", "1",
+        "0 = report compute passes unavailable on the device, as a device "
+        "without them does, so every compute path takes its CPU fallback. "
+        "The device is created the same either way. Read at device "
+        "creation."),
     ENVROW_LATCHED_NOTE("PRECOMPILE_FORCE", "Debug",
         "unset: runs in a windowed run on a hardware device",
         "1 runs the pipeline precompile at bring-up in any run mode (headless, "

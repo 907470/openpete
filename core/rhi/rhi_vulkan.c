@@ -720,6 +720,18 @@ struct rhi_device {
      * creation (surface_extent); cleared by create_swapchain. */
     bool     sc_zero_logged;
     uint32_t draw_calls;    /* rhi_draw invocations since begin_frame (perf census) */
+    bool     pass_open;     /* a render pass is recording (offscreen or a render target) */
+    /* Compute (rhi_compute_*): whether the device runs compute passes, decided
+     * at creation by compute_caps_init, and why not; the facts it read, for
+     * rhi_device_report; the open pass, its bound pipeline and set, and the
+     * dispatches recorded since begin_frame. */
+    bool        compute_ok;
+    const char *compute_why;
+    char        compute_facts[256];
+    bool        compute_open;
+    bool        compute_set_bound;
+    struct rhi_compute_pipeline *compute_pipe;
+    uint32_t    compute_dispatches;
     VkExtent2D cur_extent;  /* render area of the CURRENT pass (offscreen off_extent
                             * or the bound render target) - for rhi_clear_depth */
 
@@ -1810,6 +1822,8 @@ static int choose_physical_device(const rhi_device *dev, const VkPhysicalDevice 
     return best;
 }
 
+static void compute_caps_init(rhi_device *dev);
+
 /** @brief Choose the physical device and queue family and create the logical device and its graphics queue.
  *
  * Every enumerated device is logged (log_physical_devices), then the choice
@@ -1827,7 +1841,8 @@ static int choose_physical_device(const rhi_device *dev, const VkPhysicalDevice 
  * records the outcome. pipeline_exts_select adds the pipeline extensions on
  * every device, headless included, and logs the pipeline feature report; a
  * headless device enables no other extension. With the graphics pipeline
- * library enabled, its feature is chained and its lock created.
+ * library enabled, its feature is chained and its lock created. Then
+ * compute_caps_init decides compute availability, enabling nothing.
  * @param dev Device whose instance, gpu_choice, headless flag and surface are
  *            read and whose phys, gfx_family, device, gfx_queue, depth and feature
  *            fields are written.
@@ -1968,6 +1983,7 @@ static bool pick_physical_and_device(rhi_device *dev)
                                  dev_ext[i]);
     vkGetDeviceQueue(dev->device, chosen_family, 0, &dev->gfx_queue);
     pipeline_library_locks(dev);
+    compute_caps_init(dev);
     return true;
 }
 
@@ -2890,8 +2906,9 @@ static bool desc_pool_add(rhi_device *dev)
         { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 64 },
         /* binding 2 of every rhi_ubo set and rhi_ubo_data set */
         { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 64 },
-        /* the single binding of every rhi_create_ssbo set */
-        { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .descriptorCount = 16 },
+        /* the single binding of every rhi_create_ssbo, rhi_storage and
+         * rhi_gpu_buffer set, and every binding of a compute set */
+        { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .descriptorCount = 64 },
     };
     VkDescriptorPoolCreateInfo pi = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -3053,8 +3070,9 @@ static bool create_descriptor_infra(rhi_device *dev)
         RHI_LOG("vkCreateDescriptorSetLayout (ubo1) failed\n"); return false;
     }
     /* Single dynamic storage-buffer binding, vertex and fragment visible:
-     * engine tables too large for a uniform block (rhi_create_ssbo) and
-     * retained vertex-stage data (rhi_storage). */
+     * engine tables too large for a uniform block (rhi_create_ssbo),
+     * retained vertex-stage data (rhi_storage) and compute output read by a
+     * draw (rhi_gpu_buffer). */
     VkDescriptorSetLayoutBinding sb = {
         .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
         .descriptorCount = 1,
@@ -4579,7 +4597,8 @@ int rhi_device_report(const rhi_device *dev, char *buf, size_t cap)
         "vulkan: driver_id=%d driver_name=\"%s\" driver_info=\"%s\"\n"
         "vulkan: device extensions: %s\n"
         "vulkan: validation=%s headless=%d present_mode=%s swapchain=%ux%u format=%d "
-        "colorspace=%d images=%u offscreen=%ux%u\n",
+        "colorspace=%d images=%u offscreen=%ux%u\n"
+        "vulkan: compute=%s%s %s\n",
         props.deviceName, device_type_name(props.deviceType), props.vendorID, props.deviceID,
         VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion),
         VK_API_VERSION_PATCH(props.apiVersion), rhi_driver_version(dev), props.driverVersion,
@@ -4587,7 +4606,9 @@ int rhi_device_report(const rhi_device *dev, char *buf, size_t cap)
         have_drv ? drv.driverInfo : "", s_dev_exts[0] ? s_dev_exts : "(none)",
         s_validation_on ? "on" : "off", dev->headless ? 1 : 0, rhi_present_mode_name(dev),
         dev->sc_extent.width, dev->sc_extent.height, (int)dev->sc_format, s_sc_colorspace,
-        dev->sc_count, dev->off_extent.width, dev->off_extent.height);
+        dev->sc_count, dev->off_extent.width, dev->off_extent.height,
+        dev->compute_ok ? "available" : "unavailable: ", dev->compute_ok ? "" : dev->compute_why,
+        dev->compute_facts);
 }
 
 const char *rhi_present_mode_name(const rhi_device *dev)
@@ -4971,6 +4992,9 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
     dev->frame_active = true;
     dev->draw_calls = 0;
     dev->bias_bound = false;          /* a fresh command buffer binds nothing */
+    dev->pass_open = false;
+    dev->compute_open = false;
+    dev->compute_dispatches = 0;
     if (dev->gpu_timers) {
         /* Reset must be recorded outside a render pass - here, before any. */
         vkCmdResetQueryPool(cb, dev->gpu_qp[dev->frame], 0, RHI_GPU_ZONES_MAX * 2);
@@ -5022,6 +5046,7 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
     };
     record_pending_inits(dev);
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
+    dev->pass_open = true;
     dev->cur_extent = dev->off_extent;   /* render area of this (offscreen) pass */
     dev->cur_depth_clear = cv[1].depthStencil.depth;
 
@@ -5069,6 +5094,7 @@ void rhi_begin_offscreen_load(rhi_device *dev)
     };
     record_pending_inits(dev);
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
+    dev->pass_open = true;
     dev->cur_extent = dev->off_extent;
     dev->cur_depth_clear = cv[1].depthStencil.depth;
     VkViewport vp = {
@@ -5085,6 +5111,7 @@ void rhi_end_offscreen(rhi_device *dev)
 {
     if (!dev->frame_active) return;
     vkCmdEndRenderPass(dev->cmd[dev->frame]);
+    dev->pass_open = false;
 }
 
 /** @brief Record a single-image layout transition with an execution and memory barrier into `cb`.
@@ -6516,6 +6543,7 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
     };
     record_pending_inits(dev);
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
+    dev->pass_open = true;
     dev->cur_extent = ext;   /* render area of this (render-target) pass */
     dev->cur_depth_clear = cv[1].depthStencil.depth;
     /* Y-flipped viewport, matching rhi_begin_offscreen. */
@@ -6536,6 +6564,7 @@ void rhi_end_render_target(rhi_device *dev, rhi_texture *rt)
 {
     if (!dev->frame_active || !rt || !rt->is_rt) return;
     vkCmdEndRenderPass(dev->cmd[dev->frame]);
+    dev->pass_open = false;
     rt->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; /* rt_rp finalLayout */
 }
 
@@ -12189,6 +12218,448 @@ void rhi_storage_destroy(rhi_device *dev, rhi_storage *s)
     if (s->set) vkFreeDescriptorSets(dev->device, s->set_pool, 1, &s->set);
     rhi_destroy_buffer(dev, s->buf);
     free(s);
+}
+
+/* ---- compute passes ------------------------------------------------- */
+
+/* Stages and accesses every buffer use outside a compute pass may fall in:
+ * the first scope of rhi_compute_begin's barrier and the second of
+ * rhi_compute_end's. */
+#define COMPUTE_USER_STAGES (VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | \
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | \
+                             VK_PIPELINE_STAGE_TRANSFER_BIT)
+
+struct rhi_compute_pipeline {
+    VkPipeline            pipeline;
+    VkPipelineLayout      layout;
+    VkDescriptorSetLayout set_layout;   /* set 0: `bindings` dynamic storage buffers */
+    uint32_t              bindings;
+    uint32_t              push_size;
+};
+
+struct rhi_compute_set {
+    VkDescriptorSet  set;
+    VkDescriptorPool pool;
+    uint32_t         n;
+    rhi_storage     *storage[RHI_COMPUTE_MAX_BINDINGS];  /* NULL for a GPU-buffer binding */
+};
+
+struct rhi_gpu_buffer {
+    VkBuffer         buffer;
+    VkDeviceMemory   memory;
+    VkDeviceSize     size;
+    VkDescriptorSet  set;       /* ssbo1 layout, for rhi_gpu_buffer_bind */
+    VkDescriptorPool set_pool;
+};
+
+struct rhi_readback {
+    rhi_buffer *buf;                            /* RHI_FRAMES_IN_FLIGHT slots, `cap` apart */
+    size_t      cap;
+    size_t      len[RHI_FRAMES_IN_FLIGHT];      /* bytes queued in each slot; 0 = empty */
+    uint64_t    serial[RHI_FRAMES_IN_FLIGHT];   /* frame serial each slot's copy was queued in */
+};
+
+/** @brief Decide whether the device runs compute passes and log the facts the decision read.
+ *
+ * Reads the graphics queue family's flags, the compute and storage limits
+ * and OPENPETE_RHI_COMPUTE; enables nothing. Writes dev->compute_ok and,
+ * when false, dev->compute_why.
+ * @param dev Device after the physical device and queue family were chosen. */
+static void compute_caps_init(rhi_device *dev)
+{
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(dev->phys, &props);
+    const VkPhysicalDeviceLimits *l = &props.limits;
+    uint32_t qn = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(dev->phys, &qn, NULL);
+    VkQueueFamilyProperties *q = qn ? calloc(qn, sizeof(*q)) : NULL;
+    if (q) vkGetPhysicalDeviceQueueFamilyProperties(dev->phys, &qn, q);
+    const VkQueueFlags qf = q && dev->gfx_family < qn ? q[dev->gfx_family].queueFlags : 0;
+    free(q);
+    const char *knob = rhi_knob("OPENPETE_RHI_COMPUTE");
+    const char *why = "";
+    if (knob && *knob == '0') why = "OPENPETE_RHI_COMPUTE=0";
+    else if (!(qf & VK_QUEUE_COMPUTE_BIT)) why = "the graphics queue family has no compute bit";
+    else if (l->maxComputeWorkGroupInvocations < RHI_COMPUTE_MIN_INVOCATIONS ||
+             l->maxComputeWorkGroupSize[0] < RHI_COMPUTE_MIN_INVOCATIONS)
+        why = "workgroup size limit below 64";
+    else if (l->maxStorageBufferRange < RHI_COMPUTE_MIN_STORAGE_RANGE)
+        why = "maxStorageBufferRange below 2^27";
+    else if (l->maxPerStageDescriptorStorageBuffers < RHI_COMPUTE_MAX_BINDINGS ||
+             l->maxDescriptorSetStorageBuffersDynamic < RHI_COMPUTE_MAX_BINDINGS)
+        why = "fewer than 4 storage-buffer bindings per stage or dynamic per layout";
+    dev->compute_ok = why[0] == '\0';
+    dev->compute_why = why;
+    snprintf(dev->compute_facts, sizeof dev->compute_facts,
+             "queue_family=%u flags=0x%x invocations=%u size_x=%u groups_x=%u "
+             "storage_range=%u stage_storage=%u dynamic_storage=%u storage_align=%llu "
+             "timestamps_compute=%u",
+             dev->gfx_family, (unsigned)qf, l->maxComputeWorkGroupInvocations,
+             l->maxComputeWorkGroupSize[0], l->maxComputeWorkGroupCount[0],
+             l->maxStorageBufferRange, l->maxPerStageDescriptorStorageBuffers,
+             l->maxDescriptorSetStorageBuffersDynamic,
+             (unsigned long long)l->minStorageBufferOffsetAlignment,
+             (unsigned)l->timestampComputeAndGraphics);
+    RHI_LOG("compute: %s%s (%s)\n", dev->compute_ok ? "available" : "unavailable: ",
+            dev->compute_ok ? "" : why, dev->compute_facts);
+}
+
+bool rhi_compute_supported(const rhi_device *dev)
+{
+    return dev && dev->compute_ok;
+}
+
+const char *rhi_compute_unsupported_reason(const rhi_device *dev)
+{
+    if (!dev) return "no device";
+    return dev->compute_ok ? "" : dev->compute_why;
+}
+
+rhi_compute_pipeline *rhi_create_compute_pipeline(rhi_device *dev,
+                                                  const rhi_compute_pipeline_desc *desc)
+{
+    if (!dev || !dev->compute_ok || !desc || !desc->comp_spv || desc->bindings == 0 ||
+        desc->bindings > RHI_COMPUTE_MAX_BINDINGS || desc->push_const_size > 128 ||
+        (desc->push_const_size & 3u))
+        return NULL;
+    rhi_compute_pipeline *p = calloc(1, sizeof(*p));
+    if (!p) return NULL;
+    p->bindings = desc->bindings;
+    p->push_size = desc->push_const_size;
+    VkDescriptorSetLayoutBinding b[RHI_COMPUTE_MAX_BINDINGS];
+    for (uint32_t i = 0; i < desc->bindings; i++)
+        b[i] = (VkDescriptorSetLayoutBinding){
+            .binding = i, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+            .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        };
+    const VkDescriptorSetLayoutCreateInfo li = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = desc->bindings, .pBindings = b,
+    };
+    const VkPushConstantRange pr = {
+        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = desc->push_const_size,
+    };
+    size_t n = 0;
+    void *owned = NULL;
+    const void *spv = stage_bytes(NULL, 0, desc->comp_spv, &n, &owned);
+    VkShaderModule m = spv ? create_shader_module(dev, spv, n, desc->comp_spv, 0) : VK_NULL_HANDLE;
+    free(owned);
+    bool ok = m != VK_NULL_HANDLE &&
+              vkCreateDescriptorSetLayout(dev->device, &li, NULL, &p->set_layout) == VK_SUCCESS;
+    if (ok) {
+        const VkPipelineLayoutCreateInfo pli = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1, .pSetLayouts = &p->set_layout,
+            .pushConstantRangeCount = desc->push_const_size ? 1u : 0u, .pPushConstantRanges = &pr,
+        };
+        ok = vkCreatePipelineLayout(dev->device, &pli, NULL, &p->layout) == VK_SUCCESS;
+    }
+    if (ok) {
+        const VkComputePipelineCreateInfo ci = {
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                       .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main" },
+            .layout = p->layout,
+        };
+        ok = vkCreateComputePipelines(dev->device, dev->pcache, 1, &ci, NULL, &p->pipeline) == VK_SUCCESS;
+    }
+    if (m) vkDestroyShaderModule(dev->device, m, NULL);
+    if (!ok) {
+        RHI_LOG("rhi_create_compute_pipeline: %s failed\n", desc->comp_spv);
+        rhi_destroy_compute_pipeline(dev, p);
+        return NULL;
+    }
+    return p;
+}
+
+void rhi_destroy_compute_pipeline(rhi_device *dev, rhi_compute_pipeline *pipe)
+{
+    if (!pipe) return;
+    if (pipe->pipeline) vkDestroyPipeline(dev->device, pipe->pipeline, NULL);
+    if (pipe->layout) vkDestroyPipelineLayout(dev->device, pipe->layout, NULL);
+    if (pipe->set_layout) vkDestroyDescriptorSetLayout(dev->device, pipe->set_layout, NULL);
+    free(pipe);
+}
+
+/** @brief Record one global memory barrier into the current frame's command buffer.
+ * @param dev Device inside an active frame.
+ * @param src_stage Stages of the earlier accesses.
+ * @param src_access Earlier writes made available.
+ * @param dst_stage Stages of the later accesses.
+ * @param dst_access Later accesses the writes are made visible to. */
+static void memory_barrier(rhi_device *dev, VkPipelineStageFlags src_stage, VkAccessFlags src_access,
+                           VkPipelineStageFlags dst_stage, VkAccessFlags dst_access)
+{
+    const VkMemoryBarrier mb = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = src_access, .dstAccessMask = dst_access,
+    };
+    vkCmdPipelineBarrier(dev->cmd[dev->frame], src_stage, dst_stage, 0, 1, &mb, 0, NULL, 0, NULL);
+}
+
+rhi_gpu_buffer *rhi_gpu_buffer_create(rhi_device *dev, size_t bytes)
+{
+    if (!dev || bytes < 4 || !dev->ssbo1_set_layout) return NULL;
+    rhi_gpu_buffer *b = calloc(1, sizeof(*b));
+    if (!b) return NULL;
+    b->size = (VkDeviceSize)bytes;
+    const VkBufferCreateInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = bytes,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    bool ok = vkCreateBuffer(dev->device, &bi, NULL, &b->buffer) == VK_SUCCESS;
+    if (ok) {
+        VkMemoryRequirements mr;
+        vkGetBufferMemoryRequirements(dev->device, b->buffer, &mr);
+        uint32_t mt = find_memtype(dev->phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (mt == UINT32_MAX) mt = find_memtype(dev->phys, mr.memoryTypeBits, 0);
+        const VkMemoryAllocateInfo mai = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = mr.size, .memoryTypeIndex = mt,
+        };
+        ok = mt != UINT32_MAX && vkAllocateMemory(dev->device, &mai, NULL, &b->memory) == VK_SUCCESS &&
+             vkBindBufferMemory(dev->device, b->buffer, b->memory, 0) == VK_SUCCESS;
+    }
+    ok = ok && desc_alloc(dev, dev->ssbo1_set_layout, &b->set, &b->set_pool);
+    VkCommandBuffer cb = ok ? one_shot_begin(dev) : VK_NULL_HANDLE;
+    if (!cb) {
+        RHI_LOG("rhi_gpu_buffer_create: %zu B buffer, memory or descriptor allocation failed\n", bytes);
+        rhi_gpu_buffer_destroy(dev, b);
+        return NULL;
+    }
+    vkCmdFillBuffer(cb, b->buffer, 0, VK_WHOLE_SIZE, 0);
+    const VkMemoryBarrier mb = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                         VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT,
+    };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, COMPUTE_USER_STAGES, 0, 1, &mb,
+                         0, NULL, 0, NULL);
+    one_shot_end(dev, cb);
+    const VkDescriptorBufferInfo dbi = { .buffer = b->buffer, .offset = 0, .range = VK_WHOLE_SIZE };
+    const VkWriteDescriptorSet w = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = b->set,
+        .dstBinding = 0, .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .pBufferInfo = &dbi,
+    };
+    vkUpdateDescriptorSets(dev->device, 1, &w, 0, NULL);
+    return b;
+}
+
+size_t rhi_gpu_buffer_size(const rhi_gpu_buffer *b)
+{
+    return b ? (size_t)b->size : 0;
+}
+
+void rhi_gpu_buffer_bind(rhi_device *dev, rhi_gpu_buffer *b, uint32_t set)
+{
+    if (!dev || !b || !dev->frame_active || !dev->cur_layout) return;
+    const uint32_t off = 0;
+    vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, set, 1, &b->set, 1, &off);
+}
+
+void rhi_gpu_buffer_destroy(rhi_device *dev, rhi_gpu_buffer *b)
+{
+    if (!b) return;
+    if (b->set) vkFreeDescriptorSets(dev->device, b->set_pool, 1, &b->set);
+    if (b->buffer) vkDestroyBuffer(dev->device, b->buffer, NULL);
+    if (b->memory) vkFreeMemory(dev->device, b->memory, NULL);
+    free(b);
+}
+
+rhi_compute_set *rhi_compute_set_create(rhi_device *dev, const rhi_compute_pipeline *pipe,
+                                        const rhi_compute_binding *b, uint32_t n)
+{
+    if (!dev || !pipe || !b || n != pipe->bindings) return NULL;
+    VkDescriptorBufferInfo bi[RHI_COMPUTE_MAX_BINDINGS];
+    VkWriteDescriptorSet w[RHI_COMPUTE_MAX_BINDINGS];
+    rhi_compute_set *s = calloc(1, sizeof(*s));
+    if (!s) return NULL;
+    s->n = n;
+    for (uint32_t i = 0; i < n; i++) {
+        if (!b[i].storage == !b[i].gpu) {
+            RHI_LOG("rhi_compute_set_create: binding %u names %s buffer\n", i,
+                    b[i].storage ? "more than one" : "no");
+            free(s);
+            return NULL;
+        }
+        s->storage[i] = b[i].storage;
+        bi[i] = b[i].storage
+            ? (VkDescriptorBufferInfo){ .buffer = b[i].storage->buf->buffer, .range = b[i].storage->bytes }
+            : (VkDescriptorBufferInfo){ .buffer = b[i].gpu->buffer, .range = VK_WHOLE_SIZE };
+    }
+    if (!desc_alloc(dev, pipe->set_layout, &s->set, &s->pool)) {
+        RHI_LOG("rhi_compute_set_create: descriptor allocation failed\n");
+        free(s);
+        return NULL;
+    }
+    for (uint32_t i = 0; i < n; i++)
+        w[i] = (VkWriteDescriptorSet){
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->set,
+            .dstBinding = i, .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .pBufferInfo = &bi[i],
+        };
+    vkUpdateDescriptorSets(dev->device, n, w, 0, NULL);
+    return s;
+}
+
+void rhi_compute_set_destroy(rhi_device *dev, rhi_compute_set *set)
+{
+    if (!set) return;
+    if (set->set) vkFreeDescriptorSets(dev->device, set->pool, 1, &set->set);
+    free(set);
+}
+
+bool rhi_compute_begin(rhi_device *dev)
+{
+    seam_check("compute_begin");
+    if (!dev || !dev->compute_ok || !dev->frame_active || dev->pass_open || dev->compute_open)
+        return false;
+    memory_barrier(dev, COMPUTE_USER_STAGES,
+                   VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    dev->compute_open = true;
+    dev->compute_pipe = NULL;
+    dev->compute_set_bound = false;
+    return true;
+}
+
+void rhi_compute_bind(rhi_device *dev, rhi_compute_pipeline *pipe, rhi_compute_set *set)
+{
+    if (!dev || !dev->compute_open || !pipe || !set || set->n != pipe->bindings) return;
+    uint32_t off[RHI_COMPUTE_MAX_BINDINGS] = { 0 };
+    for (uint32_t i = 0; i < set->n; i++) {
+        rhi_storage *st = set->storage[i];
+        if (!st) continue;
+        st->bound[st->committed] = s_frame_serial;
+        off[i] = (uint32_t)(st->stride * st->committed);
+    }
+    VkCommandBuffer cb = dev->cmd[dev->frame];
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe->pipeline);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe->layout, 0, 1, &set->set,
+                            set->n, off);
+    dev->compute_pipe = pipe;
+    dev->compute_set_bound = true;
+}
+
+void rhi_compute_push(rhi_device *dev, const void *data, uint32_t size)
+{
+    if (!dev || !dev->compute_open || !dev->compute_pipe || !data || size == 0 ||
+        size > dev->compute_pipe->push_size)
+        return;
+    vkCmdPushConstants(dev->cmd[dev->frame], dev->compute_pipe->layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, size, data);
+}
+
+void rhi_compute_dispatch(rhi_device *dev, uint32_t gx, uint32_t gy, uint32_t gz)
+{
+    if (!dev || !dev->compute_open || !dev->compute_set_bound || !gx || !gy || !gz) return;
+    dev->compute_dispatches++;
+    vkCmdDispatch(dev->cmd[dev->frame], gx, gy, gz);
+}
+
+void rhi_compute_barrier(rhi_device *dev)
+{
+    if (!dev || !dev->compute_open) return;
+    memory_barrier(dev, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+}
+
+void rhi_compute_end(rhi_device *dev)
+{
+    if (!dev || !dev->compute_open) return;
+    dev->compute_open = false;
+    if (!dev->frame_active) return;
+    memory_barrier(dev, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                   COMPUTE_USER_STAGES,
+                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                   VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+}
+
+uint32_t rhi_compute_dispatches(const rhi_device *dev)
+{
+    return dev ? dev->compute_dispatches : 0;
+}
+
+rhi_readback *rhi_readback_create(rhi_device *dev, size_t bytes)
+{
+    if (!dev || bytes == 0) return NULL;
+    rhi_readback *rb = calloc(1, sizeof(*rb));
+    if (!rb) return NULL;
+    rb->cap = bytes;
+    rb->buf = create_host_buffer(dev, bytes * RHI_FRAMES_IN_FLIGHT,
+                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT, /*prefer_cached=*/true);
+    if (!rb->buf || !rb->buf->mapped) {
+        RHI_LOG("rhi_readback_create: %zu B ring allocation failed\n", bytes * RHI_FRAMES_IN_FLIGHT);
+        if (rb->buf) rhi_destroy_buffer(dev, rb->buf);
+        free(rb);
+        return NULL;
+    }
+    return rb;
+}
+
+/** @brief Copy a ring slot's capture to the caller and empty the slot.
+ * @param rb Ring.
+ * @param slot Slot index.
+ * @param out Destination, or NULL to drop the capture.
+ * @param out_cap Capacity of @p out.
+ * @param out_serial Receives the capture's frame serial; may be NULL.
+ * @return Bytes written; 0 when the slot was empty or the capture did not fit. */
+static size_t readback_take(rhi_readback *rb, uint32_t slot, void *out, size_t out_cap,
+                            uint64_t *out_serial)
+{
+    const size_t n = rb->len[slot];
+    rb->len[slot] = 0;
+    if (n == 0 || !out || n > out_cap) return 0;
+    memcpy(out, (const uint8_t *)rb->buf->mapped + rb->cap * slot, n);
+    if (out_serial) *out_serial = rb->serial[slot];
+    return n;
+}
+
+size_t rhi_readback_cycle(rhi_device *dev, rhi_readback *rb, rhi_gpu_buffer *src,
+                          size_t offset, size_t bytes, void *out, size_t out_cap,
+                          uint64_t *out_serial)
+{
+    if (!dev || !rb || !dev->frame_active || dev->pass_open || dev->compute_open) return 0;
+    const uint32_t slot = dev->frame;
+    const size_t got = readback_take(rb, slot, out, out_cap, out_serial);
+    if (!src || bytes == 0 || bytes > rb->cap || offset > src->size || bytes > src->size - offset)
+        return got;
+    const VkBufferCopy region = { .srcOffset = offset, .dstOffset = rb->cap * slot, .size = bytes };
+    vkCmdCopyBuffer(dev->cmd[slot], src->buffer, rb->buf->buffer, 1, &region);
+    memory_barrier(dev, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
+    rb->len[slot] = bytes;
+    rb->serial[slot] = s_frame_serial;
+    return got;
+}
+
+size_t rhi_readback_drain(rhi_device *dev, rhi_readback *rb, void *out, size_t out_cap,
+                          uint64_t *out_serial)
+{
+    if (!dev || !rb || dev->frame_active) return 0;
+    for (;;) {
+        uint32_t oldest = UINT32_MAX;
+        for (uint32_t i = 0; i < RHI_FRAMES_IN_FLIGHT; i++)
+            if (rb->len[i] && (oldest == UINT32_MAX || rb->serial[i] < rb->serial[oldest])) oldest = i;
+        if (oldest == UINT32_MAX) return 0;
+        const size_t got = readback_take(rb, oldest, out, out_cap, out_serial);
+        if (got) return got;
+    }
+}
+
+void rhi_readback_destroy(rhi_device *dev, rhi_readback *rb)
+{
+    if (!rb) return;
+    rhi_destroy_buffer(dev, rb->buf);
+    free(rb);
 }
 
 /* ---- offscreen-as-input: the COMPOSITE postfx point ---------------- */

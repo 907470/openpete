@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 9bca03eba977ed995b060513e154a2e3f3b97102
+# head: e2269a1a9825b3a31af6ad83664aff882565ae22
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -71,7 +71,7 @@ core/rhi/rhi_vulkan.c	create_render_target_impl	31	0
 core/rhi/rhi_vulkan.c	device_objects_destroy	31	0	
 core/rhi/rhi_vulkan.c	rhi_create_impl	29	0	
 core/rhi/rhi_vulkan.c	rhi_cycle_readback	26	0	
-core/rhi/smoketest.c	main	33	0	
+core/rhi/smoketest.c	run_windowed	27	0	
 core/runtime/feature_registry.c	feature_registry_dispatch	26	0	
 core/runtime/present_thread.c	present_thread_main	110	0	
 core/runtime/run.c	gameplay_hash_compute_ex	81	0	

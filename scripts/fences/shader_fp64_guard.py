@@ -13,7 +13,7 @@ the Float64 capability is invalid on every device.
 
   source SHADER_DIR STAMP
       Secondary check, on the source, naming the line for the author: every
-      .vert, .frag and .glsl under SHADER_DIR with comments stripped,
+      .vert, .frag, .comp and .glsl under SHADER_DIR with comments stripped,
       searched for the fp64 spellings. A source line carrying the marker
       `fp64-fence: allow` is exempt; the reason is written beside it.
       Writes STAMP on success.
@@ -132,7 +132,7 @@ def check_source(shader_dir, stamp):
     """Fail on an fp64 spelling in the shader sources; return the exit code."""
     hits, scanned, files = [], 0, 0
     for name in sorted(os.listdir(shader_dir)):
-        if not name.endswith((".vert", ".frag", ".glsl")):
+        if not name.endswith((".vert", ".frag", ".comp", ".glsl")):
             continue
         scanned += scan_raw(os.path.join(shader_dir, name), hits)
         files += 1

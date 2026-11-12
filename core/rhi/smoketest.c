@@ -21,7 +21,12 @@
  *                exit 0 on pass, 1 on a failed case, 77 without a device:
  *                the vertex stage reads its positions and colours from a
  *                retained storage buffer (rhi_storage, set 2), and each
- *                frame's readback must equal the expected image exactly.
+ *                frame's readback must equal the expected image exactly;
+ *                a compute pass writes words read back to the host and the
+ *                vertex records a draw of the same present reads, both
+ *                compared exactly (skipped where compute is unavailable).
+ *   --compute-control  the compute case alone with a perturbed input, whose
+ *                every word and present must mismatch: exit 0 when detected.
  */
 
 #include "rhi.h"
@@ -405,12 +410,334 @@ static int run_texstore(rhi_device *dev, rhi_buffer *vb)
     return rc;
 }
 
-/** @brief Run the headless self-checking cases.
+/* ---- headless case: a compute pass consumed by readback and by a draw ---- */
+
+#define CC_WORDS  4096u      /* input words per present: 64 workgroups of 64 */
+#define CC_FRAMES 6          /* presents; each perturbs the input */
+
+/* Head of the compute stage's input (rhi_smoke.comp OpSmokeIn): the
+ * rectangle to emit, then CC_WORDS words. */
+typedef struct { float edges[4]; float color[4]; } cc_rect;
+typedef struct { uint32_t count, key; } cc_push;
+
+/** @brief Return the compute stage's function of one input word: rhi_smoke.comp op_smoke_fn.
  *
- * @return 0 when every case passes, 1 on a failed case or resource
- *         failure, 77 when no Vulkan device can be created. */
-static int run_headless(void)
+ * @param x Input word.
+ * @param key Per-present term.
+ * @return The output word, in 32-bit unsigned arithmetic. */
+static uint32_t cc_fn(uint32_t x, uint32_t key)
 {
+    return (x * 2654435761u + key) ^ (x >> 7);
+}
+
+/** @brief Return input word i of present f: distinct per word and per present.
+ *
+ * @param f Present index.
+ * @param i Word index.
+ * @return The word. */
+static uint32_t cc_input(int f, uint32_t i)
+{
+    return i * 7919u + (uint32_t)f * 104729u + ((i ^ (uint32_t)f) << 20);
+}
+
+/** @brief Return the per-present key of present f.
+ *
+ * @param f Present index.
+ * @return The key. */
+static uint32_t cc_key(int f)
+{
+    return 0x9E3779B9u * (uint32_t)(f + 1);
+}
+
+/** @brief Return the rectangle present f emits: red on even presents, green on odd.
+ *
+ * @param f Present index.
+ * @return The rectangle. */
+static const sc_rect *cc_rect_of(int f)
+{
+    return (f & 1) ? &k_sc_green : &k_sc_red;
+}
+
+/** @brief Fill and commit present f's input: the rectangle record and the words.
+ *
+ * Under the control the uploaded words have their low bit flipped and the
+ * other present's rectangle is uploaded, while the expected values stay
+ * those of the unperturbed input, so every compared word and pixel of the
+ * changed rectangles must mismatch.
+ * @param in Input buffer.
+ * @param f Present index.
+ * @param control true for the perturbed upload. */
+static void cc_publish(rhi_storage *in, int f, bool control)
+{
+    uint8_t *p = rhi_storage_map(in);
+    if (!p) return;
+    const sc_rect *r = cc_rect_of(control ? f + 1 : f);
+    cc_rect head = { { r->x0, r->y0, r->x1, r->y1 },
+                     { r->rgb[0] / 255.0f, r->rgb[1] / 255.0f, r->rgb[2] / 255.0f, 1.0f } };
+    memcpy(p, &head, sizeof head);
+    uint32_t *w = (uint32_t *)(p + sizeof head);
+    for (uint32_t i = 0; i < CC_WORDS; i++) w[i] = cc_input(f, i) ^ (control ? 1u : 0u);
+    rhi_storage_commit(in);
+}
+
+/** @brief Compare one read-back capture with the values present f must produce.
+ *
+ * @param got The capture, CC_WORDS words.
+ * @param f Present index the capture was queued in.
+ * @return The number of mismatched words. */
+static long cc_compare(const uint32_t *got, int f)
+{
+    long bad = 0;
+    for (uint32_t i = 0; i < CC_WORDS; i++) bad += got[i] != cc_fn(cc_input(f, i), cc_key(f));
+    return bad;
+}
+
+/* The compute case's GPU objects. */
+typedef struct {
+    rhi_compute_pipeline *cpipe;
+    rhi_compute_set      *set;
+    rhi_storage          *in;
+    rhi_gpu_buffer       *vals;
+    rhi_gpu_buffer       *verts;
+    rhi_readback         *rb;
+} cc_objs;
+
+/* The compute case's tallies. */
+typedef struct {
+    long   bad_words, words, bad_frames, drawn, captures, dispatches;
+    double zone_us[CC_FRAMES];
+    int    zones;
+} cc_tally;
+
+/** @brief Check one capture taken from the ring: its present index from the frame serial and its words.
+ *
+ * @param t Tallies.
+ * @param got The capture.
+ * @param serial Frame serial the capture was queued in.
+ * @param serial0 Frame serial of present 0. */
+static void cc_take(cc_tally *t, const uint32_t *got, uint64_t serial, uint64_t serial0)
+{
+    const int f = (int)(serial - serial0);
+    const long bad = f >= 0 && f < CC_FRAMES ? cc_compare(got, f) : (long)CC_WORDS;
+    printf("rhi_smoketest: compute readback present %d: %s mismatched=%ld of %u\n",
+           f, bad == 0 ? "PASS" : "FAIL", bad, CC_WORDS);
+    t->bad_words += bad;
+    t->words += CC_WORDS;
+    t->captures++;
+}
+
+/** @brief Collect the GPU time of the compute zone from the timer results the frame begin harvested.
+ *
+ * @param dev Device inside a frame.
+ * @param t Tallies. */
+static void cc_zones(rhi_device *dev, cc_tally *t)
+{
+    rhi_gpu_zone_result z[8];
+    const int n = rhi_gpu_zone_results(dev, z, 8);
+    for (int i = 0; i < n && t->zones < CC_FRAMES; i++)
+        if (strcmp(z[i].name, "smoke.compute") == 0) t->zone_us[t->zones++] = z[i].us;
+}
+
+/** @brief Record and check one present: input commit, dispatch, readback cycle, draw from the compute output.
+ *
+ * @param dev Headless device.
+ * @param o GPU objects.
+ * @param pipe The storage_pull pipeline.
+ * @param vb Six-vertex buffer for the vertex input.
+ * @param f Present index.
+ * @param control true for the perturbed input.
+ * @param serial0 Frame serial of present 0, written at present 0.
+ * @param t Tallies.
+ * @return false when the frame could not begin. */
+static bool cc_frame(rhi_device *dev, const cc_objs *o, rhi_pipeline *pipe, rhi_buffer *vb, int f,
+                     bool control, uint64_t *serial0, cc_tally *t)
+{
+    static uint32_t got[CC_WORDS];
+    cc_publish(o->in, f, control);
+    if (!rhi_begin_frame(dev)) { printf("rhi_smoketest: begin_frame refused\n"); return false; }
+    if (f == 0) *serial0 = rhi_frame_serial(dev);
+    cc_zones(dev, t);
+    if (rhi_compute_begin(dev)) {
+        const cc_push pc = { CC_WORDS, cc_key(f) };
+        rhi_gpu_zone_begin(dev, "smoke.compute");
+        rhi_compute_bind(dev, o->cpipe, o->set);
+        rhi_compute_push(dev, &pc, sizeof pc);
+        rhi_compute_dispatch(dev, CC_WORDS / 64u, 1, 1);
+        rhi_gpu_zone_end(dev);
+        rhi_compute_end(dev);
+    }
+    t->dispatches += rhi_compute_dispatches(dev);
+    uint64_t serial = 0;
+    if (rhi_readback_cycle(dev, o->rb, o->vals, 0, CC_WORDS * 4u, got, sizeof got, &serial))
+        cc_take(t, got, serial, *serial0);
+    rhi_begin_offscreen(dev, 0.0f, 0.0f, 0.0f, 1.0f);
+    rhi_bind_pipeline(dev, pipe);
+    rhi_bind_vertex_buffer(dev, vb);
+    rhi_gpu_buffer_bind(dev, o->verts, 2);
+    rhi_draw(dev, 6, 0);
+    rhi_end_offscreen(dev);
+    rhi_end_frame(dev);
+    const sc_rect *const want[] = { cc_rect_of(f) };
+    long drawn = 0;
+    t->bad_frames += !sc_check(dev, f & 1 ? "compute draw (green)" : "compute draw (red)", want, 1,
+                               &drawn);
+    t->drawn += drawn;
+    return true;
+}
+
+/** @brief Create the compute case's GPU objects.
+ *
+ * @param dev Headless device.
+ * @param o Receives the objects; members that failed stay NULL.
+ * @return true when every object exists. */
+static bool cc_create(rhi_device *dev, cc_objs *o)
+{
+    const rhi_compute_pipeline_desc cd = {
+        .comp_spv = "rhi_smoke.comp.spv", .bindings = 3, .push_const_size = sizeof(cc_push),
+    };
+    memset(o, 0, sizeof *o);
+    o->cpipe = rhi_create_compute_pipeline(dev, &cd);
+    o->in = rhi_storage_create(dev, sizeof(cc_rect) + CC_WORDS * 4u);
+    o->vals = rhi_gpu_buffer_create(dev, CC_WORDS * 4u);
+    o->verts = rhi_gpu_buffer_create(dev, 6 * sizeof(sc_vert));
+    o->rb = rhi_readback_create(dev, CC_WORDS * 4u);
+    if (!o->cpipe || !o->in || !o->vals || !o->verts || !o->rb) return false;
+    const rhi_compute_binding b[3] = { { .storage = o->in }, { .gpu = o->vals }, { .gpu = o->verts } };
+    o->set = rhi_compute_set_create(dev, o->cpipe, b, 3);
+    return o->set != NULL;
+}
+
+/** @brief Destroy the compute case's GPU objects after the device is idle.
+ *
+ * @param dev Device.
+ * @param o Objects; NULL members are skipped. */
+static void cc_destroy(rhi_device *dev, cc_objs *o)
+{
+    rhi_compute_set_destroy(dev, o->set);
+    rhi_readback_destroy(dev, o->rb);
+    rhi_gpu_buffer_destroy(dev, o->verts);
+    rhi_gpu_buffer_destroy(dev, o->vals);
+    rhi_storage_destroy(dev, o->in);
+    rhi_destroy_compute_pipeline(dev, o->cpipe);
+}
+
+/** @brief Print the case's summary line and decide its verdict.
+ *
+ * Without the control: PASS when every capture and every present matched,
+ * all CC_FRAMES captures arrived and pixels and dispatches engaged. Under
+ * the control: DETECTED when every compared word and every present
+ * mismatched.
+ * @param t Tallies.
+ * @param control true under the control.
+ * @return 0 on PASS or DETECTED, 1 otherwise. */
+static int cc_verdict(const cc_tally *t, bool control)
+{
+    double lo = 0.0, hi = 0.0, sum = 0.0;
+    for (int i = 0; i < t->zones; i++) {
+        lo = i == 0 || t->zone_us[i] < lo ? t->zone_us[i] : lo;
+        hi = t->zone_us[i] > hi ? t->zone_us[i] : hi;
+        sum += t->zone_us[i];
+    }
+    printf("rhi_smoketest: compute gpu zone smoke.compute: %d samples min=%.1f mean=%.1f max=%.1f us\n",
+           t->zones, lo, t->zones ? sum / t->zones : 0.0, hi);
+    const bool engaged = t->captures == CC_FRAMES && t->dispatches == CC_FRAMES && t->words > 0;
+    const bool ok = control ? engaged && t->bad_words == t->words && t->bad_frames == CC_FRAMES
+                            : engaged && t->bad_words == 0 && t->bad_frames == 0 && t->drawn > 0;
+    printf("rhi_smoketest: compute %s: %s dispatches=%ld captures=%ld words=%ld mismatched_words=%ld "
+           "mismatched_presents=%ld engaged_px=%ld\n",
+           control ? "control" : "case", control ? (ok ? "DETECTED" : "MISSED") : (ok ? "PASS" : "FAIL"),
+           t->dispatches, t->captures, t->words, t->bad_words, t->bad_frames, t->drawn);
+    return ok ? 0 : 1;
+}
+
+/** @brief Run the compute case: CC_FRAMES presents of dispatch, readback and draw from the compute output.
+ *
+ * Each present commits a new input, dispatches the stage over it, takes
+ * the readback queued RHI_FRAMES_IN_FLIGHT presents earlier and draws the
+ * rectangle the stage emitted; the last captures are drained after the
+ * device is idle. On a device without compute the case is skipped and
+ * passes once the pipeline create is shown to refuse.
+ * @param dev Headless device.
+ * @param pipe The storage_pull pipeline.
+ * @param vb Six-vertex buffer for the vertex input.
+ * @param control true to upload the perturbed input (cc_publish).
+ * @return 0 on PASS (or SKIP, or DETECTED under the control), 1 otherwise. */
+static int run_compute(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb, bool control)
+{
+    if (!rhi_compute_supported(dev)) {
+        const rhi_compute_pipeline_desc cd = { .comp_spv = "rhi_smoke.comp.spv", .bindings = 3 };
+        rhi_compute_pipeline *p = rhi_create_compute_pipeline(dev, &cd);
+        printf("rhi_smoketest: compute case: SKIP compute unavailable (%s); pipeline create %s\n",
+               rhi_compute_unsupported_reason(dev), p ? "succeeded (FAIL)" : "refused");
+        rhi_destroy_compute_pipeline(dev, p);
+        return p ? 1 : 0;
+    }
+    cc_objs o;
+    cc_tally t = { 0 };
+    int rc = 1;
+    if (cc_create(dev, &o)) {
+        uint64_t serial0 = 0;
+        bool ran = true;
+        for (int f = 0; f < CC_FRAMES && ran; f++) ran = cc_frame(dev, &o, pipe, vb, f, control, &serial0, &t);
+        rhi_wait_idle(dev);
+        static uint32_t got[CC_WORDS];
+        uint64_t serial = 0;
+        while (rhi_readback_drain(dev, o.rb, got, sizeof got, &serial)) cc_take(&t, got, serial, serial0);
+        rc = ran ? cc_verdict(&t, control) : 1;
+    } else {
+        printf("rhi_smoketest: compute pipeline/buffer setup failed\n");
+    }
+    rhi_wait_idle(dev);
+    cc_destroy(dev, &o);
+    return rc;
+}
+
+/** @brief Answer the RHI's knob lookups: the environment, with OPENPETE_GPU_TIMERS on unless the environment sets it.
+ *
+ * @param name Knob name.
+ * @return Its value, or NULL when unset. */
+static const char *smoke_knob(const char *name)
+{
+    const char *v = getenv(name);
+    if (!v && strcmp(name, "OPENPETE_GPU_TIMERS") == 0) return "1";
+    return v;
+}
+
+/** @brief Run the retained-storage and image-plus-storage cases.
+ *
+ * @param dev Headless device.
+ * @param pipe The storage_pull pipeline.
+ * @param vb Six-vertex buffer for the vertex input.
+ * @return 0 when both pass, 1 otherwise. */
+static int run_storage_cases(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb)
+{
+    rhi_storage *st = rhi_storage_create(dev, 6 * sizeof(sc_vert));
+    if (!st) { printf("rhi_smoketest: storage buffer setup failed\n"); return 1; }
+    const uint64_t over0 = rhi_ring_gen_overflows();
+    long drawn = 0;
+    const bool ok = sc_run_frames(dev, pipe, vb, st, &drawn);
+    const uint64_t over = rhi_ring_gen_overflows() - over0;
+    printf("rhi_smoketest: storage vertex stage: %s engaged_px=%ld overflows=%llu\n",
+           ok && over == 0 ? "PASS" : "FAIL", drawn, (unsigned long long)over);
+    int rc = ok && over == 0 ? 0 : 1;
+    if (run_texstore(dev, vb) != 0) rc = 1;
+    rhi_wait_idle(dev);
+    rhi_storage_destroy(dev, st);
+    return rc;
+}
+
+/** @brief Run the headless self-checking cases, or the compute case under its control alone.
+ *
+ * GPU timer zones are on unless OPENPETE_GPU_TIMERS says otherwise
+ * (smoke_knob), for the compute zone's time.
+ * @param compute_control true to run only the compute case with the
+ *                        perturbed input, which must be detected.
+ * @return 0 when every case passes (or the control is detected), 1 on a
+ *         failed case or resource failure, 77 when no Vulkan device can be
+ *         created. */
+static int run_headless(bool compute_control)
+{
+    rhi_set_knob_source(smoke_knob);
     rhi_device *dev = rhi_create_headless("openpete-rhi-smoketest", SC_W, SC_H, NULL);
     if (!dev) { printf("rhi_smoketest: no headless device: SKIP\n"); return 77; }
     printf("rhi_smoketest: device='%s' (headless)\n", rhi_device_name(dev));
@@ -420,24 +747,16 @@ static int run_headless(void)
     };
     rhi_pipeline *pipe = rhi_create_pipeline(dev, &desc);
     rhi_buffer *vb = rhi_create_vertex_buffer(dev, 6 * sizeof(rhi_vertex));
-    rhi_storage *st = rhi_storage_create(dev, 6 * sizeof(sc_vert));
     int rc = 1;
-    if (pipe && vb && st) {
+    if (pipe && vb) {
         const rhi_vertex zero[6] = { { 0 } };
         rhi_update_buffer(vb, zero, sizeof zero);
-        const uint64_t over0 = rhi_ring_gen_overflows();
-        long drawn = 0;
-        const bool ok = sc_run_frames(dev, pipe, vb, st, &drawn);
-        const uint64_t over = rhi_ring_gen_overflows() - over0;
-        printf("rhi_smoketest: storage vertex stage: %s engaged_px=%ld overflows=%llu\n",
-               ok && over == 0 ? "PASS" : "FAIL", drawn, (unsigned long long)over);
-        rc = ok && over == 0 ? 0 : 1;
-        if (run_texstore(dev, vb) != 0) rc = 1;
+        rc = compute_control ? 0 : run_storage_cases(dev, pipe, vb);
+        if (run_compute(dev, pipe, vb, compute_control) != 0) rc = 1;
     } else {
-        printf("rhi_smoketest: storage pipeline/buffer setup failed\n");
+        printf("rhi_smoketest: pipeline/buffer setup failed\n");
     }
     rhi_wait_idle(dev);
-    rhi_storage_destroy(dev, st);
     if (vb) rhi_destroy_buffer(dev, vb);
     if (pipe) rhi_destroy_pipeline(dev, pipe);
     rhi_destroy(dev);
@@ -466,20 +785,12 @@ static void hue_ramp(unsigned long frame, float rgb[3])
  * iteration draws three quads sampled through the PSX material push constant
  * (16, 8 and 4 bpp) and one vertex-coloured reference quad into an offscreen
  * target cleared to a cycling hue, then blits it to the swapchain. Exits on
- * window close or Escape, or after N presented frames with `--frames N`.
- * `--headless` runs the self-checking cases of run_headless instead.
- * @param argc Argument count.
- * @param argv Arguments; `--frames N` sets the presented-frame limit.
+ * window close or Escape, or after @p frame_limit presented frames.
+ * @param frame_limit Presented frames to run; negative runs until quit.
  * @return 0 on a clean run, 1 when SDL, the device or the GPU resources fail
- *         to initialise; under `--headless`, run_headless's status. */
-int main(int argc, char **argv)
+ *         to initialise. */
+static int run_windowed(long frame_limit)
 {
-    long frame_limit = -1; /* -1 = run until quit */
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--headless") == 0) return run_headless();
-        if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frame_limit = strtol(argv[++i], NULL, 10);
-    }
-
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -625,4 +936,23 @@ int main(int argc, char **argv)
     SDL_DestroyWindow(win);
     SDL_Quit();
     return 0;
+}
+
+/** @brief Run the smoke test in the mode the arguments select.
+ *
+ * `--headless` runs the self-checking cases of run_headless;
+ * `--compute-control` runs the compute case under its control; otherwise
+ * the windowed run, `--frames N` bounding its presented frames.
+ * @param argc Argument count.
+ * @param argv Arguments.
+ * @return run_headless's status for the headless modes, else run_windowed's. */
+int main(int argc, char **argv)
+{
+    long frame_limit = -1; /* -1 = run until quit */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--headless") == 0) return run_headless(false);
+        if (strcmp(argv[i], "--compute-control") == 0) return run_headless(true);
+        if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frame_limit = strtol(argv[++i], NULL, 10);
+    }
+    return run_windowed(frame_limit);
 }

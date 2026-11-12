@@ -1,0 +1,63 @@
+#version 450
+
+/* Compute stage of rhi_smoketest's compute case (core/rhi/smoketest.c).
+ *
+ * Binding 0 is the host-written input (rhi_storage): a rectangle record
+ * followed by `count` words. Binding 1 receives one word per input word,
+ * op_smoke_fn of it, which the host reads back and compares exactly.
+ * Binding 2 receives the rectangle as six storage_pull.vert records (two
+ * triangles, the corner order of the smoketest's sc_fill), which a vertex
+ * stage draws later in the same present. Integer arithmetic only, so the
+ * expected values are exact on every device. */
+
+layout(local_size_x = 64) in;
+
+struct op_smoke_rect {
+    vec4 edges;  /* x0, y0, x1, y1 in clip space */
+    vec4 color;  /* RGBA 0..1 */
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer OpSmokeIn {
+    op_smoke_rect rect;
+    uint values[];
+} op_in;
+
+layout(std430, set = 0, binding = 1) writeonly buffer OpSmokeOut {
+    uint values[];
+} op_out;
+
+struct op_storage_vert {
+    vec4 pos;    /* xy = clip space; z, w unused */
+    vec4 color;  /* RGBA 0..1 */
+};
+
+layout(std430, set = 0, binding = 2) writeonly buffer OpSmokeVerts {
+    op_storage_vert v[];
+} op_verts;
+
+layout(push_constant) uniform OpSmokePush {
+    uint count;  /* words in op_in.values */
+    uint key;    /* per-present term of op_smoke_fn */
+} pc;
+
+/* The smoketest's smoke_fn: a multiplicative hash of x plus key, xor x >> 7. */
+uint op_smoke_fn(uint x, uint key)
+{
+    return (x * 2654435761u + key) ^ (x >> 7);
+}
+
+void main()
+{
+    const uint i = gl_GlobalInvocationID.x;
+    if (i < pc.count)
+        op_out.values[i] = op_smoke_fn(op_in.values[i], pc.key);
+    if (i < 6u) {
+        /* Corner of record i: x edge bits 0b010110, y edge bits 0b110100
+         * give (x0,y0) (x1,y0) (x1,y1) (x0,y0) (x1,y1) (x0,y1). */
+        const vec4 e = op_in.rect.edges;
+        const float x = ((0x16u >> i) & 1u) != 0u ? e.z : e.x;
+        const float y = ((0x34u >> i) & 1u) != 0u ? e.w : e.y;
+        op_verts.v[i].pos = vec4(x, y, 0.0, 1.0);
+        op_verts.v[i].color = op_in.rect.color;
+    }
+}
