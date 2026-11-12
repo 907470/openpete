@@ -2329,6 +2329,24 @@ static double moby_record_depth_k(CPUState* cpu, uint32_t moby);
 static void moby_sphere_shell_pull(CPUState* cpu, uint32_t moby, uint32_t header,
                                   double depth_k, proj_xy* out, int n);
 
+/** @brief The centre a live cull record projects through, at full precision.
+ *
+ * build_moby_record_tr's centre on a game whose cull stores the unscaled
+ * translation, moby_record_centre_final's on one that stores the final
+ * translation, and none when neither derivation applies (the record then
+ * projects its stored TR).
+ * @param cpu The guest CPU state, read only.
+ * @param R The extracted record.
+ * @param tr Receives the centre.
+ * @return tr, or NULL when the record projects its stored TR. */
+static const double* moby_record_centre(CPUState* cpu, const moby_record_t* R, double tr[3]) {
+    if (!game_layout.moby.rec_tr_final && R->moby >= 0x80000000u) {
+        build_moby_record_tr(cpu, R->moby, tr);
+        return tr;
+    }
+    return moby_record_centre_final(cpu, R->moby, R->header, tr) ? tr : NULL;
+}
+
 /** @brief Project one live cull record, whose fields the game's record reader already extracted.
  *
  * The record's stored TR is the cull's MVMVA of the camera-moby delta taken
@@ -2358,12 +2376,7 @@ static int moby_project_record(CPUState* cpu, const moby_record_t* R, const floa
                                int* zsf4, proj_xy* out, int cap) {
     const ngte_view* v = moby_record_view(R->moby);
     double tr[3];
-    const double* TR_frac = NULL;
-    if (!game_layout.moby.rec_tr_final && R->moby >= 0x80000000u) {
-        build_moby_record_tr(cpu, R->moby, tr); TR_frac = tr;
-    } else if (moby_record_centre_final(cpu, R->moby, R->header, tr)) {
-        TR_frac = tr;
-    }
+    const double* TR_frac = moby_record_centre(cpu, R, tr);
     const double depth_k = moby_record_depth_k(cpu, R->moby);
     const int n = moby_decode_project(cpu, R->header, R->header_b, R->frame_a, R->frame_b, R->w0,
                                       NULL, 0.0, -1.0, depth_k,
@@ -3238,8 +3251,13 @@ static void canon_rec_put(CPUState* cpu, int nrec, uint32_t rec, const moby_reco
         .mscol = R->material,
         .moby = R->moby,
         .zsf4 = dzsf4,
-        .env_az = atan2f((float)R->TR_raw[2], (float)R->TR_raw[0]),
         .frameA = R->frame_a };
+    /* The environment map's view azimuth comes from the centre the record
+     * projects through, the one the sub-tick re-extract reads at the same
+     * tick, so a re-extract at alpha 1 draws the canonical UVs. */
+    double ctr[3];
+    const double* c = moby_record_centre(cpu, R, ctr);
+    m->env_az = c ? (float)atan2(c[2], c[0]) : atan2f((float)R->TR_raw[2], (float)R->TR_raw[0]);
     memcpy(m->Mf, Mf, sizeof m->Mf);
     m->heat = moby_game.spec_colour_off
         ? (uint8_t)moby_heat_scalar(cpu->read_word(m->moby + moby_game.spec_colour_off)) : 0u;
