@@ -16,10 +16,17 @@ skelos_badlands | pos=(116034, 2704, 95746) yaw=1112 pitch=541 | | extended
 icy_speedway | pos=(62236, 86740, 17376) yaw=2548 pitch=111
 # The freecam corpus's Fire Wizard row.
 skelos_badlands@wizardfx | pos=(95730, 55975, 28402) yaw=86 pitch=69
+# A second-kind moby (class 0x71, the freecam corpus's summer_forest
+# sub-tick row) with the camera against it: second-kind vertices in the GTE
+# divide-overflow regime.
+summer_forest | pos=(52301, 47195, 44105) yaw=-946 pitch=303
+# A recording whose HUD draws second-kind records placed in screen space
+# (the simplescreen class), at a pinned VBL of the presentation corpus.
+bk2:summer-forest-collect-orb | | 1455
 #
 carve-out | gpf | Spyro 2 and 3 store the final translation (game_layout.moby.rec_tr_final), so moby_decode_project_body never runs the GPF rescale
 carve-out | mirrored | no freecam row draws a record whose rotation has a negative determinant; a mirror-twin row is owed
 carve-out | shell | the sphere-shell class (0xAA, the bubble about Sparx under water) needs Spyro under water, which no freecam row reaches; a bk2 row is owed
-carve-out | shaded | Spyro 2 and 3 have no shaded pass (game_layout.moby.hook_draw_shaded is 0); their second model kind projects through moby_simple_project, outside the stage
+carve-out | shaded | Spyro 2 and 3 have no shaded pass (game_layout.moby.hook_draw_shaded is 0)
 carve-out | billboard | Spyro 2 and 3 have no shaded pass (game_layout.moby.hook_draw_shaded is 0)
 carve-out | drawscale | Spyro 2 and 3 have no shaded pass (game_layout.moby.hook_draw_shaded is 0)

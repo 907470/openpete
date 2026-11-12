@@ -48,6 +48,8 @@
 #define MOBY_F_ENV    64u
 #define MOBY_F_SHADED 128u
 #define MOBY_F_BILLBOARD 256u
+#define MOBY_F_SIMPLE 512u
+#define MOBY_F_SCREEN 1024u
 
 /* Vec4s per instance record and per vertex record in the stage's storage
  * (openpete_moby_gstage.h OPENPETE_GSAB_INST_VEC4, _VERT_VEC4). */

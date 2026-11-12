@@ -1163,9 +1163,10 @@ static void moby_vert_homog(proj_xy* o, double sx, double sy, double vzz,
  * the record's terms in a moby_proj_rec. What differs between the passes is
  * per-record data: the translation, the screen offset and view, the factor
  * from the projected view-Z to the perspective W (2^scale byte on a record
- * pass; 2, or 64 / draw-scale byte, on the shaded pass), the written depth's
- * factor and GPF restore (1 and 0 on the shaded pass), the tie-pull gate and
- * the paint key's inputs. */
+ * pass; 2, or 64 / draw-scale byte, on the shaded pass; 1 on the second
+ * kind, whose rotation and translation are scaled to full world units), the
+ * written depth's factor and GPF restore (1 and 0 on the shaded pass and the
+ * second kind), the tie-pull gate and the paint key's inputs. */
 typedef struct {
     const int (*M)[3];          /* model-to-view rotation, 4096 = 1.0: paint key, Mf bound check */
     const float (*Mf)[3];       /* model-to-view rotation at unit scale: the projection */
@@ -1181,6 +1182,7 @@ typedef struct {
     double kofx, kofy;          /* the paint key's screen offset */
     openpete_gsab_vert* gsv;    /* the stage readback's first vertex slot, or NULL */
     double minfvz;              /* running near floor over the record (moby_floor_depth) */
+    double mk;                  /* Mf over M / 4096: 1, or 2 on the second kind */
 } moby_proj_rec;
 
 /* ---- moby vertex stage readback: the CPU arm (OPENPETE_MOBY_GSTAGE_AB) ------
@@ -1288,9 +1290,9 @@ static void moby_gsab_close(openpete_gsab_inst* I, const proj_xy* out, int n, do
     }
 }
 
-static void moby_mf_bound_check(const int M[3][3], const float Mf_probe[3][3], const double TR[3], double vx,
-                                double vy, double vz, double ofx, double ofy, const ngte_view* v, double sx,
-                                double sy, double z);
+static void moby_mf_bound_check(const int M[3][3], double mk, const float Mf_probe[3][3], const double TR[3],
+                                double vx, double vy, double vz, double ofx, double ofy, const ngte_view* v,
+                                double sx, double sy, double z);
 static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int M[3][3],
                             double vx, double vy, double vz, double ofx, double ofy, int H,
                             proj_xy* o);
@@ -1335,7 +1337,7 @@ static double moby_project_vertex(moby_proj_rec* P, int i, const double c[3], co
                                   double vx, double vy, double vz, proj_xy* o) {
     double sx, sy; int sat;
     const double vzz = project(P->Mf, P->TR, vx, vy, vz, P->ofx, P->ofy, P->v, &sx, &sy, &sat);
-    moby_mf_bound_check(P->M, P->Mf, P->TR, vx, vy, vz, P->ofx, P->ofy, P->v, sx, sy, vzz);
+    moby_mf_bound_check(P->M, P->mk, P->Mf, P->TR, vx, vy, vz, P->ofx, P->ofy, P->v, sx, sy, vzz);
     moby_vert_homog(o, sx, sy, vzz, P->ofx, P->ofy, P->wk);
     const double fsx = sx, fsy = sy;   /* the float projection, before the GTE mirror */
     const int unr = moby_gte_near_fixup(P->Mf, P->TR, vx, vy, vz, vzz, P->ofx, P->ofy, P->v, &sx, &sy);
@@ -1881,13 +1883,16 @@ static int moby_tier_vcount(CPUState* cpu, uint32_t header, int zsf4, int negctl
  *
  * The float rotation and the Q12 one are the same rotation, the Q12 one
  * rounded or truncated per element by at most 3 units of 1/4096 over its
- * compose, so a vertex v moves on screen by at most that bound. Counts the
+ * compose, so a vertex v moves on screen by at most that bound; a float
+ * rotation mk times the Q12 one (the second kind's full-world projection) is
+ * compared with the Q12 one scaled by mk, and the bound scales with it. Counts the
  * vertices checked (engagement), those over the bound, those over the bound
  * with the perspective term (|v|_1 * 3/4096 * (H + |s - of|) / z, the first
  * order effect of the view-Z error on an off-centre vertex) and the largest
  * ratio of delta to the plain bound, printed once per second of VBLs; vertices behind or near
  * the GTE regime (z <= H_canon / 2) are not checked.
  * @param M The Q12 matrix.
+ * @param mk The float matrix's scale over M / 4096, a power of two.
  * @param Mf_probe The float matrix the projection used.
  * @param TR The projection translation.
  * @param vx The vertex X.
@@ -1899,17 +1904,18 @@ static int moby_tier_vcount(CPUState* cpu, uint32_t header, int zsf4, int negctl
  * @param sx The float projection's screen X.
  * @param sy The float projection's screen Y.
  * @param z The float projection's view Z. */
-static void moby_mf_bound_check(const int M[3][3], const float Mf_probe[3][3], const double TR[3], double vx,
-                                double vy, double vz, double ofx, double ofy, const ngte_view* v, double sx,
-                                double sy, double z) {
+static void moby_mf_bound_check(const int M[3][3], double mk, const float Mf_probe[3][3], const double TR[3],
+                                double vx, double vy, double vz, double ofx, double ofy, const ngte_view* v,
+                                double sx, double sy, double z) {
     static int s_on = -1; static long s_n, s_over, s_overp; static double s_worst; static unsigned s_next;
     if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_MF_BOUND"); s_on = e && *e == '1'; }
     if (!s_on || !(z > 0.0 && v->H_canon < 2.0 * z)) return;
     float Mu[3][3];
     ngte_mat_unit_f(M, Mu);
+    for (int k = 0; k < 9; k++) (&Mu[0][0])[k] *= (float)mk;
     double qx, qy;
     project((const float (*)[3])Mu, TR, vx, vy, vz, ofx, ofy, v, &qx, &qy, NULL);
-    const double e = (fabs(vx) + fabs(vy) + fabs(vz)) * 3.0 / 4096.0;
+    const double e = (fabs(vx) + fabs(vy) + fabs(vz)) * 3.0 * mk / 4096.0;
     const double b = e * v->H_eff / z;
     const double bp = e * (v->H_eff + fmax(fabs(sx - ofx), fabs(sy - ofy))) / z;
     const double d = fmax(fabs(qx - sx), fabs(qy - sy));
@@ -2173,7 +2179,7 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
     int blend_p = moby_prev_streams(cpu, prev, count, &Ap, &Bp);
     const double prev_k = moby_prev_unit(cpu, prev, blend_p, m_scale);
     moby_proj_rec P = { M, Mf, TR, v, v->ofx, v->ofy, moby_scale_unit(m_scale), depth_k, vz_bias,
-                        moby_tie_pull_on() && centre_full > 0.0, &otr, itr, v->ofx, v->ofy, NULL, 0.0 };
+                        moby_tie_pull_on() && centre_full > 0.0, &otr, itr, v->ofx, v->ofy, NULL, 0.0, 1.0 };
     openpete_gsab_inst* gsab = moby_proj_open(&P, out, moby_rec_gsab_flags(gpf, do_blend, blend_p),
                                               blend_p >= 0 ? blend_alpha : 1.0, count);
     for (int i = 0; i < count; i++) {
@@ -2371,21 +2377,25 @@ static int moby_project_record(CPUState* cpu, const moby_record_t* R, const floa
     return n;
 }
 
-/* The scene's projected-vertex store: the record passes fill [0, MAX_PROJ)
- * and the shaded pass the MOBY_SHD_PROJ_CAP slots after it (s_proj_shd), so
- * both passes' vertices carry one index space (the stage readback's). */
+/* The scene's projected-vertex store: the record passes fill [0, MAX_PROJ),
+ * the shaded pass the MOBY_SHD_PROJ_CAP slots after it (s_proj_shd) and the
+ * second model kind the MOBY_SIM_PROJ_CAP slots after those (s_proj_sim), so
+ * every pass's vertices carry one index space (the stage readback's). */
 #define MAX_PROJ 32768
 #define MOBY_SHD_PROJ_CAP 8192
-static proj_xy s_proj[MAX_PROJ + MOBY_SHD_PROJ_CAP]; static int s_proj_n;
+#define MOBY_SIM_PROJ_CAP 16384
+#define MOBY_PROJ_ALL (MAX_PROJ + MOBY_SHD_PROJ_CAP + MOBY_SIM_PROJ_CAP)
+static proj_xy s_proj[MOBY_PROJ_ALL]; static int s_proj_n;
 static proj_xy* const s_proj_shd = s_proj + MAX_PROJ;
-_Static_assert(MAX_PROJ + MOBY_SHD_PROJ_CAP <= OPENPETE_GSAB_PROJ_CAP,
+static proj_xy* const s_proj_sim = s_proj + MAX_PROJ + MOBY_SHD_PROJ_CAP;
+_Static_assert(MOBY_PROJ_ALL <= OPENPETE_GSAB_PROJ_CAP,
                "the stage readback holds one slot per projected vertex");
 
 /** @brief The index of a projected vertex in s_proj, or -1 for one outside it (a verify buffer).
  * @param p The vertex.
  * @return The index, or -1. */
 static int moby_proj_index(const proj_xy* p) {
-    return (p >= s_proj && p < s_proj + MAX_PROJ + MOBY_SHD_PROJ_CAP) ? (int)(p - s_proj) : -1;
+    return (p >= s_proj && p < s_proj + MOBY_PROJ_ALL) ? (int)(p - s_proj) : -1;
 }
 
 /* rec_meta.clr_flags: the present is one tick period or more past the pair's
@@ -5700,21 +5710,32 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
 
 /* ---- second model kind: the shared half of moby_game.simple_pass ---------
  * The provider owns the second kind's record, header, vertex and face
- * encodings and its model->view transform, because none of them is shared;
- * everything downstream of a view-space triangle is. The provider names the
- * record's moby once, then hands each triangle in view space, full world
- * units, and these two apply the same per-record tagging, the same raw float
- * projection, the same GTE near-plane mirror and the same emit the animated
- * walk uses, so both kinds reach the scene in one category and one depth
- * space. */
+ * encodings and its placement, because none of them is shared; the
+ * projection and everything downstream of it are. The provider names the
+ * record's moby once, hands its transform and model-space vertices to
+ * moby_simple_project_record, which projects them through
+ * moby_project_vertex into the store's second-kind region, then names each
+ * triangle by three of those vertices, so both kinds reach the scene in one
+ * category, one depth space and one projection store. */
 static const float MOBY_IDENT_F[3][3] = { {1.0f,0.0f,0.0f}, {0.0f,1.0f,0.0f}, {0.0f,0.0f,1.0f} };
 
 /* The projection origin of the record being decoded, and the view it projects
  * through. A record whose model is placed in screen space names its own origin
- * in PSX pixels; every other record takes the origin of its own view, which is
- * what these two read before this existed. */
+ * in PSX pixels; every other record takes the origin of its own view. */
 static int    s_cur_screen;
 static double s_cur_screen_ofx, s_cur_screen_ofy;
+
+/* The pass's use of the store's second-kind region: its fill, the current
+ * record's vertices (in the region, or in s_sim_scratch once it is full) and
+ * the records the stage readback commits at the scene push. */
+#define MOBY_SIM_RECS 2048
+static int s_proj_sim_n;
+static proj_xy* s_sim_cur;
+static proj_xy s_sim_scratch[MOBY_SIMPLE_MAX_VERTS];
+static struct { uint32_t moby; int off, n; } s_simrecs[MOBY_SIM_RECS];
+static int s_nsimrecs;
+
+static void moby_simple_occl_audit(uint32_t moby, const proj_xy* p, int n);
 
 /** @brief The view the current second-kind record projects through, with its projection origin.
  *
@@ -5756,15 +5777,52 @@ void moby_simple_screen_origin(double ofx, double ofy) {
     s_cur_front = 0;
 }
 
-void moby_simple_project(const double p[3], float* sx, float* sy) {
+/** @brief Take the slots of the current second-kind record: the store's next free run, or the scratch array once the region cannot hold the record.
+ *
+ * A record that fits is listed for the stage readback's commit.
+ * @param n The record's vertex count.
+ * @return The record's first vertex. */
+static proj_xy* moby_simple_slots(int n) {
+    if (s_proj_sim_n + n > MOBY_SIM_PROJ_CAP) return s_sim_scratch;
+    proj_xy* out = s_proj_sim + s_proj_sim_n;
+    if (s_nsimrecs < MOBY_SIM_RECS) {
+        s_simrecs[s_nsimrecs].moby = s_cur_moby_key;
+        s_simrecs[s_nsimrecs].off = s_proj_sim_n;
+        s_simrecs[s_nsimrecs].n = n;
+        s_nsimrecs++;
+    }
+    s_proj_sim_n += n;
+    return out;
+}
+
+void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)[3], int n,
+                                float (*scr)[2], moby_otk_vert_t* iv) {
+    if (n > MOBY_SIMPLE_MAX_VERTS) n = MOBY_SIMPLE_MAX_VERTS;
     double ofx, ofy;
     const ngte_view* view = moby_simple_view(&ofx, &ofy);
-    double x, y; int sat;
-    double vzz = project(MOBY_IDENT_F, NULL, p[0], p[1], p[2],
-                         ofx, ofy, view, &x, &y, &sat);
-    moby_gte_near_fixup(MOBY_IDENT_F, NULL, p[0], p[1], p[2],
-                        vzz, ofx, ofy, view, &x, &y);
-    *sx = (float)x; *sy = (float)y;
+    /* The draw's GTE runs in half world units (TR is world / 2); the
+     * projection takes the rotation and translation doubled, exact in binary,
+     * so its view-Z is full world and its W factor 1. */
+    float Mf[3][3];
+    double TR[3];
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) Mf[r][c] = 2.0f * x->Rf[r][c];
+        TR[r] = 2.0 * x->TR[r];
+    }
+    proj_xy* out = moby_simple_slots(n);
+    moby_proj_rec P = { x->R, (const float (*)[3])Mf, TR, view, ofx, ofy, 1.0, 1.0, 0.0, 0,
+                        x->otk, x->itr, ofx, ofy, NULL, 0.0, 2.0 };
+    openpete_gsab_inst* gsab = moby_proj_open(&P, out, OPENPETE_GSAB_F_SIMPLE
+                                              | (s_cur_screen ? OPENPETE_GSAB_F_SCREEN : 0u), 1.0, n);
+    for (int i = 0; i < n; i++) {
+        moby_project_vertex(&P, i, vm[i], vm[i], vm[i][0], vm[i][1], vm[i][2], &out[i]);
+        out[i].rec = -1;
+        scr[i][0] = out[i].sx; scr[i][1] = out[i].sy;
+        if (x->otk->row != MOBY_OTK_NONE) iv[i] = out[i].iv;
+    }
+    moby_proj_close(&P, gsab, out, n);
+    s_sim_cur = out;
+    moby_simple_occl_audit(s_cur_moby_key, out, n);
 }
 
 void moby_simple_world_bucket(int w) {
@@ -5776,41 +5834,16 @@ void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out) {
     moby_otk_record(moby_otkey_wanted() ? row : MOBY_OTK_NONE, 0, trz, out);
 }
 
-void moby_simple_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int R[3][3],
-                            double vx, double vy, double vz, moby_otk_vert_t* out) {
-    if (r->row == MOBY_OTK_NONE) return;
-    double ofx, ofy;
-    const ngte_view* view = moby_simple_view(&ofx, &ofy);
-    moby_otk_rtps(tr, R, vx, vy, vz, ofx, ofy, (int)view->H_canon, out);
-}
-
-void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
+void moby_simple_tri(const int vi[3], const uint32_t rgb[3],
                      const int u[3], const int v[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
-                     uint32_t fkey, int32_t otk, const moby_otk_vert_t* const iv[3]) {
-    double ofx, ofy;
-    const ngte_view* view = moby_simple_view(&ofx, &ofy);
-    proj_xy q[3];
-    for (int k = 0; k < 3; k++) {
-        double sx, sy; int sat;
-        /* The point is already in view space, so the rotate step is identity
-         * and the translation zero; only the divide is left to do. */
-        double vzz = project(MOBY_IDENT_F, NULL, p[k][0], p[k][1], p[k][2],
-                             ofx, ofy, view, &sx, &sy, &sat);
-        moby_vert_homog(&q[k], sx, sy, vzz, ofx, ofy, 1.0);
-        int unr = moby_gte_near_fixup(MOBY_IDENT_F, NULL, p[k][0], p[k][1], p[k][2],
-                                      vzz, ofx, ofy, view, &sx, &sy);
-        q[k].sx = (float)sx; q[k].sy = (float)sy;
-        q[k].vz = (float)vzz; q[k].tvz = (float)vzz; q[k].kvz = (float)vzz;
-        q[k].sat = sat; q[k].unr = unr; q[k].rec = -1;
-        q[k].ex = q[k].ey = q[k].ez = 0.0f;
-        if (iv) q[k].iv = *iv[k];
-    }
+                     uint32_t fkey, int32_t otk) {
+    proj_xy* const p = s_sim_cur;
     s_emit_fkey = fkey;
     s_emit_special = 0u;
     s_emit_otk = otk;
-    emit_wtri(&q[0], &q[1], &q[2], rgb[0], rgb[1], rgb[2],
+    emit_wtri(&p[vi[0]], &p[vi[1]], &p[vi[2]], rgb[0], rgb[1], rgb[2],
               u[0], v[0], u[1], v[1], u[2], v[2],
               textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend);
 }
@@ -6680,16 +6713,16 @@ static void moby_clerp_census(const rec_meta* R) {
 
 static int build_walk_tris_inner(CPUState* cpu);
 /* Which records the next scene push owes the stage readback's commit
- * (moby_gsab_commit): a record pass's walk of s_recs, or the shaded pass's
- * s_shrecs; the simple pass pushes triangles it did not project through
- * moby_project_vertex, so its pushes commit nothing. */
-enum { MOBY_GSAB_NONE = 0, MOBY_GSAB_RECS = 1, MOBY_GSAB_SHADED = 2 };
+ * (moby_gsab_commit): a record pass's walk of s_recs, the shaded pass's
+ * s_shrecs, or the second kind's s_simrecs. */
+enum { MOBY_GSAB_NONE = 0, MOBY_GSAB_RECS = 1, MOBY_GSAB_SHADED = 2, MOBY_GSAB_SIMPLE = 3 };
 static int s_gsab_armed;
 /** @brief Mark the queued records as walked and owed to the stage readback's commit. */
 static void moby_gsab_arm(void) { s_gsab_armed = MOBY_GSAB_RECS; }
 /** @brief Mark the shaded pass's records as owed to the stage readback's commit. */
 static void moby_gsab_arm_shaded(void) { s_gsab_armed = MOBY_GSAB_SHADED; }
 static void moby_gsab_commit_shaded(unsigned epoch);
+static void moby_gsab_commit_simple(unsigned epoch);
 /** @brief Build s_wtri[] from the face-stream walk of the queued records and return the triangle count.
  *
  * Runs build_walk_tris_inner. Under OPENPETE_MOBY_TIER_DBG the wall time adds
@@ -10985,14 +11018,17 @@ static void moby_face_order(CPUState* cpu, int i, int cat, uint32_t stbit,
  *
  * A record carries its moby's scene identity and, with its metal byte set,
  * the env-UV flag; the shaded pass's records commit through
- * moby_gsab_commit_shaded. Does nothing while the readback is off or when no
- * pass armed it since the last commit (moby_gsab_arm, moby_gsab_arm_shaded). */
+ * moby_gsab_commit_shaded and the second kind's through
+ * moby_gsab_commit_simple. Does nothing while the readback is off or when no
+ * pass armed it since the last commit (moby_gsab_arm, moby_gsab_arm_shaded,
+ * moby_simple_begin). */
 static void moby_gsab_commit(void) {
     if (!openpete_gsab_on() || s_gsab_armed == MOBY_GSAB_NONE) return;
     const int armed = s_gsab_armed;
     s_gsab_armed = MOBY_GSAB_NONE;
     const unsigned ep = openpete_native_scene_epoch();
     if (armed == MOBY_GSAB_SHADED) { moby_gsab_commit_shaded(ep); return; }
+    if (armed == MOBY_GSAB_SIMPLE) { moby_gsab_commit_simple(ep); return; }
     for (int r = 0; r < s_nrecs; r++)
         openpete_gsab_commit(ep, s_recs[r].proj_off, s_recs[r].proj_n, moby_scene_identity(s_recs[r].moby),
                              s_recs[r].metal ? OPENPETE_GSAB_F_ENV : 0u);
@@ -13523,7 +13559,7 @@ static int shaded_project_moby(CPUState* cpu, uint32_t m, const shaded_view* V, 
     if (billboard && !hud_rec && !near_ot) NGTE_CENSUS_HIT(bb_untagged);
     int M[3][3]; float Mf[3][3]; double TR[3];
     moby_proj_rec P = { M, Mf, TR, (billboard || hud_rec) ? &s_view_shd_canon : V->v,
-                        V->v->ofx, V->v->ofy, 2.0, 1.0, 0.0, 0, NULL, NULL, 0.0, 0.0, NULL, 0.0 };
+                        V->v->ofx, V->v->ofy, 2.0, 1.0, 0.0, 0, NULL, NULL, 0.0, 0.0, NULL, 0.0, 1.0 };
     if (billboard) {
         static const int base[3][3] = { { 4096, 0, 0 }, { 0, 2560, 0 }, { 0, 0, 4096 } };
         shaded_compose_euler(cpu, base, m, M, Mf);
@@ -13611,6 +13647,14 @@ static void moby_gsab_commit_shaded(unsigned epoch) {
     for (int r = 0; r < s_nshrecs; r++)
         openpete_gsab_commit(epoch, MAX_PROJ + s_shrecs[r].sv_off, s_shrecs[r].vcount,
                              moby_scene_identity(s_shrecs[r].moby), 0u);
+}
+
+/** @brief Commit the second kind's records of the pass into the stage readback's snapshot of a scene epoch.
+ * @param epoch The scene epoch. */
+static void moby_gsab_commit_simple(unsigned epoch) {
+    for (int r = 0; r < s_nsimrecs; r++)
+        openpete_gsab_commit(epoch, MAX_PROJ + MOBY_SHD_PROJ_CAP + s_simrecs[r].off, s_simrecs[r].n,
+                             moby_scene_identity(s_simrecs[r].moby), 0u);
 }
 
 /** @brief The bucket word of one shaded face, or -1 when the pass gives it none.
@@ -14379,16 +14423,25 @@ static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
         s_canon_simple_epoch = spyro_native_canon_epoch_stamp();
     }
 }
-/** @brief Bracket pre-hook of the second-kind pass: name the material, build the pass view and empty the walk output.
+/** @brief Start a second-kind pass or replay: name the material, build the pass view, empty the walk output and the store's second-kind region, and arm the stage readback's commit.
+ * @param cpu The guest CPU state, read only. */
+static void moby_simple_begin(CPUState* cpu) {
+    s_cur_mat = "SIM";
+    moby_view_build(cpu);
+    s_gout.n = 0;
+    s_proj_sim_n = 0;
+    s_nsimrecs = 0;
+    s_gsab_armed = MOBY_GSAB_SIMPLE;
+}
+
+/** @brief Bracket pre-hook of the second-kind pass: start it with moby_simple_begin.
  *
  * @param feed Unused.
  * @param verify Unused. */
 static void moby_simple_pre(CPUState* cpu, int feed, int verify) {
     OP_ROLE_ASSERT(sim);
     (void)feed; (void)verify;
-    s_cur_mat = "SIM";
-    moby_view_build(cpu);
-    s_gout.n = 0;
+    moby_simple_begin(cpu);
 }
 
 static hook_bracket_state s_simple_hb;
@@ -15326,28 +15379,29 @@ int moby_simple_occluded(CPUState* cpu, uint32_t moby, const double org[3], doub
     return culled;
 }
 
-
-void moby_simple_occl_audit(uint32_t moby, const float (*scr)[2], const double (*vpos)[3], int n) {
+/** @brief Audit the bounds of the last moby_simple_occluded call against a second-kind record's projected vertices (OPENPETE_MOBY_OCCL_VERIFY).
+ *
+ * Counts and prints a vertex outside the bounds' rect or nearer than their
+ * view-Z, and for a record the test culled, re-queries the vertices' own
+ * rect (occl_proj_bounds) and prints a visible verdict, counted as wrong
+ * when the rect lies on screen. Does nothing with the audit off or when the
+ * last call named another moby or built no bounds.
+ * @param moby The Moby address.
+ * @param p The record's projected vertices.
+ * @param n Their count. */
+static void moby_simple_occl_audit(uint32_t moby, const proj_xy* p, int n) {
     if (!occl_verify_on() || n <= 0 || s_simple_box.moby != moby || !s_simple_box.b.valid) return;
     const occl_box_t* b = &s_simple_box.b;
-    float x0 = scr[0][0], x1 = scr[0][0], y0 = scr[0][1], y1 = scr[0][1];
-    double vz = vpos[0][2];
-    for (int j = 1; j < n; j++) {
-        if (scr[j][0] < x0) x0 = scr[j][0];
-        if (scr[j][0] > x1) x1 = scr[j][0];
-        if (scr[j][1] < y0) y0 = scr[j][1];
-        if (scr[j][1] > y1) y1 = scr[j][1];
-        if (vpos[j][2] < vz) vz = vpos[j][2];
-    }
+    float x0, y0, x1, y1, vz;
+    occl_proj_bounds(p, n, &x0, &y0, &x1, &y1, &vz);
     s_ver_simple_n++;
-    const int out = x0 < b->x0 || x1 > b->x1 || y0 < b->y0 || y1 > b->y1 || vz < (double)b->vz;
-    if (out) {
+    if (x0 < b->x0 || x1 > b->x1 || y0 < b->y0 || y1 > b->y1 || vz < b->vz) {
         s_ver_simple_out++;
         fprintf(stderr, "[occl-VERIFY-simple-UNCONTAINED vbl=%u] moby=%08x box=(%.1f,%.1f)-(%.1f,%.1f) vz=%.1f "
                         "verts=(%.1f,%.1f)-(%.1f,%.1f) vz=%.1f\n",
                 openpete_frame, moby, b->x0, b->y0, b->x1, b->y1, b->vz, x0, y0, x1, y1, vz);
     }
-    if (s_simple_box.culled && !occl_query_at(x0, y0, x1, y1, (float)vz, 0.0f, 0.0f)) {
+    if (s_simple_box.culled && !occl_query_at(x0, y0, x1, y1, vz, 0.0f, 0.0f)) {
         const int zeropx = (x1 < s_view.xlo || x0 > s_view.xhi || y1 < 0.0f || y0 > 224.0f);
         if (!zeropx) s_ver_wrong++;
         fprintf(stderr, "[occl-VERIFY-simple-%s vbl=%u] moby=%08x fresh rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f\n",
@@ -17264,9 +17318,7 @@ static void moby_reextract_body(CPUState* cpu) {
     int sim_fresh = moby_native_simple_fresh();
     int sim_walk = 0;
     if (sim_fresh) {
-        s_cur_mat = "SIM";
-        moby_view_build(cpu);
-        s_gout.n = 0;
+        moby_simple_begin(cpu);
         moby_game.simple_replay(cpu);
         s_cur_wbk = -1;
         sim_walk = s_gout.n;

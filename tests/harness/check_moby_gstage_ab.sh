@@ -12,7 +12,8 @@
 # 2^-19 of its largest component on each axis). tools/moby_gstage_ab.py compare pairs
 # them per vertex and tools/moby_gstage_ab.py grade grades the run per class
 # (divide-overflow regime, near, saturation, lifted, GPF, animated, lerp,
-# mirrored, shell, and the shaded pass's records: shaded, billboard, drawscale):
+# mirrored, shell, the shaded pass's records: shaded, billboard, drawscale,
+# and the second model kind's: simple, simplescreen):
 # engaged when the control mismatched on the class, blind
 # when the class was compared and the control never mismatched, unseen when
 # no leg compared it; a manifest row `carve-out | <class> | <reason>`

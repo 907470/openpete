@@ -2462,7 +2462,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         set_tests_properties(moby_gstage_ab_${_gs_game} PROPERTIES
             LABELS "renderer;moby;${_gs_game}"
             RESOURCE_LOCK openpete_game
-            # Up to three rows of four legs, each self-limited at
+            # Up to four rows of four legs, each self-limited at
             # --max-runtime-seconds 840.
             TIMEOUT 5400
             SKIP_RETURN_CODE 64

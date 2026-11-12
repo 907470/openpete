@@ -25,8 +25,12 @@ bk2:level-transition-gems | | 2440
 bk2:stone-hill-gem-spyro-occlusion | | 1896
 bk2:beast-makers-wild-flight-text | | 3310
 bk2:chest-destruction | | 2332
+# The Gnasty fight's blast dome: records with a GPF byte (the GPF class).
+bk2:gnasty_gnorc_attack | | 1796
+bk2:gnasty_gnorc_attack@1808 | | 1808
 #
-carve-out | gpf | no freecam row reaches a record with a GPF byte (the blast dome of the Gnasty fight); a bk2 row is owed
 carve-out | mirrored | no freecam row draws a record whose rotation has a negative determinant; a mirror-twin row is owed
 carve-out | shell | Spyro 1 lists no sphere-shell class (game_layout.moby.sphere_shell_n is 0)
 carve-out | drawscale | no row draws a shaded moby with a nonzero m_ScaleOverride (every shaded record of the rows above has W factor 2); a row is owed
+carve-out | simple | Spyro 1 has no second model kind (moby_game.simple_pass is NULL)
+carve-out | simplescreen | Spyro 1 has no second model kind (moby_game.simple_pass is NULL)

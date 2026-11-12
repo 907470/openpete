@@ -391,13 +391,15 @@ int moby_native_simple_fresh(void);
 /* ---- second model kind ------------------------------------------------
  * A game whose moby set includes a model kind its own draw pass owns
  * (game_layout.moby.hook_draw_simple) decodes that kind inside
- * moby_game.simple_pass and hands the result back through these two: one call
- * per record to name the moby the following triangles belong to, then one per
- * triangle with its three vertices already in VIEW SPACE and FULL WORLD
- * UNITS. The projection, the GTE near-plane mirror, the per-face identity
+ * moby_game.simple_pass and hands the result back through these calls: one
+ * per record to name the moby the following geometry belongs to, one per
+ * record to project its model-space vertices, then one per triangle naming
+ * three of those vertices. The projection (moby_project_vertex, the routine
+ * every moby pass shares), the GTE near-plane mirror, the per-face identity
  * tagging and the scene push stay with the shared walk, so the second kind
- * lands in the same scene category and the same depth space as the animated
- * one. Valid only from inside simple_pass. */
+ * lands in the same scene category, the same depth space and the same
+ * projection store as the animated one. Valid only from inside simple_pass
+ * or simple_replay. */
 /** @brief Name the moby the following second-kind triangles belong to.
  *
  * Sets the current record's moby, class, HUD tag (static or UI address
@@ -416,14 +418,37 @@ void moby_simple_record(struct CPUState* cpu, uint32_t moby);
  * @param ofx The origin X, PSX pixels.
  * @param ofy The origin Y, PSX pixels. */
 void moby_simple_screen_origin(double ofx, double ofy);
-/** @brief The screen position of one view-space point under the current record's view.
+/* One second-kind record's transform as the draw loads it: the rotation in
+ * Q12 for the paint key's integer RTPS, the same rotation at unit scale in
+ * float and the translation at full precision for the projection, and the
+ * integer translation the RTPS loads. TR and itr are in the draw's GTE
+ * units, half a world unit. */
+typedef struct {
+    const int (*R)[3];          /* the composed rotation, 4096 = 1.0 */
+    const float (*Rf)[3];       /* the same rotation at unit scale */
+    const double* TR;           /* the translation, world / 2 */
+    const int* itr;             /* the integer translation the draw's RTPS loads */
+    const moby_otk_rec_t* otk;  /* the record's paint key (moby_simple_otk_record) */
+} moby_simple_xform_t;
+/** @brief Project the current second-kind record's model-space vertices into the shared projection store.
  *
- * A provider runs its own winding test on the same coordinates the emit
- * projects with: the raw float projection with the GTE near-plane mirror.
- * @param p The view-space point, full world units.
- * @param sx Receives the screen X.
- * @param sy Receives the screen Y. */
-void moby_simple_project(const double p[3], float* sx, float* sy);
+ * Each vertex runs moby_project_vertex under the record's view, with the
+ * record's rotation and translation scaled to full world units and W factor
+ * 1, so the projected view-Z and the GTE regime test read full-world depth.
+ * The vertices land in the store's second-kind region, where the following
+ * moby_simple_tri calls name them and the stage readback captures them, or
+ * in a scratch array, uncaptured, once the region is full. Runs the
+ * occlusion audit of the record (OPENPETE_MOBY_OCCL_VERIFY).
+ * @param x The record's transform.
+ * @param vm The model-space vertices.
+ * @param n Their count, at most MOBY_SIMPLE_MAX_VERTS.
+ * @param scr Receives each vertex's screen position after the GTE mirror.
+ * @param iv Receives each vertex's integer RTPS for the paint key; written
+ *        only when the paint key carries a row. */
+void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)[3], int n,
+                                float (*scr)[2], moby_otk_vert_t* iv);
+/* The vertex count moby_simple_project_record takes per record. */
+#define MOBY_SIMPLE_MAX_VERTS 256
 /** @brief The occlusion verdict for one second-kind record from its view-space origin and bounding radius.
  *
  * The record's bounds are the screen rect of the cube around the sphere of
@@ -434,7 +459,7 @@ void moby_simple_project(const double p[3], float* sx, float* sy);
  * reaching within 64 view-Z or half the canonical H of the camera, and
  * OPENPETE_MOBY_SIMPLE_OCCL=0 are never occluded. Under
  * OPENPETE_MOBY_OCCL_VERIFY a culled record is reported kept, so the decode
- * runs and moby_simple_occl_audit checks it.
+ * runs and the record's projection audits it.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param org The record's origin, view space, full world units.
@@ -442,24 +467,11 @@ void moby_simple_project(const double p[3], float* sx, float* sy);
  *        the origin, full world units.
  * @return 1 when the record is hidden behind nearer world depth, else 0. */
 int moby_simple_occluded(struct CPUState* cpu, uint32_t moby, const double org[3], double radius);
-/** @brief Audit the bounds of the last moby_simple_occluded call against the record's decoded vertices (OPENPETE_MOBY_OCCL_VERIFY).
+/** @brief Emit one second-kind triangle over three vertices of the current record's projection.
  *
- * Counts and prints a vertex outside the bounds' rect or nearer than their
- * view-Z, and for a record the test culled, re-queries the vertices' own
- * rect and prints a visible verdict, counted as wrong when the rect lies on
- * screen. Does nothing with the audit off or when the last call named
- * another moby or built no bounds.
- * @param moby The Moby address.
- * @param scr The vertices' screen positions (moby_simple_project).
- * @param vpos The vertices, view space, full world units.
- * @param n Their count. */
-void moby_simple_occl_audit(uint32_t moby, const float (*scr)[2], const double (*vpos)[3], int n);
-/** @brief Project and emit one second-kind triangle given in view space, full world units.
- *
- * Each vertex takes the raw float projection and the GTE near-plane mirror
- * under the current record's view, then the triangle goes through the shared
- * emit with the animated walk's tagging.
- * @param p The three view-space vertices.
+ * The vertices are moby_simple_project_record's; the triangle goes through
+ * the shared emit with the animated walk's tagging.
+ * @param vi The three vertex indices into the record.
  * @param rgb The three vertex colours.
  * @param u The three texel U coordinates.
  * @param v The three texel V coordinates.
@@ -473,14 +485,12 @@ void moby_simple_occl_audit(uint32_t moby, const float (*scr)[2], const double (
  * @param fkey The face identity key.
  * @param otk The triangle's bucket word in the record's paint order
  *        (moby_rank.h: the face's moby_otk_face_bucket, MOBY_OTK_Q2 set on the
- *        second triangle of one prim), -1 for none.
- * @param iv The draw's integer RTPS of the three vertices
- *        (moby_simple_otk_vertex), or NULL. */
-void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
+ *        second triangle of one prim), -1 for none. */
+void moby_simple_tri(const int vi[3], const uint32_t rgb[3],
                      const int u[3], const int v[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
-                     uint32_t fkey, int32_t otk, const moby_otk_vert_t* const iv[3]);
+                     uint32_t fkey, int32_t otk);
 /** @brief The paint key of the current record under a row, with the TRZ the draw loaded.
  *
  * The row becomes MOBY_OTK_NONE while the rank is off or the present carries
@@ -496,19 +506,6 @@ void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out);
  * clears it.
  * @param w The bucket, or -1 for none. */
 void moby_simple_world_bucket(int w);
-/** @brief One model-space vertex's integer RTPS under rotation R and translation tr, through the current record's view.
- *
- * Nothing is written when r carries no key. The projection distance is the
- * view's canonical H.
- * @param r The record's paint key.
- * @param tr The integer translation.
- * @param R The rotation, 4096 = 1.0.
- * @param vx The model-space vertex X.
- * @param vy The model-space vertex Y.
- * @param vz The model-space vertex Z.
- * @param out Receives SZ3 and SXY2. */
-void moby_simple_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int R[3][3],
-                            double vx, double vy, double vz, moby_otk_vert_t* out);
 
 /** @brief Offer the mobys the canonical cull rejected to moby_game.reveal_record, which appends records in the game's own encoding.
  *

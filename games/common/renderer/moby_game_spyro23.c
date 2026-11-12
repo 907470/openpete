@@ -903,6 +903,7 @@ static uint32_t s23_anim_blend_byte(CPUState* cpu, uint32_t state4) {
  * drops the tail of the level silently. */
 #define S23_SIMPLE_QCAP   1024
 #define S23_SIMPLE_VERTS  256
+_Static_assert(S23_SIMPLE_VERTS <= MOBY_SIMPLE_MAX_VERTS, "moby_simple_project_record takes every vertex of a record");
 #define S23_SIMPLE_COLS   256
 #define S23_SIMPLE_FACES  4096
 
@@ -1430,13 +1431,12 @@ typedef struct {
 
 /* One triangle held until the record's faces are resolved. */
 typedef struct {
-    double   p[3][3];
+    int      vi[3];     /* the corners: vertex indices into the record's projection */
     uint32_t rgb[3];
     int      u[3], v[3];
     int      textured, tpx, tpy, clx, cly, bpp, blend;
     uint32_t fkey;
     int32_t  otk;
-    const moby_otk_vert_t* iv[3];
     int      face;
 } s23_held_tri;
 
@@ -1581,8 +1581,8 @@ static int s23_abr_flush(CPUState* cpu, int nv, const double (*vmod)[3],
         const s23_held_tri* T = &s_held[t];
         const int32_t l = entry[T->face];
         moby_simple_world_bucket(l < 0 ? -1 : single ? wkey : moby_otk_splice_bucket(wkey, 2, ltop, l));
-        moby_simple_tri(T->p, T->rgb, T->u, T->v, T->textured, T->tpx, T->tpy,
-                        T->clx, T->cly, T->bpp, T->blend, T->fkey, T->otk, T->iv);
+        moby_simple_tri(T->vi, T->rgb, T->u, T->v, T->textured, T->tpx, T->tpy,
+                        T->clx, T->cly, T->bpp, T->blend, T->fkey, T->otk);
     }
     return s_held_n;
 }
@@ -1745,22 +1745,293 @@ static int s23_simple_cam_delta(CPUState* cpu, double dcam[3]) {
     return 1;
 }
 
+/* One decoded record as its face walk reads it: the composed rotation the
+ * lighting reads, the projected vertices and their paint-key RTPS, the two
+ * paint-key rows, the translation Z the flat-lit near band tests, and the
+ * colour table with its CLUT bias. */
+typedef struct {
+    const int (*R)[3];
+    const float (*vscr)[2];
+    const moby_otk_vert_t* iv;
+    const moby_otk_rec_t* ork;   /* standard, then flat-lit */
+    double trz;
+    const uint32_t* flat_w;
+    const uint32_t* ctab;
+    int ncol, clut_bias, nv;
+} s23_rec_faces;
+
+/** @brief The ordering-table key the draw drops a second-kind record on (mobydraw.s:4193-4207).
+ *
+ * Its far end is where the record runs out of ordering table, a range limit
+ * and not paint order, so extended LOD lifts it with the other one; the
+ * native path sorts by depth and needs no bucket.
+ * @param trz The translation Z, world / 2, truncated.
+ * @param rot The moby's rotation word; its top byte is the key bias.
+ * @param key Receives the key, at least 0.
+ * @return 1 when the draw keeps the record, 0 when the key is past the table. */
+static int s23_simple_record_key(int trz, uint32_t rot, int* key) {
+    int k = (2 * trz >> 7) - (int)(int8_t)(rot >> 24);
+    if (k < 0) k = 0;
+    *key = k;
+    return openpete_no_lod || !(k >= 272 && (k << 3) + 256 >= 3840);
+}
+
+/** @brief The fade and LOD tier of a second-kind record: the moby's LOD byte against twice the depth (mobydraw.s:4193-4196).
+ *
+ * Its sign picks the low-poly lists. Extended LOD removes the depth term, the
+ * rule the animated kind's tier takes: every test then reads the value the
+ * draw computes at depth 0, so the vertex count, the list pair, the fade and
+ * the CLUT bias all take the draw's own near branch (tier >= 4096 at
+ * mobydraw.s:4285-4289). A size term below that band keeps the depth term:
+ * such a record fades at depth 0 as well, which is the moby's own authoring
+ * and not a range limit.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param trz The translation Z, world / 2, truncated.
+ * @return The tier. */
+static int s23_simple_tier(CPUState* cpu, uint32_t moby, int trz) {
+    const int size_term = (int)(cpu->read_byte(moby + moby_game.renderer_off)
+                                & moby_game.renderer_mask) << 10;
+    if (openpete_no_lod && size_term >= 4096) return size_term;
+    return size_term - 2 * trz;
+}
+
+/** @brief Read a second-kind model's vertex words into model-space vertices.
+ *
+ * Each word packs X in bits 11-21, Y in bits 0-11 and Z in bits 21-31,
+ * signed (mobydraw.s:4222-4229).
+ * @param cpu The guest CPU state, read only.
+ * @param H The geometry header; the words start at +0x10.
+ * @param nv The vertex count.
+ * @param vm Receives the vertices. */
+static void s23_simple_vertices(CPUState* cpu, uint32_t H, int nv, double (*vm)[3]) {
+    for (int i = 0; i < nv; i++) {
+        const uint32_t w = cpu->read_word(H + 0x10u + (uint32_t)i * 4u);
+        vm[i][0] = (double)((int32_t)(w << 10) >> 21);
+        vm[i][1] = (double)((int32_t)(w << 20) >> 20);
+        vm[i][2] = (double)((int32_t)w >> 21);
+    }
+}
+
+/** @brief Build a second-kind record's colour table and find its face list (mobydraw.s:4285-4346).
+ *
+ * The vertex count switches on the tier's sign, the face and colour lists
+ * one step earlier: tier 0 takes the high-poly count and the low-poly lists
+ * (mobydraw.s:4215-4219, 4285-4287). Inside the fade band (0 < tier < 4096,
+ * with a low-poly block distinct from the high-poly one) each entry is
+ * depth-cued toward the low-poly entry by IR0 = 4096 - tier and the CLUT row
+ * is biased by IR0 >> 9.
+ * @param cpu The guest CPU state, read only.
+ * @param H The geometry header.
+ * @param h0 The header's first word; its low byte is the colour count.
+ * @param tier The record's tier.
+ * @param ctab Receives the colours.
+ * @param clut_bias Receives the CLUT row bias.
+ * @param faces Receives the face list's address.
+ * @return The colour count. */
+static int s23_simple_colours(CPUState* cpu, uint32_t H, uint32_t h0, int tier,
+                              uint32_t* ctab, int* clut_bias, uint32_t* faces) {
+    const uint32_t pair = cpu->read_word(H + (tier > 0 ? 0x08u : 0x0Cu));
+    const uint32_t cols = H + (pair >> 16);
+    *faces = H + (pair & 0xFFFFu);
+    int ncol = (int)(h0 & 0xFFu);
+    if (ncol > S23_SIMPLE_COLS) ncol = S23_SIMPLE_COLS;
+    const uint32_t far_cols = H + cpu->read_half(H + 0x0Eu);
+    const int fade = (tier > 0 && tier < 4096 && far_cols != cols);
+    const int ir0 = fade ? 4096 - tier : 0;
+    *clut_bias = fade ? ir0 >> 9 : 0;
+    if (ir0 > 0) s_simple_fade++;
+    for (int i = 0; i < ncol; i++) {
+        uint32_t c = cpu->read_word(cols + (uint32_t)i * 4u);
+        if (fade) {
+            const uint32_t f = cpu->read_word(far_cols + (uint32_t)i * 4u);
+            const int rr = ngte_dpcs_ch((int)(c & 0xFFu),         (int)((f <<  4) & 0xFF0u), ir0);
+            const int gg = ngte_dpcs_ch((int)((c >> 8) & 0xFFu),  (int)((f >>  4) & 0xFF0u), ir0);
+            const int bb = ngte_dpcs_ch((int)((c >> 16) & 0xFFu), (int)((f >> 12) & 0xFF0u), ir0);
+            c = (uint32_t)(rr | (gg << 8) | (bb << 16));
+        }
+        ctab[i] = c & 0xFFFFFFu;
+    }
+    return ncol;
+}
+
+/** @brief Reload the flat-colour entry for a record that names one (mobydraw.s:4351-4364).
+ *
+ * A record whose Moby+0x54 is zero draws with the last entry loaded, so the
+ * words carry over from the record before.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param flat_w The four words, replaced when the record names an entry.
+ * @return The moby's colour index. */
+static uint32_t s23_simple_flat_reload(CPUState* cpu, uint32_t moby, uint32_t flat_w[4]) {
+    const uint32_t mcol = cpu->read_word(moby + game_layout.moby.colour_off);
+    if (!mcol) return 0u;
+    const uint32_t e = moby_game_s23.simple_flat_coltab + (mcol << 4);
+    for (uint32_t i = 0; i < 4u; i++) flat_w[i] = cpu->read_word(e + 4u * i);
+    return mcol;
+}
+
+/** @brief Read a textured face's texel coordinates, texture page and CLUT into a held triangle's material.
+ *
+ * Word 2 carries corner 0's UV and the CLUT, word 3 corner 1's UV and the
+ * texture page, word 4 the UVs of corners 2 and 3. A face whose page word
+ * has bit 31 set draws at the page's ABR.
+ * @param cpu The guest CPU state, read only.
+ * @param fp The face's address.
+ * @param clut_bias The record's CLUT row bias.
+ * @param u Receives the four corners' U.
+ * @param v Receives the four corners' V.
+ * @param T Receives the texture page, CLUT, depth and, when the page sets it, the blend. */
+static void s23_simple_face_texture(CPUState* cpu, uint32_t fp, int clut_bias, int u[4], int v[4],
+                                    s23_held_tri* T) {
+    const uint32_t t0 = cpu->read_word(fp + 0x08u);
+    const uint32_t t1 = cpu->read_word(fp + 0x0Cu);
+    const uint32_t t2 = cpu->read_word(fp + 0x10u);
+    u[0] = (int)(t0 & 0xFFu); v[0] = (int)((t0 >> 8) & 0xFFu);
+    u[1] = (int)(t1 & 0xFFu); v[1] = (int)((t1 >> 8) & 0xFFu);
+    u[2] = (int)(t2 & 0xFFu); v[2] = (int)((t2 >> 8) & 0xFFu);
+    u[3] = (int)((t2 >> 16) & 0xFFu); v[3] = (int)((t2 >> 24) & 0xFFu);
+    ngte_tpage t;
+    ngte_decode_tpage((t1 >> 16) & 0x7FFFu, (t0 >> 16) & 0xFFFFu, 0u, &t);
+    T->tpx = t.tpx; T->tpy = t.tpy; T->bpp = t.bpp;
+    T->clx = t.clx; T->cly = t.cly + clut_bias;
+    if ((t1 >> 31) & 1u) T->blend = moby_abr_blend(t.abr);
+}
+
+/** @brief Hold one triangle half of a face: three of its corners in the given order, with their colours and texels.
+ * @param face The face's index from s23_abr_note_face.
+ * @param T The face's material and paint key; its corners, colours, texels and face key are written.
+ * @param idx The face's four vertex indices.
+ * @param o The half's three corner slots.
+ * @param col The four corners' colours.
+ * @param u The four corners' U.
+ * @param v The four corners' V. */
+static void s23_simple_hold_half(int face, s23_held_tri* T, const int idx[4], const int o[3],
+                                 const uint32_t* col, const int u[4], const int v[4]) {
+    for (int k = 0; k < 3; k++) {
+        T->vi[k] = idx[o[k]];
+        T->rgb[k] = col[o[k]]; T->u[k] = u[o[k]]; T->v[k] = v[o[k]];
+    }
+    T->fkey = (uint32_t)(T->vi[0] | (T->vi[1] << 10) | (T->vi[2] << 20));
+    s23_abr_hold(face, T);
+    s_simple_tris++;
+}
+
+/** @brief Shade one face of a record and hold the triangle halves it keeps.
+ *
+ * The winding tests read the projected screen positions (s23_nclip), the
+ * shading s23_simple_shade_face; a textured face reads its texels
+ * (s23_simple_face_texture). The first half is (v0, v1, v2) and the second
+ * (v1, v3, v2), each with its paint-key bucket.
+ * @param cpu The guest CPU state, read only.
+ * @param F The record.
+ * @param fp The face's address.
+ * @param f0 Face word 0.
+ * @param f1 Face word 1.
+ * @param idx The face's four vertex indices, each below F->nv.
+ * @param tri 1 for a triangle. */
+static void s23_simple_face(CPUState* cpu, const s23_rec_faces* F, uint32_t fp, uint32_t f0, uint32_t f1,
+                            const int idx[4], int tri) {
+    const int face = s23_abr_note_face(cpu, fp, f0, f1, idx, tri);
+    float sc[4][2];
+    for (int k = 0; k < 4; k++) { sc[k][0] = F->vscr[idx[k]][0]; sc[k][1] = F->vscr[idx[k]][1]; }
+    s23_shade sh;
+    if (!s23_simple_shade_face(F->R, f1, tri, s23_nclip(sc, 0, 1, 2), tri ? 0.0 : s23_nclip(sc, 3, 1, 2),
+                               F->trz, F->flat_w, F->ctab, F->ncol, &sh))
+        return;
+    int u[4] = { 0, 0, 0, 0 }, v[4] = { 0, 0, 0, 0 };
+    s23_held_tri T = { .textured = sh.textured, .bpp = 16, .blend = sh.blend };
+    if (sh.textured) s23_simple_face_texture(cpu, fp, F->clut_bias, u, v, &T);
+    const int32_t otk = s23_simple_face_otk(F->ork, F->iv, idx, tri, f0, f1);
+    static const int k_half[2][3] = { { 0, 1, 2 }, { 1, 3, 2 } };
+    if (sh.emit_a) { T.otk = otk; s23_simple_hold_half(face, &T, idx, k_half[0], sh.col, u, v); }
+    if (sh.emit_b) {
+        T.otk = moby_otk_second(otk, sh.emit_a);
+        s23_simple_hold_half(face, &T, idx, k_half[1], sh.col, u, v);
+    }
+}
+
+/** @brief Walk a record's face stream, shading and holding each face whose corners the record holds.
+ *
+ * The stride is the face's own texture bit: the flat-lit material draws
+ * untextured but still carries the three texel words.
+ * @param cpu The guest CPU state, read only.
+ * @param F The record.
+ * @param faces The face list: a byte count, then the faces. */
+static void s23_simple_faces(CPUState* cpu, const s23_rec_faces* F, uint32_t faces) {
+    const uint32_t bytecount = cpu->read_word(faces);
+    uint32_t fp = faces + 4u;
+    const uint32_t end = fp + bytecount;
+    for (int guard = 0; fp + 8u <= end && guard < S23_SIMPLE_FACES; guard++) {
+        const uint32_t f0 = cpu->read_word(fp);
+        const uint32_t f1 = cpu->read_word(fp + 4u);
+        const int idx[4] = { (int)((f0 >> 21) & 0x7Fu), (int)((f0 >> 14) & 0x7Fu),
+                             (int)((f0 >>  7) & 0x7Fu), (int)( f0        & 0x7Fu) };
+        const int tri = (idx[2] == idx[3]);
+        s_simple_faces++;
+        if (idx[0] < F->nv && idx[1] < F->nv && idx[2] < F->nv && (tri || idx[3] < F->nv))
+            s23_simple_face(cpu, F, fp, f0, f1, idx, tri);
+        fp += ((int32_t)f1) < 0 ? 0x14u : 0x08u;
+    }
+}
+
+/** @brief Place, cull and LOD-select one queued second-kind record: everything the decode settles before reading a vertex.
+ *
+ * Counts the record into the pass census and its cull into s_simple_culled.
+ * @param cpu The guest CPU state, read only.
+ * @param r The queue index.
+ * @param Rcam The camera matrix.
+ * @param dcam The present camera's change since the tick (s23_simple_cam_delta).
+ * @param bracketed 1 on a sub-tick present.
+ * @param dmob Receives the moby's own displacement over this present, world units.
+ * @param pl Receives the placement.
+ * @param key Receives the record's ordering-table key.
+ * @param tier Receives the record's tier.
+ * @return The record's vertex count, 0 when it is not drawn. */
+static int s23_simple_admit(CPUState* cpu, int r, const int Rcam[3][3], const double dcam[3], int bracketed,
+                            double dmob[3], s23_place* pl, int* key, int* tier) {
+    const uint32_t moby = s_sq->q[r][0];
+    if (s23_simple_late_skip(moby)) return 0;
+    /* The moby's own world displacement over the fraction of the tick this
+     * present shows. The cull composed the record at the tick's position,
+     * which both kinds encode directly, so without this term the record
+     * holds that position for the whole tick and steps at the tick rate. */
+    dmob[0] = dmob[1] = dmob[2] = 0.0;
+    if (bracketed) s23_simple_own_motion(moby, dmob);
+    const int placed = s23_simple_place(cpu, r, Rcam, dcam, dmob, pl);
+    if (pl->screen) s_simple_screen++;
+    s_simple_recs++;
+    if (!placed) { s_simple_culled++; return 0; }
+    if (pl->screen) s_simple_screen_drawn++;
+    const int trz = (int)pl->TR[2];
+    if (!s23_simple_record_key(trz, cpu->read_word(moby + game_layout.moby.angle_off), key)) {
+        s_simple_culled++;
+        return 0;
+    }
+    *tier = s23_simple_tier(cpu, moby, trz);
+    const uint32_t h0 = cpu->read_word(pl->header);
+    const int nv = (int)((*tier >= 0 ? (h0 >> 8) : (h0 >> 16)) & 0xFFu);
+    if (nv < 3) return 0;
+    return nv > S23_SIMPLE_VERTS ? S23_SIMPLE_VERTS : nv;
+}
+
 /** @brief Decodes the host queue of second-kind records into triangles for the shared walk.
  *
- * Per queued record: places it (s23_simple_place), takes the LOD tier from the
- * moby's LOD byte against twice the depth, rotates and projects the vertex
- * words, builds the colour table (depth-cued toward the low-poly block inside
- * the fade band), then walks the face stream, shades each face
- * (s23_simple_shade_face) and emits up to two triangles through
- * moby_simple_tri with the face's paint-key bucket. A sub-tick present, which
- * has a staged tick camera, re-bases each record by the camera change and
- * applies the moby's own displacement and interpolated rotation; a canonical
- * decode takes the cull's values as they stand. A world-placed record takes
- * the occlusion test (moby_simple_occluded) on its origin and the model radius
- * stretched by its matrix before any vertex is read, and a hidden one is
- * neither decoded nor drawn; the canonical pass decides each verdict and its
- * replays hold it. Reads guest memory, writes none, and updates the pass
- * counters; it uses static scratch arrays and is not reentrant.
+ * Per queued record: admits it (s23_simple_admit: placement, the ordering
+ * table's far end, the LOD tier and vertex count), composes the moby's
+ * rotations, reads the vertex words and projects them through
+ * moby_simple_project_record, builds the colour table (depth-cued toward the
+ * low-poly block inside the fade band), then walks the face stream
+ * (s23_simple_faces) and emits the held triangles through s23_abr_flush. A
+ * sub-tick present, which has a staged tick camera, re-bases each record by
+ * the camera change and applies the moby's own displacement and
+ * interpolated rotation; a canonical decode takes the cull's values as they
+ * stand. A world-placed record takes the occlusion test
+ * (moby_simple_occluded) on its origin and the model radius stretched by its
+ * matrix before any vertex is read, and a hidden one is neither decoded nor
+ * drawn; the canonical pass decides each verdict and its replays hold it.
+ * Reads guest memory, writes none, and updates the pass counters; it uses
+ * static scratch arrays and is not reentrant.
  * @param cpu The guest CPU state, read only.
  * @return The number of triangles emitted. */
 static int s23_simple_decode(CPUState* cpu) {
@@ -1768,13 +2039,11 @@ static int s23_simple_decode(CPUState* cpu) {
     ngte_read_matrix(cpu, game_layout.cam.base, Rcam);   /* mobydraw.s:3898-3908 */
     /* The far-geometry suppression word the cull parks in GTE data 3
      * (mobydraw.s:34,36), consulted at mobydraw.s:4336-4341. */
-    int skip_lp = cpu->read_word(moby_game_s23.simple_skip_lowpoly) != 0u;
+    const int skip_lp = cpu->read_word(moby_game_s23.simple_skip_lowpoly) != 0u;
     int emitted = 0;
-
     double dcam[3];
     const int bracketed = s23_simple_cam_delta(cpu, dcam);
 
-    static double vpos[S23_SIMPLE_VERTS][3];
     static float  vscr[S23_SIMPLE_VERTS][2];
     static moby_otk_vert_t iv[S23_SIMPLE_VERTS];   /* the draw's integer RTPS (paint key) */
     static double vmod[S23_SIMPLE_VERTS][3];       /* model-space vertex words */
@@ -1783,74 +2052,29 @@ static int s23_simple_decode(CPUState* cpu) {
     memcpy(flat_w, s_sq->flat, sizeof flat_w);
 
     for (int r = 0; r < s_sq->qn; r++) {
-        uint32_t moby = s_sq->q[r][0];
-        if (s23_simple_late_skip(moby)) continue;
-        /* The moby's own world displacement over the fraction of the tick this
-         * present shows. The cull composed the record at the tick's position,
-         * which both kinds encode directly, so without this term the record
-         * holds that position for the whole tick and steps at the tick rate. */
-        double dmob[3] = { 0.0, 0.0, 0.0 };
-        if (bracketed) s23_simple_own_motion(moby, dmob);
         s23_place pl;
-        const int placed = s23_simple_place(cpu, r, Rcam, dcam, dmob, &pl);
-        if (pl.screen) s_simple_screen++;
-        s_simple_recs++;
-        if (!placed) { s_simple_culled++; continue; }
-        if (pl.screen) s_simple_screen_drawn++;
-
+        int key = 0, tier = 0;
+        double dmob[3];
+        const int nv = s23_simple_admit(cpu, r, (const int (*)[3])Rcam, dcam, bracketed, dmob, &pl, &key, &tier);
+        if (!nv) continue;
+        const uint32_t moby = s_sq->q[r][0];
         const uint32_t H = pl.header;
-        uint32_t h0 = cpu->read_word(H);
-
-        const double* TR = pl.TR;           /* the stored translation, world/2 */
-        int trz = (int)TR[2];
-
-        /* The ordering-table key the draw drops the record on
-         * (mobydraw.s:4193-4207): its far end is a cull, not paint order. */
-        uint32_t rot = cpu->read_word(moby + game_layout.moby.angle_off);
-        int key = (2*trz >> 7) - (int)(int8_t)(rot >> 24);
-        if (key < 0) key = 0;
-        /* The far end of that key is where the record runs out of ordering
-         * table, which is a range limit and not paint order, so extended LOD
-         * lifts it with the other one; the native path sorts by depth and
-         * needs no bucket. */
-        if (!openpete_no_lod && key >= 272 && (key << 3) + 256 >= 3840) {
-            s_simple_culled++; continue;
-        }
-
-        /* The fade/LOD tier: the moby's LOD byte (Moby+0x4E) against twice the depth
-         * (mobydraw.s:4193-4196). Its sign picks the low-poly lists. */
-        const int size_term = (int)(cpu->read_byte(moby + moby_game.renderer_off)
-                                    & moby_game.renderer_mask) << 10;
-        int tier = size_term - 2*trz;
-        /* Extended LOD removes the depth term, the rule the animated kind's
-         * tier takes: every test below then reads the value the draw computes
-         * at depth 0, so the vertex count, the list pair, the fade and the
-         * CLUT bias all take the draw's own near branch (tier >= 4096 at
-         * mobydraw.s:4285-4289). A size term below that band keeps the depth
-         * term: such a record fades at depth 0 as well, which is the moby's
-         * own authoring and not a range limit. */
-        if (openpete_no_lod && size_term >= 4096) tier = size_term;
-
-        int nv = (int)((tier >= 0 ? (h0 >> 8) : (h0 >> 16)) & 0xFFu);
-        if (nv < 3) continue;
-        if (nv > S23_SIMPLE_VERTS) nv = S23_SIMPLE_VERTS;
-
+        const uint32_t rot = cpu->read_word(moby + game_layout.moby.angle_off);
         /* The moby's three rotations, composed onto the placement matrix in the
          * draw's order: Y, then X, then Z (mobydraw.s:4063-4110, 4111-4158,
          * 4159-4189, one column pair replaced per axis through two MVMVAs).
          * Within a sub-tick present the angles come from the object's own pair,
          * so a moby turning a byte per tick sweeps instead of stepping; the
          * canonical pass takes the tick's word, where the composition is the
-         * table lookup the draw itself does. */
-        /* R, in Q12, is the draw's GTE compose and feeds the face lighting
-         * and the paint key; Rf, the same rotation at unit scale composed in
-         * float at the unrounded angles, places the vertices. */
+         * table lookup the draw itself does. R, in Q12, is the draw's GTE
+         * compose and feeds the face lighting and the paint key; Rf, the same
+         * rotation at unit scale composed in float at the unrounded angles,
+         * places the vertices. */
         int R[3][3];
         float Rf[3][3];
         double ang[3];
         if (!bracketed || !moby_record_angles_at_present(cpu, moby, ang)) ngte_word_angles(rot, ang);
         ngte_compose_euler_at(cpu, pl.R, ang, R, Rf);
-
         if (s23_simple_hidden(cpu, moby, &pl, (const float (*)[3])Rf)) continue;
 
         moby_simple_record(cpu, moby);
@@ -1860,167 +2084,29 @@ static int s23_simple_decode(CPUState* cpu) {
          * integer before the rejoin doubles it (mobydraw.s 3946-3952,
          * 4058-4060), where TR keeps the fraction. With it, the record's
          * paint key for both face families. */
-        const int itr[3] = { 2 * (int)floor(TR[0] * 0.5), 2 * (int)floor(TR[1] * 0.5),
-                             2 * (int)floor(TR[2] * 0.5) };
+        const int itr[3] = { 2 * (int)floor(pl.TR[0] * 0.5), 2 * (int)floor(pl.TR[1] * 0.5),
+                             2 * (int)floor(pl.TR[2] * 0.5) };
         moby_otk_rec_t ork[2];
         moby_simple_otk_record(MOBY_OTK_S23_SIMPLE, itr[2], &ork[0]);
         moby_simple_otk_record(MOBY_OTK_S23_SIMPLE_FLAT, itr[2], &ork[1]);
-
-        for (int i = 0; i < nv; i++) {
-            uint32_t w = cpu->read_word(H + 0x10u + (uint32_t)i * 4u);
-            double vx = (double)((int32_t)(w << 10) >> 21);   /* bits 11-21 */
-            double vy = (double)((int32_t)(w << 20) >> 20);   /* bits 0-11 */
-            double vz = (double)((int32_t)w >> 21);           /* bits 21-31 */
-            vmod[i][0] = vx; vmod[i][1] = vy; vmod[i][2] = vz;
-            double e1, e2, e3;
-            ngte_mac_f((const float (*)[3])Rf, vx, vy, vz, &e1, &e2, &e3);
-            /* world/2 in the game's space; the shared walk takes full world. */
-            vpos[i][0] = (e1 + TR[0]) * 2.0;
-            vpos[i][1] = (e2 + TR[1]) * 2.0;
-            vpos[i][2] = (e3 + TR[2]) * 2.0;
-            moby_simple_project(vpos[i], &vscr[i][0], &vscr[i][1]);
-            moby_simple_otk_vertex(&ork[0], itr, R, vx, vy, vz, &iv[i]);
-        }
+        s23_simple_vertices(cpu, H, nv, vmod);
+        const moby_simple_xform_t xf = { (const int (*)[3])R, (const float (*)[3])Rf, pl.TR, itr, &ork[0] };
+        moby_simple_project_record(&xf, (const double (*)[3])vmod, nv, vscr, iv);
         s_simple_verts += nv;
-        moby_simple_occl_audit(moby, (const float (*)[2])vscr, (const double (*)[3])vpos, nv);
 
-        s23_simple_postrace(cpu, moby, (const float (*)[2])vscr, nv, R, rot, dmob);
+        s23_simple_postrace(cpu, moby, (const float (*)[2])vscr, nv, (const int (*)[3])R, rot, dmob);
         moby_native_late_trace(cpu, moby, (const float (*)[2])vscr, nv, "SIM", s_sq_ghost_only);
 
-        /* The face and colour lists, and the fade the near band applies
-         * (mobydraw.s:4285-4346). */
-        /* The vertex count switches on the tier's sign, the face and colour
-         * lists one step earlier: tier 0 takes the high-poly count and the
-         * low-poly lists (mobydraw.s:4215-4219,4285-4287). */
         if (tier <= 0 && skip_lp) continue;
         if (tier <= 0) s_simple_lp++;
-        uint32_t pair = cpu->read_word(H + (tier > 0 ? 0x08u : 0x0Cu));
-        uint32_t faces = H + (pair & 0xFFFFu);
-        uint32_t cols  = H + (pair >> 16);
-        int ncol = (int)(h0 & 0xFFu);
-        if (ncol > S23_SIMPLE_COLS) ncol = S23_SIMPLE_COLS;
-        int clut_bias = 0;
-        uint32_t far_cols = H + cpu->read_half(H + 0x0Eu);
-        int fade = (tier > 0 && tier < 4096 && far_cols != cols);
-        int ir0 = fade ? 4096 - tier : 0;
-        if (fade) clut_bias = ir0 >> 9;
-        if (ir0 > 0) s_simple_fade++;
-        for (int i = 0; i < ncol; i++) {
-            uint32_t c = cpu->read_word(cols + (uint32_t)i * 4u);
-            if (fade) {
-                uint32_t f = cpu->read_word(far_cols + (uint32_t)i * 4u);
-                int rr = ngte_dpcs_ch((int)(c & 0xFFu),        (int)((f <<  4) & 0xFF0u), ir0);
-                int gg = ngte_dpcs_ch((int)((c >> 8) & 0xFFu), (int)((f >>  4) & 0xFF0u), ir0);
-                int bb = ngte_dpcs_ch((int)((c >> 16) & 0xFFu),(int)((f >> 12) & 0xFF0u), ir0);
-                c = (uint32_t)(rr | (gg << 8) | (bb << 16));
-            }
-            ctab[i] = c & 0xFFFFFFu;
-        }
-
-        /* The flat-colour entry is reloaded only for a record that names one;
-         * a record whose Moby+0x54 is zero draws with the last entry loaded
-         * (mobydraw.s:4351-4352,4353-4364). */
-        uint32_t mcol = cpu->read_word(moby + game_layout.moby.colour_off);
-        if (mcol) {
-            uint32_t e = moby_game_s23.simple_flat_coltab + (mcol << 4);
-            flat_w[0] = cpu->read_word(e);
-            flat_w[1] = cpu->read_word(e + 4u);
-            flat_w[2] = cpu->read_word(e + 8u);
-            flat_w[3] = cpu->read_word(e + 12u);
-        }
-
+        s23_rec_faces F = { (const int (*)[3])R, (const float (*)[2])vscr, iv, ork, pl.TR[2], flat_w, ctab,
+                            0, 0, nv };
+        uint32_t faces;
+        F.ncol = s23_simple_colours(cpu, H, cpu->read_word(H), tier, ctab, &F.clut_bias, &faces);
+        const uint32_t mcol = s23_simple_flat_reload(cpu, moby, flat_w);
         s23_abr_begin();
-        uint32_t bytecount = cpu->read_word(faces);
-        uint32_t fp = faces + 4u, end = fp + bytecount;
-        int guard = 0;
-        while (fp + 8u <= end && guard++ < S23_SIMPLE_FACES) {
-            uint32_t f0 = cpu->read_word(fp);
-            uint32_t f1 = cpu->read_word(fp + 4u);
-            /* The stride is the face's own texture bit; the flat-lit material
-             * draws untextured but still carries the three words. */
-            uint32_t adv = ((int32_t)f1) < 0 ? 0x14u : 0x08u;
-            int idx[4] = { (int)((f0 >> 21) & 0x7Fu), (int)((f0 >> 14) & 0x7Fu),
-                           (int)((f0 >>  7) & 0x7Fu), (int)( f0        & 0x7Fu) };
-            int tri = (idx[2] == idx[3]);
-            s_simple_faces++;
-            if (idx[0] >= nv || idx[1] >= nv || idx[2] >= nv || (!tri && idx[3] >= nv)) {
-                fp += adv; continue;
-            }
-            const int face = s23_abr_note_face(cpu, fp, f0, f1, idx, tri);
-            int u[4] = {0,0,0,0}, v[4] = {0,0,0,0};
-            int tpx = 0, tpy = 0, clx = 0, cly = 0, bpp = 16;
-            float sc[4][2];
-            for (int k = 0; k < 4; k++) {
-                sc[k][0] = vscr[idx[k]][0]; sc[k][1] = vscr[idx[k]][1];
-            }
-            s23_shade sh;
-            if (!s23_simple_shade_face(R, f1, tri,
-                                       s23_nclip(sc, 0, 1, 2),
-                                       tri ? 0.0 : s23_nclip(sc, 3, 1, 2),
-                                       TR[2], flat_w, ctab, ncol, &sh)) {
-                fp += adv; continue;
-            }
-            const uint32_t* col = sh.col;
-            int blend = sh.blend;
-
-            if (sh.textured) {
-                uint32_t t0 = cpu->read_word(fp + 0x08u);
-                uint32_t t1 = cpu->read_word(fp + 0x0Cu);
-                uint32_t t2 = cpu->read_word(fp + 0x10u);
-                u[0]=(int)(t0 & 0xFFu); v[0]=(int)((t0 >> 8) & 0xFFu);
-                u[1]=(int)(t1 & 0xFFu); v[1]=(int)((t1 >> 8) & 0xFFu);
-                u[2]=(int)(t2 & 0xFFu); v[2]=(int)((t2 >> 8) & 0xFFu);
-                u[3]=(int)((t2 >> 16) & 0xFFu); v[3]=(int)((t2 >> 24) & 0xFFu);
-                unsigned cl = (t0 >> 16) & 0xFFFFu;
-                unsigned tp = (t1 >> 16) & 0x7FFFu;
-                ngte_tpage t;
-                ngte_decode_tpage(tp, cl, 0u, &t);
-                tpx = t.tpx;
-                tpy = t.tpy;
-                bpp = t.bpp;
-                clx = t.clx;
-                cly = t.cly + clut_bias;
-                if ((t1 >> 31) & 1u)
-                    blend = moby_abr_blend(t.abr);
-            }
-
-            const int32_t otk = s23_simple_face_otk(ork, iv, idx, tri, f0, f1);
-            double p[3][3]; uint32_t rgb[3]; int uu[3], vv[3];
-            if (sh.emit_a) {
-                const int o[3] = {0,1,2};
-                for (int k = 0; k < 3; k++) {
-                    memcpy(p[k], vpos[idx[o[k]]], sizeof p[k]);
-                    rgb[k] = col[o[k]]; uu[k] = u[o[k]]; vv[k] = v[o[k]];
-                }
-                s23_held_tri T = { .textured = sh.textured, .tpx = tpx, .tpy = tpy, .clx = clx,
-                                   .cly = cly, .bpp = bpp, .blend = blend,
-                                   .fkey = (uint32_t)(idx[0] | (idx[1] << 10) | (idx[2] << 20)),
-                                   .otk = otk, .iv = { &iv[idx[0]], &iv[idx[1]], &iv[idx[2]] } };
-                memcpy(T.p, p, sizeof T.p); memcpy(T.rgb, rgb, sizeof T.rgb);
-                memcpy(T.u, uu, sizeof T.u); memcpy(T.v, vv, sizeof T.v);
-                s23_abr_hold(face, &T);
-                s_simple_tris++;
-            }
-            if (sh.emit_b) {
-                const int o[3] = {1,3,2};
-                for (int k = 0; k < 3; k++) {
-                    memcpy(p[k], vpos[idx[o[k]]], sizeof p[k]);
-                    rgb[k] = col[o[k]]; uu[k] = u[o[k]]; vv[k] = v[o[k]];
-                }
-                s23_held_tri T = { .textured = sh.textured, .tpx = tpx, .tpy = tpy, .clx = clx,
-                                   .cly = cly, .bpp = bpp, .blend = blend,
-                                   .fkey = (uint32_t)(idx[1] | (idx[3] << 10) | (idx[2] << 20)),
-                                   .otk = moby_otk_second(otk, sh.emit_a),
-                                   .iv = { &iv[idx[1]], &iv[idx[3]], &iv[idx[2]] } };
-                memcpy(T.p, p, sizeof T.p); memcpy(T.rgb, rgb, sizeof T.rgb);
-                memcpy(T.u, uu, sizeof T.u); memcpy(T.v, vv, sizeof T.v);
-                s23_abr_hold(face, &T);
-                s_simple_tris++;
-            }
-            fp += adv;
-        }
-        emitted += s23_abr_flush(cpu, nv, (const double (*)[3])vmod, itr, R,
-                                 key, mcol != 0u);
+        s23_simple_faces(cpu, &F, faces);
+        emitted += s23_abr_flush(cpu, nv, (const double (*)[3])vmod, itr, R, key, mcol != 0u);
     }
     return emitted;
 }
