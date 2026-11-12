@@ -1,8 +1,9 @@
 // core/psx/cpu.c - PSX memory map + CPUState callback bindings.
 //
 // Game-agnostic. Implements the small slice of the PSX bus that the
-// recompiled C touches: 2MB main RAM (KSEG0/KSEG1/KUSEG aliases),
-// 1KB scratchpad, and unaligned LWL/LWR/SWL/SWR helpers. The only I/O
+// recompiled C touches: 2MB main RAM (KSEG0/KSEG1/KUSEG aliases, and its
+// mirrors through physical 8 MB), 1KB scratchpad, and unaligned
+// LWL/LWR/SWL/SWR helpers. The only I/O
 // modelled here is the CD-ROM controller registers, the BIOS ROM
 // identification bytes and root counter 2's count; IRQ/GPU/SPU live in
 // PsyCross.
@@ -22,6 +23,18 @@
 #define RAM_SIZE      OPENPETE_PSX_RAM_SIZE
 #define SCRATCH_SIZE  OPENPETE_PSX_SCRATCH_SIZE
 
+/* End of the physical window in which main RAM repeats. The BIOS leaves the
+ * RAM_SIZE register (0x1F801060) at 0xB88, whose memory-window field (bits
+ * 9-11, value 5) decodes physical [0, 8 MB) as RAM; with 2 MB fitted, the
+ * chips answer every 2 MB of that window, so physical 0x200000-0x7FFFFF
+ * alias RAM at `phys & 0x1FFFFF`. Above it lies no device up to expansion
+ * region 1 (0x1F000000). A build may define it as RAM_SIZE to remove the
+ * mirror. */
+#ifndef OPENPETE_PSX_RAM_MIRROR_END
+#define OPENPETE_PSX_RAM_MIRROR_END 0x00800000u
+#endif
+#define RAM_MIRROR_END OPENPETE_PSX_RAM_MIRROR_END
+
 /* g_ram is non-static because recompiler-emitted accesses index it
  * directly; host code reaches it through `openpete_psx_get_ram()`.
  * Page-aligned so the sub-tick RAM guard can mprotect it (see
@@ -39,9 +52,10 @@ uint8_t* openpete_psx_get_scratch(void) { return g_scratch; }
  * (mod_arena.c): the DMA-reachable pool's lower segment
  * [0x00200000, 0x00700000) and upper segment [0x00700000, 0x01000000), and
  * the general pool [0x01000000, 0x1F000000). Kinds: a bus read
- * or write no host region maps (miss), a host span lookup that resolves
- * nothing, a lookup a registered region resolves (span_ptr_region, bus and
- * host together), and the host share of those hits. Counters are relaxed
+ * or write nothing maps (miss), a host span lookup that resolves
+ * nothing, a lookup a registered region resolves (span_ptr_far, bus and
+ * host together), the host share of those hits, and a lookup the RAM
+ * mirror resolves (bus and host together). Counters are relaxed
  * atomics because host span lookups also run off the simulation thread;
  * the first distinct bus-miss word addresses are recorded with no lock, so
  * the list may hold a duplicate. Off unless the variable is set; the
@@ -52,7 +66,7 @@ uint8_t* openpete_psx_get_scratch(void) { return g_scratch; }
 #define CENSUS_HI       0x1F000000u
 #define CENSUS_SEEN_MAX 32u
 
-enum { CK_READ_MISS, CK_WRITE_MISS, CK_HOST_MISS, CK_REGION_HIT, CK_HOST_HIT, CK_KINDS };
+enum { CK_READ_MISS, CK_WRITE_MISS, CK_HOST_MISS, CK_REGION_HIT, CK_HOST_HIT, CK_MIRROR_HIT, CK_KINDS };
 enum { CB_LOWER, CB_UPPER, CB_GENERAL, CB_BANDS };
 enum { CS_KUSEG, CS_KSEG0, CS_KSEG1, CS_SEGS };
 
@@ -119,36 +133,173 @@ static __attribute__((noinline, cold)) void census_note(uint32_t addr, unsigned 
     if (kind == CK_READ_MISS || kind == CK_WRITE_MISS) census_seen(addr, kind);
 }
 
-/** @brief Resolve a span through the presentation region table, or NULL.
+/* --- Unmapped guest accesses -----------------------------------------------
+ * A guest load or store through the KUSEG, KSEG0 or KSEG1 alias whose
+ * physical address lies at or above RAM_MIRROR_END and below expansion
+ * region 1 (0x1F000000), and that no registered region covers, reaches no
+ * device; hardware answers it with a data bus error. The bus reads 0 and
+ * drops the store, counts every such access, keeps the first UNMAPPED_KEEP
+ * with the guest function last entered (openpete_hang_last_entry), and logs
+ * each kept one. Counted on the bus accessors only, never on host lookups. */
+#define UNMAPPED_KEEP 8u
+static uint64_t                s_unmapped_n = 0;
+static openpete_psx_unmapped_t s_unmapped[UNMAPPED_KEEP];
+static uint32_t                s_unmapped_kept = 0;
+static int                     s_probe_running = 0;   /* the census probe is running: its accesses are not the guest's */
+
+/* The dispatch layer's last guest function entry; absent where no dispatch
+ * layer is linked (unit tests), where the record names function 0. */
+extern uint32_t openpete_hang_last_entry(void) __attribute__((weak));
+
+/** @brief Count a bus access that reached no device, and keep and log it while fewer than UNMAPPED_KEEP are kept.
+ *
+ * @param addr Guest address of the access.
+ * @param width Access width in bytes.
+ * @param write 1 for a store, 0 for a load. */
+static __attribute__((noinline, cold)) void unmapped_note(uint32_t addr, unsigned width, int write) {
+    const uint32_t top = addr >> 29, phys = addr & 0x1FFFFFFFu;
+    if (s_probe_running || (top != 0u && top != 4u && top != 5u) ||
+        phys < RAM_MIRROR_END || phys >= 0x1F000000u)
+        return;
+    __atomic_fetch_add(&s_unmapped_n, 1u, __ATOMIC_RELAXED);
+    const uint32_t k = __atomic_load_n(&s_unmapped_kept, __ATOMIC_RELAXED);
+    if (k >= UNMAPPED_KEEP) return;
+    const uint32_t fn = openpete_hang_last_entry ? openpete_hang_last_entry() : 0u;
+    s_unmapped[k].addr = addr;
+    s_unmapped[k].func = fn;
+    s_unmapped[k].width = (uint8_t)width;
+    s_unmapped[k].write = (uint8_t)write;
+    __atomic_store_n(&s_unmapped_kept, k + 1u, __ATOMIC_RELEASE);
+    OPL_WARN_F("bus", "guest %s of %u byte%s at 0x%08X reached no device (hardware raises a bus error; "
+               "the load reads 0, the store is dropped); last guest function entered 0x%08X%s",
+               write ? "store" : "load", width, width == 1u ? "" : "s", addr, fn,
+               k + 1u == UNMAPPED_KEEP ? "; further ones are counted, not logged" : "");
+}
+
+uint64_t openpete_psx_unmapped_accesses(openpete_psx_unmapped_t* first, uint32_t cap, uint32_t* kept) {
+    uint32_t k = __atomic_load_n(&s_unmapped_kept, __ATOMIC_ACQUIRE);
+    if (k > cap) k = cap;
+    for (uint32_t i = 0; i < k && first; i++) first[i] = s_unmapped[i];
+    if (kept) *kept = first ? k : 0u;
+    return __atomic_load_n(&s_unmapped_n, __ATOMIC_RELAXED);
+}
+
+/* --- Mirror site census (OPENPETE_MIRROR_CENSUS) ----------------------------
+ * Records every bus access the RAM mirror resolves (physical [RAM_SIZE,
+ * RAM_MIRROR_END) with no registered region over it), one row per (guest
+ * function last entered, address, width, load or store) with a count, in an
+ * open-addressed table of MC_SLOTS rows; an access that finds the table full
+ * is counted as dropped. Host lookups the mirror resolves are counted in one
+ * total, since they also run off the simulation thread. The function is the
+ * hang watchdog's last entry (openpete_hang_last_entry): the function that
+ * holds the access, or a callee it called earlier that has returned. Off
+ * unless the variable is set and not 0; the report runs at exit to stderr
+ * and, when the variable is a path, is appended to that file. */
+enum { MA_READ, MA_WRITE, MA_HOST };
+#define MC_SLOTS 4096u
+typedef struct {
+    uint32_t func, addr;
+    uint8_t  width, write, used;
+    uint64_t n;
+} mc_row_t;
+static int      s_mc_on = 0;
+static mc_row_t s_mc[MC_SLOTS];
+static uint64_t s_mc_dropped = 0, s_mc_host = 0;
+
+/** @brief Count one access the RAM mirror resolved in the site census.
+ *
+ * @param addr Guest address of the access.
+ * @param len Access width in bytes.
+ * @param kind MA_READ, MA_WRITE or MA_HOST. */
+static void mirror_census_note(uint32_t addr, uint32_t len, unsigned kind) {
+    if (!s_mc_on || s_probe_running) return;
+    if (kind == MA_HOST) { __atomic_fetch_add(&s_mc_host, 1u, __ATOMIC_RELAXED); return; }
+    const uint32_t fn = openpete_hang_last_entry ? openpete_hang_last_entry() : 0u;
+    const uint8_t wr = kind == MA_WRITE;
+    uint32_t h = (addr * 2654435761u) ^ (fn * 40503u) ^ (len << 1) ^ wr;
+    for (uint32_t i = 0; i < MC_SLOTS; i++) {
+        mc_row_t* r = &s_mc[(h + i) % MC_SLOTS];
+        if (!r->used) {
+            r->used = 1; r->func = fn; r->addr = addr; r->width = (uint8_t)len; r->write = wr; r->n = 1u;
+            return;
+        }
+        if (r->func == fn && r->addr == addr && r->width == len && r->write == wr) { r->n++; return; }
+    }
+    s_mc_dropped++;
+}
+
+/** @brief Write the mirror site census to @p f: one line per row, then a summary line. */
+static void mirror_census_emit(FILE* f) {
+    uint64_t rows = 0, bus = 0;
+    for (uint32_t i = 0; i < MC_SLOTS; i++) {
+        const mc_row_t* r = &s_mc[i];
+        if (!r->used) continue;
+        rows++; bus += r->n;
+        fprintf(f, "[mirror-census] func=0x%08X addr=0x%08X phys=0x%06X ram=0x%06X width=%u %s n=%llu\n",
+                r->func, r->addr, r->addr & 0x1FFFFFFFu, r->addr & (RAM_SIZE - 1u), r->width,
+                r->write ? "store" : "load", (unsigned long long)r->n);
+    }
+    fprintf(f, "[mirror-census] summary rows=%llu bus=%llu host=%llu dropped=%llu\n",
+            (unsigned long long)rows, (unsigned long long)bus,
+            (unsigned long long)__atomic_load_n(&s_mc_host, __ATOMIC_RELAXED),
+            (unsigned long long)s_mc_dropped);
+}
+
+/** @brief Report the mirror site census at exit to stderr and, when OPENPETE_MIRROR_CENSUS is a path, to that file. */
+static void mirror_census_report(void) {
+    mirror_census_emit(stderr);
+    const char* e = getenv("OPENPETE_MIRROR_CENSUS");
+    if (e && strcmp(e, "1") != 0) {
+        FILE* f = fopen(e, "a");
+        if (f) { mirror_census_emit(f); fclose(f); }
+    }
+}
+
+/** @brief Resolve a span above main RAM through the region table, else through the RAM mirror, or NULL.
  *
  * The cold half of span_ptr, kept out of line: its out-parameters are
  * address-taken locals, which inlined into span_ptr would give every bus
  * accessor a stack frame and a stack-protector canary on the main-RAM path.
- * Hot recompiler-emitted accesses to these regions bypass it through
- * per-site psxrecomp instruction substitutions.
- * @param addr Guest address.
+ * A registered region takes the address first; a span that starts in one
+ * and runs past its end is NULL. Otherwise a physical address below
+ * RAM_MIRROR_END is RAM at `phys & (RAM_SIZE - 1)`, the alias the RAM chips
+ * answer on hardware; a span that crosses the end of its 2 MB copy is
+ * NULL, as one crossing the top of main RAM is. Hot recompiler-emitted
+ * accesses to registered regions bypass this through per-site psxrecomp
+ * instruction substitutions.
+ * @param addr Guest address whose physical address is at or above RAM_SIZE.
  * @param len Span length in bytes.
- * @return The host pointer when the whole span lies in one region, else NULL. */
-static __attribute__((noinline, cold)) uint8_t* span_ptr_region(uint32_t addr, uint32_t len) {
-    if (psx_runtime_region_count() == 0u) return NULL;
-    void* host = NULL;
-    uint32_t rem = 0;
-    if (psx_runtime_resolve_region(addr, &host, &rem) && len <= rem) {
-        census_note(addr, CK_REGION_HIT);
-        return (uint8_t*)host;
+ * @param kind MA_READ, MA_WRITE or MA_HOST, for the mirror site census.
+ * @return The host pointer when the whole span lies in one region or one RAM copy, else NULL. */
+static __attribute__((noinline, cold)) uint8_t* span_ptr_far(uint32_t addr, uint32_t len, unsigned kind) {
+    if (psx_runtime_region_count() != 0u) {
+        void* host = NULL;
+        uint32_t rem = 0;
+        if (psx_runtime_resolve_region(addr, &host, &rem)) {
+            if (len > rem) return NULL;
+            census_note(addr, CK_REGION_HIT);
+            return (uint8_t*)host;
+        }
     }
-    return NULL;
+    const uint32_t phys = addr & 0x1FFFFFFFu;
+    if (phys >= RAM_MIRROR_END) return NULL;
+    const uint32_t off = phys & (RAM_SIZE - 1u);
+    if (len > RAM_SIZE - off) return NULL;
+    census_note(addr, CK_MIRROR_HIT);
+    mirror_census_note(addr, len, kind);
+    return &g_ram[off];
 }
 
 /** @brief Resolve a guest address to a host pointer valid for @p len bytes, or NULL.
  *
  * The span [addr, addr + len) must lie inside one host region: main RAM
- * (any segment), the scratchpad, or one entry of the presentation region
- * table (span_ptr_region). A span that starts inside a region and runs past
- * its end returns NULL rather than a pointer the caller would overrun. The
- * main-RAM and scratchpad tests take no local's address, so the bus
- * accessors that inline this need no stack frame. */
-static uint8_t* span_ptr(uint32_t addr, uint32_t len) {
+ * (any segment, and its mirrors below RAM_MIRROR_END), the scratchpad, or
+ * one entry of the presentation region table (span_ptr_far). A span that
+ * starts inside a region and runs past its end returns NULL rather than a
+ * pointer the caller would overrun. The main-RAM and scratchpad tests take
+ * no local's address, so the bus accessors that inline this need no stack
+ * frame. @p kind (MA_READ, MA_WRITE or MA_HOST) reaches only the cold half. */
+static uint8_t* span_ptr(uint32_t addr, uint32_t len, unsigned kind) {
     uint32_t phys = addr & 0x1FFFFFFFu;
     if (phys < RAM_SIZE)
         return (len <= RAM_SIZE - phys) ? &g_ram[phys] : NULL;
@@ -156,12 +307,12 @@ static uint8_t* span_ptr(uint32_t addr, uint32_t len) {
         uint32_t off = phys - 0x1F800000u;
         return (len <= SCRATCH_SIZE - off) ? &g_scratch[off] : NULL;
     }
-    return span_ptr_region(addr, len);
+    return span_ptr_far(addr, len, kind);
 }
 
 void* openpete_psx_to_host_span(uint32_t addr, uint32_t len) {
     if (addr == 0u) return NULL;
-    uint8_t* p = span_ptr(addr, len);
+    uint8_t* p = span_ptr(addr, len, MA_HOST);
     if ((addr & 0x1FFFFFFFu) >= RAM_SIZE) census_note(addr, p ? CK_HOST_HIT : CK_HOST_MISS);
     return p;
 }
@@ -172,8 +323,9 @@ void* openpete_psx_to_host_ptr(uint32_t addr) {
 
 /** @brief Resolve a guest address to its host byte and the bytes left in its region, or NULL.
  *
- * The region is main RAM (any segment), the scratchpad, or one entry of the
- * presentation region table, as span_ptr() classifies it.
+ * The region is main RAM (any segment), the scratchpad, one entry of the
+ * presentation region table, or the 2 MB RAM copy a mirror address names,
+ * as span_ptr() classifies it.
  * @param addr PSX virtual address.
  * @param room Receives the byte count from @p addr to the region's end. */
 static uint8_t* region_room(uint32_t addr, uint32_t* room) {
@@ -189,7 +341,9 @@ static uint8_t* region_room(uint32_t addr, uint32_t* room) {
         uint32_t rem = 0;
         if (psx_runtime_resolve_region(addr, &host, &rem)) { *room = rem; return (uint8_t*)host; }
     }
-    return NULL;
+    if (phys >= RAM_MIRROR_END) return NULL;
+    *room = RAM_SIZE - (phys & (RAM_SIZE - 1u));
+    return &g_ram[phys & (RAM_SIZE - 1u)];
 }
 
 const char* openpete_psx_to_host_str(uint32_t addr, uint32_t max, uint32_t* len_out) {
@@ -210,12 +364,16 @@ const char* openpete_psx_to_host_str(uint32_t addr, uint32_t max, uint32_t* len_
  *
  * Main RAM and the scratchpad resolve under any segment (the top three
  * address bits are dropped); any other address resolves through the
- * registered presentation region table (psx_region.c). An access whose
+ * registered presentation region table (psx_region.c), else, below
+ * physical RAM_MIRROR_END, to the main-RAM byte it mirrors. An access whose
  * last byte falls past the end of its region (an unaligned word or half
  * at the top of RAM or the scratchpad) is unmapped. Unlike
- * openpete_psx_to_host_ptr(), address 0 maps to RAM offset 0. */
-static uint8_t* mem_ptr(uint32_t addr, uint32_t n) {
-    return span_ptr(addr, n);
+ * openpete_psx_to_host_ptr(), address 0 maps to RAM offset 0.
+ * @param addr Guest address.
+ * @param n Access width in bytes.
+ * @param kind MA_READ or MA_WRITE, for the mirror site census. */
+static uint8_t* mem_ptr(uint32_t addr, uint32_t n, unsigned kind) {
+    return span_ptr(addr, n, kind);
 }
 
 /* --- Aligned reads/writes (caller is responsible for alignment) ---------- */
@@ -243,6 +401,7 @@ uint16_t openpete_psx_root_counter2(void) { return s_root_counter2; }
 static __attribute__((noinline, cold)) uint32_t rom_read(uint32_t addr, unsigned n) {
     uint32_t v = 0;
     census_note(addr, CK_READ_MISS);
+    unmapped_note(addr, n, 0);
     if ((addr & 0x1FFFFFFFu) == ROOT_COUNTER2_COUNT) {
         uint16_t ref;
         return (s_root_counter2_reader && s_root_counter2_reader(&ref)) ? ref : s_root_counter2;
@@ -256,7 +415,7 @@ static __attribute__((noinline, cold)) uint32_t rom_read(uint32_t addr, unsigned
 }
 /** @brief Read a word from the PSX bus; an address with no four mapped bytes reads the ROM model. */
 static uint32_t read_word(uint32_t addr) {
-    uint8_t* p = mem_ptr(addr, 4u);
+    uint8_t* p = mem_ptr(addr, 4u, MA_READ);
     if (!p) return rom_read(addr, 4);
     uint32_t v;
     memcpy(&v, p, 4);
@@ -264,13 +423,13 @@ static uint32_t read_word(uint32_t addr) {
 }
 /** @brief Write a word to the PSX bus; dropped unless all four bytes map. */
 static void write_word(uint32_t addr, uint32_t value) {
-    uint8_t* p = mem_ptr(addr, 4u);
-    if (!p) { census_note(addr, CK_WRITE_MISS); return; }
+    uint8_t* p = mem_ptr(addr, 4u, MA_WRITE);
+    if (!p) { census_note(addr, CK_WRITE_MISS); unmapped_note(addr, 4u, 1); return; }
     memcpy(p, &value, 4);
 }
 /** @brief Read a half from the PSX bus; an address with no two mapped bytes reads the ROM model. */
 static uint16_t read_half(uint32_t addr) {
-    uint8_t* p = mem_ptr(addr, 2u);
+    uint8_t* p = mem_ptr(addr, 2u, MA_READ);
     if (!p) return (uint16_t)rom_read(addr, 2);
     uint16_t v;
     memcpy(&v, p, 2);
@@ -278,8 +437,8 @@ static uint16_t read_half(uint32_t addr) {
 }
 /** @brief Write a half to the PSX bus; dropped unless both bytes map. */
 static void write_half(uint32_t addr, uint16_t value) {
-    uint8_t* p = mem_ptr(addr, 2u);
-    if (!p) { census_note(addr, CK_WRITE_MISS); return; }
+    uint8_t* p = mem_ptr(addr, 2u, MA_WRITE);
+    if (!p) { census_note(addr, CK_WRITE_MISS); unmapped_note(addr, 2u, 1); return; }
     memcpy(p, &value, 2);
 }
 /** @brief Read one byte no host region maps: a CD-ROM controller register, the BIOS ROM window, or 0.
@@ -294,21 +453,23 @@ static void write_half(uint32_t addr, uint16_t value) {
 static __attribute__((noinline, cold)) uint8_t read_byte_unmapped(uint32_t addr) {
     uint8_t v;
     census_note(addr, CK_READ_MISS);
+    unmapped_note(addr, 1u, 0);
     if (((addr & 0x1FFFFFFFu) & ~3u) == 0x1F801800u && openpete_cdrom_mmio_read8(addr & 0x1FFFFFFFu, &v)) return v;
     if (openpete_psx_bios_rom_read8(addr & 0x1FFFFFFFu, &v)) return v;
     return 0u;
 }
 /** @brief Read one byte from the PSX bus; main RAM, the scratchpad and the region table resolve through mem_ptr(), the rest through read_byte_unmapped. */
 static uint8_t read_byte(uint32_t addr) {
-    uint8_t* p = mem_ptr(addr, 1u);
+    uint8_t* p = mem_ptr(addr, 1u, MA_READ);
     if (p) return *p;
     return read_byte_unmapped(addr);
 }
 /** @brief Write one byte to the PSX bus; an unmapped CD-ROM register byte goes to the controller model. */
 static void write_byte(uint32_t addr, uint8_t value) {
-    uint8_t* p = mem_ptr(addr, 1u);
+    uint8_t* p = mem_ptr(addr, 1u, MA_WRITE);
     if (p) { *p = value; return; }
     census_note(addr, CK_WRITE_MISS);
+    unmapped_note(addr, 1u, 1);
     if (((addr & 0x1FFFFFFFu) & ~3u) == 0x1F801800u) (void)openpete_cdrom_mmio_write8(addr & 0x1FFFFFFFu, value);
 }
 
@@ -373,7 +534,7 @@ static void do_swr(uint32_t addr, uint32_t rt) {
 /* --- Above-RAM census report ---------------------------------------------- */
 
 static const char* const k_census_kind[CK_KINDS] = {
-    "read_miss", "write_miss", "host_miss", "region_hit", "host_hit"
+    "read_miss", "write_miss", "host_miss", "region_hit", "host_hit", "mirror_hit"
 };
 static const char* const k_census_band[CB_BANDS] = {
     "dma_lower", "dma_upper", "general"
@@ -401,8 +562,9 @@ static uint64_t census_sum(const census_counts_t* c, unsigned kind, unsigned ban
  *
  * One line per band with each kind as total(kuseg/kseg0/kseg1), one line
  * per recorded bus-miss word address, the probe line, and a summary line
- * whose game_miss counts bus reads and writes in every band and whose
- * arena_ counts sum every band.
+ * whose game_miss counts bus reads and writes nothing mapped in every band,
+ * whose arena_ counts sum every band, and whose mirror_hit counts the
+ * lookups the RAM mirror resolved.
  * @param f Destination stream.
  * @param c Counts taken before the probe.
  * @param probe Count deltas each pool's probe produced in its band, summed over segments.
@@ -428,22 +590,24 @@ static void census_emit(FILE* f, const census_counts_t* c,
                 k_census_kind[s_census_seen_kind[i]], (unsigned long long)s_census_seen_n[i]);
     for (unsigned p = 0; p < CP_POOLS; p++)
         fprintf(f, "[arena-census] probe pool=%s read_miss=+%llu write_miss=+%llu "
-                   "host_miss=+%llu region_hit=+%llu host_hit=+%llu control=%s\n",
+                   "host_miss=+%llu region_hit=+%llu host_hit=+%llu mirror_hit=+%llu control=%s\n",
                 k_census_probe[p].name,
                 (unsigned long long)probe[p][CK_READ_MISS], (unsigned long long)probe[p][CK_WRITE_MISS],
                 (unsigned long long)probe[p][CK_HOST_MISS], (unsigned long long)probe[p][CK_REGION_HIT],
-                (unsigned long long)probe[p][CK_HOST_HIT], control[p]);
-    uint64_t hit = 0, host_hit = 0;
+                (unsigned long long)probe[p][CK_HOST_HIT], (unsigned long long)probe[p][CK_MIRROR_HIT],
+                control[p]);
+    uint64_t hit = 0, host_hit = 0, mirror_hit = 0;
     for (unsigned b = 0; b < CB_BANDS; b++) {
         hit += census_sum(c, CK_REGION_HIT, b);
         host_hit += census_sum(c, CK_HOST_HIT, b);
+        mirror_hit += census_sum(c, CK_MIRROR_HIT, b);
     }
     const int pass = strncmp(control[CP_DMA], "PASS", 4) == 0 &&
                      strncmp(control[CP_GENERAL], "PASS", 4) == 0;
     fprintf(f, "[arena-census] summary game_miss=%llu arena_miss=%llu arena_region_hit=%llu "
-               "arena_host_hit=%llu control=%s dma=%s general=%s\n",
+               "arena_host_hit=%llu mirror_hit=%llu control=%s dma=%s general=%s\n",
             (unsigned long long)game_miss, (unsigned long long)game_miss,
-            (unsigned long long)hit, (unsigned long long)host_hit,
+            (unsigned long long)hit, (unsigned long long)host_hit, (unsigned long long)mirror_hit,
             pass ? "PASS" : "FAIL", control[CP_DMA], control[CP_GENERAL]);
 }
 
@@ -451,29 +615,37 @@ static void census_emit(FILE* f, const census_counts_t* c,
  *
  * Reads the pool's first words through the KUSEG, KSEG0 and KSEG1
  * aliases, rewrites one word with the value it holds (no byte changes;
- * dropped when no region maps it) and makes one host span lookup. With
- * the pool unregistered the probe must add 4 read misses, 1 write miss
- * and 1 host miss in its band; with it registered, 6 region hits (4
- * reads, 1 write, 1 host) of which 1 host hit. Anything else is FAIL.
+ * dropped when nothing maps it) and makes one host span lookup. With
+ * the pool unregistered and above the RAM mirror the probe must add 4 read
+ * misses, 1 write miss and 1 host miss in its band; with it registered, 6
+ * region hits (4 reads, 1 write, 1 host) of which 1 host hit; unregistered
+ * inside the RAM mirror, 6 mirror hits of which 1 host hit. Anything else
+ * is FAIL. The probe's accesses are not counted as unmapped guest accesses
+ * or in the mirror site census.
  * @param p CP_DMA or CP_GENERAL.
  * @param delta Receives the count deltas in the pool's band, summed over segments.
- * @return "PASS(unregistered)", "PASS(registered)" or "FAIL". */
+ * @return "PASS(unregistered)", "PASS(registered)", "PASS(mirror)" or "FAIL". */
 static const char* census_probe(unsigned p, uint64_t delta[CK_KINDS]) {
     const uint32_t b = k_census_probe[p].base;
     const unsigned band = k_census_probe[p].band;
     census_counts_t before = s_census;
+    s_probe_running = 1;
     (void)read_word(b);
     (void)read_word(OPENPETE_PSX_KSEG0_BASE | (b + 4u));
     (void)read_word(OPENPETE_PSX_KSEG1_BASE | (b + 8u));
     write_word(OPENPETE_PSX_KSEG0_BASE | (b + 12u), read_word(OPENPETE_PSX_KSEG0_BASE | (b + 12u)));
     (void)openpete_psx_to_host_span(OPENPETE_PSX_KSEG0_BASE | (b + 16u), 4u);
+    s_probe_running = 0;
     for (unsigned k = 0; k < CK_KINDS; k++)
         delta[k] = census_sum(&s_census, k, band) - census_sum(&before, k, band);
+    const int none = delta[CK_REGION_HIT] == 0u && delta[CK_MIRROR_HIT] == 0u;
     const int miss = delta[CK_READ_MISS] == 4u && delta[CK_WRITE_MISS] == 1u &&
-                     delta[CK_HOST_MISS] == 1u && delta[CK_REGION_HIT] == 0u;
+                     delta[CK_HOST_MISS] == 1u && none;
     const int hit = delta[CK_REGION_HIT] == 6u && delta[CK_HOST_HIT] == 1u &&
-                    delta[CK_READ_MISS] == 0u && delta[CK_WRITE_MISS] == 0u;
-    return miss ? "PASS(unregistered)" : (hit ? "PASS(registered)" : "FAIL");
+                    delta[CK_READ_MISS] == 0u && delta[CK_WRITE_MISS] == 0u && delta[CK_MIRROR_HIT] == 0u;
+    const int mirror = delta[CK_MIRROR_HIT] == 6u && delta[CK_HOST_HIT] == 1u &&
+                       delta[CK_READ_MISS] == 0u && delta[CK_WRITE_MISS] == 0u && delta[CK_REGION_HIT] == 0u;
+    return miss ? "PASS(unregistered)" : hit ? "PASS(registered)" : mirror ? "PASS(mirror)" : "FAIL";
 }
 
 /** @brief Report the census at exit after a probe control in each pool.
@@ -495,11 +667,16 @@ static void census_report(void) {
     }
 }
 
-/** @brief Turn the census on when OPENPETE_ARENA_CENSUS is set and not 0, once per process. */
+/** @brief Turn the above-RAM census on when OPENPETE_ARENA_CENSUS is set and not 0, and the mirror site census when OPENPETE_MIRROR_CENSUS is, once per process. */
 static void census_init(void) {
     static int armed = 0;
     if (armed) return;
     armed = 1;
+    const char* m = getenv("OPENPETE_MIRROR_CENSUS");
+    if (m && *m && *m != '0') {
+        s_mc_on = 1;
+        atexit(mirror_census_report);
+    }
     const char* e = getenv("OPENPETE_ARENA_CENSUS");
     if (!e || !*e || *e == '0') return;
     s_census_on = 1;
@@ -526,14 +703,13 @@ void openpete_psx_runtime_init(CPUState* cpu) {
 }
 
 void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size) {
-    uint8_t* p = mem_ptr(addr, 1u);
+    uint32_t avail = 0;
+    uint8_t* p = region_room(addr, &avail);
     if (!p) {
         OPL_ERROR_F("boot", "psx_load: unmapped target addr=0x%08X size=%u", addr, size);
         return;
     }
-    /* size may straddle the end of RAM; clamp on the host side. */
-    uint32_t phys = addr & 0x1FFFFFFFu;
-    uint32_t avail = (phys < RAM_SIZE) ? (RAM_SIZE - phys) : 0u;
+    /* size may straddle the end of its region; clamp on the host side. */
     if (size > avail) {
         OPL_WARN_F("boot", "psx_load: clamped %u->%u bytes at 0x%08X", size, avail, addr);
         size = avail;

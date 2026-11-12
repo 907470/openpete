@@ -328,15 +328,22 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
  * unchanged. (They key off vbl rather than `openpete_frame` so fast-boot
  * iterations - which advance vbl but not frame - don't look like hangs.)
  *
- * On trip: write three rings of (addr, ra, sp) to `OPENPETE_HANG_TRACE`
- * (default hang-trace.bin in the logs state directory, beside the log
- * file) and guest RAM to `OPENPETE_HANG_RAM` (default hang-ram.bin there),
- * tell the player (openpete_fatal_message), run the registered exit flush
- * (openpete_crash_run_exit_flush) and exit 2 (openpete_crash_terminate_now). Format: u32
- * magic 'HNG2', then
- * for each ring a u32 count, a u32 head index, and count*{u32 addr, u32 ra,
- * u32 sp}: the entry ring for the tripping interval, the entry ring as it
- * stood at the previous vbl boundary, and the recent ring.
+ * On trip: write three rings of (addr, ra, sp) and the state at the trip to
+ * `OPENPETE_HANG_TRACE` (default hang-trace.bin in the logs state directory,
+ * beside the log file) and guest RAM to `OPENPETE_HANG_RAM` (default
+ * hang-ram.bin there), tell the player (openpete_fatal_message), run the
+ * registered exit flush (openpete_crash_run_exit_flush) and exit 2
+ * (openpete_crash_terminate_now). Format, all little-endian: u32 magic
+ * 'HNG3', then for each ring a u32 count, a u32 head index, and count*{u32
+ * addr, u32 ra, u32 sp}: the entry ring for the tripping interval, the entry
+ * ring as it stood at the previous vbl boundary, and the recent ring. Then
+ * the trip block (hang_trip_block): u32 trip address; u32 1 and the 35 words
+ * r0..r31, pc, hi, lo of the registered guest CPU, or u32 0 and 35 zero
+ * words; the resident overlay's u32 id and 32-byte NUL-padded name (id 0 and
+ * an empty name when none is known); a u64 count of the guest accesses that
+ * reached no device, a u32 count kept, and HANG_UNMAPPED_KEEP*{u32 addr,
+ * u32 guest function, u8 width, u8 write, u16 0}. 'HNG2' files end after
+ * the rings.
  * Disabled when `OPENPETE_HANG_THRESHOLD=0`. */
 #define HANG_RING 4096u
 struct hang_entry { uint32_t addr; uint32_t ra; uint32_t sp; };
@@ -400,11 +407,86 @@ static void hang_output_path(const char* leaf, char* out, size_t cap) {
         snprintf(out, cap, "%s", leaf);
 }
 
-size_t openpete_hang_rings_image(uint8_t** out) {
-    const uint32_t magic = 0x32474E48u;  /* 'HNG2' */
+/* The trip block: the trip address, the guest CPU, the resident overlay and
+ * the unmapped guest accesses (format above). */
+#define HANG_UNMAPPED_KEEP 8u
+#define HANG_OVERLAY_NAME  32u
+#define HANG_TRIP_BYTES    (4u + 4u + 35u * 4u + 4u + HANG_OVERLAY_NAME + 8u + 4u + HANG_UNMAPPED_KEEP * 12u)
+
+/* The resident overlay, from the game's overlay table; absent in a build with
+ * no game (unit tests), where the block names none. */
+extern const char* game_resident_overlay_name(uint32_t* id) __attribute__((weak));
+/* The guest CPU the crash report prints (crash.c). */
+extern CPUState* openpete_psx_diag_cpu(void);
+
+/** @brief Write the trip block of hang-trace.bin at @p p: the trip address, the guest registers, the resident overlay and the unmapped guest accesses.
+ *
+ * Reads the registered guest CPU without a lock; on the stall monitor's
+ * off-thread dump the guest may be running and the registers may be torn.
+ * @param p Destination, HANG_TRIP_BYTES long.
+ * @param trip_addr The trip address, 0 when none. */
+static void hang_trip_block(uint8_t* p, uint32_t trip_addr) {
+    memset(p, 0, HANG_TRIP_BYTES);
+    memcpy(p, &trip_addr, 4); p += 4;
+    const CPUState* c = openpete_psx_diag_cpu();
+    const uint32_t have = c != NULL;
+    memcpy(p, &have, 4); p += 4;
+    if (c) {
+        memcpy(p, &c->zero, 32u * 4u);   /* r0..r31 are the struct's first 32 words */
+        memcpy(p + 128, &c->pc, 4);
+        memcpy(p + 132, &c->hi, 4);
+        memcpy(p + 136, &c->lo, 4);
+    }
+    p += 35u * 4u;
+    uint32_t id = 0;
+    const char* name = game_resident_overlay_name ? game_resident_overlay_name(&id) : NULL;
+    memcpy(p, &id, 4); p += 4;
+    if (name) strncpy((char*)p, name, HANG_OVERLAY_NAME - 1u);
+    p += HANG_OVERLAY_NAME;
+    openpete_psx_unmapped_t first[HANG_UNMAPPED_KEEP];
+    uint32_t kept = 0;
+    const uint64_t n = openpete_psx_unmapped_accesses(first, HANG_UNMAPPED_KEEP, &kept);
+    memcpy(p, &n, 8); p += 8;
+    memcpy(p, &kept, 4); p += 4;
+    for (uint32_t i = 0; i < kept; i++, p += 12) {
+        memcpy(p, &first[i].addr, 4);
+        memcpy(p + 4, &first[i].func, 4);
+        p[8] = first[i].width;
+        p[9] = first[i].write;
+    }
+}
+
+/** @brief Log the trip block's content: the overlay, the registers that locate a guest loop, and the unmapped guest accesses. */
+static void hang_trip_log(void) {
+    uint32_t id = 0;
+    const char* name = game_resident_overlay_name ? game_resident_overlay_name(&id) : NULL;
+    openpete_psx_unmapped_t first[HANG_UNMAPPED_KEEP];
+    uint32_t kept = 0;
+    const uint64_t n = openpete_psx_unmapped_accesses(first, HANG_UNMAPPED_KEEP, &kept);
+    const CPUState* c = openpete_psx_diag_cpu();
+    OPL_ERROR_F("watchdog",
+                "at the trip: overlay %s (id %u); ra=0x%08X sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X "
+                "v0=0x%08X v1=0x%08X at=0x%08X; %llu guest access(es) reached no device%s",
+                name && *name ? name : "none", id, c ? c->ra : 0u, c ? c->sp : 0u, c ? c->a0 : 0u,
+                c ? c->a1 : 0u, c ? c->a2 : 0u, c ? c->v0 : 0u, c ? c->v1 : 0u, c ? c->at : 0u,
+                (unsigned long long)n, kept ? ", first:" : "");
+    for (uint32_t i = 0; i < kept; i++)
+        OPL_ERROR_F("watchdog", "  unmapped %s of %u at 0x%08X, last guest function entered 0x%08X",
+                    first[i].write ? "store" : "load", first[i].width, first[i].addr, first[i].func);
+}
+
+/** @brief Build hang-trace.bin's image: the three rings and, when @p trip is nonzero, the trip block.
+ *
+ * @param out Receives the bytes; free with free().
+ * @param trip Nonzero to append the trip block.
+ * @param trip_addr The trip address for the block.
+ * @return The byte count, 0 when allocation failed. */
+static size_t hang_image(uint8_t** out, int trip, uint32_t trip_addr) {
+    const uint32_t magic = trip ? 0x33474E48u : 0x32474E48u;  /* 'HNG3' : 'HNG2' */
     const uint32_t count = HANG_RING, recent = HANG_RECENT;
-    const size_t n = 3u * 4u + sizeof s_hang_ring + 2u * 4u + sizeof s_hang_ring_prev + 2u * 4u +
-                     sizeof s_hang_recent;
+    const size_t rings = 3u * 4u + sizeof s_hang_ring + 2u * 4u + sizeof s_hang_ring_prev + 2u * 4u +
+                         sizeof s_hang_recent;
+    const size_t n = rings + (trip ? HANG_TRIP_BYTES : 0u);
     uint8_t* b = (uint8_t*)malloc(n);
     *out = b;
     if (!b) return 0;
@@ -422,7 +504,16 @@ size_t openpete_hang_rings_image(uint8_t** out) {
     HANG_PUT(&s_hang_recent_head, 4);
     HANG_PUT(s_hang_recent, sizeof s_hang_recent);
 #undef HANG_PUT
+    if (trip) hang_trip_block(p, trip_addr);
     return n;
+}
+
+size_t openpete_hang_rings_image(uint8_t** out) {
+    return hang_image(out, 0, 0u);
+}
+
+uint32_t openpete_hang_last_entry(void) {
+    return s_hang_recent[(s_hang_recent_head + HANG_RECENT - 1u) % HANG_RECENT].addr;
 }
 
 void openpete_hang_output_path(const char* leaf, char* out, size_t cap) {
@@ -455,7 +546,7 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta,
     FILE* fp = fopen(path, "wb");
     if (fp) {
         uint8_t* img = NULL;
-        const size_t n = openpete_hang_rings_image(&img);
+        const size_t n = hang_image(&img, 1, trip_addr);
         if (n) fwrite(img, 1, n, fp);
         free(img);
         fclose(fp);
@@ -489,6 +580,7 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta,
                     "(trip addr=0x%08X), wrote trace=%s ram=%s - exiting",
                     s_hang_calls_since_tick, s_hang_last_vbl, trip_addr,
                     path, rampath);
+    hang_trip_log();
     char msg[2600];
     snprintf(msg, sizeof msg, "The game stopped responding and was closed. "
              "Diagnostic files were written to %s and %s.", path, rampath);

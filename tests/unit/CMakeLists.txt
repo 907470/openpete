@@ -252,6 +252,22 @@ target_include_directories(psx_span_test PRIVATE
 set_target_properties(psx_span_test PROPERTIES C_STANDARD 11)
 add_test(NAME psx_span_test COMMAND psx_span_test)
 
+# psx_span_test_nomirror - the same checks over a bus built with the RAM
+# mirror removed (OPENPETE_PSX_RAM_MIRROR_END = 2 MB): the mirror checks
+# must fail, so the test is expected to fail.
+add_executable(psx_span_test_nomirror
+    ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c
+    psx_span_test.c
+    ${CMAKE_SOURCE_DIR}/core/psx/cpu.c
+    ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
+target_include_directories(psx_span_test_nomirror PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+target_compile_definitions(psx_span_test_nomirror PRIVATE OPENPETE_PSX_RAM_MIRROR_END=0x00200000u)
+set_target_properties(psx_span_test_nomirror PROPERTIES C_STANDARD 11)
+add_test(NAME psx_span_test_nomirror COMMAND psx_span_test_nomirror)
+set_tests_properties(psx_span_test_nomirror PROPERTIES WILL_FAIL TRUE)
+
 # knob_registry_test - the M-overlay knob table: module-contributed rows
 # (openpete_knob_add) landing inside their section, capacity refusal, and
 # KNOB_ACTION button rows. Compiles knob_registry.c directly and stubs the

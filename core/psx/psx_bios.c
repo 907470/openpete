@@ -159,18 +159,18 @@ static void invoke_guest(CPUState* cpu, uint32_t addr) {
 #define PSX_RAM_BYTES 0x200000u
 #define MC_FRAME_BYTES 128u
 
-/** @brief Resolve a guest buffer of @p len bytes in main RAM to a host pointer.
+/** @brief Resolve a guest buffer of @p len bytes to a host pointer, as a bus access resolves it.
  *
- * The three segment mirrors all alias the same 2 MB, so the physical address
- * is the low 29 bits. A buffer that starts above the RAM window (scratchpad,
- * hardware registers, BIOS) or runs past its end has no host backing here.
+ * The buffer must lie in one region openpete_psx_to_host_span accepts: main
+ * RAM under any segment, one 2 MB mirror copy of it below physical 8 MB,
+ * the scratchpad, or a registered region. Guest address 0 is kernel RAM
+ * offset 0 here, as the BIOS's own copy loops see it, not PSX NULL.
  * @param addr Guest address of the buffer.
  * @param len Bytes the caller reads or writes.
  * @return The host pointer, or NULL. */
 static void* guest_ptr(uint32_t addr, uint32_t len) {
-    uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys >= PSX_RAM_BYTES || len > PSX_RAM_BYTES - phys) return NULL;
-    return openpete_psx_get_ram() + phys;
+    if (addr == 0u) return len <= PSX_RAM_BYTES ? openpete_psx_get_ram() : NULL;
+    return openpete_psx_to_host_span(addr, len);
 }
 
 /* The kernel's file layer, at the SCPH-1001 addresses: errno at 0x8640 and

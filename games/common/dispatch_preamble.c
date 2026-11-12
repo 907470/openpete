@@ -37,3 +37,10 @@ uint32_t game_resident_overlay_probe(void) {
     psyq_overlay_resync_from_ram();
     return spyro_get_active_overlay_magic();
 }
+
+const char* game_resident_overlay_name(uint32_t* id) {
+    const uint32_t magic = spyro_get_active_overlay_magic();
+    const spyro_overlay_entry_t* e = magic ? spyro_overlay_find(magic) : NULL;
+    *id = magic;
+    return e ? e->name : NULL;
+}

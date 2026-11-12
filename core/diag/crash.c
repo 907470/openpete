@@ -123,6 +123,11 @@ static CPUState* g_diag_cpu = NULL;
  * @param cpu The game's CPUState; NULL prints "(no CPUState registered)". */
 void openpete_psx_set_diag_cpu(CPUState* cpu) { g_diag_cpu = cpu; }
 
+/** @brief Return the CPUState registered with openpete_psx_set_diag_cpu.
+ *
+ * @return The registered CPUState, or NULL before one is registered. */
+CPUState* openpete_psx_diag_cpu(void) { return g_diag_cpu; }
+
 /** @brief Append the guest registers of the registered CPUState and the mod whose override chain was executing. */
 static void rep_guest_state(void) {
     const CPUState* c = g_diag_cpu;

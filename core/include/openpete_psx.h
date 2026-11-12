@@ -198,7 +198,8 @@ void openpete_state_regions_register(const OpenpeteStateRegion* regions,
  *
  * Main RAM and the scratchpad resolve under any segment (the top three
  * address bits are dropped); any other address resolves through the
- * registered presentation region table. PSYQ thunks use it to translate
+ * registered presentation region table, else, below physical 8 MB, to the
+ * main-RAM byte it mirrors (physical address modulo 2 MB), as on hardware. PSYQ thunks use it to translate
  * pointer arguments, held in cpu->aN as PSX addresses, to host pointers
  * PsyCross can dereference. The pointer is valid for one byte; a host
  * site that reads or writes more resolves through
@@ -210,8 +211,9 @@ void* openpete_psx_to_host_ptr(uint32_t addr);
 /** @brief Map a PSX virtual address to a host pointer valid for @p len bytes.
  *
  * The span [addr, addr + len) must lie inside one region: main RAM (any
- * segment), the scratchpad, or one registered presentation region. A
- * span that crosses the end of its region is refused, so a guest pointer
+ * segment), one 2 MB mirror copy of it below physical 8 MB, the
+ * scratchpad, or one registered presentation region. A span that crosses
+ * the end of its region or mirror copy is refused, so a guest pointer
  * near the top of RAM cannot carry a host read or write past g_ram or
  * the scratchpad array. Every host site that reads or writes more than
  * one byte through a guest pointer resolves it here with the width it
@@ -239,11 +241,33 @@ void* openpete_psx_to_host_span(uint32_t addr, uint32_t len);
  *         string that runs off its region's end. */
 const char* openpete_psx_to_host_str(uint32_t addr, uint32_t max, uint32_t* len_out);
 
-/** @brief Copy bytes into main RAM at a PSX virtual address.
+/** @brief One guest load or store that reached no device. */
+typedef struct {
+    uint32_t addr;   /**< Guest virtual address of the access. */
+    uint32_t func;   /**< Guest function last entered before it (the hang watchdog's ring), 0 when unknown. */
+    uint8_t  width;  /**< Access width in bytes. */
+    uint8_t  write;  /**< 1 for a store, 0 for a load. */
+} openpete_psx_unmapped_t;
+
+/** @brief Report the guest loads and stores that reached no device: the count and the first ones kept.
  *
- * The copy is clamped, with a warning, to the bytes between the target and
- * the end of main RAM, so a target outside main RAM copies nothing; an
- * unmapped target logs an error.
+ * An access counts when it goes through the KUSEG, KSEG0 or KSEG1 alias to
+ * a physical address at or above 8 MB (the end of the RAM mirror) and
+ * below expansion region 1 (0x1F000000) that no registered region covers;
+ * hardware raises a data bus error there, the bus reads 0 and drops the
+ * store. The bus keeps the first 8 and logs each as it is kept.
+ * @param first Receives up to @p cap kept accesses, oldest first; may be NULL.
+ * @param cap Capacity of @p first.
+ * @param kept Receives the number written to @p first; may be NULL.
+ * @return The number of such accesses since boot. */
+uint64_t openpete_psx_unmapped_accesses(openpete_psx_unmapped_t* first, uint32_t cap, uint32_t* kept);
+
+/** @brief Copy bytes into guest memory at a PSX virtual address.
+ *
+ * The target resolves as a bus access does (main RAM, its mirrors, the
+ * scratchpad or a registered region); the copy is clamped, with a warning,
+ * to the bytes between the target and the end of that region or 2 MB RAM
+ * copy, and an unmapped target logs an error and copies nothing.
  * @param addr Destination PSX address.
  * @param data Source bytes.
  * @param size Byte count. */
@@ -465,6 +489,11 @@ void openpete_stall_monitor_stop(void);
  * @param out Receives the bytes; free with free().
  * @return The byte count, 0 when allocation failed. */
 size_t openpete_hang_rings_image(uint8_t** out);
+
+/** @brief Return the guest function the hang watchdog's recent ring entered last.
+ *
+ * @return Its guest address, or 0 when the watchdog is disarmed or nothing was entered. */
+uint32_t openpete_hang_last_entry(void);
 
 /** @brief Write the path a hang trip writes one of its files to: OPENPETE_HANG_TRACE / OPENPETE_HANG_RAM, else the logs state directory.
  * @param leaf "hang-trace.bin" or "hang-ram.bin".

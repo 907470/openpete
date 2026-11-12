@@ -2169,6 +2169,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Guest RAM mirror end to end: mods/ram-mirror-probe makes each game's
+    # own moby grid relink run with a moby at a negative X (bucket store in
+    # the RAM mirror) and a negative Y (bucket store above 8 MB), and checks
+    # the bucket, the census engagement count and the unmapped-store
+    # warning (tests/harness/check_ram_mirror.sh). Six runs measure about
+    # 50 s on an idle machine; skips (exit 64) without the binary or discs.
+    add_test(NAME ram_mirror_e2e
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_ram_mirror.sh)
+    set_tests_properties(ram_mirror_e2e PROPERTIES
+        LABELS "slow;mods"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 300
+        SKIP_RETURN_CODE 64
+        ENVIRONMENT "RAM_MIRROR_WORK=${CMAKE_BINARY_DIR}/ram-mirror"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Hang watchdog stall monitor: an inline mod that spins without a VBL
     # trips within the stall limit (Linux, and Windows when the MinGW exe is
     # built), the community-mod triple trips on Windows when

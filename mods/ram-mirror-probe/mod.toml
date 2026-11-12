@@ -1,0 +1,61 @@
+# ram-mirror-probe - CI fixture: a moby at a negative coordinate.
+#
+# Hooks the game's moby grid relink (Spyro 1 0x800529E4, Spyro 2
+# 0x80041538, Spyro 3 0x80055D24). The relink files a moby in the bucket
+# (x >> 13) + (y >> 13) * 32 of the 32x32 sector grid, computed with
+# unsigned shifts, so a negative X gives an index of 0x80000 or more and
+# the bucket store lands 2 MB or more past the grid: on hardware a RAM
+# mirror of the bucket the stored halfword names. The probe picks the first
+# moby the game relinks itself (flag 2) once gameplay is live, sets its X
+# (case x) or Y (case y) negative for that moby's next `force` relink calls
+# of the game's own update, restores the coordinate after each, and checks
+# the bucket. Drives tests/harness/check_ram_mirror.sh. Never enable it to
+# play.
+
+[mod]
+id      = "ram-mirror-probe"
+name    = "RAM Mirror Probe"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"      # call counters only
+runahead = "host-fx"   # log lines
+
+[[config]]
+key = "case"
+type = "string"
+default = "x"
+label = "Negative axis"
+help = "x: the moby's X is set negative (bucket store in the RAM mirror); y: its Y (bucket store above 8 MB)"
+
+[[config]]
+key = "skip"
+type = "int"
+default = 200
+min = 0
+max = 1000000
+label = "Relinks to skip"
+help = "Live relink calls let through before a moby is chosen"
+
+[[config]]
+key = "force"
+type = "int"
+default = 30
+min = 1
+max = 10000
+label = "Forced relinks"
+help = "Relink calls of the chosen moby made with the coordinate negative"
+
+[[config]]
+key = "conflict"
+type = "bool"
+default = false
+label = "Map the arena over the mirror"
+help = "Allocate 9 MiB and then 2 MiB of the DMA-reachable arena at entry, so the second block covers the first RAM mirror copy"
+
+[[config]]
+key = "observe"
+type = "bool"
+default = false
+label = "Observe only"
+help = "Force nothing; log the grid's base address whenever it or the level changes"

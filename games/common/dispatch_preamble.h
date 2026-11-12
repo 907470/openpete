@@ -45,6 +45,15 @@ int game_dispatch_preamble(CPUState* cpu, uint32_t addr,
  *         read. */
 uint32_t game_resident_overlay_probe(void);
 
+/** @brief Name the overlay the dispatcher treats as resident, without re-deriving it from guest RAM.
+ *
+ * Reads the active-overlay tracker only, so the hang watchdog may call it
+ * from the stall monitor thread while the guest runs.
+ * @param id Receives the overlay id, 0 when none is active.
+ * @return The overlay's table name (the decomp's link-map section name),
+ *         or NULL when none is active. */
+const char* game_resident_overlay_name(uint32_t* id);
+
 #ifdef __cplusplus
 }
 #endif
