@@ -168,3 +168,9 @@ dino_mines:2 | pos=(193476, 57000, 11500) yaw=1023 pitch=-1
 # angles from the colour word; its rotation holds for the whole tick on
 # sub-tick presents. Blessed pre-fix.
 evening_lake | pos=(49300, 52390, 20500) yaw=1100 pitch=108
+# The camera inside a sunny_villa butterfly jar (class 0x233, a moby of the
+# second model kind): the jar's near faces have vertices within the GTE's
+# divide-overflow regime at the draw's own GTE depth (half world units), so
+# they are drawn as their near-clipped view-space shapes and selected on their
+# true facing, as the animated kind's are.
+sunny_villa | pos=(76936, 50960, 12313) yaw=867 pitch=197

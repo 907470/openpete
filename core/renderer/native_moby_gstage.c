@@ -201,7 +201,11 @@ static uint32_t gsab_bits(float f)
  *
  * A snapshot vertex's screen position is the float the walk copies into the
  * scene, so a scene vertex the projection emitted unclipped matches bit for
- * bit; near-cut vertices match nothing.
+ * bit. A vertex in the GTE divide-overflow regime is also keyed at the
+ * position the near clip emits for an uncut corner, its homogeneous position
+ * over W in float (hx / tvz, hy / tvz, each rounded to float first), so a
+ * record whose every face takes the near clip still matches; near-cut
+ * corners match nothing.
  * @param S The snapshot.
  * @param tris The scene's triangles.
  * @param n Their count.
@@ -213,15 +217,18 @@ static unsigned gsab_match(const gsab_snap *S, const void *tris, int n, size_t s
                            unsigned *known)
 {
     *total = 0; *known = 0;
-    gsab_key *k = S->nvert > 0 ? malloc((size_t)S->nvert * sizeof *k) : NULL;
+    gsab_key *k = S->nvert > 0 ? malloc(2u * (size_t)S->nvert * sizeof *k) : NULL;
     if (!k) return 0;
+    size_t nk = 0;
     for (int r = 0; r < S->nrec; r++)
         for (int j = 0; j < S->rec[r].inst.n; j++) {
             const openpete_gsab_vert *V = &S->vert[S->rec[r].first + j];
-            k[S->rec[r].first + j] = (gsab_key){ S->rec[r].mid, gsab_bits((float)V->sx),
-                                                 gsab_bits((float)V->sy) };
+            k[nk++] = (gsab_key){ S->rec[r].mid, gsab_bits((float)V->sx), gsab_bits((float)V->sy) };
+            if (V->unr)
+                k[nk++] = (gsab_key){ S->rec[r].mid, gsab_bits((float)V->hx / (float)V->tvz),
+                                      gsab_bits((float)V->hy / (float)V->tvz) };
         }
-    qsort(k, (size_t)S->nvert, sizeof *k, gsab_key_cmp);
+    qsort(k, nk, sizeof *k, gsab_key_cmp);
     unsigned hit = 0;
     for (int t = 0; t < n; t++) {
         const openpete_scene_tri *T = (const openpete_scene_tri *)((const char *)tris + (size_t)t * stride);
@@ -229,8 +236,8 @@ static unsigned gsab_match(const gsab_snap *S, const void *tris, int n, size_t s
         for (int v = 0; v < 3; v++) {
             const gsab_key q = { T->mid, gsab_bits(T->v[v].sx), gsab_bits(T->v[v].sy) };
             (*total)++;
-            hit += bsearch(&q, k, (size_t)S->nvert, sizeof *k, gsab_key_cmp) != NULL;
-            *known += bsearch(&q, k, (size_t)S->nvert, sizeof *k, gsab_mid_cmp) != NULL;
+            hit += bsearch(&q, k, nk, sizeof *k, gsab_key_cmp) != NULL;
+            *known += bsearch(&q, k, nk, sizeof *k, gsab_mid_cmp) != NULL;
         }
     }
     free(k);

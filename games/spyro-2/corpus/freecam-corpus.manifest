@@ -248,3 +248,9 @@ autumn_plains@doorkey | pos=(101952, 143650, 32010) yaw=-1055 pitch=-275 | | --a
 # vertex keeps its true view Z as the perspective divisor, so the texture
 # bends across the face (playtest report). Blessed pre-fix.
 icy_speedway | pos=(62236, 86740, 17376) yaw=2548 pitch=111
+# The camera against the summer_forest life orb (class 0x71, a moby of the
+# second model kind): every vertex of the orb lies within the GTE's
+# divide-overflow regime at the draw's own GTE depth (half world units), so
+# each face is drawn as its near-clipped view-space shape and selected on its
+# true facing, as the animated kind's are.
+summer_forest | pos=(52301, 47195, 44105) yaw=-946 pitch=303

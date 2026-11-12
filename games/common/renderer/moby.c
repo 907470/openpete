@@ -1163,8 +1163,8 @@ static void moby_vert_homog(proj_xy* o, double sx, double sy, double vzz,
  * the record's terms in a moby_proj_rec. What differs between the passes is
  * per-record data: the translation, the screen offset and view, the factor
  * from the projected view-Z to the perspective W (2^scale byte on a record
- * pass; 2, or 64 / draw-scale byte, on the shaded pass; 1 on the second
- * kind, whose rotation and translation are scaled to full world units), the
+ * pass; 2, or 64 / draw-scale byte, on the shaded pass; 2 on the second
+ * kind, whose GTE runs in half world units), the
  * written depth's factor and GPF restore (1 and 0 on the shaded pass and the
  * second kind), the tie-pull gate and the paint key's inputs. */
 typedef struct {
@@ -1182,7 +1182,6 @@ typedef struct {
     double kofx, kofy;          /* the paint key's screen offset */
     openpete_gsab_vert* gsv;    /* the stage readback's first vertex slot, or NULL */
     double minfvz;              /* running near floor over the record (moby_floor_depth) */
-    double mk;                  /* Mf over M / 4096: 1, or 2 on the second kind */
 } moby_proj_rec;
 
 /* ---- moby vertex stage readback: the CPU arm (OPENPETE_MOBY_GSTAGE_AB) ------
@@ -1290,7 +1289,7 @@ static void moby_gsab_close(openpete_gsab_inst* I, const proj_xy* out, int n, do
     }
 }
 
-static void moby_mf_bound_check(const int M[3][3], double mk, const float Mf_probe[3][3], const double TR[3],
+static void moby_mf_bound_check(const int M[3][3], const float Mf_probe[3][3], const double TR[3],
                                 double vx, double vy, double vz, double ofx, double ofy, const ngte_view* v,
                                 double sx, double sy, double z);
 static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int M[3][3],
@@ -1337,7 +1336,7 @@ static double moby_project_vertex(moby_proj_rec* P, int i, const double c[3], co
                                   double vx, double vy, double vz, proj_xy* o) {
     double sx, sy; int sat;
     const double vzz = project(P->Mf, P->TR, vx, vy, vz, P->ofx, P->ofy, P->v, &sx, &sy, &sat);
-    moby_mf_bound_check(P->M, P->mk, P->Mf, P->TR, vx, vy, vz, P->ofx, P->ofy, P->v, sx, sy, vzz);
+    moby_mf_bound_check(P->M, P->Mf, P->TR, vx, vy, vz, P->ofx, P->ofy, P->v, sx, sy, vzz);
     moby_vert_homog(o, sx, sy, vzz, P->ofx, P->ofy, P->wk);
     const double fsx = sx, fsy = sy;   /* the float projection, before the GTE mirror */
     const int unr = moby_gte_near_fixup(P->Mf, P->TR, vx, vy, vz, vzz, P->ofx, P->ofy, P->v, &sx, &sy);
@@ -1883,16 +1882,13 @@ static int moby_tier_vcount(CPUState* cpu, uint32_t header, int zsf4, int negctl
  *
  * The float rotation and the Q12 one are the same rotation, the Q12 one
  * rounded or truncated per element by at most 3 units of 1/4096 over its
- * compose, so a vertex v moves on screen by at most that bound; a float
- * rotation mk times the Q12 one (the second kind's full-world projection) is
- * compared with the Q12 one scaled by mk, and the bound scales with it. Counts the
+ * compose, so a vertex v moves on screen by at most that bound. Counts the
  * vertices checked (engagement), those over the bound, those over the bound
  * with the perspective term (|v|_1 * 3/4096 * (H + |s - of|) / z, the first
  * order effect of the view-Z error on an off-centre vertex) and the largest
  * ratio of delta to the plain bound, printed once per second of VBLs; vertices behind or near
  * the GTE regime (z <= H_canon / 2) are not checked.
  * @param M The Q12 matrix.
- * @param mk The float matrix's scale over M / 4096, a power of two.
  * @param Mf_probe The float matrix the projection used.
  * @param TR The projection translation.
  * @param vx The vertex X.
@@ -1904,7 +1900,7 @@ static int moby_tier_vcount(CPUState* cpu, uint32_t header, int zsf4, int negctl
  * @param sx The float projection's screen X.
  * @param sy The float projection's screen Y.
  * @param z The float projection's view Z. */
-static void moby_mf_bound_check(const int M[3][3], double mk, const float Mf_probe[3][3], const double TR[3],
+static void moby_mf_bound_check(const int M[3][3], const float Mf_probe[3][3], const double TR[3],
                                 double vx, double vy, double vz, double ofx, double ofy, const ngte_view* v,
                                 double sx, double sy, double z) {
     static int s_on = -1; static long s_n, s_over, s_overp; static double s_worst; static unsigned s_next;
@@ -1912,10 +1908,9 @@ static void moby_mf_bound_check(const int M[3][3], double mk, const float Mf_pro
     if (!s_on || !(z > 0.0 && v->H_canon < 2.0 * z)) return;
     float Mu[3][3];
     ngte_mat_unit_f(M, Mu);
-    for (int k = 0; k < 9; k++) (&Mu[0][0])[k] *= (float)mk;
     double qx, qy;
     project((const float (*)[3])Mu, TR, vx, vy, vz, ofx, ofy, v, &qx, &qy, NULL);
-    const double e = (fabs(vx) + fabs(vy) + fabs(vz)) * 3.0 * mk / 4096.0;
+    const double e = (fabs(vx) + fabs(vy) + fabs(vz)) * 3.0 / 4096.0;
     const double b = e * v->H_eff / z;
     const double bp = e * (v->H_eff + fmax(fabs(sx - ofx), fabs(sy - ofy))) / z;
     const double d = fmax(fabs(qx - sx), fabs(qy - sy));
@@ -2179,7 +2174,7 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
     int blend_p = moby_prev_streams(cpu, prev, count, &Ap, &Bp);
     const double prev_k = moby_prev_unit(cpu, prev, blend_p, m_scale);
     moby_proj_rec P = { M, Mf, TR, v, v->ofx, v->ofy, moby_scale_unit(m_scale), depth_k, vz_bias,
-                        moby_tie_pull_on() && centre_full > 0.0, &otr, itr, v->ofx, v->ofy, NULL, 0.0, 1.0 };
+                        moby_tie_pull_on() && centre_full > 0.0, &otr, itr, v->ofx, v->ofy, NULL, 0.0 };
     openpete_gsab_inst* gsab = moby_proj_open(&P, out, moby_rec_gsab_flags(gpf, do_blend, blend_p),
                                               blend_p >= 0 ? blend_alpha : 1.0, count);
     for (int i = 0; i < count; i++) {
@@ -5354,6 +5349,36 @@ static double moby_true_nclip(const proj_xy* a, const proj_xy* b, const proj_xy*
     return ax * (by * cw - bw * cy) - ay * (bx * cw - bw * cx) + aw * (bx * cy - by * cx);
 }
 
+/** @brief A face's two facing values, times the record's face sign.
+ *
+ * NCLIP1 is (p0, p1, p2) and NCLIP2 is (p3, p1, p2), -1 without a fourth
+ * vertex. The draw of a mirrored record negates both before any test
+ * (moby_record_face_sign). A face with no vertex in the GTE divide-overflow
+ * regime takes them on the float screen coordinates. A face with one
+ * (moby_gte_near_fixup) takes them from the homogeneous positions
+ * (moby_true_nclip), the side of the face's plane the eye is on: its pinned
+ * screen positions need not keep the face's winding, and the face is drawn
+ * at its view-space shape clipped at the near plane (emit_wtri_near), so the
+ * test reads the same geometry the draw does. Where every vertex is in front
+ * of the eye the two agree in sign.
+ * @param fsign The record's face sign, +1 or -1.
+ * @param p0 The first vertex.
+ * @param p1 The second vertex.
+ * @param p2 The third vertex.
+ * @param p3 The fourth vertex, or NULL.
+ * @param ncl1 Receives NCLIP1.
+ * @param ncl2 Receives NCLIP2. */
+static void face_nclips(int fsign, const proj_xy* p0, const proj_xy* p1, const proj_xy* p2,
+                        const proj_xy* p3, double* ncl1, double* ncl2) {
+    if (p0->unr || p1->unr || p2->unr || (p3 && p3->unr)) {
+        *ncl1 = fsign * moby_true_nclip(p0, p1, p2);
+        *ncl2 = p3 ? fsign * moby_true_nclip(p3, p1, p2) : -1.0;
+        return;
+    }
+    *ncl1 = fsign * tri_nclip(p0->sx, p0->sy, p1->sx, p1->sy, p2->sx, p2->sy);
+    *ncl2 = p3 ? fsign * tri_nclip(p3->sx, p3->sy, p1->sx, p1->sy, p2->sx, p2->sy) : -1.0;
+}
+
 /** @brief The near-clipped true projection of a triangle, as screen corners.
  * @param t The three vertices.
  * @param xy Receives up to four corners.
@@ -5795,23 +5820,19 @@ static proj_xy* moby_simple_slots(int n) {
     return out;
 }
 
+
 void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)[3], int n,
                                 float (*scr)[2], moby_otk_vert_t* iv) {
     if (n > MOBY_SIMPLE_MAX_VERTS) n = MOBY_SIMPLE_MAX_VERTS;
     double ofx, ofy;
     const ngte_view* view = moby_simple_view(&ofx, &ofy);
-    /* The draw's GTE runs in half world units (TR is world / 2); the
-     * projection takes the rotation and translation doubled, exact in binary,
-     * so its view-Z is full world and its W factor 1. */
-    float Mf[3][3];
-    double TR[3];
-    for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < 3; c++) Mf[r][c] = 2.0f * x->Rf[r][c];
-        TR[r] = 2.0 * x->TR[r];
-    }
+    /* The draw's GTE runs in half world units (model words and TR, world / 2):
+     * the projection takes its rotation and translation as they stand, so the
+     * projected view-Z is the GTE's own depth, which the divide-overflow test
+     * (moby_gte_near_fixup) reads, and W factor 2 takes it to full world. */
     proj_xy* out = moby_simple_slots(n);
-    moby_proj_rec P = { x->R, (const float (*)[3])Mf, TR, view, ofx, ofy, 1.0, 1.0, 0.0, 0,
-                        x->otk, x->itr, ofx, ofy, NULL, 0.0, 2.0 };
+    moby_proj_rec P = { x->R, x->Rf, x->TR, view, ofx, ofy, 2.0, 1.0, 0.0, 0,
+                        x->otk, x->itr, ofx, ofy, NULL, 0.0 };
     openpete_gsab_inst* gsab = moby_proj_open(&P, out, OPENPETE_GSAB_F_SIMPLE
                                               | (s_cur_screen ? OPENPETE_GSAB_F_SCREEN : 0u), 1.0, n);
     for (int i = 0; i < n; i++) {
@@ -5846,6 +5867,11 @@ void moby_simple_tri(const int vi[3], const uint32_t rgb[3],
     emit_wtri(&p[vi[0]], &p[vi[1]], &p[vi[2]], rgb[0], rgb[1], rgb[2],
               u[0], v[0], u[1], v[1], u[2], v[2],
               textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend);
+}
+
+void moby_simple_face_nclips(const int idx[4], int tri, double* ncl1, double* ncl2) {
+    const proj_xy* const p = s_sim_cur;
+    face_nclips(1, &p[idx[0]], &p[idx[1]], &p[idx[2]], tri ? NULL : &p[idx[3]], ncl1, ncl2);
 }
 
 /* specular env-reflection UV -- definitions below (near recolor); forward-
@@ -7055,36 +7081,6 @@ static int moby_record_face_sign(CPUState* cpu, const rec_meta* R) {
                 R->moby ? cpu->read_half(R->moby + game_layout.moby.class_off) & 0xFFFu : 0u,
                 R->mscol, R->addr == 0u);
     return sign;
-}
-
-/** @brief A face's two facing values, times the record's face sign.
- *
- * NCLIP1 is (p0, p1, p2) and NCLIP2 is (p3, p1, p2), -1 without a fourth
- * vertex. The draw of a mirrored record negates both before any test
- * (moby_record_face_sign). A face with no vertex in the GTE divide-overflow
- * regime takes them on the float screen coordinates. A face with one
- * (moby_gte_near_fixup) takes them from the homogeneous positions
- * (moby_true_nclip), the side of the face's plane the eye is on: its pinned
- * screen positions need not keep the face's winding, and the face is drawn
- * at its view-space shape clipped at the near plane (emit_wtri_near), so the
- * test reads the same geometry the draw does. Where every vertex is in front
- * of the eye the two agree in sign.
- * @param fsign The record's face sign, +1 or -1.
- * @param p0 The first vertex.
- * @param p1 The second vertex.
- * @param p2 The third vertex.
- * @param p3 The fourth vertex, or NULL.
- * @param ncl1 Receives NCLIP1.
- * @param ncl2 Receives NCLIP2. */
-static void face_nclips(int fsign, const proj_xy* p0, const proj_xy* p1, const proj_xy* p2,
-                        const proj_xy* p3, double* ncl1, double* ncl2) {
-    if (p0->unr || p1->unr || p2->unr || (p3 && p3->unr)) {
-        *ncl1 = fsign * moby_true_nclip(p0, p1, p2);
-        *ncl2 = p3 ? fsign * moby_true_nclip(p3, p1, p2) : -1.0;
-        return;
-    }
-    *ncl1 = fsign * tri_nclip(p0->sx, p0->sy, p1->sx, p1->sy, p2->sx, p2->sy);
-    *ncl2 = p3 ? fsign * tri_nclip(p3->sx, p3->sy, p1->sx, p1->sy, p2->sx, p2->sy) : -1.0;
 }
 
 /** @brief Walk the records [r0, r1) of s_recs into the calling worker's emit target.
@@ -13559,7 +13555,7 @@ static int shaded_project_moby(CPUState* cpu, uint32_t m, const shaded_view* V, 
     if (billboard && !hud_rec && !near_ot) NGTE_CENSUS_HIT(bb_untagged);
     int M[3][3]; float Mf[3][3]; double TR[3];
     moby_proj_rec P = { M, Mf, TR, (billboard || hud_rec) ? &s_view_shd_canon : V->v,
-                        V->v->ofx, V->v->ofy, 2.0, 1.0, 0.0, 0, NULL, NULL, 0.0, 0.0, NULL, 0.0, 1.0 };
+                        V->v->ofx, V->v->ofy, 2.0, 1.0, 0.0, 0, NULL, NULL, 0.0, 0.0, NULL, 0.0 };
     if (billboard) {
         static const int base[3][3] = { { 4096, 0, 0 }, { 0, 2560, 0 }, { 0, 0, 4096 } };
         shaded_compose_euler(cpu, base, m, M, Mf);

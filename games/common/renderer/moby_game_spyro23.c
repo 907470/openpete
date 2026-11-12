@@ -1137,20 +1137,6 @@ static uint32_t s23_simple_flat_colour(const int R[3][3], uint32_t w1,
     return (uint32_t)out;
 }
 
-/** @brief The signed doubled area of the screen triangle (a, b, c), the GTE's NCLIP value.
- *
- * (b - a) x (c - a) over the float screen points, without rounding them to the
- * GTE's integer grid. The draw keeps a standard triangle on a positive value.
- * @param s The screen points, X then Y; at least max(a, b, c) + 1 rows.
- * @param a The row of the first vertex.
- * @param b The row of the second vertex.
- * @param c The row of the third vertex.
- * @return The signed doubled area. */
-static double s23_nclip(const float s[3][2], int a, int b, int c) {
-    return (double)(s[b][0]-s[a][0]) * (double)(s[c][1]-s[a][1])
-         - (double)(s[c][0]-s[a][0]) * (double)(s[b][1]-s[a][1]);
-}
-
 /* What one face contributes: which of the two triangle halves survive the
  * winding tests, whether the face draws textured, its blend mode, and the
  * colour each of its four vertex slots takes. */
@@ -1186,8 +1172,8 @@ typedef struct {
  * @param R The model-to-view rotation the normal rotates by.
  * @param f1 Face word 1.
  * @param tri 1 for a triangle.
- * @param nA The NCLIP of (v0,v1,v2).
- * @param nB The NCLIP of (v3,v1,v2), on a quad.
+ * @param nA The facing value of (v0,v1,v2) (moby_simple_face_nclips).
+ * @param nB The facing value of (v3,v1,v2), on a quad.
  * @param trz The record's translation depth the near band is tested against.
  * @param flat_w The four material words in force.
  * @param sh Receives the halves, the blend flag and the colour; `textured` is cleared.
@@ -1235,8 +1221,8 @@ static int s23_simple_flat_face(const int R[3][3], uint32_t f1, int tri,
  * @param R The model-to-view rotation the flat material's normal rotates by.
  * @param f1 Face word 1; its sign is the textured flag.
  * @param tri 1 for a triangle.
- * @param nA The NCLIP of (v0,v1,v2).
- * @param nB The NCLIP of (v3,v1,v2), on a quad.
+ * @param nA The facing value of (v0,v1,v2) (moby_simple_face_nclips).
+ * @param nB The facing value of (v3,v1,v2), on a quad.
  * @param trz The record's translation depth the near band is tested against.
  * @param flat_w The four material words in force.
  * @param ctab The record's decoded colours.
@@ -1746,12 +1732,12 @@ static int s23_simple_cam_delta(CPUState* cpu, double dcam[3]) {
 }
 
 /* One decoded record as its face walk reads it: the composed rotation the
- * lighting reads, the projected vertices and their paint-key RTPS, the two
- * paint-key rows, the translation Z the flat-lit near band tests, and the
- * colour table with its CLUT bias. */
+ * lighting reads, the projected vertices' paint-key RTPS, the two paint-key
+ * rows, the translation Z the flat-lit near band tests, and the colour table
+ * with its CLUT bias. The projected vertices themselves are the shared
+ * walk's (moby_simple_face_nclips). */
 typedef struct {
     const int (*R)[3];
-    const float (*vscr)[2];
     const moby_otk_vert_t* iv;
     const moby_otk_rec_t* ork;   /* standard, then flat-lit */
     double trz;
@@ -1919,8 +1905,10 @@ static void s23_simple_hold_half(int face, s23_held_tri* T, const int idx[4], co
 
 /** @brief Shade one face of a record and hold the triangle halves it keeps.
  *
- * The winding tests read the projected screen positions (s23_nclip), the
- * shading s23_simple_shade_face; a textured face reads its texels
+ * The winding tests read the face's facing values (moby_simple_face_nclips:
+ * the NCLIPs of its projected screen positions, or its true facing when a
+ * vertex lies in the GTE divide-overflow regime), the shading
+ * s23_simple_shade_face; a textured face reads its texels
  * (s23_simple_face_texture). The first half is (v0, v1, v2) and the second
  * (v1, v3, v2), each with its paint-key bucket.
  * @param cpu The guest CPU state, read only.
@@ -1933,11 +1921,10 @@ static void s23_simple_hold_half(int face, s23_held_tri* T, const int idx[4], co
 static void s23_simple_face(CPUState* cpu, const s23_rec_faces* F, uint32_t fp, uint32_t f0, uint32_t f1,
                             const int idx[4], int tri) {
     const int face = s23_abr_note_face(cpu, fp, f0, f1, idx, tri);
-    float sc[4][2];
-    for (int k = 0; k < 4; k++) { sc[k][0] = F->vscr[idx[k]][0]; sc[k][1] = F->vscr[idx[k]][1]; }
+    double nA, nB;
+    moby_simple_face_nclips(idx, tri, &nA, &nB);
     s23_shade sh;
-    if (!s23_simple_shade_face(F->R, f1, tri, s23_nclip(sc, 0, 1, 2), tri ? 0.0 : s23_nclip(sc, 3, 1, 2),
-                               F->trz, F->flat_w, F->ctab, F->ncol, &sh))
+    if (!s23_simple_shade_face(F->R, f1, tri, nA, nB, F->trz, F->flat_w, F->ctab, F->ncol, &sh))
         return;
     int u[4] = { 0, 0, 0, 0 }, v[4] = { 0, 0, 0, 0 };
     s23_held_tri T = { .textured = sh.textured, .bpp = 16, .blend = sh.blend };
@@ -2099,7 +2086,7 @@ static int s23_simple_decode(CPUState* cpu) {
 
         if (tier <= 0 && skip_lp) continue;
         if (tier <= 0) s_simple_lp++;
-        s23_rec_faces F = { (const int (*)[3])R, (const float (*)[2])vscr, iv, ork, pl.TR[2], flat_w, ctab,
+        s23_rec_faces F = { (const int (*)[3])R, iv, ork, pl.TR[2], flat_w, ctab,
                             0, 0, nv };
         uint32_t faces;
         F.ncol = s23_simple_colours(cpu, H, cpu->read_word(H), tier, ctab, &F.clut_bias, &faces);

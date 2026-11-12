@@ -433,8 +433,9 @@ typedef struct {
 /** @brief Project the current second-kind record's model-space vertices into the shared projection store.
  *
  * Each vertex runs moby_project_vertex under the record's view, with the
- * record's rotation and translation scaled to full world units and W factor
- * 1, so the projected view-Z and the GTE regime test read full-world depth.
+ * record's rotation and translation in the draw's GTE units and W factor 2,
+ * so the GTE divide-overflow test reads the GTE's own depth and the written
+ * depth and perspective W are full world.
  * The vertices land in the store's second-kind region, where the following
  * moby_simple_tri calls name them and the stage readback captures them, or
  * in a scratch array, uncaptured, once the region is full. Runs the
@@ -491,6 +492,18 @@ void moby_simple_tri(const int vi[3], const uint32_t rgb[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
                      uint32_t fkey, int32_t otk);
+/** @brief A second-kind face's two facing values over the current record's projection, by the animated walk's rule.
+ *
+ * NCLIP1 is (v0, v1, v2) and NCLIP2 is (v3, v1, v2), on the float screen
+ * positions; a face with a vertex in the GTE divide-overflow regime takes
+ * both from the homogeneous positions instead, the side of the face's plane
+ * the eye is on, which is the geometry its near-clipped draw shows. The
+ * vertices are moby_simple_project_record's.
+ * @param idx The face's four vertex indices into the record.
+ * @param tri 1 for a triangle, which has no NCLIP2.
+ * @param ncl1 Receives NCLIP1.
+ * @param ncl2 Receives NCLIP2, -1 on a triangle. */
+void moby_simple_face_nclips(const int idx[4], int tri, double* ncl1, double* ncl2);
 /** @brief The paint key of the current record under a row, with the TRZ the draw loaded.
  *
  * The row becomes MOBY_OTK_NONE while the rank is off or the present carries
