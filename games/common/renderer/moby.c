@@ -11045,26 +11045,46 @@ static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
  * the order of the cull's record queue, so within one world bucket a record
  * queued later paints over an earlier one. Two mobys whose faces coincide
  * carry per-pixel keys that differ only by projection rounding, and the
- * contest's strict compare then follows the sign of that rounding. Each
- * opaque face's key is pulled MOBY_TIE_STEP world nearer per record spliced
- * into its world bucket before its own (its splice ordinal, at most
- * MOBY_TIE_MAX_ORD), so the later record holds a coincident pixel. The pull
- * spans at most 7/8 world, so it changes the verdict between two faces only
- * where their keys at the pixel differ by less than the difference of their
- * pulls. Faces past the cap share the cap's pull and keep the depth order
- * among themselves; a pair of faces in different world buckets whose keys
- * meet within the spread at a bucket boundary is ordered by its pulls, not
- * by the bucket. The step is a power of two and far above the float key's
- * resolution (2^-8 world at the 32768-world key ceiling). */
+ * contest's strict compare then follows the sign of that rounding. A face
+ * that coincides with a face of a record spliced into its world bucket before
+ * its own (moby_tie_coincident) has its key pulled MOBY_TIE_STEP world nearer
+ * per such earlier record (its splice ordinal, at most MOBY_TIE_MAX_ORD), so
+ * the later record holds the coincident pixels. Every other face keeps its
+ * depth key: the splice order decides nothing between faces of different
+ * buckets, nor between faces of one bucket that only cross. A per-pixel key
+ * cannot hold the splice order within a bucket and the depth order across
+ * buckets at once (three faces at one pixel within the pull, two coincident
+ * in one bucket and one of another bucket between them, order cyclically), so
+ * the pull is confined to the coincident faces and spans at most 7/8 world:
+ * it reorders a pulled face against another face only where their keys
+ * differ by less than the difference of their pulls. The step is a power of
+ * two and far above the float key's resolution (2^-8 world at the
+ * 32768-world key ceiling). */
 #define MOBY_TIE_STEP    0.125
 #define MOBY_TIE_MAX_ORD 7
 #define MOBY_TIE_BUCKETS 0x800   /* the largest world table, S1's 2048 buckets */
+#define MOBY_TIE_FACES   4096    /* faces kept per scene for the coincidence test */
 
 /* One world bucket's splice state in the current scene: the moby whose
- * faces the emit last stamped in it, that moby's ordinal, and the count of
- * mobys seen. stamp is the scene epoch + 1, so a zeroed entry is stale. */
-typedef struct { unsigned stamp; uint32_t moby; uint8_t ord, n; } moby_tie_bucket_t;
+ * faces the emit last stamped in it, that moby's ordinal, the count of
+ * mobys seen, and the newest kept face of the bucket (s_tie_face, -1 for
+ * none). stamp is the scene epoch + 1, so a zeroed entry is stale. */
+typedef struct { unsigned stamp; uint32_t moby; uint8_t ord, n; int16_t head; } moby_tie_bucket_t;
 static moby_tie_bucket_t s_tie_bk[MOBY_TIE_BUCKETS];
+
+/* A keyed face kept for the coincidence test: its moby, the previous kept
+ * face of its bucket, its screen vertices and their keys (ordering view-Z
+ * less 128 x m_DepthOffset), its screen box, and the plane of its
+ * reciprocal ordering view-Z over the screen (iz = a sx + b sy + c). */
+typedef struct {
+    uint32_t moby; int16_t next;
+    float x[3], y[3], k[3];
+    float x0, x1, y0, y1;
+    double a, b, c, dofs_key;
+} moby_tie_face_t;
+static moby_tie_face_t s_tie_face[MOBY_TIE_FACES];
+static int s_tie_face_n;
+static unsigned s_tie_face_stamp;
 
 /** @brief The splice ordinal of walk triangle i's moby in its world bucket, at most MOBY_TIE_MAX_ORD.
  *
@@ -11085,13 +11105,101 @@ static int moby_tie_ordinal(int i) {
     if (b < 0 || b >= MOBY_TIE_BUCKETS || moby_walk_tri_host_added(mob)) return 0;
     const unsigned stamp = openpete_native_scene_epoch() + 1u;
     moby_tie_bucket_t* e = &s_tie_bk[b];
-    if (e->stamp != stamp) { e->stamp = stamp; e->moby = mob; e->ord = 0; e->n = 1; return 0; }
+    if (e->stamp != stamp) { e->stamp = stamp; e->moby = mob; e->ord = 0; e->n = 1; e->head = -1; return 0; }
     if (e->moby != mob) {
         e->moby = mob;
         e->ord = e->n < MOBY_TIE_MAX_ORD ? e->n : MOBY_TIE_MAX_ORD;
         if (e->n < MOBY_TIE_MAX_ORD) e->n++;
     }
     return e->ord;
+}
+
+/** @brief Fill a kept face from walk triangle i: vertices, keys, screen box and reciprocal-depth plane.
+ *
+ * The plane is the screen-linear 1/(ordering view-Z) the key contest
+ * interpolates (op_key_stored_depth). A face whose screen area or vertex
+ * depth is degenerate gets a zero plane, which no coincidence test accepts.
+ * @param i Walk triangle index.
+ * @param f The face to fill. */
+static void moby_tie_face_fill(int i, moby_tie_face_t* f) {
+    const ntri_t* w = &s_wtri[i];
+    f->moby = s_wtri_moby[i];
+    f->dofs_key = OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i];
+    double iz[3];
+    for (int k = 0; k < 3; k++) {
+        f->x[k] = w->v[k].sx; f->y[k] = w->v[k].sy;
+        f->k[k] = (float)(w->v[k].vz - f->dofs_key);
+        iz[k] = w->v[k].vz > 1.0f ? 1.0 / w->v[k].vz : 0.0;
+    }
+    f->x0 = fminf(f->x[0], fminf(f->x[1], f->x[2])); f->x1 = fmaxf(f->x[0], fmaxf(f->x[1], f->x[2]));
+    f->y0 = fminf(f->y[0], fminf(f->y[1], f->y[2])); f->y1 = fmaxf(f->y[0], fmaxf(f->y[1], f->y[2]));
+    const double ux = f->x[1] - f->x[0], uy = f->y[1] - f->y[0];
+    const double vx = f->x[2] - f->x[0], vy = f->y[2] - f->y[0];
+    const double det = ux * vy - uy * vx;
+    if (fabs(det) < 1e-3 || iz[0] == 0.0 || iz[1] == 0.0 || iz[2] == 0.0) { f->a = f->b = f->c = 0.0; return; }
+    const double du = iz[1] - iz[0], dv = iz[2] - iz[0];
+    f->a = (du * vy - dv * uy) / det;
+    f->b = (dv * ux - du * vx) / det;
+    f->c = iz[0] - f->a * f->x[0] - f->b * f->y[0];
+}
+
+/** @brief Whether every vertex of face f lies on face g's surface within the key error of half a screen pixel plus one world unit.
+ *
+ * g's key at a screen point is 1/(a sx + b sy + c) less its m_DepthOffset
+ * key; the allowed error is half a pixel of g's key gradient there, the
+ * placement two records' projections of one vertex can differ by, plus one
+ * world unit of depth rounding. Their screen boxes must overlap.
+ * @param f The later face.
+ * @param g A face of an earlier record of the same world bucket.
+ * @return 1 when f coincides with g, else 0. */
+static int moby_tie_face_on(const moby_tie_face_t* f, const moby_tie_face_t* g) {
+    if (g->c == 0.0 && g->a == 0.0 && g->b == 0.0) return 0;
+    if (f->x1 < g->x0 || g->x1 < f->x0 || f->y1 < g->y0 || g->y1 < f->y0) return 0;
+    for (int k = 0; k < 3; k++) {
+        const double iz = g->a * f->x[k] + g->b * f->y[k] + g->c;
+        if (!(iz > 0.0)) return 0;
+        const double gk = 1.0 / iz - g->dofs_key;
+        const double tol = 0.5 * (fabs(g->a) + fabs(g->b)) / (iz * iz) + 1.0;
+        if (fabs(gk - f->k[k]) > tol) return 0;
+    }
+    return 1;
+}
+
+/** @brief Keep walk triangle i for the coincidence test and report whether it coincides with a kept face of another moby in world bucket b.
+ *
+ * The kept faces of bucket b all precede i in the scene's emit order, so a
+ * match belongs to a record spliced into b before i's. The store runs per
+ * scene (openpete_native_scene_epoch); a face past MOBY_TIE_FACES is not
+ * kept and reports no match.
+ * @param i Walk triangle index.
+ * @param b Its world bucket, whose s_tie_bk entry moby_tie_ordinal stamped for this scene.
+ * @return 1 when i coincides with an earlier record's face of b, else 0. */
+static int moby_tie_coincident(int i, int b) {
+    const unsigned stamp = openpete_native_scene_epoch() + 1u;
+    if (s_tie_face_stamp != stamp) { s_tie_face_stamp = stamp; s_tie_face_n = 0; }
+    if (s_tie_face_n >= MOBY_TIE_FACES) return 0;
+    moby_tie_face_t* f = &s_tie_face[s_tie_face_n];
+    moby_tie_face_fill(i, f);
+    int hit = 0;
+    for (int j = s_tie_bk[b].head; j >= 0 && !hit; j = s_tie_face[j].next)
+        hit = s_tie_face[j].moby != f->moby && moby_tie_face_on(f, &s_tie_face[j]);
+    f->next = s_tie_bk[b].head;
+    s_tie_bk[b].head = (int16_t)s_tie_face_n++;
+    return hit;
+}
+
+/** @brief The tie pull of walk triangle i in steps: its splice ordinal when it coincides with an earlier record's face of its world bucket, else 0.
+ *
+ * Every face that reaches the key stamp advances its bucket's splice state
+ * (moby_tie_ordinal) and is kept for the faces after it.
+ * @param i Walk triangle index.
+ * @return The pull in MOBY_TIE_STEP units, 0 to MOBY_TIE_MAX_ORD. */
+static int moby_tie_pull(int i) {
+    const int ord = moby_tie_ordinal(i);
+    const int b = s_wtri_wbk[i];
+    if (b < 0 || b >= MOBY_TIE_BUCKETS || moby_walk_tri_host_added(s_wtri_moby[i])) return 0;
+    const int hit = moby_tie_coincident(i, b);
+    return hit ? ord : 0;
 }
 
 /** @brief Stamp a walk face's ordering-table key: koff on an opaque ACTOR face, skey on a blended one.
@@ -11104,8 +11212,8 @@ static int moby_tie_ordinal(int i) {
  * images and the contest, and the snap draws its sunk part in front of the
  * terrain whose key sorts behind it, as it does the opaque faces under it.
  * An opaque face also carries its moby-against-moby key offset akc, -128 x
- * m_DepthOffset less the tie step times its splice ordinal
- * (moby_tie_ordinal; 0 for a true-depth class): its ordering view-Z at any
+ * m_DepthOffset less the tie step times its tie pull
+ * (moby_tie_pull; 0 for a true-depth class): its ordering view-Z at any
  * pixel plus akc is its key there, so two faces of equal offsets compare
  * the depths they store, tie pull included, and two coincident faces of
  * one world bucket resolve to the record the game splices later; every
@@ -11126,7 +11234,7 @@ static void moby_face_stamp_key(int i, int cat, uint32_t stbit, openpete_scene_t
     t->prop = moby_class_is_prop(s_wtri_cls[i]);
     t->key_order = moby_class_draws_by_key(s_wtri_cls[i], stbit);
     t->akc = td ? 0.0f : (float)(-OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i] -
-                                 MOBY_TIE_STEP * moby_tie_ordinal(i));
+                                 MOBY_TIE_STEP * moby_tie_pull(i));
     t->akpx = !t->key_order;
 }
 
