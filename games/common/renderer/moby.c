@@ -60,6 +60,7 @@
 #include "openpete_mods.h"     /* per-instance material slot resolve */
 #include "openpete_workpool.h" /* data-parallel face walk (--extract-threads) */
 #include "openpete_bugrec_subtick.h" /* the bug-report sub-tick present ring */
+#include "openpete_moby_gstage.h"  /* the moby vertex stage readback (OPENPETE_MOBY_GSTAGE_AB) */
 
 #include <math.h>
 #include <stdint.h>
@@ -1156,6 +1157,143 @@ static void moby_vert_homog(proj_xy* o, double sx, double sy, double vzz,
     o->hy = (float)((ofy * vzz + (sy - ofy) * z) * wk);
 }
 
+/* ---- moby vertex stage readback: the CPU arm (OPENPETE_MOBY_GSTAGE_AB) ------
+ * The decode fills the readback's slot of every vertex it writes into the
+ * scene's projection array (openpete_moby_gstage.h): the stage's inputs (the
+ * current and previous model-space vertex, the record's terms rounded once
+ * to float) and the projection's own outputs. Each helper does nothing while
+ * the readback is off. */
+static int moby_proj_index(const proj_xy* p);
+
+/** @brief Open the readback record of a decode whose output starts at out, with the record's stage terms.
+ *
+ * @param out The decode's first output vertex.
+ * @param Mf The model-to-view rotation at unit scale.
+ * @param TR The projection translation.
+ * @param v The view.
+ * @param m_scale The header's scale byte.
+ * @param depth_k The projected to written depth factor.
+ * @param vz_bias The GPF depth restore.
+ * @param ot_centre The tie-pull gate's centre depth; positive applies the pull.
+ * @param gpf The GPF scale byte, 0 when the rescale did not run.
+ * @param do_blend Nonzero when two keyframes blend.
+ * @param blend_p The previous pose's blend, negative without a previous pose.
+ * @param blend_alpha The pose lerp phase.
+ * @param count The record's vertex count.
+ * @return The record, or NULL while the readback is off or out lies outside the scene's array. */
+static openpete_gsab_inst* moby_gsab_open(const proj_xy* out, const float Mf[3][3], const double TR[3],
+                                          const ngte_view* v, int m_scale, double depth_k,
+                                          double vz_bias, double ot_centre, int gpf, int do_blend,
+                                          int blend_p, double blend_alpha, int count) {
+    openpete_gsab_inst* I = openpete_gsab_on() ? openpete_gsab_rec_open(moby_proj_index(out)) : NULL;
+    if (!I) return NULL;
+    memcpy(I->M, Mf, sizeof I->M);
+    for (int k = 0; k < 3; k++) {
+        I->TR[k] = (float)TR[k];
+        I->TR_lo[k] = (float)(TR[k] - (double)I->TR[k]);
+    }
+    const int ds = m_scale < 0 ? 0 : (m_scale > 8 ? 8 : m_scale);
+    I->ofx = (float)v->ofx; I->ofy = (float)v->ofy;
+    I->H = (float)v->H_eff; I->H_canon = (float)v->H_canon;
+    I->div_cap = (float)(NGTE_DIV_CAP * v->s);
+    I->unit = (float)(1 << ds);
+    I->depth_k = (float)depth_k; I->vz_bias = (float)vz_bias;
+    I->tie_pull = ot_centre > 0.0 ? (float)OPENPETE_MOBY_TIE_PULL_VZ : 0.0f;
+    I->alpha = blend_p >= 0 ? (float)blend_alpha : 1.0f;
+    const double det = (double)Mf[0][0] * (Mf[1][1] * Mf[2][2] - Mf[1][2] * Mf[2][1])
+                     - (double)Mf[0][1] * (Mf[1][0] * Mf[2][2] - Mf[1][2] * Mf[2][0])
+                     + (double)Mf[0][2] * (Mf[1][0] * Mf[2][1] - Mf[1][1] * Mf[2][0]);
+    I->flags = (gpf ? OPENPETE_GSAB_F_GPF : 0u) | (do_blend || blend_p >= 0 ? OPENPETE_GSAB_F_ANIM : 0u)
+             | (blend_p >= 0 ? OPENPETE_GSAB_F_LERP : 0u) | (det < 0.0 ? OPENPETE_GSAB_F_MIRROR : 0u);
+    I->n = count;
+    return I;
+}
+
+/** @brief Return the readback's vertex slots of a decode, NULL while the readback is off.
+ * @param I The decode's readback record, or NULL.
+ * @param out The decode's first output vertex.
+ * @return The slot of out[0]; out[i]'s is i past it. */
+static openpete_gsab_vert* moby_gsab_verts(const openpete_gsab_inst* I, const proj_xy* out) {
+    return I ? openpete_gsab_vert_at(moby_proj_index(out)) : NULL;
+}
+
+/** @brief Store a vertex's stage inputs and the CPU projection's outputs at their full precision.
+ *
+ * The inputs are the current and previous model-space vertex. The outputs
+ * are the screen pair after the GTE mirror, the projected view-Z and the
+ * perspective W, the homogeneous position by moby_vert_homog's arithmetic
+ * and the rotated offset by ngte_mac_f, each before the store rounds it. The
+ * decode loop calls it once per vertex; while the readback is off V is NULL
+ * and the inlined call is one test of a value fixed for the record.
+ * @param V The record's first vertex slot (moby_gsab_verts), or NULL.
+ * @param i The vertex index.
+ * @param cx The current pose's X.
+ * @param cy The current pose's Y.
+ * @param cz The current pose's Z.
+ * @param p The previous pose's vertex in the current clip's unit.
+ * @param Mf The rotation at unit scale.
+ * @param v The view.
+ * @param vx The projected vertex X (after the pose lerp).
+ * @param vy The projected vertex Y.
+ * @param vz The projected vertex Z.
+ * @param sx The screen X after moby_gte_near_fixup.
+ * @param sy The screen Y after moby_gte_near_fixup.
+ * @param fsx The float projection's screen X.
+ * @param fsy The float projection's screen Y.
+ * @param vzz The projected view-Z.
+ * @param wk The factor from projected to world view-Z, 2^scale byte.
+ * @param unr The divide-overflow regime flag.
+ * @param sat The saturation flag. */
+static inline void moby_gsab_vert(openpete_gsab_vert* V, int i, double cx, double cy, double cz,
+                                  const double p[3], const float Mf[3][3], const ngte_view* v,
+                                  double vx, double vy, double vz, double sx, double sy,
+                                  double fsx, double fsy, double vzz, double wk, int unr, int sat) {
+    if (__builtin_expect(V == NULL, 1)) return;
+    openpete_gsab_vert* o = V + i;
+    o->c[0] = (float)cx; o->c[1] = (float)cy; o->c[2] = (float)cz;
+    for (int k = 0; k < 3; k++) o->p[k] = (float)p[k];
+    const double z = vzz != 0.0 ? vzz : 1.0;
+    o->sx = sx; o->sy = sy; o->mac3 = vzz; o->tvz = vzz * wk;
+    o->hx = (v->ofx * vzz + (fsx - v->ofx) * z) * wk;
+    o->hy = (v->ofy * vzz + (fsy - v->ofy) * z) * wk;
+    ngte_mac_f(Mf, vx, vy, vz, &o->ex, &o->ey, &o->ez);
+    o->unr = (uint8_t)(unr != 0); o->sat = (uint8_t)(sat != 0);
+}
+
+/** @brief Close a decode's readback record: its near-floor lift and the depths it wrote.
+ * @param I The readback record, or NULL.
+ * @param out The decode's output vertices.
+ * @param n Their count.
+ * @param rec_minfvz The record's floor depth minimum the lift reads. */
+static void moby_gsab_close(openpete_gsab_inst* I, const proj_xy* out, int n, double rec_minfvz) {
+    if (!I) return;
+    if (rec_minfvz < 1.0 && rec_minfvz > -1e29) {
+        I->lift = (float)(1.0 - rec_minfvz);
+        I->flags |= OPENPETE_GSAB_F_LIFT;
+    }
+    for (int i = 0; i < n; i++) {
+        openpete_gsab_vert* V = openpete_gsab_vert_at(moby_proj_index(out) + i);
+        if (V) { V->vz = out[i].vz; V->kvz = out[i].kvz; }
+    }
+}
+
+/** @brief Record the sphere-shell pull of a record and its own near-floor lift, and the depths it left.
+ * @param out The record's output vertices.
+ * @param n Their count.
+ * @param rho The pull.
+ * @param minvz The nearest in-front written depth after the pull. */
+static void moby_gsab_shell(const proj_xy* out, int n, double rho, float minvz) {
+    openpete_gsab_inst* I = openpete_gsab_on() ? openpete_gsab_rec_at(moby_proj_index(out)) : NULL;
+    if (!I || I->n != n) return;
+    I->rho = (float)rho;
+    I->lift2 = minvz < 1.0f ? 1.0f - minvz : 0.0f;
+    I->flags |= OPENPETE_GSAB_F_SHELL | (minvz < 1.0f ? OPENPETE_GSAB_F_LIFT : 0u);
+    for (int i = 0; i < n; i++) {
+        openpete_gsab_vert* V = openpete_gsab_vert_at(moby_proj_index(out) + i);
+        if (V) { V->vz = out[i].vz; V->kvz = out[i].kvz; }
+    }
+}
+
 /** @brief Open the previous pose's keyframe streams for the two-pass shape lerp.
  *
  * Both decode with that pose's own ShortShift, equal to the current one within
@@ -1920,6 +2058,9 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
     /* Optional prev pose (two-pass sub-tick shape lerp). */
     int blend_p = moby_prev_streams(cpu, prev, count, &Ap, &Bp);
     const double prev_k = moby_prev_unit(cpu, prev, blend_p, m_scale);
+    openpete_gsab_inst* gsab = moby_gsab_open(out, Mf, TR, v, m_scale, depth_k, vz_bias, ot_centre, gpf,
+                                              do_blend, blend_p, blend_alpha, count);
+    openpete_gsab_vert* const gsv = moby_gsab_verts(gsab, out);
     for (int i = 0; i < count; i++) {
         vstream_next(cpu, &A, i == 0);
         double vx = A.VX, vy = A.VY, vz = A.VZ;
@@ -1931,12 +2072,15 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
         }
         /* A canonical decode keeps the pose it drew (pose_hold_begin). */
         if (t_ph_dst) { t_ph_dst[i][0] = vx; t_ph_dst[i][1] = vy; t_ph_dst[i][2] = vz; }
+        const double cvx = vx, cvy = vy, cvz = vz;   /* the current pose, before the lerp */
+        double pv[3] = { vx, vy, vz };               /* the previous pose, the current one without a lerp */
         if (blend_p >= 0) {
             /* curr pose is in (vx,vy,vz); lerp prev->curr by blend_alpha (the
              * moby's per-object sub-tick alpha). */
             double p[3];
             moby_prev_vertex(cpu, prev, &Ap, &Bp, blend_p, i, p);
             p[0] *= prev_k; p[1] *= prev_k; p[2] *= prev_k;
+            pv[0] = p[0]; pv[1] = p[1]; pv[2] = p[2];
             vx = p[0] + (vx - p[0]) * blend_alpha;
             vy = p[1] + (vy - p[1]) * blend_alpha;
             vz = p[2] + (vz - p[2]) * blend_alpha;
@@ -1989,6 +2133,7 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
           ngte_mac_f(Mf, vx, vy, vz, &e1, &e2, &e3);
           out[i].ex = (float)e1; out[i].ey = (float)e2; out[i].ez = (float)e3; }
         out[i].mv[0] = (float)vx; out[i].mv[1] = (float)vy; out[i].mv[2] = (float)vz;
+        moby_gsab_vert(gsv, i, cvx, cvy, cvz, pv, Mf, v, vx, vy, vz, sx, sy, fsx, fsy, vzz, (double)(1 << ds), unr, sat);
     }
     /* Near-floor: if the pulls pushed this record past the near plane, lift
      * the WHOLE record uniformly so its nearest vertex sits on the floor -
@@ -1998,6 +2143,7 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
         float lift = (float)(1.0 - rec_minfvz);
         for (int i = 0; i < count; i++) out[i].vz += lift;
     }
+    moby_gsab_close(gsab, out, count, rec_minfvz);
     out[0].otk = otr;
     return count;
 }
@@ -2178,6 +2324,14 @@ static int moby_project_record(CPUState* cpu, const moby_record_t* R, const floa
 
 #define MAX_PROJ 32768
 static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
+_Static_assert(MAX_PROJ <= OPENPETE_GSAB_PROJ_CAP, "the stage readback holds one slot per projected vertex");
+
+/** @brief The index of a projected vertex in s_proj, or -1 for one outside it (a verify buffer).
+ * @param p The vertex.
+ * @return The index, or -1. */
+static int moby_proj_index(const proj_xy* p) {
+    return (p >= s_proj && p < s_proj + MAX_PROJ) ? (int)(p - s_proj) : -1;
+}
 
 /* rec_meta.clr_flags: the present is one tick period or more past the pair's
  * current stamp (PAST); the pair's distinct interval exceeds one tick period,
@@ -6470,6 +6624,12 @@ static void moby_clerp_census(const rec_meta* R) {
 }
 
 static int build_walk_tris_inner(CPUState* cpu);
+/* Set when a record pass has walked s_recs and its records await the stage
+ * readback's commit (moby_gsab_commit); the shaded and simple passes push
+ * triangles without touching s_recs, so their pushes commit nothing. */
+static int s_gsab_armed;
+/** @brief Mark the queued records as walked and owed to the stage readback's commit. */
+static void moby_gsab_arm(void) { s_gsab_armed = 1; }
 /** @brief Build s_wtri[] from the face-stream walk of the queued records and return the triangle count.
  *
  * Runs build_walk_tris_inner. Under OPENPETE_MOBY_TIER_DBG the wall time adds
@@ -6481,6 +6641,7 @@ static int build_walk_tris_inner(CPUState* cpu);
  * @return The triangle count, s_gout.n. */
 static int build_walk_tris(CPUState* cpu) {
     const uint64_t t_wk = mst_now();
+    moby_gsab_arm();
     if (!tier_dbg_on()) {
         int nt = build_walk_tris_inner(cpu);
         mst_add(MST_WALK, t_wk); msc_add(MSC_TRIS, nt);
@@ -10760,6 +10921,20 @@ static void moby_face_order(CPUState* cpu, int i, int cat, uint32_t stbit,
     }
 }
 
+/** @brief Commit every record of the pass into the stage readback's snapshot of the scene being fed (OPENPETE_MOBY_GSTAGE_AB).
+ *
+ * A record carries its moby's scene identity and, with its metal byte set,
+ * the env-UV flag. Does nothing while the readback is off or when no record
+ * pass walked s_recs since the last commit (moby_gsab_arm). */
+static void moby_gsab_commit(void) {
+    if (!openpete_gsab_on() || !s_gsab_armed) return;
+    s_gsab_armed = 0;
+    const unsigned ep = openpete_native_scene_epoch();
+    for (int r = 0; r < s_nrecs; r++)
+        openpete_gsab_commit(ep, s_recs[r].proj_off, s_recs[r].proj_n, moby_scene_identity(s_recs[r].moby),
+                             s_recs[r].metal ? OPENPETE_GSAB_F_ENV : 0u);
+}
+
 /** @brief Append the walk's moby triangles to the native scene, panel 0.
  *
  * Does nothing unless the moby render path is selected. Appends to the scene
@@ -10779,6 +10954,7 @@ static void moby_face_order(CPUState* cpu, int i, int cat, uint32_t stbit,
  * @param cpu Guest CPU state, read for game.state (moby_walk_state_bit). */
 static void push_scene_moby_tris(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
+    moby_gsab_commit();
     const uint32_t stbit = moby_walk_state_bit(cpu);
     static int s_logged = 0;
     if (!s_logged && s_gout.n > 0) {
@@ -15417,6 +15593,7 @@ static void moby_sphere_shell_pull(CPUState* cpu, uint32_t moby, uint32_t header
     }
     if (minvz < 1.0f)
         for (int i = 0; i < n; i++) out[i].vz += 1.0f - minvz;
+    moby_gsab_shell(out, n, rho, minvz);
 }
 
 /** @brief The translation a rec_tr_final cull stores, at full precision.

@@ -78,6 +78,7 @@ extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
                                     unsigned int gl_format);
 #include "openpete_native_vram.h"   /* the owned VRAM model + native ops */
 #include "openpete_terrain_cache.h" /* terrain sector-mesh GPU cache (retained terrain) */
+#include "openpete_moby_gstage.h"  /* the moby vertex stage readback (OPENPETE_MOBY_GSTAGE_AB) */
 #include "texture_pack.h"           /* texture-replacement registry */
 #include "openpete_thread_roles.h"
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
@@ -22546,6 +22547,33 @@ static void tercache_readback_write(const char *base, int dump)
     (void)openpete_tercache_readback_write(p);
 }
 
+/** @brief Record the moby stage readback (OPENPETE_MOBY_GSTAGE_AB) of the scene the dump draws.
+ *
+ * Inside the dump's frame, outside any pass; does nothing unless the
+ * readback is on. */
+static void gsab_readback_record(void)
+{
+    if (!openpete_gsab_on()) return;
+    int n; uint32_t bg, fade;
+    const scene_tri_t *tris = scene_present_buf(&n, &bg, &fade, NULL, NULL, NULL);
+    (void)openpete_gsab_dump_record(s_nr.dev, tris, n, sizeof(scene_tri_t));
+}
+
+/** @brief Write a recorded moby stage readback beside a dump, as <base without extension>-gstage.bin.
+ *
+ * A compose read into memory writes nothing.
+ * @param base The dump's path base.
+ * @param dump Nonzero for a dump written to files. */
+static void gsab_readback_write(const char *base, int dump)
+{
+    if (!dump || !openpete_gsab_on()) return;
+    char p[1100];
+    const char *dot = strrchr(base, '.');
+    if (dot) snprintf(p, sizeof p, "%.*s-gstage.bin", (int)(dot - base), base);
+    else     snprintf(p, sizeof p, "%s-gstage.bin", base);
+    (void)openpete_gsab_dump_write(p);
+}
+
 /** @brief Write the terrain key image's colour attachment (owner true view-Z, class byte) to <stem>.rgba.
  *
  * Four bytes per texel, rows top-down, alpha kept (rhi_read_render_target_raw).
@@ -24262,6 +24290,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         openpete_native_hdfold_flush();
         native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
         tercache_readback_record();
+        gsab_readback_record();
         /* BLACK clear - live-offscreen parity. The live present clears black and
          * relies on the scene's own bg-fill quad; clearing to the bg colour here
          * painted over exactly the class of bug where that quad is built but
@@ -24310,6 +24339,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
     }
     shot_chrome_note(menu_verts);
     tercache_readback_write(base, cap_out == NULL);
+    gsab_readback_write(base, cap_out == NULL);
 
     unsigned char *nat = malloc(frame_px * 4);          /* native, top-down    */
     unsigned char *ref = with_ref ? malloc(frame_px * 4)     : NULL;  /* reference, top-down  */
@@ -24432,6 +24462,7 @@ void openpete_native_render_shutdown(void)
     nr_launcher_shapes_release(s_nr.dev);   /* the adopted launcher device's shape pass */
     openpete_devui_shutdown();   /* imgui backend objects die before the device */
     openpete_tercache_shutdown(s_nr.dev);
+    openpete_gsab_shutdown(s_nr.dev);
     /* The growth census row, printed whether or not the cache came up: a
      * harness that forced the cache reads bakes=0 as a run that never
      * exercised it. */

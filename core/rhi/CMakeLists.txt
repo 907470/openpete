@@ -19,7 +19,7 @@ find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 set(RHI_SHADER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(RHI_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${RHI_SHADER_OUT_DIR})
-set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert psx_sample.frag psx_scene.frag psx_scene_key.frag psx_key_cutout.frag key_ident.frag blit.frag freeze_overlay.frag resolve.frag overlay_resolve.frag shadow_decal.frag shadow_decal_tex.vert shadow_decal_tex.frag prepass.vert terrain_key.vert occl_downsample.frag hd_tex.frag hd_tex_cutout.frag postfx_fs.vert raster_quantize.frag psx_dither.frag moby_rank.vert moby_rank.frag moby_rank_cutout.frag moby_shell.frag moby_shell_intr.frag terrain.vert terrain.frag terrain_prepass.frag terrain_prepass_cutout.frag prepass_cutout.frag terrain_key_cache.frag terrain_faceid.frag terrain_readback.frag storage_pull.vert storage_pull_tex.vert tex_store.frag)
+set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert psx_sample.frag psx_scene.frag psx_scene_key.frag psx_key_cutout.frag key_ident.frag blit.frag freeze_overlay.frag resolve.frag overlay_resolve.frag shadow_decal.frag shadow_decal_tex.vert shadow_decal_tex.frag prepass.vert terrain_key.vert occl_downsample.frag hd_tex.frag hd_tex_cutout.frag postfx_fs.vert raster_quantize.frag psx_dither.frag moby_rank.vert moby_rank.frag moby_rank_cutout.frag moby_shell.frag moby_shell_intr.frag terrain.vert terrain.frag terrain_prepass.frag terrain_prepass_cutout.frag prepass_cutout.frag terrain_key_cache.frag terrain_faceid.frag terrain_readback.frag storage_pull.vert storage_pull_tex.vert tex_store.frag moby_rb.vert)
 # The launcher shape pass (core/renderer/launcher_shape_pass.c).
 list(APPEND RHI_SHADERS launcher_shape.vert launcher_shape.frag)
 # The launcher sky pass (core/renderer/launcher_sky_pass.c).
@@ -40,6 +40,7 @@ set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
                         ${RHI_SHADER_SRC_DIR}/moby_shell.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_moby_snap.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_src_tint.glsl
+                        ${RHI_SHADER_SRC_DIR}/moby_stage.glsl
                         ${RHI_SHADER_SRC_DIR}/launcher_sky.glsl)
 # terrain.vert and its four variants are rewritten to SSA form after
 # glslangValidator: every function-local variable whose loads and stores are
@@ -54,7 +55,8 @@ set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
 # arithmetic instruction is added, reordered or re-associated, and
 # NoContraction stays on every arithmetic result, so the SSA form is the same
 # computation, and the driver compiles it to a stage whose output is a
-# function of its inputs.
+# function of its inputs. The moby stage (moby_stage.glsl, through its
+# readback variant moby_rb.vert) takes the same passes.
 find_program(SPIRV_OPT spirv-opt REQUIRED)
 set(RHI_TERRAIN_SSA_ARGS --eliminate-local-single-block
                          --eliminate-local-single-store
@@ -62,7 +64,7 @@ set(RHI_TERRAIN_SSA_ARGS --eliminate-local-single-block
 set(RHI_SHADER_SPV "")
 foreach(s IN LISTS RHI_SHADERS)
     set(post "")
-    if(s STREQUAL "terrain.vert")
+    if(s STREQUAL "terrain.vert" OR s STREQUAL "moby_rb.vert")
         set(post COMMAND ${SPIRV_OPT} ${RHI_TERRAIN_SSA_ARGS}
                          ${RHI_SHADER_OUT_DIR}/${s}.spv -o ${RHI_SHADER_OUT_DIR}/${s}.spv)
     endif()

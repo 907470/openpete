@@ -228,6 +228,9 @@ add_library(openpete_core STATIC
 
     runtime/present_thread.c
     renderer/native_terrain_cache.c
+    # OPENPETE_MOBY_GSTAGE_AB: the moby vertex stage's readback against the
+    # CPU projection (diagnostic).
+    renderer/native_moby_gstage.c
     renderer/launcher_preview_gpu.c
 
     # Render-side state interpolation snapshot ring (game-agnostic;

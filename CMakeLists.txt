@@ -2448,6 +2448,39 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Moby vertex stage readback: per row of
+    # games/<game>/corpus/moby-gstage.manifest, per LOD tier, the canonical
+    # present and the sub-tick re-extract at phase 0.5, the GPU stage
+    # (core/rhi/shaders/moby_stage.glsl) against the CPU projection of the
+    # same present's vertices on software vk; every class engaged by the
+    # negative control or carved out. Exit 2 is VACUOUS and fails the test.
+    # Skips (exit 64) without a binary, a disc or numpy.
+    foreach(_gs_game IN ITEMS spyro-1 spyro-2 spyro-3)
+        add_test(NAME moby_gstage_ab_${_gs_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_gstage_ab.sh
+                         --game ${_gs_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(moby_gstage_ab_${_gs_game} PROPERTIES
+            LABELS "renderer;moby;${_gs_game}"
+            RESOURCE_LOCK openpete_game
+            # Up to three rows of four legs, each self-limited at
+            # --max-runtime-seconds 840.
+            TIMEOUT 5400
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+    # Its negative control: the stage arm drawn with the control's 1/64 px
+    # offset must fail every leg.
+    add_test(NAME moby_gstage_ab_negctl
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_gstage_ab.sh
+                     --game spyro-2 --filter icy_speedway --negctl
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(moby_gstage_ab_negctl PROPERTIES
+        LABELS "renderer;moby;spyro-2"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # CPU terrain walk vs retained terrain cache, per-pose residual against a
     # committed baseline. Per row of games/spyro-1/corpus/walk-cache.manifest, two
     # headless legs at the freecam corpus's canonical VBL (the walk, and the

@@ -1,0 +1,22 @@
+# moby-gstage.manifest - freecam poses for the moby vertex stage readback
+# (tests/harness/check_moby_gstage_ab.sh, tools/moby_gstage_ab.py).
+#
+# One row per pose:  <level>[@variant] | pos=(x, y, z) yaw=Y pitch=P | [start VBL] | [LOD tiers]
+#   level  a --skip-to-level name
+#   pose   a freecam pose string (the per-tick freecam log format, verbatim)
+#   start  the capture VBL (default: the freecam corpus's canonical VBL)
+#   tiers  the --lod values captured (default: the harness's --lods)
+# and carve-out rows:  carve-out | <class> | <reason>
+#
+# The Skelos Badlands pose of the 480 presents/s target, at extended LOD
+# alone: at original LOD its scene draws no moby triangle.
+skelos_badlands | pos=(116034, 2704, 95746) yaw=1112 pitch=541 | | extended
+# Icy Speedway's igloo with the camera against it: faces with vertices in the
+# GTE divide-overflow regime and behind the near plane.
+icy_speedway | pos=(62236, 86740, 17376) yaw=2548 pitch=111
+# The freecam corpus's Fire Wizard row.
+skelos_badlands@wizardfx | pos=(95730, 55975, 28402) yaw=86 pitch=69
+#
+carve-out | gpf | Spyro 2 and 3 store the final translation (game_layout.moby.rec_tr_final), so moby_decode_project_body never runs the GPF rescale
+carve-out | mirrored | no freecam row draws a record whose rotation has a negative determinant; a mirror-twin row is owed
+carve-out | shell | the sphere-shell class (0xAA, the bubble about Sparx under water) needs Spyro under water, which no freecam row reaches; a bk2 row is owed
