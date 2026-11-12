@@ -399,8 +399,9 @@ rows= loads counted= delivered=` is the engagement (the last three: rows
 with an `rt`, loads of their words counted, rows delivered at a load); the gate reports a run with no VBL delivered, no libspu call
 or no register access charged as VACUOUS (exit 3).
 `scripts/check_psx_oracle_all.sh` runs a `clock` row per game after the
-`stock` rows; the stock row's GTE mismatch count and `vbl deltas` measure
-the in-tick timing the shipped engine leaves unreplayed. Under
+`stock` rows; the stock row's GTE events, VBL events and gameplay bursts
+(see [Event ratchet](#event-ratchet)) measure the in-tick timing the
+shipped engine leaves unreplayed, and the clock row holds each at zero. Under
 `OPENPETE_SCHED_LOG` each delivery (`vblpos`, `vblpos-late`) and each
 libspu match (`spuq`, `spuq-unmatched`) and register access (`spureg`) is
 logged.
@@ -447,10 +448,19 @@ The gate exports `OPENPETE_GTE_HASH=1` whenever the golden has the
 sidecar; openpete then folds every `gte_execute` call by the same rule
 and the verifier compares row k when it consumes record k+1, skipping an
 interval a load window or a re-alignment cut. The summary line
-`gte: records= mismatches= ops_hashed= ref_ops= skipped= mism_ops=
-mism_hash= mism_written= first_mismatch=` follows the schedule summary;
-the gate exits 3 (VACUOUS) when it is missing or `ops_hashed` is 0, and
-a mismatch fails the gate only under `OPENPETE_ORACLE_GTE_STRICT=1`.
+`gte: records= mismatches= events= carries= ops_hashed= ref_ops= skipped=
+mism_ops= mism_hash= mism_written= first_mismatch=` follows the schedule
+summary; the gate exits 3 (VACUOUS) when it is missing or `ops_hashed` is
+0. A mismatching record is one GTE event, logged as `gte event: record N`,
+except a carry: the recorder folds every written register's read view
+after each instruction, so an interval that ran a different instruction
+count leaves different LZCS/LZCR words behind and the next interval's
+first instructions fold them. A hash-only mismatch (equal instruction
+counts and written masks) directly after an op-count mismatch is that
+event's carry, logged as `gte carry: record N` and not counted again. An
+event the row's ratchet table does not list fails the run (`hard fail:
+ratchet-gte`); `OPENPETE_ORACLE_GTE_STRICT=1` fails any mismatching
+record.
 openpete knobs: `OPENPETE_GTE_HASH_OUT=PATH` writes openpete's own rows
 in the sidecar's format (two runs compare with `python3 -m
 tools.psxtrace_format gte A B`); `OPENPETE_GTE_HASH_POKE=REC:REG:XOR`
@@ -651,9 +661,10 @@ value names) with the value already there; the oracle passes and the row
 fails.
 
 `scripts/check_psx_oracle_all.sh [-- flags]` runs every game's gate
-concurrently and prints one table (game, verdict, records consumed, first
-divergence outside the neutral rows); exit 2 when any game fails, 64 when
-none ran. The music-routing bounds (`MODE_RT_CLEARED_MIN`,
+concurrently and prints one table (game, row, verdict, records consumed,
+`gte` GTE events/mismatching records, `vbl` VBL events/VBL-delta
+mismatches, `gp_b` gameplay bursts, clock engagement, first divergence
+outside the neutral rows); exit 2 when any game fails, 64 when none ran. The music-routing bounds (`MODE_RT_CLEARED_MIN`,
 `READS_RT_CLEAR_MAX`) come from the recipe and apply to a run that reached
 the trace's end; a recipe lacking them fails with the measured values.
 Each golden holds 20000 records over the manifest's rows (Spyro 1: 54),
@@ -861,8 +872,25 @@ reference's load VBLs on openpete's side would let the main-image flags
 be removed.
 
 The verifier (`core/diag/psxtrace_verify.c`) tracks each transient
-region's divergence burst independently. A burst that re-converges is
-absorbed and logged. A burst still open after `heal_window` ticks, or still
+region's divergence burst independently and classifies it at the record
+it opens. A record lies inside a load span when the reference issued a
+CdRead at it (the `.loads` sidecar's issue column) or a burst that
+opened inside a span is still open; a span therefore runs from the
+reference's read to the heal of the last burst the load caused. A burst
+that opens inside a span is a CD-load transient: when it re-converges it
+is absorbed and logged (`CD-load transient absorbed:`). A burst that
+opens outside every span is a gameplay burst (`gameplay burst: region=R
+(NAME) opened at record N outside a load span`, `gameplay burst
+healed:`): the same heal window applies, it does not extend a span, and
+the row's ratchet table must list it (`hard fail: ratchet-burst`). The
+spans come from the reference's reads and the hash compare alone, so no
+presentation state reaches them. On Spyro 1 the game's own load word is
+no span: `g_LoadStage` holds 10 through the whole title screen (records
+0-1555 of the demo golden), so it would admit every title-screen burst.
+Calibration: the clock rows of all three games open every burst inside a
+span (Spyro 1 absorbs 241, Spyro 2 and 3 none); the Spyro 1 stock row
+absorbs the same 241 and reports 37 gameplay bursts (`g_Spu` 29 on voice
+ends, `g_DeltaTime` 8 on the long title-to-demo ticks). A burst still open after `heal_window` ticks, or still
 open when the trace is fully consumed (`openpete_psxtrace_finalize`), is a
 hard failure. `heal_window` defaults to 600 ticks; the largest legitimate
 load burst measured in the 20k demo is about 310 ticks.
@@ -894,7 +922,61 @@ tolerance classes apart: `CD-load transients absorbed=` is the
 bursts=` the bursts on neutral and host-precision rows. The summary names
 the first divergence in a row that is neither (`first_non_neutral_div=`)
 and, on a FAIL, the row and reason (`non-transient`, `unhealed`,
-`unhealed-eof`, `ratchet`).
+`unhealed-eof`, `ratchet`, `ratchet-gte`, `ratchet-vbl`, `ratchet-burst`,
+`ratchet-stale`). The verdict line also carries `gameplay bursts=N
+[REGION=n ...]`.
+
+## Event ratchet
+
+Three event classes are tolerated on a stock row only by name, in
+`games/<game>/manifest/oracle_ratchet.toml`, one table per golden (its
+file name without `.bin`, e.g. `[psxtrace-demo-20k]`,
+`[psxtrace-demo-20k-card]`):
+
+| List | Entry | Event |
+|---|---|---|
+| `gte` | record | a GTE hash row mismatch, its carry folded (see [GTE hash row](#gte-hash-row)) |
+| `vbl` | record | the record where the VBL deficit against the reference leaves 0 (`vbl event: record N`); the record that closes it is the same event |
+| `gameplay_bursts` | `"REGION@RECORD"` | a `cd_load_transient` burst opening outside a load span |
+
+The gate passes the file and the table to the verifier
+(`OPENPETE_PSXTRACE_RATCHET`, `OPENPETE_PSXTRACE_RATCHET_KEY`,
+`core/diag/psxtrace_ratchet.c`), which fails the run at the first event
+the table does not list, naming the class and record. The clock row, a
+game without the file and a golden without a table run with every list
+empty. The summary line is `ratchet: key= armed= gte events= vbl
+events= gameplay bursts=; new= stale=`. A listed entry a complete run did
+not produce is stale (`ratchet: stale ... entry`): the row improved and
+the table is due a tighten. A stale entry fails the run only under
+`OPENPETE_PSXTRACE_RATCHET_STRICT=1`.
+
+Tightening a table after a fix, from a complete run's log:
+
+```sh
+OPENPETE_ORACLE_LOG=/tmp/s1.log tests/harness/check_psx_oracle.sh --game spyro-1
+python3 tools/oracle_ratchet.py show /tmp/s1.log       # events, new and stale entries
+python3 tools/oracle_ratchet.py tighten /tmp/s1.log    # drop the stale entries
+```
+
+`tighten` refuses a log with an event the table does not list.
+`tighten --accept REASON LOG` writes every event the log holds, new ones
+included, with REASON as a comment above the table; measuring a new row
+takes a `PSXTRACE_KEEP_GOING=1` run, which logs every event past the
+first unlisted one. The tables' counts at their measurement:
+
+| Game | Row | `gte` (records) | `vbl` (mismatches) | `gameplay_bursts` |
+|---|---|---|---|---|
+| Spyro 1 | stock | 25 (25) | 14 (28) | 37 |
+| Spyro 2 | stock, card, card+save | 47 (51; 4 carries) | 0 | 0 |
+| Spyro 3 | stock | 1 (2; 1 carry) | 0 | 0 |
+
+Spyro 3 card, card+save, and both card-load rows hold every list at 0.
+Negative controls: `OPENPETE_GTE_HASH_POKE=5000:30:1` on Spyro 1 fails
+with `ratchet-gte: record 5000`;
+`OPENPETE_PSXTRACE_POKE=0x800756CC:0x07:2200` (`g_DeltaTime` in demo
+gameplay) fails with `ratchet-burst: record 2200 region g_DeltaTime`.
+ctest `psxtrace_ratchet_test` covers the list lookups, the stale count
+and the carry, VBL-event and span rules on synthetic records.
 
 Each manifest carries a `[derivation]` table (the `--named`, `--overlay`
 and `min_row` arguments its direct rows were derived with);

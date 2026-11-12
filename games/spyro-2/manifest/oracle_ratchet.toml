@@ -1,0 +1,63 @@
+# games/spyro-2/manifest/oracle_ratchet.toml - the events the oracle tolerates
+# on each stock row of this game, by name. One table per golden (its file
+# name without `.bin`); tests/harness/check_psx_oracle.sh passes the file and
+# the table to the verifier (core/diag/psxtrace_ratchet.c), which fails the
+# row on any event the table does not list:
+#
+#   gte              records whose GTE hash row differs from the reference's
+#                    (a hash-only row directly after an op-count row is the
+#                    carry of that event and is not listed)
+#   vbl              records that open a VBL deficit against the reference
+#                    (the record after, which closes it, is the same event)
+#   gameplay_bursts  "REGION@RECORD": a cd_load_transient burst that opens
+#                    outside a load span (no CdRead issued by the reference
+#                    at that record and no load burst open)
+#
+# Every entry is in-tick timing this engine does not replay yet (the
+# reference's VBLANK positions inside a tick's work and its SPU clock); the
+# clock row (OPENPETE_ORACLE_CLOCK=1) replays both and holds every list at
+# zero. A listed entry a complete run does not produce is reported stale;
+# `python3 tools/oracle_ratchet.py tighten LOG` drops it. A table only
+# shrinks, unless `--accept REASON` admits a new event.
+
+# accepted: GTE: the magnitude computation at func_8001BA20 0x8001BAA4,
+# each on a host-SPU `spu_voice_table` burst (21 op-count rows, 4 carries
+# folded, 26 hash-only rows). The clock row holds 0.
+
+[psxtrace-demo-20k]
+gte = [
+    1830, 2981, 2983, 2984, 2985, 2986, 2987, 2988,
+    2989, 2991, 2992, 2993, 2997, 3459, 3525, 5137,
+    8321, 8788, 8790, 8791, 8792, 8793, 8794, 10505,
+    12104, 13255, 13257, 13258, 13259, 13260, 13261, 13262,
+    13263, 13265, 13266, 13267, 13271, 13733, 13799, 15411,
+    18595, 19062, 19064, 19065, 19066, 19067, 19068,
+]
+vbl = []
+gameplay_bursts = []
+
+# accepted: the stock row's 47 GTE events, at the same records.
+[psxtrace-demo-20k-card]
+gte = [
+    1830, 2981, 2983, 2984, 2985, 2986, 2987, 2988,
+    2989, 2991, 2992, 2993, 2997, 3459, 3525, 5137,
+    8321, 8788, 8790, 8791, 8792, 8793, 8794, 10505,
+    12104, 13255, 13257, 13258, 13259, 13260, 13261, 13262,
+    13263, 13265, 13266, 13267, 13271, 13733, 13799, 15411,
+    18595, 19062, 19064, 19065, 19066, 19067, 19068,
+]
+vbl = []
+gameplay_bursts = []
+
+# accepted: the stock row's 47 GTE events, at the same records.
+[psxtrace-demo-20k-card-with-save]
+gte = [
+    1830, 2981, 2983, 2984, 2985, 2986, 2987, 2988,
+    2989, 2991, 2992, 2993, 2997, 3459, 3525, 5137,
+    8321, 8788, 8790, 8791, 8792, 8793, 8794, 10505,
+    12104, 13255, 13257, 13258, 13259, 13260, 13261, 13262,
+    13263, 13265, 13266, 13267, 13271, 13733, 13799, 15411,
+    18595, 19062, 19064, 19065, 19066, 19067, 19068,
+]
+vbl = []
+gameplay_bursts = []

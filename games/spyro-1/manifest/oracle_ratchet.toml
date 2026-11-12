@@ -1,0 +1,53 @@
+# games/spyro-1/manifest/oracle_ratchet.toml - the events the oracle tolerates
+# on each stock row of this game, by name. One table per golden (its file
+# name without `.bin`); tests/harness/check_psx_oracle.sh passes the file and
+# the table to the verifier (core/diag/psxtrace_ratchet.c), which fails the
+# row on any event the table does not list:
+#
+#   gte              records whose GTE hash row differs from the reference's
+#                    (a hash-only row directly after an op-count row is the
+#                    carry of that event and is not listed)
+#   vbl              records that open a VBL deficit against the reference
+#                    (the record after, which closes it, is the same event)
+#   gameplay_bursts  "REGION@RECORD": a cd_load_transient burst that opens
+#                    outside a load span (no CdRead issued by the reference
+#                    at that record and no load burst open)
+#
+# Every entry is in-tick timing this engine does not replay yet (the
+# reference's VBLANK positions inside a tick's work and its SPU clock); the
+# clock row (OPENPETE_ORACLE_CLOCK=1) replays both and holds every list at
+# zero. A listed entry a complete run does not produce is reported stale;
+# `python3 tools/oracle_ratchet.py tighten LOG` drops it. A table only
+# shrinks, unless `--accept REASON` admits a new event.
+
+# accepted: GTE: MVMVA 0x80022E04 (func_80022A2C) on the 6 demo-start
+# records, where the reference takes 1-2 VBLs inside the tick's work, and
+# one SQR fewer in VecMagnitude 0x80017218 from SoundsUpdate's 3D-sound
+# branch on 19 records (a voice ends one tick early under the host SPU
+# clock). VBL: the 8 title-to-demo ticks (reference 3,1 against 2,2) and
+# the 6 demo starts. Gameplay bursts: g_DeltaTime on the 8 title-to-demo
+# ticks, g_Spu voice state on 29 voice ends. The clock row holds all 0.
+
+[psxtrace-demo-20k]
+gte = [
+    1941, 1979, 2004, 2324, 4388, 4683, 4759, 4969,
+    5025, 9582, 9823, 10144, 10210, 10273, 10520, 12159,
+    12197, 12222, 12542, 14606, 14901, 14977, 15187, 15243,
+    19800,
+]
+vbl = [
+    1555, 1941, 4002, 4388, 6689, 9196, 9582, 11773,
+    12159, 14220, 14606, 16907, 19414, 19800,
+]
+gameplay_bursts = [
+    "g_DeltaTime@1555", "g_Spu@1980", "g_Spu@2005", "g_Spu@2325",
+    "g_Spu@2493", "g_DeltaTime@4002", "g_Spu@4684", "g_Spu@4760",
+    "g_Spu@4869", "g_Spu@4970", "g_DeltaTime@6689", "g_DeltaTime@9196",
+    "g_Spu@9731", "g_Spu@9739", "g_Spu@9771", "g_Spu@9822",
+    "g_Spu@9865", "g_Spu@10145", "g_Spu@10211", "g_Spu@10261",
+    "g_Spu@10271", "g_Spu@10521", "g_DeltaTime@11773", "g_Spu@12198",
+    "g_Spu@12223", "g_Spu@12543", "g_Spu@12711", "g_DeltaTime@14220",
+    "g_Spu@14902", "g_Spu@14978", "g_Spu@15087", "g_Spu@15188",
+    "g_DeltaTime@16907", "g_DeltaTime@19414", "g_Spu@19949", "g_Spu@19957",
+    "g_Spu@19989",
+]

@@ -101,6 +101,16 @@ typedef struct {
      * ticks (default 600, env OPENPETE_PSXTRACE_HEAL_WINDOW). */
     int64_t  transient_open_frame[OPENPETE_PSXTRACE_MAX_REGIONS];
     uint64_t transient_healed_bursts;    /* cd_load_transient bursts that healed */
+    /* Load spans: a record is inside one when the reference issued a
+     * CdRead at it (the `.loads` sidecar) or a burst that opened inside a
+     * span is still open. A cd_load_transient burst that opens outside a
+     * span is a gameplay burst: tolerated by the same heal window, counted
+     * per region and held to the row's ratchet list. */
+    uint8_t  transient_is_load[OPENPETE_PSXTRACE_MAX_REGIONS];
+    uint32_t load_bursts_open;
+    uint64_t gameplay_bursts;
+    uint32_t per_region_gameplay_bursts[OPENPETE_PSXTRACE_MAX_REGIONS];
+    uint64_t vbl_events;                 /* records that opened a VBL deficit */
     uint64_t neutral_bursts;             /* gameplay_neutral / host_precision bursts */
     uint32_t heal_window;
 
@@ -177,8 +187,11 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path);
  * in a region that is neither transient nor neutral, a CD-load transient
  * that outlives @c heal_window, a VBL-delta mismatch under the exact
  * policy, or a failed schedule sets @c hard_failed, which decides the exit
- * code. Inside a scheduler load window the record is consumed without a
- * compare.
+ * code. A cd_load_transient burst opening outside a load span (no CdRead
+ * the reference issued at the record, no load burst open) is a gameplay
+ * burst; it, a VBL event and a GTE event set @c hard_failed when the
+ * row's ratchet list (openpete_ratchet_load) does not hold them. Inside a
+ * scheduler load window the record is consumed without a compare.
  * @param t Trace opened by openpete_psxtrace_open().
  * @return 1 when a record was consumed, 0 at EOF, -1 on a parse or I/O
  *         error. */
@@ -192,9 +205,11 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t);
  * "unhealed-eof"). When the run ended before the trace did, an open
  * transient is logged as unverified and not promoted. An open burst in a
  * gameplay_neutral or host_precision region is logged and never promoted.
- * Then logs the scheduler and CD-ROM MMIO summaries, the first hard
- * failure, and the `verdict:` line with the absorbed-transient and
- * neutral-burst counts.
+ * Then logs the scheduler, CD-ROM MMIO and GTE summaries and the ratchet's
+ * (a stale list entry fails a complete run under
+ * OPENPETE_PSXTRACE_RATCHET_STRICT=1, reason "ratchet-stale"), the first
+ * hard failure, and the `verdict:` line with the absorbed-transient,
+ * gameplay-burst (per region) and neutral-burst counts.
  * @param t Trace opened by openpete_psxtrace_open(). */
 void openpete_psxtrace_finalize(openpete_psxtrace_t* t);
 
@@ -500,6 +515,12 @@ int  openpete_sched_anchor_window(uint32_t record, uint32_t value, uint32_t* ski
  * the watched word; 0 before its first call that has load windows.
  * @return 1 while inside a load window, else 0. */
 int  openpete_sched_in_load(void);
+/** @brief Report whether the reference issued a CdRead at a record, by the `.loads` sidecar's issue column.
+ *
+ * A linear scan of the sidecar's rows; 0 when no `.loads` sidecar loaded.
+ * @param rec Reference record index.
+ * @return 1 when at least one `.loads` row has issue record rec, else 0. */
+int  openpete_sched_read_issued_at(uint32_t rec);
 /** @brief Return whether the kernel's controller and card vblank handler ran on reference VBLANK vbl.
  *
  * Read from the `.sio0` sidecar. The BIOS card model holds a pending card
@@ -724,6 +745,80 @@ void openpete_gte_hash_op(uint32_t cmd, uint32_t pc,
  * openpete_psxtrace_anchor_pc (core/psx/dispatch.c); NULL when no verifier
  * is attached. */
 extern void (*openpete_psxtrace_dispatch_hook)(uint32_t addr);
+
+/* ---- Event ratchet (core/diag/psxtrace_ratchet.c) -------------------------
+ * The row's committed list of tolerated events, one table per golden in
+ * games/<game>/manifest/oracle_ratchet.toml. */
+enum {
+    OPENPETE_RATCHET_GTE   = 0,   /* GTE hash event, by record */
+    OPENPETE_RATCHET_VBL   = 1,   /* VBL deficit opening, by record */
+    OPENPETE_RATCHET_BURST = 2,   /* gameplay burst, by region and opening record */
+    OPENPETE_RATCHET_CLASSES = 3
+};
+/** @brief Read the row's ratchet list and arm the ratchet.
+ *
+ * file NULL or empty leaves the ratchet unarmed: events are counted and
+ * none fails. file `strict` arms it with empty lists. Otherwise the TOML
+ * file's table named key holds the lists (`gte`, `vbl`: record indices;
+ * `gameplay_bursts`: "REGION@RECORD" strings); a missing table arms empty
+ * lists. Replaces any list loaded before.
+ * @param file Path of the ratchet file, `strict`, or NULL.
+ * @param key Table name: the golden's file name without `.bin`.
+ * @return 0 on success, -1 when the file is unreadable or malformed. */
+int      openpete_ratchet_load(const char* file, const char* key);
+/** @brief Drop the loaded list and the counts, leaving the ratchet unarmed.
+ *
+ * Frees the list; a later openpete_ratchet_load starts from zero counts. */
+void     openpete_ratchet_reset(void);
+/** @brief Report whether a ratchet list is armed.
+ *
+ * @return 1 when openpete_ratchet_load armed one, else 0. */
+int      openpete_ratchet_armed(void);
+/** @brief Count one event and look it up in the list, marking a listed entry seen.
+ *
+ * @param cls OPENPETE_RATCHET_GTE, _VBL or _BURST.
+ * @param rec The event's record index (a burst's opening record).
+ * @param region The burst's region name; ignored for the other classes.
+ * @return 1 when the event is listed or the ratchet is unarmed, 0 when it
+ *         is new and fails the row. */
+int      openpete_ratchet_note(int cls, uint32_t rec, const char* region);
+/** @brief Log the ratchet's `ratchet:` summary line and, for a complete run, each listed entry no event matched.
+ *
+ * @param complete Nonzero when every record was consumed; a run cut short
+ *        reports no stale entry, since its missing events may lie past the cut.
+ * @return The number of stale entries (0 when complete is 0). */
+uint32_t openpete_ratchet_report(int complete);
+/** @brief Decide whether a GTE row mismatch is the carry of the previous record's op-count mismatch.
+ *
+ * The recorder folds every written register's read view after each op, so
+ * an interval that ran a different op count leaves different LZCS/LZCR
+ * words behind, and the next interval's first ops fold them: a hash-only
+ * difference with equal op counts and written masks directly after an
+ * op-count mismatch is that one event, counted once at its first record.
+ * @param prev_ops_mismatch Nonzero when the previous record was compared and its op counts differed.
+ * @param d_ops Nonzero when this record's op counts differ.
+ * @param d_hash Nonzero when this record's hashes differ.
+ * @param d_written Nonzero when this record's written masks differ.
+ * @return 1 when the mismatch is a carry, else 0. */
+int      openpete_ratchet_gte_carry(int prev_ops_mismatch, int d_ops, int d_hash, int d_written);
+/** @brief Decide whether a record's VBL delta opens a VBL event.
+ *
+ * Under the schedule a VBL the reference spent inside a tick's work shows
+ * as one record behind and the next ahead (or further records until the
+ * deficit returns to 0): one event at the record where the deficit leaves
+ * 0. Without a schedule every differing delta is an event.
+ * @param scheduled Nonzero when the reference schedule is active.
+ * @param deficit_before The reference's VBLs minus openpete's before this record.
+ * @param d_trace The reference's delta at this record.
+ * @param d_op openpete's delta at this record.
+ * @return 1 when the record opens an event, else 0. */
+int      openpete_ratchet_vbl_event(int scheduled, int64_t deficit_before, int64_t d_trace, int64_t d_op);
+/** @brief Decide whether a record lies inside a load span.
+ *
+ * @param read_issued Nonzero when the reference issued a CdRead at the record.
+ * @param load_bursts_open cd_load_transient bursts opened inside a span and not yet healed.
+ * @return 1 inside a span, else 0. */
+int      openpete_ratchet_span_open(int read_issued, uint32_t load_bursts_open);
 
 #ifdef __cplusplus
 }

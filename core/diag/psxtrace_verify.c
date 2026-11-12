@@ -83,6 +83,9 @@ static struct {
     int             open_ok;   /* that record was compared (not in a load window) */
     uint64_t        compared, mismatches, ops_hashed, ref_ops, skipped;
     uint64_t        mism_ops, mism_hash, mism_written;
+    uint64_t        events, carries;  /* mismatches counted once per event; carries folded */
+    int64_t         prev_ops_rec;     /* last compared record whose op counts differed */
+    int64_t         new_event_rec;    /* first event not on the row's ratchet list */
     int64_t         first_mismatch;
     gte_hash_row_t  first_ref, first_op;
     FILE*           out;       /* OPENPETE_GTE_HASH_OUT: openpete's own rows */
@@ -91,7 +94,7 @@ static struct {
     int             poke;      /* OPENPETE_GTE_HASH_POKE=REC:REG:XOR */
     uint32_t        poke_rec, poke_reg, poke_xor;
     int             poke_pending;
-} s_gh = { .open_rec = GTE_HASH_NO_REC, .first_mismatch = -1 };
+} s_gh = { .open_rec = GTE_HASH_NO_REC, .prev_ops_rec = -1, .new_event_rec = -1, .first_mismatch = -1 };
 
 /** @brief Sign-extend the low 16 bits of a register word to 32 bits. */
 static uint32_t gte_sx16(uint32_t w) { return (uint32_t)(int32_t)(int16_t)(uint16_t)w; }
@@ -247,7 +250,15 @@ static void gte_hash_open(const char* path, uint32_t records) {
                s_gh.poke ? " (negative control armed)" : "");
 }
 
-/** @brief Compare openpete's closed interval with the reference's row for record rec and count the result. */
+/** @brief Compare openpete's closed interval with the reference's row for record rec, count the result and hold an event to the ratchet.
+ *
+ * A mismatch is one event unless openpete_ratchet_gte_carry calls it the
+ * carry of the previous record's op-count mismatch: a hash-only row
+ * directly after an op-count row differs only by the LZCS/LZCR words the
+ * differing op count left behind, and is folded into that event. Each
+ * event is logged with its record and looked up in the row's ratchet
+ * list; the first one not listed is kept in s_gh.new_event_rec.
+ * @param rec Index of the record whose interval closed. */
 static void gte_hash_compare(uint32_t rec) {
     if (rec >= s_gh.row_count || !s_gh.have[rec]) { s_gh.skipped++; return; }
     const gte_hash_row_t ref = s_gh.rows[rec];
@@ -259,8 +270,21 @@ static void gte_hash_compare(uint32_t rec) {
     s_gh.mism_ops += (uint64_t)d_ops;
     s_gh.mism_hash += (uint64_t)d_hash;
     s_gh.mism_written += (uint64_t)d_w;
+    const int prev_ops = s_gh.prev_ops_rec >= 0 && (uint32_t)s_gh.prev_ops_rec + 1u == rec;
+    s_gh.prev_ops_rec = d_ops ? (int64_t)rec : -1;
     if (!(d_ops || d_hash || d_w)) return;
     s_gh.mismatches++;
+    if (openpete_ratchet_gte_carry(prev_ops, d_ops, d_hash, d_w)) {
+        s_gh.carries++;
+        OPL_INFO_F("psxtrace", "gte carry: record %u (hash only after the op-count event at %u; one event)",
+                   rec, rec - 1u);
+    } else {
+        s_gh.events++;
+        const int listed = openpete_ratchet_note(OPENPETE_RATCHET_GTE, rec, NULL);
+        OPL_INFO_F("psxtrace", "gte event: record %u ops ref=%u op=%u%s%s%s", rec, ref.ops, op.ops,
+                   d_hash ? " hash" : "", d_w ? " written" : "", listed ? "" : " NOT IN RATCHET");
+        if (!listed && s_gh.new_event_rec == -1) s_gh.new_event_rec = rec;
+    }
     if (s_gh.first_mismatch < 0) {
         s_gh.first_mismatch = rec;
         s_gh.first_ref = ref;
@@ -311,9 +335,10 @@ static void gte_hash_summary(void) {
                  (unsigned long long)s_gh.first_ref.hash, (unsigned long long)s_gh.first_op.hash,
                  (unsigned long long)s_gh.first_ref.written, (unsigned long long)s_gh.first_op.written);
     OPL_INFO_F("psxtrace",
-               "gte: records=%llu mismatches=%llu ops_hashed=%llu ref_ops=%llu skipped=%llu "
+               "gte: records=%llu mismatches=%llu events=%llu carries=%llu ops_hashed=%llu ref_ops=%llu skipped=%llu "
                "mism_ops=%llu mism_hash=%llu mism_written=%llu first_mismatch=%s",
                (unsigned long long)s_gh.compared, (unsigned long long)s_gh.mismatches,
+               (unsigned long long)s_gh.events, (unsigned long long)s_gh.carries,
                (unsigned long long)s_gh.ops_hashed, (unsigned long long)s_gh.ref_ops,
                (unsigned long long)s_gh.skipped, (unsigned long long)s_gh.mism_ops,
                (unsigned long long)s_gh.mism_hash, (unsigned long long)s_gh.mism_written, first);
@@ -610,6 +635,8 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
     }
     if (t->has_vbl_stamps && !(t->flags & PSXTRACE_FLAG_HAS_RAM) && save >= 0) read_ahead_stamps(t, save);
     if (save >= 0) fseek(t->fp, save, SEEK_SET);
+    if (openpete_ratchet_load(getenv("OPENPETE_PSXTRACE_RATCHET"), getenv("OPENPETE_PSXTRACE_RATCHET_KEY")) != 0)
+        goto fail;
     gte_hash_open(path, t->frame_count);
     OPL_INFO_F("psxtrace",
                "opened %s: v%u frames=%u regions=%u flags=0x%x has_ram=%d "
@@ -626,6 +653,32 @@ fail:
     return -1;
 }
 
+/** @brief Latch a hard failure for an event the row's ratchet list does not hold, logging what and where.
+ *
+ * @param t The trace.
+ * @param rec Record index of the event.
+ * @param region Region index of a gameplay burst, else -1.
+ * @param reason "ratchet-gte", "ratchet-vbl" or "ratchet-burst". */
+static void ratchet_fail(openpete_psxtrace_t* t, uint32_t rec, int32_t region, const char* reason) {
+    OPL_ERROR_F("psxtrace", "%s: record %u%s%s%s is not in the row's ratchet list", reason, rec,
+                region >= 0 ? " region " : "", region >= 0 ? t->region_names[region] : "",
+                region >= 0 ? " (burst outside a load span)" : "");
+    if (t->hard_failed) return;
+    t->hard_failed      = 1;
+    t->hard_fail_frame  = rec;
+    t->hard_fail_region = region;
+    t->hard_fail_reason = reason;
+}
+
+/** @brief Hold a GTE event the last gte_hash_on_record found unlisted to the ratchet, once.
+ *
+ * @param t The trace. */
+static void gte_ratchet_check(openpete_psxtrace_t* t) {
+    if (s_gh.new_event_rec < 0) return;
+    ratchet_fail(t, (uint32_t)s_gh.new_event_rec, -1, "ratchet-gte");
+    s_gh.new_event_rec = -2;   /* latched; later unlisted events are logged only */
+}
+
 int openpete_psxtrace_skip_to(openpete_psxtrace_t* t, uint32_t rec) {
     if (!t->fp || (t->flags & PSXTRACE_FLAG_HAS_RAM)) return -1;
     const long rec_size = 5 * 4 + 8 + 8 * (long)t->region_count;
@@ -638,6 +691,119 @@ int openpete_psxtrace_skip_to(openpete_psxtrace_t* t, uint32_t rec) {
         t->records_skipped++;
     }
     return 0;
+}
+
+/** @brief Compare one record's VBL delta with openpete's: histograms, the VBL event ratchet, the schedule's deficit, and the exact policy.
+ *
+ * Under the schedule a VBL the reference spent inside a tick's work is
+ * charged by openpete at the next wait, so openpete reaches that record
+ * one VBL behind and the next record one ahead: a deficit that opens and
+ * closes within two records. A deficit that grows negative (openpete
+ * ahead) or persists is a desync, a hard failure under the exact policy.
+ * The record where the deficit leaves 0 is one VBL event, held to the
+ * row's ratchet list.
+ * @param t The trace.
+ * @param frame_no The record's index.
+ * @param d_trace The reference's VBLs since the previous record.
+ * @param d_op openpete's VBLs since the previous record. */
+static void vbl_delta_compare(openpete_psxtrace_t* t, uint32_t frame_no, int64_t d_trace, int64_t d_op) {
+    const int bt = (d_trace < 0) ? 16 : (d_trace > 16 ? 16 : (int)d_trace);
+    const int bo = (d_op < 0)    ? 16 : (d_op > 16 ? 16 : (int)d_op);
+    t->vbl_hist_trace[bt]++;
+    t->vbl_hist_op[bo]++;
+    int sched_ok = 0;
+    if (openpete_ratchet_vbl_event(openpete_sched_active(), t->vbl_deficit, d_trace, d_op)) {
+        t->vbl_events++;
+        const int listed = openpete_ratchet_note(OPENPETE_RATCHET_VBL, frame_no, NULL);
+        OPL_INFO_F("psxtrace", "vbl event: record %u reference %lld openpete %lld%s", frame_no,
+                   (long long)d_trace, (long long)d_op, listed ? "" : " NOT IN RATCHET");
+        if (!listed) ratchet_fail(t, frame_no, -1, "ratchet-vbl");
+    }
+    if (openpete_sched_active()) {
+        t->vbl_deficit += d_trace - d_op;
+        if (t->vbl_deficit == 0) t->vbl_deficit_records = 0;
+        else t->vbl_deficit_records++;
+        sched_ok = (t->vbl_deficit >= 0 && t->vbl_deficit_records <= 2);
+        if (d_trace != d_op && t->vbl_deficit > 0) t->vbl_long_frames++;
+    }
+    if (d_trace != d_op) {
+        if (t->vbl_delta_mismatches == 0) {
+            t->first_vbl_mismatch_frame = frame_no;
+            t->first_vbl_mismatch_trace = (int32_t)d_trace;
+            t->first_vbl_mismatch_op    = (int32_t)d_op;
+        }
+        t->vbl_delta_mismatches++;
+        if (t->vbl_policy_exact && !sched_ok && !t->hard_failed) {
+            t->hard_failed      = 1;
+            t->hard_fail_frame  = frame_no;
+            t->hard_fail_region = -1;
+            t->hard_fail_reason = "vbl-delta";
+            OPL_ERROR_F("psxtrace",
+                        "record %u: VBL delta %lld on the reference, %lld in openpete",
+                        frame_no, (long long)d_trace, (long long)d_op);
+        }
+    }
+}
+
+/** @brief Open a burst in a tolerated region and classify a cd_load_transient one by the load span.
+ *
+ * A neutral (gameplay_neutral, host_precision) burst is only opened. A
+ * cd_load_transient burst opening inside a load span is a load burst and
+ * holds the span open until it heals; one opening outside is a gameplay
+ * burst, counted per region, logged, and failed by the ratchet unless the
+ * row's list holds it.
+ * @param t The trace.
+ * @param r Region index.
+ * @param frame_no The record the burst opens at.
+ * @param neutral Nonzero for a gameplay_neutral or host_precision region.
+ * @param in_span Nonzero when the record lies inside a load span. */
+static void transient_burst_open(openpete_psxtrace_t* t, uint32_t r, uint32_t frame_no, int neutral, int in_span) {
+    t->transient_open_frame[r] = (int64_t)frame_no;
+    if (neutral) return;
+    t->transient_is_load[r] = (uint8_t)(in_span != 0);
+    if (in_span) {
+        t->load_bursts_open++;
+        return;
+    }
+    t->gameplay_bursts++;
+    t->per_region_gameplay_bursts[r]++;
+    const int listed = openpete_ratchet_note(OPENPETE_RATCHET_BURST, frame_no, t->region_names[r]);
+    OPL_INFO_F("psxtrace", "gameplay burst: region=%u (%s) opened at record %u outside a load span%s", r,
+               t->region_names[r], frame_no, listed ? "" : " NOT IN RATCHET");
+    if (!listed) ratchet_fail(t, frame_no, (int32_t)r, "ratchet-burst");
+}
+
+/** @brief Close a tolerated region's burst at the record it re-converged on and count it by its class.
+ *
+ * A neutral row's burst is tolerated by its class (bounded only by its
+ * diverge_baseline), a cd_load_transient row's by the heal window; a load
+ * burst is counted as an absorbed CD-load transient and releases its hold
+ * on the load span, a gameplay burst is logged apart, so the CD-load count
+ * measures the load tolerance alone.
+ * @param t The trace.
+ * @param r Region index.
+ * @param frame_no The first record the region matched again.
+ * @param neutral Nonzero for a gameplay_neutral or host_precision region. */
+static void transient_burst_heal(openpete_psxtrace_t* t, uint32_t r, uint32_t frame_no, int neutral) {
+    const int64_t start = t->transient_open_frame[r];
+    const long long len = (long long)((int64_t)frame_no - start);
+    t->transient_open_frame[r] = -1;
+    if (neutral) {
+        t->neutral_bursts++;
+        OPL_INFO_F("psxtrace", "%s burst: region=%u (%s) ticks %lld..%u (len=%lld)",
+                   openpete_state_regions[r].host_precision ? "host_precision" : "gameplay_neutral",
+                   r, t->region_names[r], (long long)start, frame_no - 1u, len);
+        return;
+    }
+    if (!t->transient_is_load[r]) {
+        OPL_INFO_F("psxtrace", "gameplay burst healed: region=%u (%s) ticks %lld..%u (len=%lld)",
+                   r, t->region_names[r], (long long)start, frame_no - 1u, len);
+        return;
+    }
+    t->load_bursts_open--;
+    t->transient_healed_bursts++;
+    OPL_INFO_F("psxtrace", "CD-load transient absorbed: region=%u (%s) ticks %lld..%u (len=%lld, window=%u)",
+               r, t->region_names[r], (long long)start, frame_no - 1u, len, t->heal_window);
 }
 
 int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
@@ -707,45 +873,9 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
      * fails at its first record with both deltas named. */
     if (t->has_vbl_stamps) {
         const int32_t op_vbl = SDL_GetAtomicInt(&openpete_vbl_device);
-        if (t->records_consumed > 0) {
-            const int64_t d_trace = (int64_t)pad2 - (int64_t)t->prev_trace_vbl;
-            const int64_t d_op    = (int64_t)op_vbl - (int64_t)t->prev_op_vbl;
-            const int bt = (d_trace < 0) ? 16 : (d_trace > 16 ? 16 : (int)d_trace);
-            const int bo = (d_op < 0)    ? 16 : (d_op > 16 ? 16 : (int)d_op);
-            t->vbl_hist_trace[bt]++;
-            t->vbl_hist_op[bo]++;
-            /* Under the schedule a VBL the reference spent inside a tick's
-             * work is charged by openpete at the next wait, so openpete
-             * reaches that record one VBL behind and the next record one
-             * ahead: a deficit that opens and closes within two records.
-             * A deficit that grows negative (openpete ahead) or persists
-             * is a desync. */
-            int sched_ok = 0;
-            if (openpete_sched_active()) {
-                t->vbl_deficit += d_trace - d_op;
-                if (t->vbl_deficit == 0) t->vbl_deficit_records = 0;
-                else t->vbl_deficit_records++;
-                sched_ok = (t->vbl_deficit >= 0 && t->vbl_deficit_records <= 2);
-                if (d_trace != d_op && t->vbl_deficit > 0) t->vbl_long_frames++;
-            }
-            if (d_trace != d_op) {
-                if (t->vbl_delta_mismatches == 0) {
-                    t->first_vbl_mismatch_frame = frame_no;
-                    t->first_vbl_mismatch_trace = (int32_t)d_trace;
-                    t->first_vbl_mismatch_op    = (int32_t)d_op;
-                }
-                t->vbl_delta_mismatches++;
-                if (t->vbl_policy_exact && !sched_ok && !t->hard_failed) {
-                    t->hard_failed      = 1;
-                    t->hard_fail_frame  = frame_no;
-                    t->hard_fail_region = -1;
-                    t->hard_fail_reason = "vbl-delta";
-                    OPL_ERROR_F("psxtrace",
-                                "record %u: VBL delta %lld on the reference, %lld in openpete",
-                                frame_no, (long long)d_trace, (long long)d_op);
-                }
-            }
-        }
+        if (t->records_consumed > 0)
+            vbl_delta_compare(t, frame_no, (int64_t)pad2 - (int64_t)t->prev_trace_vbl,
+                              (int64_t)op_vbl - (int64_t)t->prev_op_vbl);
         t->prev_trace_vbl = pad2;
         t->prev_op_vbl = op_vbl;
     }
@@ -793,6 +923,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
     if (openpete_sched_in_load()) {
         t->records_uncompared++;
         gte_hash_on_record(t->records_consumed, 0, (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device));
+        gte_ratchet_check(t);
         t->prev_trace_vbl = pad2;
         t->prev_op_vbl = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
         t->frames_compared++;
@@ -827,6 +958,10 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
     static int s_dump = -1;
     if (s_dump < 0) s_dump = getenv("OPENPETE_PSXTRACE_DUMP") ? 1 : 0;
 
+    /* A burst that opens inside a load span (a CdRead the reference issued
+     * at this record, or a load burst still open) is a CD-load transient;
+     * one that opens outside is a gameplay burst. */
+    const int in_span = openpete_ratchet_span_open(openpete_sched_read_issued_at(frame_no), t->load_bursts_open);
     int any_mism = 0;
     for (uint32_t r = 0; r < t->region_count; r++) {
         const int in_range = (r < (uint32_t)openpete_state_region_count);
@@ -875,8 +1010,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
                     t->hard_fail_reason = "non-transient";
                 }
             } else if (t->transient_open_frame[r] < 0) {
-                /* Open a new CD-load transient burst. */
-                t->transient_open_frame[r] = (int64_t)frame_no;
+                transient_burst_open(t, r, frame_no, neutral, in_span);
             } else if (!neutral && (int64_t)frame_no - t->transient_open_frame[r]
                        > (int64_t)t->heal_window) {
                 /* Burst outlived the tolerance window: treat as a real
@@ -891,32 +1025,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
                 }
             }
         } else if (transient && t->transient_open_frame[r] >= 0) {
-            /* The region re-converged: the burst ended. A neutral row's
-             * burst is tolerated by its class (bounded only by its
-             * diverge_baseline), a cd_load_transient row's by the heal
-             * window; the two are counted apart so the CD-load count
-             * measures the load tolerance alone. */
-            int64_t start = t->transient_open_frame[r];
-            if (neutral) {
-                t->neutral_bursts++;
-                OPL_INFO_F("psxtrace",
-                           "%s burst: region=%u (%s) ticks %lld..%u (len=%lld)",
-                           openpete_state_regions[r].host_precision ? "host_precision"
-                                                                     : "gameplay_neutral",
-                           r, t->region_names[r],
-                           (long long)start, frame_no - 1u,
-                           (long long)((int64_t)frame_no - start));
-            } else {
-                t->transient_healed_bursts++;
-                OPL_INFO_F("psxtrace",
-                           "CD-load transient absorbed: region=%u (%s) "
-                           "ticks %lld..%u (len=%lld, window=%u)",
-                           r, t->region_names[r],
-                           (long long)start, frame_no - 1u,
-                           (long long)((int64_t)frame_no - start),
-                           t->heal_window);
-            }
-            t->transient_open_frame[r] = -1;
+            transient_burst_heal(t, r, frame_no, neutral);
         }
     }
     if (total_op != total_oracle && !any_mism) {
@@ -940,12 +1049,48 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
         }
     }
     gte_hash_on_record(t->records_consumed, 1, (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device));
+    gte_ratchet_check(t);
     t->frames_compared++;
     t->records_consumed++;
     openpete_psx_bios_card_anchor_end();
     return 1;
 }
 
+
+/** @brief Write the gameplay-burst count per region as ` [NAME=N ...]`, or an empty string when there is none.
+ *
+ * @param t The trace.
+ * @param out Receives the text, truncated to cap.
+ * @param cap Size of out. */
+static void gameplay_burst_breakdown(const openpete_psxtrace_t* t, char* out, size_t cap) {
+    size_t n = 0;
+    out[0] = 0;
+    for (uint32_t r = 0; r < t->region_count && n + 1 < cap; r++) {
+        if (!t->per_region_gameplay_bursts[r]) continue;
+        n += (size_t)snprintf(out + n, cap - n, "%s%s=%u", n ? " " : " [", t->region_names[r],
+                              t->per_region_gameplay_bursts[r]);
+    }
+    if (n && n + 1 < cap) snprintf(out + n, cap - n, "]");
+}
+
+/** @brief Log the ratchet summary and stale entries, and fail a complete run with stale entries under OPENPETE_PSXTRACE_RATCHET_STRICT=1.
+ *
+ * A stale entry is a listed event the run did not produce: the row
+ * improved and the list is due a tighten. It fails only in the strict mode.
+ * @param t The trace.
+ * @param eof_reached Nonzero when every record was consumed. */
+static void ratchet_finalize(openpete_psxtrace_t* t, int eof_reached) {
+    const uint32_t stale = openpete_ratchet_report(eof_reached);
+    const char* e = getenv("OPENPETE_PSXTRACE_RATCHET_STRICT");
+    if (stale == 0 || !(e && strcmp(e, "1") == 0)) return;
+    OPL_ERROR_F("psxtrace", "ratchet: %u stale entr%s under OPENPETE_PSXTRACE_RATCHET_STRICT=1; tighten the list",
+                stale, stale == 1 ? "y" : "ies");
+    if (t->hard_failed) return;
+    t->hard_failed      = 1;
+    t->hard_fail_frame  = t->frame_count;
+    t->hard_fail_region = -1;
+    t->hard_fail_reason = "ratchet-stale";
+}
 
 void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
     /* A transient burst still open when the WHOLE trace was consumed never
@@ -1014,6 +1159,7 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
     openpete_sched_summary();
     openpete_cdrom_mmio_summary();
     gte_hash_summary();
+    ratchet_finalize(t, eof_reached);
     {
         uint32_t held, ref_timed, steps, fallbacks;
         openpete_psx_bios_card_anchor_counts(&held, &ref_timed, &steps, &fallbacks);
@@ -1029,11 +1175,14 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
                    (r >= 0 && r < (int32_t)t->region_count)
                        ? t->region_names[r] : "<total>");
     }
+    char gp[512];
+    gameplay_burst_breakdown(t, gp, sizeof(gp));
     OPL_INFO_F("psxtrace",
                "verdict: %s (hard_failed=%d, CD-load transients absorbed=%llu, "
-               "heal_window=%u ticks, neutral bursts=%llu)",
+               "gameplay bursts=%llu%s, heal_window=%u ticks, neutral bursts=%llu)",
                t->hard_failed ? "FAIL" : "PASS", t->hard_failed,
                (unsigned long long)t->transient_healed_bursts,
+               (unsigned long long)t->gameplay_bursts, gp,
                t->heal_window,
                (unsigned long long)t->neutral_bursts);
 }

@@ -9,7 +9,10 @@
 # main-image state the level load fills or advances while sectors arrive)
 # legitimately diverge for a load's duration (openpete lands a read
 # instantly; the reference lands it over the load's VBLs) and re-converge;
-# the verifier tolerates a divergence there that heals within the window.
+# the verifier tolerates a divergence there that heals within the window
+# when it opens inside a load span (a CdRead the reference issued at the
+# record, or a load burst still open); one opening outside is a gameplay
+# burst, held to the row's ratchet table like GTE and VBL events.
 # Rows flagged gameplay_neutral or host_precision are hashed and logged and
 # never fail on a divergence; their per-record divergence count is bounded
 # by the row's diverge_baseline. Any other row differing, or a transient that never
@@ -89,8 +92,10 @@
 #                         must carry and the run must consume for a PASS
 #   PSXTRACE_KEEP_GOING=1   diff every frame, don't stop on first mismatch
 #   OPENPETE_ORACLE_GTE_STRICT=1 a GTE hash mismatch fails the run (exit 2);
-#                         without it the GTE row is reported and does not
-#                         decide the verdict
+#                         without it a GTE event fails the run unless the
+#                         row's ratchet table lists it (see below)
+#   OPENPETE_PSXTRACE_RATCHET_STRICT=1 a listed ratchet entry the complete
+#                         run did not produce fails it (exit 2)
 #   OPENPETE_ORACLE_ALLOW_KNOBS=<reason> admits OPENPETE_PSXTRACE_HEAL_WINDOW,
 #                         OPENPETE_PSXTRACE_VBL_POLICY and
 #                         OPENPETE_PSXTRACE_CLOCK_REPLAY from the caller's
@@ -337,6 +342,24 @@ if [[ -f "$TRACE.gte" ]]; then
     echo "[psx-oracle] gte hash: $TRACE.gte"
 fi
 
+# The event ratchet: the stock row may produce only the GTE events, VBL
+# events and gameplay bursts (cd_load_transient bursts opening outside a
+# load span) its table in games/GAME/manifest/oracle_ratchet.toml lists,
+# keyed by the golden's file name without `.bin`; the verifier fails the
+# run on any other and reports listed entries the run did not produce
+# (stale; a failure under OPENPETE_PSXTRACE_RATCHET_STRICT=1). The clock
+# row, a game without the file, and a golden without a table hold every
+# list at zero. tools/oracle_ratchet.py tightens a table from a run's log.
+RATCHET_FILE="games/$GAME/manifest/oracle_ratchet.toml"
+if [[ "$CLOCK" != "0" || ! -f "$RATCHET_FILE" ]]; then
+    export OPENPETE_PSXTRACE_RATCHET=strict
+else
+    export OPENPETE_PSXTRACE_RATCHET="$RATCHET_FILE"
+fi
+OPENPETE_PSXTRACE_RATCHET_KEY="$(basename "$TRACE" .bin)"
+export OPENPETE_PSXTRACE_RATCHET_KEY
+echo "[psx-oracle] ratchet: $OPENPETE_PSXTRACE_RATCHET [$OPENPETE_PSXTRACE_RATCHET_KEY]"
+
 # A card-present recipe: openpete runs on a scratch copy of the card the
 # reference booted with, so a write the game makes never reaches the fixture
 # and every run starts from the captured image.
@@ -475,6 +498,19 @@ if [[ "$GTE_ROW" == 1 ]]; then
         fi
     fi
 fi
+
+# The ratchet's summary: every run that finalized prints it; the
+# verifier itself fails an unlisted event.
+RATCHET_LINE=$(grep -o 'psxtrace: ratchet: key=.*' "$LOG" | tail -1 || true)
+if [[ -z "$RATCHET_LINE" ]]; then
+    echo "[psx-oracle] ratchet: no summary line" >&2
+    [[ "$rc" == 0 ]] && rc=2
+else
+    echo "[psx-oracle] ${RATCHET_LINE#psxtrace: }"
+    grep -o 'psxtrace: ratchet: stale .*' "$LOG" | sed 's/^psxtrace: /[psx-oracle] /' || true
+fi
+VERDICT_LINE=$(grep -o 'psxtrace: verdict: .*' "$LOG" | tail -1 || true)
+[[ -n "$VERDICT_LINE" ]] && echo "[psx-oracle] ${VERDICT_LINE#psxtrace: }"
 
 # Clock row engagement: a replay that delivered no in-work VBLANK or
 # charged no libspu call or SPU register access ran the stock timing under

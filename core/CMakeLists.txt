@@ -28,6 +28,7 @@ add_library(openpete_core STATIC
     diag/func_trace.c
     diag/ident_audit.c
     diag/openpete_frame_time_log.c
+    diag/psxtrace_ratchet.c
     diag/psxtrace_schedule.c
     diag/psxtrace_verify.c
 

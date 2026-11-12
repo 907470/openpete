@@ -738,6 +738,12 @@ int openpete_sched_anchor_window(uint32_t record, uint32_t value, uint32_t* skip
 
 int openpete_sched_in_load(void) { return s_in_load; }
 
+int openpete_sched_read_issued_at(uint32_t rec) {
+    for (uint32_t i = 0; i < s_rd_n; i++)
+        if (s_rd[i].issue_rec == rec) return 1;
+    return 0;
+}
+
 /* A callback registration: the next registration row of this record (or
  * an earlier one) gives the VBLANK the reference registered at; the VBLs
  * its tick's work spent before it are charged there, so the callback

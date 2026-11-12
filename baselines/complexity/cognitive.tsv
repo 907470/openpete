@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 6c3246471e602cdac058ed592a8207261a5999b7
+# head: 9bca03eba977ed995b060513e154a2e3f3b97102
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -14,9 +14,9 @@ core/diag/psxtrace_schedule.c	openpete_sched_anchor_window	29	0
 core/diag/psxtrace_schedule.c	openpete_sched_next_vsync	48	0	
 core/diag/psxtrace_schedule.c	openpete_sched_query	46	0	
 core/diag/psxtrace_schedule.c	openpete_sched_read	28	0	
-core/diag/psxtrace_verify.c	openpete_psxtrace_advance	132	0	
+core/diag/psxtrace_verify.c	openpete_psxtrace_advance	88	0	
 core/diag/psxtrace_verify.c	openpete_psxtrace_finalize	30	0	
-core/diag/psxtrace_verify.c	openpete_psxtrace_open	88	0	
+core/diag/psxtrace_verify.c	openpete_psxtrace_open	89	0	
 core/host/sfx_pack.c	override_cb	55	0	
 core/host/spu_adpcm.c	spu_adpcm_decode	27	0	
 core/host/texture_pack.c	texture_pack_dump_draw	74	0	

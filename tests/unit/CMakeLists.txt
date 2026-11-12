@@ -226,6 +226,23 @@ set_target_properties(psxtrace_schedule_test PROPERTIES C_STANDARD 11)
 add_test(NAME psxtrace_schedule_past_end COMMAND psxtrace_schedule_test past-end)
 add_test(NAME psxtrace_schedule_beyond_inside COMMAND psxtrace_schedule_test inside)
 
+# psxtrace_ratchet_test - the oracle's event ratchet: a row's listed GTE
+# events, VBL events and gameplay bursts pass, an unlisted one is new, a
+# listed one the run never produced is stale; and the carry, VBL-event and
+# load-span rules on synthetic record sequences. Compiles
+# psxtrace_ratchet.c, log.c and tomlc99 directly.
+add_executable(psxtrace_ratchet_test
+    psxtrace_ratchet_test.c
+    ${CMAKE_SOURCE_DIR}/core/diag/psxtrace_ratchet.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c
+    ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
+target_include_directories(psxtrace_ratchet_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+set_target_properties(psxtrace_ratchet_test PROPERTIES C_STANDARD 11)
+add_test(NAME psxtrace_ratchet_test
+         COMMAND psxtrace_ratchet_test ${CMAKE_CURRENT_BINARY_DIR}/psxtrace_ratchet_test.toml)
+
 # psx_runtime_layout_test - static assertions that CPUState in
 # core/include/psxrt/psx_runtime.h has the offset, size and type of every
 # field of the recompiler runner's CPUState, which savestates and mods built
