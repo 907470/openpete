@@ -775,9 +775,10 @@ if(NOT CMAKE_HOST_WIN32)
         COMMENT "clock fence: scene producers read the present clock, not the wall clock"
         VERBATIM)
 
-    # The moby frame word's 21-bit stream field is decoded by one idiom at
-    # 21 sites; each is substituted with the stream-handle resolver. A
-    # missed reader walks garbage vertices silently, so the census over the
+    # The frame word's 21-bit stream field is decoded by a shift pair or by
+    # an `and` with a 0x1FFFFF mask held in a register; the final shift of
+    # each decode is substituted with the stream-handle resolver. A missed
+    # reader reads the kernel area silently, so the census over the
     # GENERATED C (opcode words, not C text) and the manifest must agree,
     # and every row's line must carry the substitution (a stale regen runs
     # the stock decode). The census reads Spyro 1's generated C alone, so the
@@ -786,7 +787,7 @@ if(NOT CMAKE_HOST_WIN32)
         add_custom_target(openpete_vstream_sites ALL
             COMMAND ${CMAKE_COMMAND} -E echo "Checking frame-word field readers..."
             COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/vstream_sites.py ${CMAKE_SOURCE_DIR}
-            COMMENT "vstream fence: every 21-bit field reader is substituted, at its srl"
+            COMMENT "vstream fence: every 21-bit field reader is substituted, at its final shift"
             VERBATIM)
     endif()
 

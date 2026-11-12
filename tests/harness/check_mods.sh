@@ -919,7 +919,7 @@ fi
 # vstream-rehandle rewrites EVERY animated model's frame words in the level
 # to stream handles - mode 1 bound to the streams in place, mode 2 bound to
 # arena copies (the total-conversion shape). The rendered frame must equal
-# stock byte-for-byte: the readers are the 21 substituted sites plus the
+# stock byte-for-byte: the readers are the 22 substituted sites plus the
 # native walks, so a pixel difference is a reader that resolved a handle
 # differently from an address. Engagement: the census line must show
 # handle resolutions and no unresolved field.
@@ -972,6 +972,43 @@ elif cmp -s "$WORK/vh-stock-vk.png" "$WORK/vh-mode2-vk.png"; then
     ok "mode 2 (streams in the arena): pixel-identical to stock"
 else
     bad "mode 2 (streams in the arena): DIFFERS from stock"
+fi
+
+# Spyro's per-tick update (func_80048D10) reads the vertex stream his
+# current frame word names to place the flame origin, a gameplay-read
+# vector that no capture shows. flame-origin-probe logs that origin on
+# every flame tick of flame.bk2; with every frame word rehandled in place
+# (vstream-rehandle mode 1) each logged origin must equal the stock run's.
+# A reader that takes a handle for an address reads the kernel area and
+# moves the origin; the vstream census cannot see such a read, since it
+# never reaches the resolver.
+say "stream handles: the flame origin read through a rehandled Spyro frame"
+for v in stock rh; do
+    rm -rf "${WORK:?}/fo-$v"; mkdir -p "$WORK/fo-$v"
+    cp -r "$MODS_SRC/flame-origin-probe" "$WORK/fo-$v/flame-origin-probe"
+    rm -rf "${WORK:?}/fo-$v/flame-origin-probe/.build"
+done
+cp -r "$MODS_SRC/vstream-rehandle" "$WORK/fo-rh/vstream-rehandle"
+rm -rf "${WORK:?}/fo-rh/vstream-rehandle/.build"
+echo flame-origin-probe > "$WORK/fo-stock/enabled.txt"
+printf 'vstream-rehandle\nflame-origin-probe\n' > "$WORK/fo-rh/enabled.txt"
+fo_origins() { # fo_origins <log text> -> one "call=N origin=(x, y, z)" line per flame tick
+    printf '%s\n' "$1" | grep -o "flame-origin-probe: call=[0-9]* origin=([-0-9, ]*)"
+}
+out_fs="$(run_game "$WORK/fo-stock" 3000 --bk2 games/spyro-1/bk2/flame.bk2 \
+    $(cat games/spyro-1/bk2/flame.bk2.args))"
+out_fr="$(run_game "$WORK/fo-rh" 3000 --bk2 games/spyro-1/bk2/flame.bk2 \
+    $(cat games/spyro-1/bk2/flame.bk2.args))"
+fo_s="$(fo_origins "$out_fs")"; fo_r="$(fo_origins "$out_fr")"
+fo_n="$(printf '%s\n' "$fo_s" | grep -c "origin=")"
+if [ "${fo_n:-0}" -eq 0 ] || \
+   ! printf '%s\n' "$out_fr" | grep -q "vstream-rehandle: level rehandled" || \
+   ! printf '%s\n' "$out_fr" | grep -qE "\[vstream\] stock=[0-9]+ handle=[1-9][0-9]* unresolved=0 "; then
+    bad "flame origin: VACUOUS - ${fo_n:-0} flame ticks, or the rehandle never engaged"
+elif [ "$fo_s" = "$fo_r" ]; then
+    ok "flame origin: $fo_n flame ticks, rehandled origins equal stock"
+else
+    bad "flame origin: rehandled origins DIFFER from stock (first: $(diff <(printf '%s\n' "$fo_s") <(printf '%s\n' "$fo_r") | grep -m1 '^>'))"
 fi
 
 # ── 13d. texture_register from a mod-started thread ────────────────────

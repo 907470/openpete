@@ -805,16 +805,19 @@ animation frame word packs the vertex-stream address into bits 0-20 (a
 byte address for moby frames; halved for Spyro's own), so a stream must
 sit in the first 2 MB of RAM and mod model data could never live in the
 arena past it. Every reader decodes the field with one idiom -
-`sll r,r,11 ; srl r,r,11|10` - at the 21 sites below (8 functions, main
-EXE only; the 35 level overlays have none). The `srl` of each pair is
-substituted with a resolver call: a field value >= 0x8000 passes through
+`sll r,r,11 ; srl r,r,11|10` - at 21 of the sites below, and
+func_80048D10 decodes Spyro's halved field as `and r,w,0x1FFFFF ; sll
+r,r,1` with the mask built by `lui`/`ori` (22 sites, 9 functions, main
+EXE only; the 35 level overlays have none). The final shift of each decode
+is substituted with a resolver call: a field value >= 0x8000 passes through
 bit-identical (stock), a value below it is a HANDLE into an engine table
 of full 32-bit vaddrs (core/psx/vstream.c). Stock words never
 address below 0x10000 (the kernel area), which is what makes the range
 free - the full-20k oracle census (`[vstream] ... unresolved=0`) is the
 evidence. The operand is the shift's `rt` field (a shift is R-type with
-rs = 0); the hook undoes the `sll` and resolves. The `sll` stays as
-emitted, dead once its consumer is replaced.
+rs = 0); the hook undoes the `sll 11` (or takes the masked field) and
+resolves. The `sll 11` and the `and` stay as emitted, dead once their
+consumer is replaced.
 scripts/fences/vstream_sites.py censuses the GENERATED C by opcode and
 refuses a site missing here, a row naming no site, or a stale regen."""
 substitution_sites = [
@@ -839,6 +842,7 @@ substitution_sites = [
     { addr = 0x80059C20, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80059A48 shadow
     { addr = 0x80059C28, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80059A48
     { addr = 0x80059D0C, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80059A48
+    { addr = 0x800490C0, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved_field" },  # func_80048D10 flame origin, Spyro frame (mask-and form)
 ]
 determinism_critical = false  # stock values pass through bit-identical; the oracle census proves it
 verified_against = ["psx_oracle"]

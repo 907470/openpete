@@ -1,0 +1,20 @@
+# flame-origin-probe - CI fixture: logs the flame origin Spyro's per-tick
+# update computes, on every tick the flame is active.
+#
+# func_80048D10 places the flame origin (g_SpyroFlame +0x00, three words)
+# at Spyro's position plus a vertex packed in word +0x10 of the vertex
+# stream his current frame word names, rotated by his matrix; it does so
+# while byte g_SpyroFlame +0x9A is nonzero. The probe runs the update and
+# then logs that vector with the frame word, so a run with Spyro's frame
+# words rewritten to stream handles (vstream-rehandle) can be compared
+# line for line with a stock run. It writes no guest RAM.
+
+[mod]
+id      = "flame-origin-probe"
+name    = "Flame Origin Probe"
+version = "0.1.0"
+game    = "spyro-1"
+api     = 9
+state    = "none"
+runahead = "host-fx"
+sim_mutative = false

@@ -211,9 +211,11 @@ void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 
 /**
  * @name Moby vertex-stream address hooks
- * Replace the `srl` of the game's frame-word field decode. The source
- * register holds the frame word shifted left by 11; the hook shifts it
- * back and maps the 21-bit field through the vertex-stream handle table.
+ * Replace the final shift of the game's frame-word field decode: the `srl`
+ * of `sll r,r,11 ; srl r,r,11|10`, whose source holds the frame word
+ * shifted left by 11, or the `sll` of `and r,w,0x1FFFFF ; sll r,r,1`,
+ * whose source holds the masked field. The hook recovers the 21-bit field
+ * and maps it through the vertex-stream handle table.
  * A field below the handle bound that names no bound handle yields 0;
  * a field at or above the bound is a plain guest address and passes
  * through with the value the `srl` produces.
@@ -230,6 +232,14 @@ uint32_t psx_runtime_vstream_moby(uint32_t rt);
  * @param rt The `srl` source register value.
  * @return The bound handle's guest address, 0 for an unbound handle, or `rt >> 10` for a plain address. */
 uint32_t psx_runtime_vstream_halved(uint32_t rt);
+
+/** @brief Return the vertex-stream address the game's `and rd, w, 0x1FFFFF ; sll rd, rd, 1` decode yields.
+ *
+ * Replaces the `sll` of the mask-and form of Spyro's halved field decode
+ * (func_80048D10, which builds the mask with `lui`/`ori`).
+ * @param rt The `sll` source register value: the frame word masked to 21 bits.
+ * @return The bound handle's guest address, 0 for an unbound handle, or `rt << 1` for a plain address. */
+uint32_t psx_runtime_vstream_halved_field(uint32_t rt);
 /** @} */
 
 /**

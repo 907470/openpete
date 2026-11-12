@@ -96,3 +96,7 @@ void openpete_vstream_census(openpete_vstream_census_t* out) {
  * left by 11 in the shift's source register; undo that and resolve. */
 uint32_t psx_runtime_vstream_moby(uint32_t rt)   { return openpete_vstream_addr(rt >> 11, 0); }
 uint32_t psx_runtime_vstream_halved(uint32_t rt) { return openpete_vstream_addr(rt >> 11, 1); }
+
+/* The substituted `sll rd, rt, 1` of the mask-and decode receives the
+ * field already masked to 21 bits. */
+uint32_t psx_runtime_vstream_halved_field(uint32_t rt) { return openpete_vstream_addr(rt, 1); }

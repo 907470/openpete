@@ -250,6 +250,14 @@ uint32_t psx_runtime_vstream_moby(uint32_t rt);
  * @param rt Source register of the substituted shift (frame word << 11).
  * @return The stream address. */
 uint32_t psx_runtime_vstream_halved(uint32_t rt);
+/** @brief Resolve a masked Spyro frame field to the stream address the `sll rd, rt, 1` yields.
+ *
+ * Resolves @p rt through openpete_vstream_addr with halving: a field at or
+ * above the handle bound returns doubled, a bound handle returns its vaddr,
+ * an unbound handle below the bound returns 0.
+ * @param rt Source register of the substituted shift (frame word & 0x1FFFFF).
+ * @return The stream address. */
+uint32_t psx_runtime_vstream_halved_field(uint32_t rt);
 
 /*
  * Flag-gated store hooks.
