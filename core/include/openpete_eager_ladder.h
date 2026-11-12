@@ -124,50 +124,114 @@ static inline int64_t op_eager_ladder_fill(int64_t len, int afford, int64_t floo
     return period;
 }
 
-/* A free span's count controller: with no display grid the span plans
- * afford - short_by evenly spaced scenes, and short_by is the estimate's
- * measured overreach. Initialise zeroed. */
+/* Why a span ended with planned scenes unproduced. Only a deadline cut says
+ * the plan held more scenes than their cost lets the budget produce. */
+typedef enum {
+    OP_EAGER_CUT_NONE = 0,   /* the span produced its plan */
+    OP_EAGER_CUT_DEADLINE,   /* the produce guard stopped before a scene whose cost would pass the deadline */
+    OP_EAGER_CUT_RING,       /* the scene ring stayed full: the present thread drained slower than the plan's spacing */
+    OP_EAGER_CUT_WITHHELD,   /* production was withheld: the world was not live, or the span was never resumed */
+    OP_EAGER_CUT_LATE        /* the span was planned after a stalled tick start, which the guard absorbs */
+} op_eager_cut_t;
+
+/* The count controller's unit: a deficit of OP_EAGER_COUNT_ONE plans none of
+ * afford. The deficit never passes half of it. */
+#define OP_EAGER_COUNT_ONE 65536
+#define OP_EAGER_COUNT_MAX_DEFICIT (OP_EAGER_COUNT_ONE / 2)
+
+/* A free span's count controller: with no display grid the span plans the
+ * fraction 1 - deficit of afford, and its instants are spaced no closer than
+ * the present thread's measured drain while a ring cut is recent.
+ * Initialise zeroed. */
 typedef struct {
-    int short_by;   /* scenes planned below afford */
-    int clean;      /* consecutive spans that finished with room to spare */
+    int     deficit;     /* fraction of afford left unplanned, in 1/OP_EAGER_COUNT_ONE */
+    int     clean;       /* consecutive produced spans that finished with room to spare */
+    int64_t drain_ns;    /* the last ring-cut span's length over the scenes it produced */
+    int     drain_left;  /* spans drain_ns still floors the spacing for */
 } op_eager_count_t;
 
-/** @brief Return the scenes a free span plans: afford less the controller's shortfall, at least 1.
+/** @brief Return the deficit step worth one scene at afford: OP_EAGER_COUNT_ONE / afford, rounded up.
+ * @param afford The scenes the budget affords; below 1 counts as 1.
+ * @return The step, in 1/OP_EAGER_COUNT_ONE. */
+static inline int op_eager_count_unit(int afford)
+{
+    if (afford < 1) afford = 1;
+    return (OP_EAGER_COUNT_ONE + afford - 1) / afford;
+}
+
+/** @brief Return the scenes a free span plans: afford scaled by 1 - deficit, rounded to nearest, at least 1.
+ *
+ * The rounding makes k steps of op_eager_count_unit(afford) plan exactly
+ * afford - k at that afford (the unit's excess over ONE / afford, summed over
+ * at most afford / 2 steps, stays under half a scene for afford up to
+ * OP_EAGER_LADDER_MAX_AFFORD), and a change of afford rescales the plan with
+ * it, so no correction outlives the budget it was measured against.
  * @param c The controller.
  * @param afford The scenes the budget affords.
  * @return The scene count. */
 static inline int op_eager_count_plan(const op_eager_count_t *c, int afford)
 {
-    const int n = afford - c->short_by;
-    return n < 1 ? 1 : n;
+    const int64_t n = ((int64_t)afford * (OP_EAGER_COUNT_ONE - c->deficit) + OP_EAGER_COUNT_ONE / 2) /
+                      OP_EAGER_COUNT_ONE;
+    return n < 1 ? 1 : (int)n;
 }
 
-/** @brief Move the free-span count controller for the span just closed.
- *
- * A cut span (one the produce guard left with scenes unproduced) plans one
- * scene fewer from the next span on. A span that produced its plan with
- * room for at least need_spare more scenes extends a clean run; window
- * consecutive such spans give back one scene. A span that produced its
- * plan with less room than that ends the run without moving the count:
- * the plan sits at the guard's edge, and probing past it would cut. The
- * divisor ladder's standing raise has no counterpart: with no grid a
- * shortfall of one scene costs one scene, not every second one.
+/** @brief Return the least spacing in nanoseconds a free span's instants keep for the present thread's drain, or 0 for none.
  * @param c The controller.
- * @param cut Nonzero when the span was cut by its own cost.
- * @param spare The further scenes the guard would have started when the plan finished; ignored when cut.
- * @param window The clean run that gives back one scene, in spans.
- * @param need_spare The room a span must leave to count as clean, in scenes. */
-static inline void op_eager_count_step(op_eager_count_t *c, int cut, int spare, int window, int need_spare)
+ * @return drain_ns while a ring cut is recent, else 0. */
+static inline int64_t op_eager_count_floor(const op_eager_count_t *c)
 {
-    if (cut) {
-        if (c->short_by < OP_EAGER_LADDER_MAX_AFFORD) c->short_by++;
+    return c->drain_left > 0 ? c->drain_ns : 0;
+}
+
+/** @brief Move the free-span count controller for the span just closed, by the cause of its cut.
+ *
+ * A deadline cut raises the deficit by one scene at the span's afford, up to
+ * OP_EAGER_COUNT_MAX_DEFICIT, and ends the clean run. A ring cut is the
+ * present thread's limit, not the budget's: it sets the drain floor to the
+ * span's length over the scenes it produced, for drain_runs spans, and leaves
+ * the deficit alone. A withheld or late cut carries no measurement and
+ * changes nothing. A produced span counts down the drain floor; with room
+ * for at least need_spare more scenes it extends the clean run, and window
+ * consecutive such spans lower the deficit by one scene at that span's
+ * afford; with less room it ends the run (the plan sits at the guard's
+ * edge, and probing past it would cut). From any state, a run of spans with
+ * room reaches the plan with less than need_spare room in at most window
+ * spans per scene of deficit, and the deficit is at most half of afford.
+ * @param c The controller.
+ * @param cause Why the span ended with scenes unproduced, or OP_EAGER_CUT_NONE.
+ * @param afford The scenes the span's budget afforded.
+ * @param spare The further scenes the guard would have started when the plan finished; read when not cut.
+ * @param made The scenes the span produced; read on a ring cut.
+ * @param len_ns The span's length in nanoseconds; read on a ring cut.
+ * @param window The clean run that gives back one scene, in spans.
+ * @param need_spare The room a span must leave to count as clean, in scenes.
+ * @param drain_runs The spans a ring cut's drain floor applies for. */
+static inline void op_eager_count_step(op_eager_count_t *c, op_eager_cut_t cause, int afford, int spare,
+                                       int made, int64_t len_ns, int window, int need_spare, int drain_runs)
+{
+    switch (cause) {
+    case OP_EAGER_CUT_DEADLINE:
+        c->deficit += op_eager_count_unit(afford);
+        if (c->deficit > OP_EAGER_COUNT_MAX_DEFICIT) c->deficit = OP_EAGER_COUNT_MAX_DEFICIT;
         c->clean = 0;
         return;
+    case OP_EAGER_CUT_RING:
+        c->drain_ns = len_ns / (made > 0 ? made : 1);
+        c->drain_left = drain_runs;
+        return;
+    case OP_EAGER_CUT_WITHHELD:
+    case OP_EAGER_CUT_LATE:
+        return;
+    case OP_EAGER_CUT_NONE:
+        break;
     }
+    if (c->drain_left > 0) c->drain_left--;
     if (spare < need_spare) { c->clean = 0; return; }
     if (++c->clean < window) return;
     c->clean = 0;
-    if (c->short_by > 0) c->short_by--;
+    c->deficit -= op_eager_count_unit(afford);
+    if (c->deficit < 0) c->deficit = 0;
 }
 
 #endif /* OPENPETE_EAGER_LADDER_H */

@@ -109,7 +109,9 @@ enum {
     OP_PACE_EP_CUT    = 1u << 0,  /* the previous span left targets unproduced */
     OP_PACE_EP_LATE   = 1u << 1,  /* the tick started past its deadline (stall) */
     OP_PACE_EP_PINNED = 1u << 2,  /* OPENPETE_EAGER_LEVEL pins the level */
-    OP_PACE_EP_GREEDY = 1u << 3   /* OPENPETE_EAGER_POLICY=greedy */
+    OP_PACE_EP_GREEDY = 1u << 3,  /* OPENPETE_EAGER_POLICY=greedy */
+    OP_PACE_EP_RING   = 1u << 4,  /* with CUT: the scene ring stayed full (the present thread's drain) */
+    OP_PACE_EP_WITHHELD = 1u << 5 /* with CUT: production was withheld (world not live, or not resumed) */
 };
 
 /* TICK_SPLIT accumulators (the duration slots, in record order). */

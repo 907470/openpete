@@ -26,7 +26,14 @@
  * (op_eager_ladder_afford, reconstructed from the run's scene costs and
  * equal to the logged afford wherever that price ran), and the capacity, the
  * scenes a replay of the produce guard on the span's recorded costs starts.
- * A span is cut when it plans more than its capacity. The vsync rows are
+ * A span is cut when it plans more than its capacity. The transition rows
+ * are the EAGER_PLAN records of a Spyro 1 attract-demo replay (vsync off,
+ * the same flags) through a level load: one-VBL spans at afford 128 whose
+ * plans the scene ring cut, with the scenes each span produced (the present
+ * thread's drain), followed here by gameplay spans at afford 12. The
+ * previous count controller (an absolute shortfall below afford) is kept as
+ * the negative control: it carries the transition's shortfall into the
+ * level and plans one scene per span there. The vsync rows are
  * spans of the vsync-on runs with that price that it planned below the
  * slot count, where the sum price stays at or above it.
  *
@@ -330,23 +337,99 @@ static const struct { const char *level; const unsigned char *win, *sum, *cap; }
 };
 #define COUNT_SPANS 240
 
-/** @brief Check the count controller's transitions: a cut costs one scene, a clean run with room gives one back, a run at the edge does not. */
+#define COUNT_RUNS 16
+#define COUNT_SPARE 2
+#define DRAIN_RUNS 32
+
+/** @brief Step the count controller for a span that produced its plan with spare scenes of room.
+ * @param c The controller.
+ * @param afford The span's afford.
+ * @param spare The room left, in scenes. */
+static void count_clean(op_eager_count_t *c, int afford, int spare)
+{
+    op_eager_count_step(c, OP_EAGER_CUT_NONE, afford, spare, 0, 0, COUNT_RUNS, COUNT_SPARE, DRAIN_RUNS);
+}
+
+/** @brief Step the count controller for a span cut by cause.
+ * @param c The controller.
+ * @param cause The cut's cause.
+ * @param afford The span's afford.
+ * @param made The scenes the span produced.
+ * @param len The span's length in nanoseconds. */
+static void count_cut(op_eager_count_t *c, op_eager_cut_t cause, int afford, int made, int64_t len)
+{
+    op_eager_count_step(c, cause, afford, 0, made, len, COUNT_RUNS, COUNT_SPARE, DRAIN_RUNS);
+}
+
+/** @brief Check the count controller's transitions by cause, its afford-relative plan, its deficit bound and its drain floor. */
 static void test_count_steps(void)
 {
     op_eager_count_t c;
     memset(&c, 0, sizeof c);
-    check(op_eager_count_plan(&c, 20) == 20, "count: plans afford with no shortfall");
-    op_eager_count_step(&c, 1, 0, 16, 2);
-    check(op_eager_count_plan(&c, 20) == 19, "count: a cut plans one fewer");
-    for (int i = 0; i < 15; i++) op_eager_count_step(&c, 0, 2, 16, 2);
-    check(c.short_by == 1, "count: fifteen clean spans give nothing back");
-    op_eager_count_step(&c, 0, 2, 16, 2);
-    check(c.short_by == 0, "count: the sixteenth gives one back");
-    op_eager_count_step(&c, 1, 0, 16, 2);
-    for (int i = 0; i < 40; i++) op_eager_count_step(&c, 0, 1, 16, 2);
-    check(c.short_by == 1, "count: spans finishing at the guard's edge hold the count");
-    c.short_by = 30;
-    check(op_eager_count_plan(&c, 20) == 1, "count: at least one scene");
+    check(op_eager_count_plan(&c, 20) == 20, "count: plans afford with no deficit");
+    count_cut(&c, OP_EAGER_CUT_DEADLINE, 20, 0, 0);
+    check(op_eager_count_plan(&c, 20) == 19, "count: a deadline cut plans one fewer");
+    check(op_eager_count_plan(&c, 200) == 190, "count: the deficit scales with afford");
+    for (int i = 0; i < 15; i++) count_clean(&c, 20, 2);
+    check(op_eager_count_plan(&c, 20) == 19, "count: fifteen clean spans give nothing back");
+    count_clean(&c, 20, 2);
+    check(op_eager_count_plan(&c, 20) == 20, "count: the sixteenth gives one back");
+    count_cut(&c, OP_EAGER_CUT_DEADLINE, 20, 0, 0);
+    for (int i = 0; i < 40; i++) count_clean(&c, 20, 1);
+    check(op_eager_count_plan(&c, 20) == 19, "count: spans finishing at the guard's edge hold the count");
+    for (int a = 2; a <= OP_EAGER_LADDER_MAX_AFFORD; a++) {
+        op_eager_count_t d;
+        memset(&d, 0, sizeof d);
+        for (int k = 1; k <= a / 2; k++) {
+            count_cut(&d, OP_EAGER_CUT_DEADLINE, a, 0, 0);
+            if (op_eager_count_plan(&d, a) == a - k) continue;
+            char what[80];
+            snprintf(what, sizeof what, "count: %d deadline cuts at afford %d plan %d", k, a, op_eager_count_plan(&d, a));
+            check(0, what);
+        }
+    }
+    memset(&c, 0, sizeof c);
+    for (int i = 0; i < 100; i++) count_cut(&c, OP_EAGER_CUT_DEADLINE, 3, 0, 0);
+    check(op_eager_count_plan(&c, 20) == 10, "count: the deficit stops at half of afford");
+    check(op_eager_count_plan(&c, 3) == 2 && op_eager_count_plan(&c, 2) == 1, "count: half of afford rounds to nearest, at least 1");
+    memset(&c, 0, sizeof c);
+    count_cut(&c, OP_EAGER_CUT_RING, 128, 46, 20 * MS);
+    count_cut(&c, OP_EAGER_CUT_WITHHELD, 128, 1, 20 * MS);
+    count_cut(&c, OP_EAGER_CUT_LATE, 128, 1, 20 * MS);
+    check(c.deficit == 0, "count: ring, withheld and late cuts leave the deficit alone");
+    check(op_eager_count_floor(&c) == 20 * MS / 46, "count: a ring cut floors the spacing at the span over the scenes it made");
+    for (int i = 0; i < DRAIN_RUNS - 1; i++) count_clean(&c, 128, 0);
+    check(op_eager_count_floor(&c) == 20 * MS / 46, "count: the drain floor holds through its run");
+    count_clean(&c, 128, 0);
+    check(op_eager_count_floor(&c) == 0, "count: the drain floor lapses after its run");
+}
+
+/** @brief The previous count controller: an absolute shortfall below afford, raised by every cut not after a stall.
+ *
+ * The negative control of the transition rows. */
+typedef struct { int short_by, clean; } old_count_t;
+
+/** @brief The previous controller's plan: afford less the shortfall, at least 1.
+ * @param c The controller.
+ * @param afford The scenes afforded.
+ * @return The scene count. */
+static int old_count_plan(const old_count_t *c, int afford)
+{
+    const int n = afford - c->short_by;
+    return n < 1 ? 1 : n;
+}
+
+/** @brief The previous controller's step: a cut adds one, COUNT_RUNS clean spans with COUNT_SPARE room remove one.
+ * @param c The controller.
+ * @param cut Nonzero for a cut span, whatever its cause.
+ * @param spare The room left, in scenes. */
+static void old_count_step(old_count_t *c, int cut, int spare)
+{
+    if (cut) { if (c->short_by < OP_EAGER_LADDER_MAX_AFFORD) c->short_by++; c->clean = 0; return; }
+    if (spare < COUNT_SPARE) { c->clean = 0; return; }
+    if (++c->clean < COUNT_RUNS) return;
+    c->clean = 0;
+    if (c->short_by > 0) c->short_by--;
 }
 
 /** @brief Replay the count rows: the guard-window price as planned cuts 10% or more, the sum price under the count controller 4% or less at 18 or more scenes per span.
@@ -364,7 +447,8 @@ static void test_count(int print)
             cut_w += w > cap; made_w += w < cap ? w : cap;
             const int plan = op_eager_count_plan(&c, k_count[i].sum[q]);
             cut_c += plan > cap; made_c += plan < cap ? plan : cap;
-            op_eager_count_step(&c, plan > cap, cap - plan, 16, 2);
+            if (plan > cap) count_cut(&c, OP_EAGER_CUT_DEADLINE, k_count[i].sum[q], cap, 0);
+            else count_clean(&c, k_count[i].sum[q], cap - plan);
         }
         if (print) printf("%-14s %6.1f %6.2f          %6.1f %6.2f\n", k_count[i].level,
                           100.0 * cut_w / COUNT_SPANS, (double)made_w / COUNT_SPANS,
@@ -377,6 +461,156 @@ static void test_count(int print)
         snprintf(what, sizeof what, "control %s: the guard-window price cut on %d of %d spans", k_count[i].level, cut_w, COUNT_SPANS);
         check(cut_w * 10 >= COUNT_SPANS, what);
     }
+}
+
+/* Transition rows: one-VBL spans of the Spyro 1 attract demo through the
+ * level 11 load (VBLs 3111-3177), afford and the scenes each produced; every
+ * plan above that count was cut by a full scene ring. */
+static const unsigned char k_trans_afford[] = {
+    128, 128, 128, 128, 128, 128, 128, 122, 128, 128, 128, 128, 128, 128, 128, 128, 128,
+    128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128,
+    128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128,
+    128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128,
+};
+static const unsigned char k_trans_made[] = {
+    55, 46, 46, 46, 46, 46, 46, 48, 46, 46, 46, 46, 46, 46, 46, 46, 46,
+    46, 46, 46, 49, 46, 46, 46, 52, 46, 46, 46, 46, 51, 46, 48, 53, 55,
+    54, 49, 49, 51, 59, 53, 49, 49, 51, 54, 53, 48, 51, 48, 53, 50, 53,
+    49, 52, 53, 49, 48, 52, 54, 49, 47, 51, 52, 52, 51, 51, 50, 50,
+};
+#define TRANS_SPANS ((int)sizeof k_trans_made)
+/* The span lengths (one VBL plus the 3.26 ms lag; one tick plus it) and the
+ * gameplay spans that follow: afford 12, of which 10 fit. */
+#define TRANS_VBL_LEN (19940 * 1000LL)
+#define TRANS_TICK_LEN (36690 * 1000LL)
+#define TRANS_AFFORD 12
+#define TRANS_CAP 10
+#define TRANS_LEVEL_SPANS 120
+
+/** @brief Plan one free span from the controller: its count at afford, at most one per drain floor over len.
+ * @param c The controller.
+ * @param afford The scenes afforded.
+ * @param len The span's length in nanoseconds.
+ * @return The scenes planned. */
+static int count_span(const op_eager_count_t *c, int afford, int64_t len)
+{
+    int n = 0;
+    op_eager_ladder_fill(len, op_eager_count_plan(c, afford), op_eager_count_floor(c), 1, &n);
+    return n;
+}
+
+/** @brief Replay the transition rows into gameplay: the controller plans the level within one scene of its steady count at once and never one scene; the previous controller strands at one.
+ *
+ * The present thread's drain is the recorded scene count per transition
+ * span (a plan above it is a ring cut); the gameplay spans cut at the
+ * deadline above TRANS_CAP and leave cap - plan scenes of room. The steady
+ * count there is TRANS_CAP: the controller holds a plan with less than
+ * COUNT_SPARE room. Under the previous controller every cut raised the
+ * absolute shortfall, which leaves afford 12 planning 1.
+ * @param print Nonzero to print the per-span plans. */
+static void test_count_transition(int print)
+{
+    op_eager_count_t c;
+    old_count_t o = { 0, 0 };
+    memset(&c, 0, sizeof c);
+    int ring = 0, ring_old = 0, made = 0, made_old = 0;
+    for (int q = 0; q < TRANS_SPANS; q++) {
+        const int a = k_trans_afford[q], cap = k_trans_made[q];
+        const int n = count_span(&c, a, TRANS_VBL_LEN), no = old_count_plan(&o, a);
+        ring += n > cap; ring_old += no > cap; made += n < cap ? n : cap; made_old += no < cap ? no : cap;
+        if (n > cap) count_cut(&c, OP_EAGER_CUT_RING, a, cap, TRANS_VBL_LEN);
+        else count_clean(&c, a, OP_EAGER_LADDER_MAX_AFFORD);   /* the walk ends before the update VBL */
+        old_count_step(&o, no > cap, OP_EAGER_LADDER_MAX_AFFORD);
+    }
+    char what[128];
+    snprintf(what, sizeof what, "transition: %d of %d spans ring-cut against the previous controller's %d, at most 10%%",
+             ring, TRANS_SPANS, ring_old);
+    check(ring * 10 <= TRANS_SPANS && ring_old * 2 >= TRANS_SPANS, what);
+    snprintf(what, sizeof what, "transition: %d scenes made against the previous controller's %d, at least 90%%", made, made_old);
+    check(made * 10 >= made_old * 9, what);
+    if (print) printf("transition: ring cuts %d (previous %d), scenes %d (previous %d)\n", ring, ring_old, made, made_old);
+    int first_near = -1, ones = 0, old_ones = 0, cuts = 0;
+    for (int q = 0; q < TRANS_LEVEL_SPANS; q++) {
+        const int n = count_span(&c, TRANS_AFFORD, TRANS_TICK_LEN), no = old_count_plan(&o, TRANS_AFFORD);
+        if (print) printf("level span %3d: plan %2d (previous controller %2d)\n", q, n, no);
+        if (first_near < 0 && n >= TRANS_CAP - 1 && n <= TRANS_CAP) first_near = q;
+        ones += n == 1; old_ones += no == 1; cuts += n > TRANS_CAP;
+        if (n > TRANS_CAP) count_cut(&c, OP_EAGER_CUT_DEADLINE, TRANS_AFFORD, TRANS_CAP, TRANS_TICK_LEN);
+        else count_clean(&c, TRANS_AFFORD, TRANS_CAP - n);
+        old_count_step(&o, no > TRANS_CAP, TRANS_CAP - no);
+    }
+    snprintf(what, sizeof what, "transition: the level plans within one of %d from span %d (bound 2)", TRANS_CAP, first_near);
+    check(first_near >= 0 && first_near <= 2, what);
+    snprintf(what, sizeof what, "transition: %d level span(s) plan one scene at afford %d", ones, TRANS_AFFORD);
+    check(ones == 0, what);
+    snprintf(what, sizeof what, "transition: %d deadline cut(s) in the level, at most the two to the edge", cuts);
+    check(cuts <= 2, what);
+    snprintf(what, sizeof what, "control: the previous controller plans one scene on %d of %d level spans", old_ones, TRANS_LEVEL_SPANS);
+    check(old_ones == TRANS_LEVEL_SPANS, what);
+}
+
+/** @brief Run the controller from a deficit against a fixed afford and capacity, and return the first span planning within [lo, hi].
+ *
+ * A span plans count_span over a tick span; it is cut at the deadline when
+ * it plans more than cap and otherwise leaves cap - plan scenes of room.
+ * @param afford The scenes afforded.
+ * @param cap The scenes that fit.
+ * @param deficit The controller's starting deficit.
+ * @param lo The lowest steady plan.
+ * @param hi The highest steady plan.
+ * @param spans The spans to run.
+ * @param left Receives 1 when a span after the first in range plans outside it.
+ * @return The first span in range, or -1. */
+static int count_settle(int afford, int cap, int deficit, int lo, int hi, int spans, int *left)
+{
+    op_eager_count_t c;
+    memset(&c, 0, sizeof c);
+    c.deficit = deficit;
+    int reached = -1;
+    *left = 0;
+    for (int q = 0; q < spans; q++) {
+        const int n = count_span(&c, afford, TRANS_TICK_LEN);
+        const int in = n >= lo && n <= hi;
+        if (in && reached < 0) reached = q;
+        *left |= !in && reached >= 0;
+        if (n > cap) count_cut(&c, OP_EAGER_CUT_DEADLINE, afford, cap, TRANS_TICK_LEN);
+        else count_clean(&c, afford, cap - n);
+    }
+    return reached;
+}
+
+/** @brief Check the recovery bound: from either extreme deficit, every afford and capacity reaches the steady count within its bound and stays.
+ *
+ * The steady count is the plan the controller holds: cap or cap - 1 (less
+ * than COUNT_SPARE room), or the deficit's floor round(afford / 2) when cap
+ * lies below it. From a zero deficit the plan falls one scene per span; from
+ * the largest deficit it rises one scene per COUNT_RUNS spans with room. The
+ * bound is COUNT_RUNS * ceil(afford / 2) + afford spans. */
+static void test_count_bound(void)
+{
+    int worst = 0, fails = 0;
+    for (int a = 1; a <= OP_EAGER_LADDER_MAX_AFFORD; a++) {
+        const int floor_n = (a + 1) / 2, bound = COUNT_RUNS * ((a + 1) / 2) + a;
+        for (int cap = 1; cap <= a; cap++) {
+            const int lo = cap - 1 > floor_n ? cap - 1 : floor_n, hi = cap > floor_n ? cap : floor_n;
+            int left_z, left_f;
+            const int rz = count_settle(a, cap, 0, lo, hi, bound + 4 * COUNT_RUNS, &left_z);
+            const int rf = count_settle(a, cap, OP_EAGER_COUNT_MAX_DEFICIT, lo, hi, bound + 4 * COUNT_RUNS, &left_f);
+            const int r = rz > rf ? rz : rf;
+            worst = r > worst ? r : worst;
+            const int bad = rz < 0 || rf < 0 || r > bound || left_z || left_f;
+            fails += bad;
+            if (bad && fails <= 4) {
+                char what[112];
+                snprintf(what, sizeof what, "bound: afford %d cap %d reached %d / %d (bound %d), left %d / %d",
+                         a, cap, rz, rf, bound, left_z, left_f);
+                check(0, what);
+            }
+        }
+    }
+    char what[80];
+    snprintf(what, sizeof what, "bound: %d case(s) outside, worst %d spans", fails, worst);
+    check(fails == 0, what);
 }
 
 /* Vsync rows: level, budget, cost mean and deviation (ns), slots, the guard-window price's afford. */
@@ -526,6 +760,8 @@ int main(int argc, char **argv)
     test_free(argc > 1 && !strcmp(argv[1], "replay"));
     test_count_steps();
     test_count(argc > 1 && !strcmp(argv[1], "replay"));
+    test_count_transition(argc > 1 && !strcmp(argv[1], "replay"));
+    test_count_bound();
     test_vsync();
     test_stall();
     printf("eager_ladder_test: %s\n", g_fail ? "FAIL" : "PASS");
