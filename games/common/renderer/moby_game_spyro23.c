@@ -306,33 +306,32 @@ static int s23_clamp_ir(long v) {
  * returns into the primitive's three coordinate slots (mobydraw.s:2326,
  * 2332-2336, 2338). The routine builds a spherical environment coordinate.
  *
- * Its input is the vector the vertex stage stored for that vertex: the three
- * depth-cued colour channels the interpolation leaves in MAC1-3
+ * Its input is the vector the vertex stage stored for that vertex: the
+ * keyframe-interpolated model-space vertex INTPL leaves in MAC1-3
  * (mobydraw.s:1295-1301, stored at +0x2, +0x400 and +0x402 of the vertex
- * slot), read back permuted into IR1-3 as (MAC2, MAC3, MAC1)
- * (mobydraw.s:2378-2384). That vector rotates by the Moby's own matrix at
- * +0x20, which the mode-1 setup loads into the GTE's rotation registers
- * (mobydraw.s:2080-2095).
+ * slot), read back as (MAC2, MAC3, MAC1) (mobydraw.s:2378-2384), the order
+ * the vertex stage hands RTPS (mobydraw.s:1308-1314), so the vector is the
+ * walk's model-space vertex truncated to 16 bits. MVMVA rotates it by the
+ * Moby's own rotation at +0x20, which the mode-1 setup loads into the GTE's
+ * rotation registers after the vertex stage has projected every vertex
+ * (mobydraw.s:2079-2093): the map follows the moby's orientation in the
+ * world, not the view.
  *
  * From the rotated vector (x, y, z) the routine takes the azimuth from the
  * ratio of the minor to the major of |z| and |x| through an arctangent table,
- * placed in its octant by the two signs (mobydraw.s:2404-2418, 2484-2496,
- * 2497-2502); the elevation from -y divided by the vector's length, the length
+ * placed in its octant by the two signs (mobydraw.s:2397-2415, 2448-2496,
+ * 2497-2504); the elevation from -y divided by the vector's length, the length
  * itself coming from a square-root table indexed by the squared length
- * normalized by its leading-zero count (mobydraw.s:2423-2452); and turns the
+ * normalized by its leading-zero count (mobydraw.s:2416-2446); and turns the
  * pair into a disc coordinate by looking the elevation up as a radius and
  * multiplying it by the sine and cosine of the azimuth, offset to the page's
- * centre texel 0x40 (mobydraw.s:2518-2544).
+ * centre texel 0x40 (mobydraw.s:2516-2547). The azimuth carries a per-record
+ * bias the setup leaves in GTE control 17 (mobydraw.s:2096-2112).
  *
  * The routine memoizes its result in the vertex slot and marks the slot done,
  * so a vertex shared by several faces is transformed once; the walk computes
  * per face corner instead, which gives the same coordinate for the same
  * vertex.
- *
- * UNRESOLVED: the azimuth carries a per-moby bias the setup leaves in GTE
- * control 17 (mobydraw.s:2100-2112), built from the record's view-space depth
- * shifted by a per-model byte pair and a global word. The walk holds it at 0,
- * which leaves the map unrotated.
  */
 
 /** @brief The GTE's LZCS/LZCR count: leading zeroes of a positive value, leading ones of a negative one.
@@ -346,63 +345,119 @@ static int s23_lzcr(uint32_t v) {
     return n;
 }
 
-/* The per-record environment-map setup, resolved once per record rather than
- * per face. The walk supplies the rotated corner positions, so it holds the
- * azimuth bias alone. */
-typedef struct { int bias; } s23_env_setup;
+/* The cull record's word whose bytes 2 and 3 the mode-1 setup subtracts for
+ * the depth term's shift (mobydraw.s:2096, 2103-2106). The cull stores the
+ * keyframe header's byte 3 at +0x1A and that byte plus the header's scale
+ * byte at +0x1B (mobydraw.s:499-501), so the difference is the model's scale
+ * shift. */
+#define S23_REC_ENV_SHIFT_OFF 0x18u
 
-/** @brief Resolves a record's environment-map setup: the azimuth bias, always 0.
+/* The per-record environment-map setup, resolved once per face: the Moby's
+ * rotation the routine's MVMVA applies, the azimuth bias, and whether the
+ * vertex stage stored the vertex through the packed word that borrows. */
+typedef struct { int R[3][3]; int32_t bias; int borrow; } s23_env_setup;
+
+/** @brief Resolves a record's environment-map setup: the Moby's own rotation, the azimuth bias the draw leaves in GTE control 17, and the vertex slot's borrow.
  *
- * The draw's mode-1 azimuth carries a per-record bias (mobydraw.s:2100-2112)
- * that this decode does not reproduce, so `bias` is 0 and no guest memory is
- * read.
- * @param cpu Unused.
- * @param rec Unused: the cull record's address.
+ * The rotation is the five words at the Moby's +0x20 (mobydraw.s:2082-2093).
+ * The bias is the record's view-space depth, which its own setup loaded into
+ * the translation register (mobydraw.s:898-908), shifted left by the
+ * difference of bytes 3 and 2 of the record's word at +0x18 (the shift
+ * amount's low five bits, as SLLV reads it) and logically right by 6, plus
+ * the global word at `env_bias_word` shifted arithmetically right by 3
+ * (mobydraw.s:2096-2112). Only its low byte reaches the azimuth. A record the
+ * walk built itself has no word at +0x18; the cull stores there the header's
+ * byte 3 and that byte plus the header's scale byte (mobydraw.s:499-501), so
+ * the shift is the scale byte. A record with a zero keyframe blend takes the
+ * draw's unblended vertex path (mobydraw.s:922-923, 986), which stores the
+ * vertex's X and Y as the one word VX + (VY << 16) (mobydraw.s:1027-1028,
+ * 1035), so a negative X borrows one from the Y the routine reads back; the
+ * blended path stores the three halves apart (mobydraw.s:1299-1301).
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby the record draws.
+ * @param rec The cull record.
  * @param E Receives the setup. */
-static void s23_env_setup_read(CPUState* cpu, uint32_t rec, s23_env_setup* E) {
-    /* The azimuth carries a per-record bias the setup leaves in GTE control 17
-     * (mobydraw.s:2100-2112): the record's view-space depth, which its own
-     * setup left in the translation register, shifted left by the difference of
-     * two bytes of the record's word at +0x18, shifted right by 6, plus an
-     * eighth of the global word at `env_bias_word`. Reading it back that way
-     * rotates the coordinates further from the draw's than leaving it out, so
-     * the bias is held at 0. */
-    (void)cpu; (void)rec;
-    E->bias = 0;
+static void s23_env_setup_read(CPUState* cpu, uint32_t moby, const moby_face_rec_t* rec, s23_env_setup* E) {
+    ngte_read_matrix(cpu, moby + game_layout.moby.rot_off, E->R);
+    int sh;
+    if (rec->addr) {
+        const uint32_t w = moby_rec_word(cpu, rec->addr + S23_REC_ENV_SHIFT_OFF);
+        sh = ((int)(w >> 24) - (int)((w >> 16) & 0xFFu)) & 31;
+    } else {
+        sh = (int)(cpu->read_byte(rec->header + game_layout.moby.anim_scale_off) & 31u);
+    }
+    const uint32_t depth = ((uint32_t)rec->tr_z << sh) >> 6;
+    const int32_t g = game_layout.moby.env_bias_word
+                    ? (int32_t)cpu->read_word(game_layout.moby.env_bias_word) : 0;
+    E->bias = (int32_t)(depth + (uint32_t)(g >> 3));
+    E->borrow = ((rec->w0 >> game_layout.moby.blend_shift) & game_layout.moby.blend_mask) == 0u;
 }
 
-/** @brief One face corner's mode-1 environment coordinate pair, from that corner's rotated position.
+/** @brief The routine's azimuth in 256ths of a turn, before the bias: the arctangent table entry placed in the octant the signs of z and -x select.
  *
- * The per-vertex routine of mobydraw.s:2377-2547: the azimuth from the
- * arctangent table in the octant the signs of z and -x place it, the elevation
- * from -y over the vector's length through the radius table, and the disc
- * coordinate from that radius times the azimuth's cosine and sine, centred on
+ * The draw branches on the sign of z, then of -x, then on which of the two
+ * magnitudes is larger (mobydraw.s:2448-2496). Each comparison branch's delay
+ * slot writes the add/subtract flag on both paths, and the taken target
+ * rewrites it, so the taken branch (the minor axis is z) takes the target's
+ * flag and base: z >= 0 with -x >= 0 gives 0x40 - a when z < -x, else a;
+ * z >= 0 with -x < 0 gives 0xC0 + a when z < x, else 0x100 - a; z < 0 with
+ * -x >= 0 gives 0x40 + a when -z < -x, else 0x80 - a; z < 0 with -x < 0 gives
+ * 0xC0 - a when -z < x, else 0x80 + a. The result is atan2(-x, z) in 256ths
+ * of a turn.
+ * @param z The rotated vector's third component (MAC3).
+ * @param nx The negated first component (-MAC1).
+ * @param at The arctangent table entry of the minor-over-major ratio.
+ * @return The azimuth, 0..0x100. */
+static int s23_env_azimuth(long z, long nx, int at) {
+    const long az = z < 0 ? -z : z, anx = nx < 0 ? -nx : nx;
+    const int minor_z = az < anx;               /* the taken branch of each octant */
+    if (z >= 0 && nx >= 0) return minor_z ? 0x40 - at : at;
+    if (z >= 0)            return minor_z ? 0xC0 + at : 0x100 - at;
+    if (nx >= 0)           return minor_z ? 0x40 + at : 0x80 - at;
+    return minor_z ? 0xC0 - at : 0x80 + at;
+}
+
+/** @brief One face corner's mode-1 environment coordinate pair, from that corner's model-space vertex.
+ *
+ * The per-vertex routine of mobydraw.s:2377-2547: the vertex as the vertex
+ * stage stored it (the unblended path's borrow, s23_env_setup_read, and each
+ * component truncated to its 16-bit slot), rotated by the Moby's rotation
+ * (MVMVA, shift 12); the azimuth from the arctangent table in the octant the
+ * signs of z and -x place it (s23_env_azimuth); the elevation from -y over
+ * the vector's length through the radius table; and the disc coordinate from
+ * that radius times the cosine and sine of the biased azimuth, centred on
  * texel 0x40.
  * @param cpu The guest CPU state, read only (the square-root, arctangent, radius and sine tables).
- * @param E The per-record setup; its azimuth bias is added before the sine lookup.
- * @param e The corner's model-to-view rotated position.
+ * @param E The per-record setup: the rotation, the azimuth bias and the borrow.
+ * @param mv The corner's model-space vertex after the keyframe blend.
  * @param pu Receives U.
  * @param pv Receives V. */
-static void s23_env_uv(CPUState* cpu, const s23_env_setup* E, const float e[3],
+static void s23_env_uv(CPUState* cpu, const s23_env_setup* E, const float mv[3],
                       uint8_t* pu, uint8_t* pv) {
-    /* The walk already holds the rotated vector the draw's MVMVA produces: the
-     * model-to-view rotation applied to the vertex, shifted by 12. */
+    /* INTPL's MAC floors the blend; the slot keeps its low 16 bits
+     * (mobydraw.s:1295-1301), read back sign-extended (mobydraw.s:2378-2384). */
+    long V[3];
+    for (int j = 0; j < 3; j++) V[j] = (long)floor((double)mv[j]);
+    if (E->borrow && V[0] < 0) V[1] -= 1;
+    for (int j = 0; j < 3; j++) V[j] = (int16_t)(uint16_t)V[j];
     long mac[3], ir[3];
     for (int i = 0; i < 3; i++) {
-        mac[i] = (long)(e[i] < 0.0f ? -(long)(-e[i] + 0.5f) : (long)(e[i] + 0.5f));
+        const long long s = (long long)E->R[i][0] * V[0] + (long long)E->R[i][1] * V[1]
+                          + (long long)E->R[i][2] * V[2];
+        mac[i] = (long)(s >> 12);
         ir[i] = s23_clamp_ir(mac[i]);
     }
-    long z = mac[2], nx = -mac[0], ny = -mac[1];    /* mobydraw.s:2392-2396 */
+    long z = mac[2], nx = -mac[0], ny = -mac[1];    /* mobydraw.s:2391-2396 */
 
     /* The azimuth ratio: the minor of |z| and |x| over the major, in 6
-     * fractional bits (mobydraw.s:2404-2419). */
+     * fractional bits (mobydraw.s:2397-2415). */
     long a = z < 0 ? -z : z, b = nx < 0 ? -nx : nx;
     if (a > b) { long t = a; a = b; b = t; }
     if (b == 0) b = 1;
     long q = (a << 6) / b;
     if (q > 64) q = 64;
 
-    /* SQR 0 then the square root of the sum (mobydraw.s:2397, 2423-2452). */
+    /* SQR 0 then the square root of the sum (mobydraw.s:2394, 2416-2446). */
     unsigned long len2 = 0;
     for (int i = 0; i < 3; i++) len2 += (unsigned long)(ir[i] * ir[i]);
     long len = 0;
@@ -416,27 +471,17 @@ static void s23_env_uv(CPUState* cpu, const s23_env_setup* E, const float e[3],
         len = ((long)w << sh) >> 12;
     }
 
-    /* The octant the two signs place the ratio in (mobydraw.s:2484-2502). */
-    int sub, base;
-    if (z >= 0) {
-        if (nx >= 0) { if (z - nx < 0) { sub = 1; base = 0x40; } else { sub = 0; base = 0x00; } }
-        else         { long m = -nx; if (z - m < 0) { sub = 1; base = 0x100; } else { sub = 0; base = 0xC0; } }
-    } else {
-        long zm = -z;
-        if (nx >= 0) { if (zm - nx < 0) { sub = 1; base = 0x80; } else { sub = 0; base = 0x40; } }
-        else         { long m = -nx; if (zm - m < 0) { sub = 1; base = 0xC0; } else { sub = 0; base = 0x80; } }
-    }
     int at = (int)cpu->read_byte(game_layout.moby.env_atan_table + (uint32_t)q);
-    int ang = sub ? (base - at) : (base + at);
+    int ang = s23_env_azimuth(z, nx, at);
 
-    /* The elevation, clamped to the radius table's range (mobydraw.s:2508-2521). */
+    /* The elevation, clamped to the radius table's range (mobydraw.s:2506-2514). */
     long evq = len ? ((ny << 12) / len) : 0;
     long el = evq >> 5;
     if (el < 0) el = 0; else if (el > 0x80) el = 0x80;
     int rad = (int)cpu->read_byte(game_layout.moby.env_radius_table + (uint32_t)el) >> 1;
 
-    /* The disc coordinate, centred on texel 0x40 (mobydraw.s:2522-2544). */
-    int az = (ang + E->bias) & 0xFF;
+    /* The disc coordinate, centred on texel 0x40 (mobydraw.s:2516-2547). */
+    int az = (int)(((uint32_t)ang + (uint32_t)E->bias) & 0xFFu);
     uint32_t sp = game_layout.sin_table + (uint32_t)(az << 1);
     int cs = (int16_t)cpu->read_half(sp + 0x80u);
     int sn = (int16_t)cpu->read_half(sp);
@@ -595,21 +640,20 @@ static int s23_water_plane(CPUState* cpu, uint32_t mat, uint32_t moby, uint32_t 
  * @param mat The record's material word.
  * @param M The model-to-view matrix at unit scale; mode 2 rotates the face
  *        normal by it and floors each component as the GTE's >> 12 does.
- * @param moby Unused.
- * @param rec The cull record's address, passed to the environment setup.
+ * @param moby The Moby the record draws; mode 1 reads its rotation.
+ * @param rec The cull record, passed to the environment setup.
  * @param F The face; `hl` must be 1, and n1..n3 are the normal mode 2 reads.
  * @param c The four vertex colours, rewritten in place.
- * @param ev The four corners' model-to-view rotated positions, read by mode 1.
+ * @param mv The four corners' model-space vertices after the keyframe blend, read by mode 1.
  * @param textured Set to 1 by mode 1 when it applies the substitute page;
  *        modes 0 and 2 keep the face's own flag.
  * @param tex Receives mode 1's substitute page, CLUT and coordinates; the walk
  *        zeroes it before the call.
  * @return 0 when the face is left alone, else 1 plus the mode applied. */
 static int s23_special_face(CPUState* cpu, uint32_t mat, const float M[3][3],
-                           uint32_t moby, uint32_t rec, const moby_wface_t* F,
-                           uint32_t c[4], const float ev[4][3], int* textured,
+                           uint32_t moby, const moby_face_rec_t* rec, const moby_wface_t* F,
+                           uint32_t c[4], const float mv[4][3], int* textured,
                            moby_face_tex_t* tex) {
-    (void)moby;
     if (F->hl != 1) return 0;                      /* bit 4: the other dispatcher */
     int mode = mat ? (int)((mat >> 28) & 7u) : 0;
     if (mode > 2) return 0;                        /* no face treatment; mode 3 tints the table */
@@ -674,12 +718,11 @@ static int s23_special_face(CPUState* cpu, uint32_t mat, const float M[3][3],
             *textured = 1;
         }
         /* The coordinates the emit generates per corner in place of the face's
-         * own, from that corner's depth-cued colour before the treatment
-         * rewrites it. */
+         * own, from that corner's model-space vertex. */
         {
-            s23_env_setup E; s23_env_setup_read(cpu, rec, &E);
+            s23_env_setup E; s23_env_setup_read(cpu, moby, rec, &E);
             for (int k = 0; k < 4; k++)
-                s23_env_uv(cpu, &E, ev[k], &tex->u[k], &tex->v[k]);
+                s23_env_uv(cpu, &E, mv[k], &tex->u[k], &tex->v[k]);
             tex->uv_set = 1u;
         }
         /* The colour half runs off one IR0 for the whole moby, bits 24-27 << 8

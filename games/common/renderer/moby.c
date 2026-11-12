@@ -2417,6 +2417,7 @@ enum { MOBY_CLR_PAST = 1, MOBY_CLR_CAPPED = 2 };
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
 typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b, faceblock, w0;
                  int metal; uint32_t mscol; uint32_t moby; int zsf4;
+                 int32_t tr_z;     /* the view-space translation's Z as the cull stores it */
                  float env_az;     /* view azimuth atan2(TR.z, TR.x), from the full-precision centre where the record has one */
                  uint32_t frameA;
                  uint32_t frameA_p, header_p; float clr_alpha;
@@ -3251,7 +3252,7 @@ static void canon_rec_put(CPUState* cpu, int nrec, uint32_t rec, const moby_reco
         .mscol = R->material,
         .moby = R->moby,
         .zsf4 = dzsf4,
-        .frameA = R->frame_a };
+        .frameA = R->frame_a, .tr_z = R->TR_raw[2] };
     /* The environment map's view azimuth comes from the centre the record
      * projects through, the one the sub-tick re-extract reads at the same
      * tick, so a re-extract at alpha 1 draws the canonical UVs. */
@@ -3762,6 +3763,7 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
         .faceblock = moby_tier_faceblock(cpu, f->header, dzsf4), .w0 = f->w0,
         .metal = f->metal, .mscol = f->mscol, .moby = m, .zsf4 = dzsf4,
         .env_az = (float)atan2(f->TR_frac[2], f->TR_frac[0]), .frameA = f->frameA,
+        .tr_z = f->TR_raw[2],
         .frameA_p = pd.prev.frame_a, .header_p = pd.prev.header,
         .clr_alpha = (float)pd.clr_alpha };
     s_recs[s_nrecs].model_held = pd.model_held;
@@ -7479,12 +7481,12 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 int tex2 = textured;
                 moby_face_tex_t stex; memset(&stex, 0, sizeof stex);
                 const proj_xy* pv4[4] = { p0, p1, p2, p3 ? p3 : p2 };
-                float ev[4][3];
-                for (int q = 0; q < 4; q++) {
-                    ev[q][0] = pv4[q]->ex; ev[q][1] = pv4[q]->ey; ev[q][2] = pv4[q]->ez;
-                }
+                float mv[4][3];
+                for (int q = 0; q < 4; q++)
+                    for (int j = 0; j < 3; j++) mv[q][j] = pv4[q]->mv[j];
+                const moby_face_rec_t frec = { R->addr, R->w0, R->header, R->tr_z };
                 int applied = moby_game.special_face(cpu, R->mscol, (const float (*)[3])R->Mf, R->moby,
-                                                     R->addr, F, cc, ev, &tex2, &stex);
+                                                     &frec, F, cc, mv, &tex2, &stex);
                 if (applied && stex.set) {
                     /* The treatment's substitute page and CLUT, in place of the
                      * face's own. The draw biases the substitute's CLUT row by
@@ -7992,9 +7994,12 @@ static void moby_prec_tally_report(const moby_prec_tally_t* t) {
  * triangles with a vertex in a screen box, once per pass (box_pass_latched).
  * The first call also prints a few on-screen misses and uncovered prims. Reads
  * s_gout, s_wtri and s_gte; the OPENPETE_MOBY_VERIFY path calls it after
- * build_walk_tris or build_shaded_walk_tris. */
-static void compare_walk_vs_prims(void) {
+ * build_walk_tris or build_shaded_walk_tris.
+ * @return The one-to-one assignment: the prim triangle index per walk
+ *         triangle, -1 when unmatched, over the s_gout.n walk triangles. */
+static const int* compare_walk_vs_prims(void) {
     build_prim_tris();
+    static int s_assign[MAX_NTRI];
     static int s_cmp_dumped = 0; int s_cmp_dump = !s_cmp_dumped; s_cmp_dumped = 1;
     { /* OPENPETE_MOBY_PRIMBOX="x0,y0,x1,y1": dump every captured .s prim with a
        * vertex in the PSX-screen box (per-vertex xy+rgb) - the position-matched
@@ -8078,7 +8083,6 @@ static void compare_walk_vs_prims(void) {
      * sub-pixel triangles pairs faces that are not counterparts and then scores
      * their colours against each other. Rank every admissible pair by cost and
      * assign in that order, each side used once. */
-    static int s_assign[MAX_NTRI];
     {
         typedef struct { float c; int w, p; } pair_t;
         static pair_t* pool; static int poolcap;
@@ -8261,6 +8265,91 @@ static void compare_walk_vs_prims(void) {
     class_colour_tally_report(&vcls);
     moby_prec_tally_report(&vmob);
     #undef ONSCR
+    return s_assign;
+}
+
+/** @brief Whether every pair of a prim triangle's corners lies more than a distance apart.
+ * @param P The prim triangle.
+ * @param d The distance in screen px.
+ * @return 1 when the corners are separated, 0 when two lie within d. */
+static int ptri_corners_separated(const ptri* P, double d) {
+    for (int a = 0; a < 3; a++)
+        for (int b = a + 1; b < 3; b++) {
+            const double dx = P->x[a] - P->x[b], dy = P->y[a] - P->y[b];
+            if (dx * dx + dy * dy <= d * d) return 0;
+        }
+    return 1;
+}
+
+/** @brief Whether a prim triangle draws textured from the walk triangle's texture page and CLUT.
+ * @param w The walk triangle.
+ * @param P The prim triangle.
+ * @return 1 when the prim is textured and its decoded page and CLUT equal the walk triangle's. */
+static int ptri_same_page(const ntri_t* w, const ptri* P) {
+    if (!P->tex) return 0;
+    ngte_tpage t;
+    ngte_decode_tpage((unsigned)P->tpage, (unsigned)P->clut, 0u, &t);
+    return t.tpx == w->tpage_x && t.tpy == w->tpage_y && t.clx == w->clut_x && t.cly == w->clut_y;
+}
+
+/** @brief The prim triangle corner nearest a screen point, within a radius.
+ * @param P The prim triangle.
+ * @param x The point's screen X.
+ * @param y The point's screen Y.
+ * @param r The radius in screen px.
+ * @return The corner index, or -1 when none lies within r. */
+static int ptri_nearest_corner(const ptri* P, double x, double y, double r) {
+    double bd = r * r; int bk = -1;
+    for (int k = 0; k < 3; k++) {
+        const double dx = x - P->x[k], dy = y - P->y[k], dd = dx * dx + dy * dy;
+        if (dd <= bd) { bd = dd; bk = k; }
+    }
+    return bk;
+}
+
+/** @brief Print the per-corner A/B of the walk's generated environment coordinates against the captured prims' texture coordinates.
+ *
+ * Scores every walk triangle whose special-material treatment generated its
+ * texture coordinates (s_wtri_special 2) against the prim triangle
+ * compare_walk_vs_prims assigned it, skipping a prim that does not
+ * draw textured from the walk triangle's page and CLUT (ptri_same_page: the
+ * pairing is another face) and a prim whose corners lie within 3 px of each
+ * other; each walk corner pairs with the nearest prim corner within 2.5 px.
+ * The error of a pair is the larger of |du| and |dv| in texels. The line
+ * reports the treated faces, those left unpaired, the paired corners, the
+ * exact ones and the mean and largest error. OPENPETE_MOBY_ENVUV_DUMP=1 adds
+ * one line per paired corner with the Moby, its class, both pairs and the
+ * triangle match cost.
+ * @param assign compare_walk_vs_prims's assignment over the same walk. */
+static void env_uv_ab(const int* assign) {
+    static int s_dump = -1;
+    if (s_dump < 0) { const char* e = getenv("OPENPETE_MOBY_ENVUV_DUMP"); s_dump = (e && *e && *e != '0'); }
+    long n = 0, exact = 0, sum = 0, mx = 0; int faces = 0, unmatched = 0;
+    for (int wi = 0; wi < s_gout.n; wi++) {
+        if (s_wtri_special[wi] != 2u) continue;
+        const ntri_t* w = &s_wtri[wi];
+        faces++;
+        const int bp = assign[wi];
+        if (bp < 0 || !ptri_same_page(w, &s_ptri[bp]) || !ptri_corners_separated(&s_ptri[bp], 3.0)) {
+            unmatched++; continue;
+        }
+        for (int k = 0; k < 3; k++) {
+            const int pk = ptri_nearest_corner(&s_ptri[bp], w->v[k].sx, w->v[k].sy, 2.5);
+            if (pk < 0) continue;
+            const int wu = (int)lrintf(w->v[k].u), wv = (int)lrintf(w->v[k].v);
+            const int du = abs(wu - s_ptri[bp].u[pk]), dv = abs(wv - s_ptri[bp].v[pk]);
+            const long e = du > dv ? du : dv;
+            n++; exact += (e == 0); sum += e; if (e > mx) mx = e;
+            if (s_dump)
+                fprintf(stderr, "[env-uv-pair %s vbl=%u] m=%08X cls=%03X w=%d,%d p=%d,%d cost=%.2f\n",
+                        s_cur_mat ? s_cur_mat : "?", openpete_frame, s_wtri_moby[wi],
+                        (unsigned)s_wtri_cls[wi], wu, wv, s_ptri[bp].u[pk], s_ptri[bp].v[pk],
+                        tri_match_cost(w, &s_ptri[bp]));
+        }
+    }
+    fprintf(stderr, "[env-uv-ab %s vbl=%u] faces=%d unmatched=%d corners=%ld exact=%ld mean=%.3f max=%ld\n",
+            s_cur_mat ? s_cur_mat : "?", openpete_frame, faces, unmatched, n, exact,
+            n ? (double)sum / (double)n : 0.0, mx);
 }
 
 /** @brief Print the per-vertex colour A/B of the native shaded lighting against the captured shaded prims.
@@ -11895,7 +11984,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
         if (target) {
             compare_and_report(nrec);
             build_walk_tris(cpu);             /* independent walk + topology A/B */
-            compare_walk_vs_prims();
+            env_uv_ab(compare_walk_vs_prims());
             if (mat && mat[0] == 'S' && mat[1] == 'P') {   /* confirm specular recolor attaches the prim colour */
                 specular_env_calibrate(cpu);  /* env-UV calibration dump (native refl vs prim UV) */
                 specular_hl_calibrate(cpu);   /* highlight calibration (face-normal.light vs prim) */
@@ -17224,6 +17313,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             .faceblock = moby_tier_faceblock(cpu, f.header, zsf4),
             .w0 = f.w0, .metal = f.metal, .mscol = f.mscol, .moby = mobys[i], .zsf4 = zsf4,
             .env_az = (float)atan2(f.TR_frac[2], f.TR_frac[0]), .frameA = f.frameA,
+            .tr_z = f.TR_raw[2],
             .frameA_p = prev->frame_a, .header_p = prev->header,
             .clr_alpha = (float)pd.clr_alpha };
         s_recs[s_nrecs].clr_flags = (uint8_t)pd.clr_flags;

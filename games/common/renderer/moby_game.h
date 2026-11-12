@@ -103,6 +103,17 @@ typedef struct moby_wface {
     uint8_t  u[4], v[4];
 } moby_wface_t;
 
+/* The cull record a special face belongs to, as the walk holds it: the
+ * record's guest address (0 for a record the walk built itself, which has
+ * none), its flags word, its AnimationHeader, and the Z of its view-space
+ * translation as the cull stores it. */
+typedef struct moby_face_rec {
+    uint32_t addr;
+    uint32_t w0;
+    uint32_t header;
+    int32_t  tr_z;
+} moby_face_rec_t;
+
 /* A texture page and CLUT one face draws from instead of its own, in the same
  * decoded form as the face's fields. `set` 0 leaves the face's texture alone;
  * a treatment that sets it also names the colour depth and blend mode of the
@@ -286,14 +297,14 @@ typedef struct moby_game {
      * or 1 + the treatment index it applied, which the walk counts. `material`
      * is the record's material word, `M` its model-to-view matrix at unit
      * scale, `moby` the
-     * Moby the record was built from, `rec` the cull record's own address (0
-     * for a record the walk built itself, which carries no guest record), and
-     * `ev` the four corners' model-to-view rotated positions, which a
-     * coordinate-generating treatment reads. NULL
+     * Moby the record was built from, `rec` the cull record the face belongs
+     * to, and
+     * `mv` the four corners' model-space vertices after the keyframe blend,
+     * which a coordinate-generating treatment reads. NULL
      * where the game's special faces are handled by the walk's own branch. */
     int  (*special_face)(CPUState* cpu, uint32_t material, const float M[3][3],
-                         uint32_t moby, uint32_t rec, const struct moby_wface* F,
-                         uint32_t c[4], const float ev[4][3], int* textured,
+                         uint32_t moby, const moby_face_rec_t* rec, const struct moby_wface* F,
+                         uint32_t c[4], const float mv[4][3], int* textured,
                          moby_face_tex_t* tex);
 
     /* ---- mirrored record ----------------------------------------------
