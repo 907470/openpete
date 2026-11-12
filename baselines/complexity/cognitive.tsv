@@ -102,11 +102,9 @@ games/common/renderer/moby.c	compare_and_report	90	0
 games/common/renderer/moby.c	compare_walk_vs_prims	251	0	
 games/common/renderer/moby.c	hex_dump	35	0	
 games/common/renderer/moby.c	moby_build_validate	51	0	
-games/common/renderer/moby.c	moby_decode_project_body	74	0	
 games/common/renderer/moby.c	moby_native_pass	49	0	
 games/common/renderer/moby.c	moby_reextract_body	52	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
-games/common/renderer/moby.c	project_all_shaded	166	0	
 games/common/renderer/moby.c	reextract_record_pass	98	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_pcol_scratch_check	27	0	

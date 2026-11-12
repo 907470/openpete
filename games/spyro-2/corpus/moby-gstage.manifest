@@ -20,3 +20,6 @@ skelos_badlands@wizardfx | pos=(95730, 55975, 28402) yaw=86 pitch=69
 carve-out | gpf | Spyro 2 and 3 store the final translation (game_layout.moby.rec_tr_final), so moby_decode_project_body never runs the GPF rescale
 carve-out | mirrored | no freecam row draws a record whose rotation has a negative determinant; a mirror-twin row is owed
 carve-out | shell | the sphere-shell class (0xAA, the bubble about Sparx under water) needs Spyro under water, which no freecam row reaches; a bk2 row is owed
+carve-out | shaded | Spyro 2 and 3 have no shaded pass (game_layout.moby.hook_draw_shaded is 0); their second model kind projects through moby_simple_project, outside the stage
+carve-out | billboard | Spyro 2 and 3 have no shaded pass (game_layout.moby.hook_draw_shaded is 0)
+carve-out | drawscale | Spyro 2 and 3 have no shaded pass (game_layout.moby.hook_draw_shaded is 0)

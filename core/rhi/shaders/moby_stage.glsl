@@ -3,8 +3,9 @@
  * translation, the float perspective divide, the GTE divide-cap mirror and
  * the depths the scene stores, in fp32 with no Float64 capability.
  *
- * It computes what the CPU decode (moby.c moby_decode_project_body) writes
- * per vertex, from the same per-record terms rounded once to float:
+ * It computes what the CPU projection (moby.c moby_project_vertex, called by
+ * the record passes and the shaded pass alike) writes per vertex, from the
+ * same per-record terms rounded once to float:
  *   v    = p + (c - p) * alpha          the previous-to-current pose lerp
  *   r    = M v                          rotated offset, the env-UV input
  *   mac  = TR + r                       TR = tr + tr_lo, the double translation as two floats
@@ -13,7 +14,9 @@
  *          inside it sx = clamp(ofx + sat16(mac1) * cap, -1024, 1023), the
  *          capped quotient and the SXY saturation (ngte_screen_gte)
  *   sat  = |mac1| or |mac2| past int16, mac3 <= 0, or H_canon >= 2 mac3
- *   tvz  = mac3 * unit                  the perspective W (unit = 2^scale byte)
+ *   tvz  = mac3 * unit                  the perspective W (unit = 2^scale byte on a
+ *                                       record pass; 2, or 64 / draw-scale byte, on
+ *                                       the shaded pass)
  *   kvz  = (mac3 + vz_bias) * unit * depth_k
  *   vz   = kvz - tie_pull + lift, then - rho + lift2 (the sphere-shell pull)
  *   h    = (of * mac3 + mac12 * H) * unit, the homogeneous screen position
@@ -43,6 +46,8 @@
 #define MOBY_F_LIFT   16u
 #define MOBY_F_SHELL  32u
 #define MOBY_F_ENV    64u
+#define MOBY_F_SHADED 128u
+#define MOBY_F_BILLBOARD 256u
 
 /* Vec4s per instance record and per vertex record in the stage's storage
  * (openpete_moby_gstage.h OPENPETE_GSAB_INST_VEC4, _VERT_VEC4). */
@@ -57,7 +62,7 @@ struct moby_inst {
     float H;            /* the display's projection distance */
     float H_canon;      /* the GTE's H: every regime test reads it */
     float div_cap;      /* the capped quotient 0x1FFFF / 65536 times the --fov scale */
-    float unit;         /* 2^scale byte: projected view-Z to world view-Z */
+    float unit;         /* projected view-Z to the perspective W: 2^scale byte, or the shaded pass's factor */
     float depth_k;      /* projected to written depth (sized records) */
     float vz_bias;      /* a GPF record's depth restore */
     float tie_pull;     /* the one-slot tie pull, 0 when the gate is off */

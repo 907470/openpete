@@ -25,8 +25,9 @@ extern "C" {
 
 struct rhi_device;
 
-/* Slots per projection array: one per projected vertex. */
-#define OPENPETE_GSAB_PROJ_CAP 32768
+/* Slots per projection array: one per projected vertex (the record passes'
+ * 32768 and the shaded pass's 8192 after them). */
+#define OPENPETE_GSAB_PROJ_CAP 40960
 
 /* Instance flags (moby_stage.glsl MOBY_F_*). */
 enum {
@@ -37,6 +38,8 @@ enum {
     OPENPETE_GSAB_F_LIFT   = 16u,   /* a near-floor lift moved the record */
     OPENPETE_GSAB_F_SHELL  = 32u,   /* the sphere-shell pull moved the record */
     OPENPETE_GSAB_F_ENV    = 64u,   /* the record's metal byte is set (env-UV faces) */
+    OPENPETE_GSAB_F_SHADED = 128u,  /* a shaded-pass record (unit 2, or 64 / draw-scale byte) */
+    OPENPETE_GSAB_F_BILLBOARD = 256u, /* a shaded-pass billboard (screen-position offset) */
 };
 
 /* One record's per-record stage inputs, each rounded once to float. */
@@ -47,7 +50,7 @@ typedef struct {
     float ofx, ofy;     /* screen offsets */
     float H, H_canon;   /* display and GTE projection distance */
     float div_cap;      /* capped quotient times the --fov scale */
-    float unit;         /* 2^scale byte */
+    float unit;         /* projected view-Z to the perspective W */
     float depth_k;      /* projected to written depth */
     float vz_bias;      /* GPF depth restore */
     float tie_pull;     /* tie pull, 0 when off */

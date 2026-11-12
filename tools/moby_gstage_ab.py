@@ -55,6 +55,7 @@ HDR = struct.Struct("<12I")
 REC = np.dtype([("q", "<f4", 32), ("mid", "<u4"), ("first", "<u4"), ("n", "<u4")])
 VERT = np.dtype([("inp", "<f4", 6), ("ref", "<f8", 9), ("dz", "<f4", 2), ("fl", "u1", 4)])
 F_GPF, F_ANIM, F_LERP, F_MIRROR, F_LIFT, F_SHELL, F_ENV = 1, 2, 4, 8, 16, 32, 64
+F_SHADED, F_BILLBOARD = 128, 256
 SCREEN_BOUND = 1.0 / 256.0
 DEPTH_BOUND = 2.0 ** -20
 FLAG_EDGE = 2.0 ** -16
@@ -75,6 +76,9 @@ CLASSES = [
     ("mirrored", "a rotation with negative determinant"),
     ("shell", "the sphere-shell pull"),
     ("cancel", "projected view-Z under 1/16 of the translation (cancellation)"),
+    ("shaded", "a shaded-pass record (static model, W factor 2 or 64 / draw-scale byte)"),
+    ("billboard", "a shaded-pass billboard (screen-position offset, canonical view)"),
+    ("drawscale", "a shaded-pass record with a draw-scale byte (W factor 64 / byte)"),
 ]
 
 
@@ -195,6 +199,10 @@ def class_masks(vert, rec, ri):
         "shell": (flags & F_SHELL) != 0,
         "cancel": np.abs(ref[:, 2]) < np.max(np.abs(rec["q"][:, [3, 7, 11]].astype(np.float64)), 1)[ri] / 16.0
         if len(rec) else np.zeros(0, bool),
+        "shaded": (flags & F_SHADED) != 0,
+        "billboard": (flags & F_BILLBOARD) != 0,
+        "drawscale": ((flags & F_SHADED) != 0) & ((flags & F_BILLBOARD) == 0) &
+        (rec["q"][:, 17][ri] != np.float32(2.0)),
     }
     return m, flags
 
