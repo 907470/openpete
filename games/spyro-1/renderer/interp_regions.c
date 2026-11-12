@@ -82,6 +82,11 @@ static const game_interp_row_t s_spyro_interp_rows[] = {
      * stores are CD DMA (game_layout.moby.regime). Committed timeline, like
      * g_GameState. */
     { "g_LoadStage", 0x80075864, 0x4, 1 },
+    /* D_800770C8.m_metalmatrix (+0x18, five words): MetalBuildMatrix rebuilds
+     * it from the camera on gameplay ticks; the metal faces' environment map
+     * blends it across the tick interval with the camera pair. Committed
+     * timeline, like the camera it is built from. */
+    { GAME_INTERP_METAL_ROW, 0x800770E0, 0x14, 1 },
 };
 
 /* --- per-object (indirect) capture: the g_LevelMobys array --------------- */

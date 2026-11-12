@@ -71,6 +71,11 @@ int game_interp_row_index(const char* name);
  * under this one name, and every consumer resolves the ring index by it. */
 #define GAME_INTERP_CAM_ROW "g_Camera"
 
+/* The specular metal matrix's ring row: the 3x3 int16 matrix (five words) the
+ * game rebuilds from the camera on gameplay ticks and the environment-reflection
+ * map reads. A game with that material registers it under this name. */
+#define GAME_INTERP_METAL_ROW "g_MetalMatrix"
+
 /** @brief Snapshot one record per live moby of the game's moby array into the keyed prev/curr table.
  *
  * The array (game_layout.moby: array_head/array_direct, array_stride,

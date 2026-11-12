@@ -44,10 +44,10 @@
 extern "C" {
 #endif
 
-/* Maximum total bytes captured per snapshot across all regions. Set
- * generously to cover Spyro (0x2A4) + Camera (0x110) + later mobies.
- * The three ring slots take ~96 KB in total. */
-#define OPENPETE_INTERP_MAX_REGIONS         8
+/* The region-table cap and the maximum total bytes captured per snapshot
+ * across all regions. The bytes are set generously to cover Spyro (0x2A4) +
+ * Camera (0x110) + later mobies; the three ring slots take ~96 KB in total. */
+#define OPENPETE_INTERP_MAX_REGIONS         16
 #define OPENPETE_INTERP_MAX_SNAPSHOT_BYTES  (32u * 1024u)
 
 /* Region descriptor. Kept narrower than OpenpeteStateRegion: the interp

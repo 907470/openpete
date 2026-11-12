@@ -55,6 +55,7 @@
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/cut_guard.h"     /* the per-object discontinuity hold */
+#include "renderer/interp_regions_gen.h"   /* the camera and metal-matrix rows of the interp ring */
 #include "renderer/player_hide.h"  /* --hide-player: the companion's faces */
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
 #include "openpete_mods.h"     /* per-instance material slot resolve */
@@ -2403,7 +2404,7 @@ enum { MOBY_CLR_PAST = 1, MOBY_CLR_CAPPED = 2 };
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
 typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b, faceblock, w0;
                  int metal; uint32_t mscol; uint32_t moby; int zsf4;
-                 float env_az;
+                 float env_az;     /* view azimuth atan2(TR.z, TR.x), from the full-precision centre where the record has one */
                  uint32_t frameA;
                  uint32_t frameA_p, header_p; float clr_alpha;
                  uint8_t spec_solo;
@@ -3742,7 +3743,7 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
         .header = f->header, .header_b = f->header_b,
         .faceblock = moby_tier_faceblock(cpu, f->header, dzsf4), .w0 = f->w0,
         .metal = f->metal, .mscol = f->mscol, .moby = m, .zsf4 = dzsf4,
-        .env_az = atan2f((float)f->TR_raw[2], (float)f->TR_raw[0]), .frameA = f->frameA,
+        .env_az = (float)atan2(f->TR_frac[2], f->TR_frac[0]), .frameA = f->frameA,
         .frameA_p = pd.prev.frame_a, .header_p = pd.prev.header,
         .clr_alpha = (float)pd.clr_alpha };
     s_recs[s_nrecs].model_held = pd.model_held;
@@ -5064,7 +5065,7 @@ static _Thread_local mn_out* t_out = &s_gout;
 static _Thread_local const moby_wplane_t* t_emit_wp;
 static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, proj_xy* c,
                              uint32_t ca, uint32_t cb, uint32_t cc,
-                             int ua, int va, int ub, int vb, int uc, int vc,
+                             float ua, float va, float ub, float vb, float uc, float vc,
                              int tex, int tpx, int tpy, int clx, int cly, int bpp, int blend);
 
 /* A walk triangle's material: texture page, CLUT, depth and blend code. */
@@ -5570,7 +5571,7 @@ static void emit_wtri_near(const proj_xy* const p[3], const float uv[3][2],
  *              a semi-transparent face. */
 static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
                       uint32_t ca, uint32_t cb, uint32_t cc,
-                      int ua,int va,int ub,int vb,int uc,int vc,
+                      float ua,float va,float ub,float vb,float uc,float vc,
                       int tex,int tpx,int tpy,int clx,int cly,int bpp,int blend) {
     if (t_emit_wp) {
         const moby_wplane_t* wp = t_emit_wp;
@@ -5581,8 +5582,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
         return;
     }
     const proj_xy* const p[3] = { a, b, c };
-    const float uv[3][2] = { { (float)ua, (float)va }, { (float)ub, (float)vb },
-                             { (float)uc, (float)vc } };
+    const float uv[3][2] = { { ua, va }, { ub, vb }, { uc, vc } };
     const uint32_t col[3] = { ca, cb, cc };
     const mn_mat m = { tex, tpx, tpy, clx, cly, bpp, blend };
     if (a->unr || b->unr || c->unr) emit_wtri_near(p, uv, col, &m);
@@ -5683,12 +5683,12 @@ static const moby_wplane_t* moby_wplane_face(const moby_wplane_t* wp, int* emit_
  * @param blend The blend code. */
 static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, proj_xy* c,
                              uint32_t ca, uint32_t cb, uint32_t cc,
-                             int ua, int va, int ub, int vb, int uc, int vc,
+                             float ua, float va, float ub, float vb, float uc, float vc,
                              int tex, int tpx, int tpy, int clx, int cly, int bpp, int blend) {
     enum { AT_VZ, AT_TVZ, AT_KVZ, AT_EX, AT_EY, AT_EZ, AT_U, AT_V, AT_HX, AT_HY, AT_N };
     proj_xy* const src[3] = { a, b, c };
     const uint32_t col[3] = { ca, cb, cc };
-    const int uu[3] = { ua, ub, uc }, vv[3] = { va, vb, vc };
+    const float uu[3] = { ua, ub, uc }, vv[3] = { va, vb, vc };
     wplane_vert_t in[3], pos[4], neg[4];
     for (int k = 0; k < 3; k++) {
         const proj_xy* p = src[k];
@@ -5878,7 +5878,7 @@ void moby_simple_face_nclips(const int idx[4], int tri, double* ncl1, double* nc
  * declared so the walk can derive metal-face UVs natively. s_env_* = the static
  * metal Tiledef (D_800756F0, level-load asset), decoded to VRAM px by _load. */
 static void specular_env_load(CPUState* cpu);
-static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv);
+static void specular_env_uv(float ex, float ey, float ez, float* pu, float* pv);
 static int  s_env_tpx, s_env_tpy, s_env_clx, s_env_cly, s_env_bpp;
 static float s_specL[3], s_specLlen;   /* D_800770C8+0xC specular light dir (highlight) */
 
@@ -7341,7 +7341,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             int cly_fog = moby_face_fog_row(&fd, fcc);
             uint8_t tmix = moby_face_fog_mix(&fd, fcc);
             cly += cly_fog;
-            int u[4]={F->u[0],F->u[1],F->u[2],F->u[3]}, v[4]={F->v[0],F->v[1],F->v[2],F->v[3]};
+            float u[4]={F->u[0],F->u[1],F->u[2],F->u[3]}, v[4]={F->v[0],F->v[1],F->v[2],F->v[3]};
             /* SPECULAR per-face shading. STRIP faces (!fresh) with word0&0x4
              * get the special per-face treatment (highlight-enable @80021B64;
              * dispatcher .L80021DB4): METAL record -> env reflection (the
@@ -7379,7 +7379,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 /* SEAM UNWRAP: u is azimuth mod 128; pull u[1..3] within +-64 of
                  * u[0] (then keep >=0) so a seam face isn't interpolated backwards
                  * (mirrors the .s shifting a whole face by +-128). */
-                int nvtx = p3 ? 4 : 3, umin = u[0];
+                int nvtx = p3 ? 4 : 3;
+                float umin = u[0];
                 for (int q = 1; q < nvtx; q++) {
                     while (u[q] - u[0] >  64) u[q] -= 128;
                     while (u[q] - u[0] < -64) u[q] += 128;
@@ -8351,24 +8352,75 @@ static void recolor_walk_from_prims(void) {
  * offset per-moby by the camera heading (.L800226F8/.L800222C0). metalMatrix
  * (D_800770C8+0x18) is the camera rotation with z negated (MetalBuildMatrix,
  * update-side), so refl is already CAMERA-relative -> the reflection tracks the
- * camera for free. The UV is re-derived in FLOAT as a clean spherical map; the
- * game's prim UV agrees with it in camera tracking but not exactly. */
-static int   s_metalM[3][3];     /* D_800770C8+0x18, int16 1.0=4096 */
-static int   s_camHead;          /* g_Camera+0x50 (camera heading word) */
+ * camera for free. The UV is re-derived in FLOAT as a clean spherical map and
+ * kept in float to the sampler; the game's prim UV agrees with it in camera
+ * tracking but not exactly.
+ *
+ * The metal matrix and the camera heading are tick-held game values. A present
+ * inside a tick interval shows both blended between the interp ring's two
+ * snapshots by the present's alpha (specular_env_present): the pair and alpha
+ * the staged camera takes, so the reflection follows the interpolated view
+ * instead of stepping at the tick. */
+static float  s_envM[3][3];   /* the metal matrix at the present, 1.0 = 1 */
+static float  s_envHead;      /* the camera heading at the present, 4096 per turn */
+static double s_rc_alpha;     /* the present's alpha; defined with its initializer below */
 /* s_specL[3]/s_specLlen forward-declared above build_walk_tris (highlight uses them) */
-/** @brief Load the specular pass's per-tick inputs: the metal matrix, camera heading, specular light and metal env texture page.
+/** @brief Blend the metal matrix and camera heading toward the interp ring's earlier snapshot by 1 - alpha.
+ *
+ * Both endpoints come from the ring pair the present lies between: the metal
+ * matrix from its own row (GAME_INTERP_METAL_ROW), the heading from its
+ * halfword in the camera row. The matrix blends per element; the heading
+ * blends along the shorter way round the 4096-unit circle, the period the map
+ * reads it with. Leaves M and head as they are when the ring holds no pair or
+ * the game registers no metal row.
+ * @param alpha The present's position in the tick interval, below 1.
+ * @param M Receives the blended metal matrix at unit scale.
+ * @param head Receives the blended heading. */
+static void specular_env_present(double alpha, float M[3][3], float* head) {
+    static int cam_row = -2, metal_row = -2;
+    if (cam_row == -2) {
+        cam_row = game_interp_row_index(GAME_INTERP_CAM_ROW);
+        metal_row = game_interp_row_index(GAME_INTERP_METAL_ROW);
+    }
+    if (cam_row < 0 || metal_row < 0) return;
+    double qa = 0.0;
+    const openpete_interp_snapshot_t *pv = NULL, *cu = NULL;
+    if (!openpete_interp_query(openpete_interp_present_now(), g_openpete_tick_period_ns, &qa, &pv, &cu))
+        return;
+    const openpete_interp_snapshot_t* snap[2] = { pv, cu };
+    int Mq[2][3][3];
+    uint16_t hq[2];
+    const uint32_t hoff = moby_game.cam_heading - game_layout.cam.base;
+    for (int k = 0; k < 2; k++) {
+        uint32_t w[5];
+        memcpy(w, snap[k]->data + snap[k]->region_offsets[metal_row], sizeof w);
+        ngte_unpack_matrix(w[0], w[1], w[2], w[3], w[4], Mq[k]);
+        memcpy(&hq[k], snap[k]->data + snap[k]->region_offsets[cam_row] + hoff, sizeof hq[k]);
+    }
+    const double rest = 1.0 - alpha;
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            M[r][c] = (float)(((double)Mq[1][r][c] - (double)(Mq[1][r][c] - Mq[0][r][c]) * rest) / 4096.0);
+    const double d = fmod((double)hq[1] - (double)hq[0] + 65536.0 + 2048.0, 4096.0) - 2048.0;
+    *head = (float)((double)hq[1] - d * rest);
+}
+/** @brief Load the specular pass's inputs at the present: the metal matrix, camera heading, specular light and metal env texture page.
  *
  * Reads the metal matrix at spec_light + 0x18 (the camera rotation with z
- * negated), the camera heading word, the specular light direction at
- * spec_light + 0xC..0x14 and its length (floored at 1), and decodes the metal
- * Tiledef (word 0 high half the CLUT, word 1 high half the tpage) into the
- * env texture fields. A game without a specular light or metal Tiledef
- * leaves them untouched.
+ * negated) and the camera heading halfword, which a present inside a tick
+ * interval replaces with their blend at its alpha (specular_env_present); the
+ * specular light direction at spec_light + 0xC..0x14 and its length (floored
+ * at 1); and decodes the metal Tiledef (word 0 high half the CLUT, word 1 high
+ * half the tpage) into the env texture fields. A game without a specular
+ * light or metal Tiledef leaves them untouched.
  * @param cpu The guest CPU state, read only. */
 static void specular_env_load(CPUState* cpu) {
     if (!moby_game.spec_light || !moby_game.metal_tiledef) return;   /* no specular material */
-    ngte_read_matrix(cpu, moby_game.spec_light + 0x18u, s_metalM);
-    s_camHead = (int)cpu->read_word(moby_game.cam_heading);
+    int M[3][3];
+    ngte_read_matrix(cpu, moby_game.spec_light + 0x18u, M);
+    ngte_mat_unit_f((const int (*)[3])M, s_envM);
+    s_envHead = (float)(uint16_t)cpu->read_half(moby_game.cam_heading);
+    if (s_rc_alpha < 1.0) specular_env_present(s_rc_alpha, s_envM, &s_envHead);
     s_specL[0] = (float)(int32_t)cpu->read_word(moby_game.spec_light + 0xCu);
     s_specL[1] = (float)(int32_t)cpu->read_word(moby_game.spec_light + 0x10u);
     s_specL[2] = (float)(int32_t)cpu->read_word(moby_game.spec_light + 0x14u);
@@ -8391,9 +8443,9 @@ static void specular_env_load(CPUState* cpu) {
  * @param ez The rotated vertex offset Z.
  * @param r Receives the reflection vector, in the offset's units. */
 static void specular_env_refl(float ex, float ey, float ez, float r[3]) {
-    r[0] = (s_metalM[0][0]*ex + s_metalM[0][1]*ey + s_metalM[0][2]*ez) / 4096.0f;
-    r[1] = (s_metalM[1][0]*ex + s_metalM[1][1]*ey + s_metalM[1][2]*ez) / 4096.0f;
-    r[2] = (s_metalM[2][0]*ex + s_metalM[2][1]*ey + s_metalM[2][2]*ez) / 4096.0f;
+    r[0] = s_envM[0][0]*ex + s_envM[0][1]*ey + s_envM[0][2]*ez;
+    r[1] = s_envM[1][0]*ex + s_envM[1][1]*ey + s_envM[1][2]*ez;
+    r[2] = s_envM[2][0]*ex + s_envM[2][1]*ey + s_envM[2][2]*ez;
 }
 
 #define PI_F 3.14159265358979f
@@ -8409,10 +8461,10 @@ static float wrap128(float x) { x = fmodf(x, 128.0f); return x < 0 ? x + 128.0f 
  *   v = 64 + (128/pi)*asin(rz/|r|)
  * where az_TR is the record's view-space azimuth. The metal matrix
  * (MetalBuildMatrix, z-negated camera rotation) is not rebuilt every tick, so
- * the .s tracks fine camera yaw with the camHead term (g_Camera+0x50, an
- * 11-bit heading, 2048 per turn). This keeps the reflection world-anchored:
- * turning the camera slides the reflected environment across the metal.
- * OPENPETE_ENV_C2 overrides the default 14.5.
+ * the .s tracks fine camera yaw with the camHead term (g_Camera+0x50, 4096 per
+ * turn, so one turn is the 128-texel wrap). This keeps the reflection
+ * world-anchored: turning the camera slides the reflected environment across
+ * the metal. OPENPETE_ENV_C2 overrides the default 14.5.
  * @return The term in texels. */
 static float env_c2(void) {   /* calibration constant (temp env override) */
     static float c = -1e9f;
@@ -8429,20 +8481,21 @@ static float env_azsign(void) {
     if (c < -1e8f) { const char* e = getenv("OPENPETE_ENV_AZSIGN"); c = (e && *e) ? (float)atof(e) : 1.0f; }
     return c;
 }
-/** @brief The environment-reflection texel of a vertex, as the specular pass computes it.
+/** @brief The environment-reflection texture coordinate of a vertex, in float texels.
  *
  * Reflects the offset (specular_env_refl), then u follows env_c2, the
  * reflection azimuth plus env_azsign times the record's view azimuth
- * (s_cur_env_az), and the camera heading (s_camHead / 32), modulo 128; v is
+ * (s_cur_env_az), and the camera heading (s_envHead / 32), modulo 128; v is
  * 64 plus the elevation scaled to 128 per half turn, 0 elevation when the
  * reflection is shorter than 0.001. The .s builds the same terms at
- * .L800226F8 from the octant-table atan of the record's view position.
+ * .L800226F8 from the octant-table atan of the record's view position. Both
+ * stay unrounded, so u lies in [0, 128) and v in [0, 128].
  * @param ex The rotated vertex offset X.
  * @param ey The rotated vertex offset Y.
  * @param ez The rotated vertex offset Z.
- * @param pu Receives U, clamped to [0, 255].
- * @param pv Receives V, clamped to [0, 255]. */
-static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv) {
+ * @param pu Receives U.
+ * @param pv Receives V. */
+static void specular_env_uv(float ex, float ey, float ez, float* pu, float* pv) {
     float r[3]; specular_env_refl(ex, ey, ez, r);
     float len = sqrtf(r[0]*r[0] + r[1]*r[1] + r[2]*r[2]);
     float az = atan2f(r[0], r[1]);
@@ -8450,18 +8503,11 @@ static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv) {
     /* u: per-moby bias mirrors the .s SPEC setup (.L800226F8): the record's
      * view-space position azimuth atan2(TR.z, TR.x) (octant-table atan in the
      * .s) + camHead>>3, folded into the per-vertex azimuth at (camHead/32 -
-     * az_TR/2)*4 texel scale. The old fit (52.5 - az*k - camHead/16) had NO
-     * TR term and the wrong camHead weight - exact only near the artisans
-     * fit-point (edge mobys / other camHead values drifted, e.g. cliff town
-     * shield sampling 75 texels off = dark noise). */
-    int u = (int)lrintf(wrap128(env_c2() - (128.0f / (2.0f*PI_F)) * (az + env_azsign()*s_cur_env_az) + s_camHead / 32.0f));
-    int v = (int)lrintf(64.0f + (128.0f / PI_F) * el);
-    if (u < 0) u = 0;
-    if (u > 255) u = 255;
-    if (v < 0) v = 0;
-    if (v > 255) v = 255;
-    *pu = u; *pv = v;
+     * az_TR/2)*4 texel scale. */
+    *pu = wrap128(env_c2() - (128.0f / (2.0f*PI_F)) * (az + env_azsign()*s_cur_env_az) + s_envHead / 32.0f);
+    *pv = 64.0f + (128.0f / PI_F) * el;
 }
+
 /** @brief Print the metal faces' native environment UV beside their matched prim's UV.
  *
  * Refreshes the environment state and the captured prims, prints the metal
@@ -8474,11 +8520,12 @@ static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv) {
 static void specular_env_calibrate(CPUState* cpu) {
     specular_env_load(cpu);
     build_prim_tris();
-    fprintf(stderr, "[spec-env vbl=%u] metalM=[%d %d %d|%d %d %d|%d %d %d] camHead=%d nrecs=%d "
+    fprintf(stderr, "[spec-env vbl=%u] metalM=[%.0f %.0f %.0f|%.0f %.0f %.0f|%.0f %.0f %.0f] camHead=%.2f nrecs=%d "
         "D756F0=%08X %08X clutmix\n",
-        openpete_frame, s_metalM[0][0],s_metalM[0][1],s_metalM[0][2],
-        s_metalM[1][0],s_metalM[1][1],s_metalM[1][2], s_metalM[2][0],s_metalM[2][1],s_metalM[2][2],
-        s_camHead, s_nrecs, cpu->read_word(moby_game.metal_tiledef), cpu->read_word(moby_game.metal_tiledef + 4u));
+        openpete_frame, s_envM[0][0]*4096.0,s_envM[0][1]*4096.0,s_envM[0][2]*4096.0,
+        s_envM[1][0]*4096.0,s_envM[1][1]*4096.0,s_envM[1][2]*4096.0,
+        s_envM[2][0]*4096.0,s_envM[2][1]*4096.0,s_envM[2][2]*4096.0,
+        s_envHead, s_nrecs, cpu->read_word(moby_game.metal_tiledef), cpu->read_word(moby_game.metal_tiledef + 4u));
     for (int r = 0; r < s_nrecs; r++)
         fprintf(stderr, "  rec%d metal=%d mscol=%08X moby=%08X\n", r,
             s_recs[r].metal, s_recs[r].mscol, s_recs[r].moby);
@@ -8501,7 +8548,8 @@ static void specular_env_calibrate(CPUState* cpu) {
             for (int j=0;j<3;j++){ double dx=w->v[k].sx-P->x[j], dy=w->v[k].sy-P->y[j];
                 double d=dx*dx+dy*dy; if(d<bd){bd=d;bj=j;} }
             float r[3]; specular_env_refl(w->v[k].ex,w->v[k].ey,w->v[k].ez,r);
-            int nu, nv2; specular_env_uv(w->v[k].ex,w->v[k].ey,w->v[k].ez, &nu, &nv2);
+            float fu, fv; specular_env_uv(w->v[k].ex,w->v[k].ey,w->v[k].ez, &fu, &fv);
+            int nu = (int)lrintf(fu), nv2 = (int)lrintf(fv);   /* the prim's UV is whole texels */
             int pu = P->u[bj], pv = P->v[bj];
             int du = nu - (pu & 127); if (du > 64) du -= 128; if (du < -64) du += 128;
             int dv = nv2 - pv;
@@ -8515,9 +8563,9 @@ static void specular_env_calibrate(CPUState* cpu) {
         }
         dumped++;
     }
-    fprintf(stderr, "[spec-env vbl=%u] camHead=%d dumped %d faces, %d verts: meanErr u=%.1f v=%.1f "
+    fprintf(stderr, "[spec-env vbl=%u] camHead=%.2f dumped %d faces, %d verts: meanErr u=%.1f v=%.1f "
         "signedU=%.2f maxErr u=%d v=%d\n",
-        openpete_frame, s_camHead, dumped, nv, nv?sumu/nv:0, nv?sumv/nv:0, nv?sgnu/nv:0, maxu, maxv);
+        openpete_frame, s_envHead, dumped, nv, nv?sumu/nv:0, nv?sumv/nv:0, nv?sgnu/nv:0, maxu, maxv);
 }
 
 /** @brief Print the specular highlight correlation: each walk face's normal against the specular light, beside its matched prim colour.
@@ -17157,7 +17205,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             .header = f.header, .header_b = f.header_b,
             .faceblock = moby_tier_faceblock(cpu, f.header, zsf4),
             .w0 = f.w0, .metal = f.metal, .mscol = f.mscol, .moby = mobys[i], .zsf4 = zsf4,
-            .env_az = atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), .frameA = f.frameA,
+            .env_az = (float)atan2(f.TR_frac[2], f.TR_frac[0]), .frameA = f.frameA,
             .frameA_p = prev->frame_a, .header_p = prev->header,
             .clr_alpha = (float)pd.clr_alpha };
         s_recs[s_nrecs].clr_flags = (uint8_t)pd.clr_flags;
