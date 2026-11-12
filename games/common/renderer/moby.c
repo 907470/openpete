@@ -622,10 +622,10 @@ static double project(const float M[3][3], const double TR[3], double vx, double
  * canonical H rather than the display's) the float coordinate carries nothing
  * the hardware had, so the vertex re-projects through ngte_project_gte with
  * the divide cap and the +-1024 SXY saturation. A vertex further than H/2
- * keeps its float projection. The pinned pair is what the game's face test
- * and paint key read; the drawn shape of a face with such a vertex is the
- * float projection of its view-space geometry, clipped at the near plane
- * (emit_wtri_near). NGTE_LIMIT counts the regime at both H values.
+ * keeps its float projection. The pinned pair is what the paint key reads; a
+ * face with such a vertex is selected on its true facing (face_nclips) and
+ * drawn as the float projection of its view-space geometry, clipped at the
+ * near plane (emit_wtri_near). NGTE_LIMIT counts the regime at both H values.
  * @param M The model-to-view rotation, 1.0 = 1.0.
  * @param TR The projection translation.
  * @param vx The model-space vertex X.
@@ -4875,18 +4875,22 @@ static int moby_pinned_extent(const proj_xy* const p[3]) {
  * point (pinned), the largest such distance over every emitted vertex, and
  * the near-plane verdicts: faces cut, faces wholly behind the plane, faces
  * whose pinned screen box exceeds the GPU's 1023 x 511 primitive extent
- * (ext), faces with a vertex at or behind the eye, tvz <= 0 (eye), and faces whose
- * clipped screen winding is opposite to the pinned winding the face test
- * read (flip), and the triangles the face test drops on the pinned
- * positions that the same test keeps on the true facing (lost), with those
- * whose near-clipped true projection overlaps the view (lostvis); drawnvis
- * applies the same overlap test to the regime faces drawn, its control. The table is keyed on the feed key (openpete_feed_key_now),
+ * (ext), faces with a vertex at or behind the eye, tvz <= 0 (eye), faces
+ * whose clipped screen winding is opposite to the pinned winding (flip), and
+ * the triangles on which the game's test on the pinned positions and the
+ * walk's test on the true facing disagree: kept on the pinned positions and
+ * dropped on the true facing (back, a back face the pinned test would draw),
+ * and the reverse (lost, a front face it would drop), each with those whose
+ * near-clipped true projection overlaps the view (backvis, lostvis);
+ * drawnvis applies the same overlap test to the regime faces drawn, its
+ * control. At the key asked for, each back or lost triangle prints its
+ * clipped true projection ([mnear-sel]). The table is keyed on the feed key (openpete_feed_key_now),
  * the counter --screenshot-on-frame targets: the value `<key>` prints every
  * moby with a nonzero regime count and the sum at that key; `all` prints the
  * sum at every key. The census forces the walk serial (walk_dbg_env). */
 typedef struct {
     uint32_t moby;
-    int faces, unr, pinned, cut, behind, ext, eye, flip, lost, lostvis, drawnvis;
+    int faces, unr, pinned, cut, behind, ext, eye, flip, back, backvis, lost, lostvis, drawnvis;
     double err;
 } mnear_row_t;
 #define MNEAR_ROWS 1024
@@ -4912,26 +4916,30 @@ static int mnear_on(void) {
 static void mnear_flush(void) {
     const int pick = s_mnear_at == 1 || (unsigned long)s_mnear_at == s_mnear_key;
     if (pick && s_mnear_n > 0) {
-        mnear_row_t sum = { 0u, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0 };
+        mnear_row_t sum;
+        memset(&sum, 0, sizeof sum);
         int nm = 0;
         for (int i = 0; i < s_mnear_n; i++) {
             const mnear_row_t* r = &s_mnear[i];
             sum.faces += r->faces; sum.unr += r->unr; sum.pinned += r->pinned;
             sum.cut += r->cut; sum.behind += r->behind; sum.ext += r->ext;
             sum.eye += r->eye; sum.flip += r->flip;
+            sum.back += r->back; sum.backvis += r->backvis;
             sum.lost += r->lost; sum.lostvis += r->lostvis; sum.drawnvis += r->drawnvis;
             if (r->err > sum.err) sum.err = r->err;
             nm += r->unr > 0;
             if (s_mnear_at == 1 || !(r->unr || r->ext || r->eye)) continue;
             fprintf(stderr, "[mnear key=%u] moby=%08X faces=%d unr=%d pinned=%d maxerr=%.4f "
-                    "cut=%d behind=%d ext=%d eye=%d flip=%d lost=%d lostvis=%d\n", s_mnear_key,
-                    r->moby, r->faces, r->unr, r->pinned, r->err, r->cut, r->behind, r->ext,
-                    r->eye, r->flip, r->lost, r->lostvis);
+                    "cut=%d behind=%d ext=%d eye=%d flip=%d back=%d backvis=%d lost=%d lostvis=%d\n",
+                    s_mnear_key, r->moby, r->faces, r->unr, r->pinned, r->err, r->cut, r->behind,
+                    r->ext, r->eye, r->flip, r->back, r->backvis, r->lost, r->lostvis);
         }
         fprintf(stderr, "[mnear-sum key=%u] mobys=%d unr_mobys=%d faces=%d unr=%d pinned=%d "
-                "maxerr=%.4f cut=%d behind=%d ext=%d eye=%d flip=%d lost=%d lostvis=%d drawnvis=%d\n",
+                "maxerr=%.4f cut=%d behind=%d ext=%d eye=%d flip=%d back=%d backvis=%d lost=%d "
+                "lostvis=%d drawnvis=%d\n",
                 s_mnear_key, s_mnear_n, nm, sum.faces, sum.unr, sum.pinned, sum.err, sum.cut,
-                sum.behind, sum.ext, sum.eye, sum.flip, sum.lost, sum.lostvis, sum.drawnvis);
+                sum.behind, sum.ext, sum.eye, sum.flip, sum.back, sum.backvis, sum.lost,
+                sum.lostvis, sum.drawnvis);
     }
     s_mnear_n = 0;
 }
@@ -5112,37 +5120,52 @@ static void moby_clip_vertex(const proj_xy* const p[3], const float uv[3][2],
 
 /** @brief The facing value of a triangle from its homogeneous screen positions.
  *
- * det[hx hy w] is H^2 times the determinant of the view-space points, so
- * its sign is the triangle's true facing on either side of the eye, the
- * sign the float NCLIP gives a triangle wholly in front.
+ * det[hx hy w] is H^2 times the determinant of the view-space points, the
+ * signed volume the triangle spans with the eye, so its sign says which side
+ * of the triangle's plane the eye is on, for vertices on either side of the
+ * eye. For a triangle wholly in front it is w0 w1 w2 times the float NCLIP,
+ * the same sign.
  * @param a The first vertex.
  * @param b The second vertex.
  * @param c The third vertex.
  * @return The determinant. */
-static double mnear_true_nclip(const proj_xy* a, const proj_xy* b, const proj_xy* c) {
+static double moby_true_nclip(const proj_xy* a, const proj_xy* b, const proj_xy* c) {
     const double ax = a->hx, ay = a->hy, aw = a->tvz, bx = b->hx, by = b->hy, bw = b->tvz;
     const double cx = c->hx, cy = c->hy, cw = c->tvz;
     return ax * (by * cw - bw * cy) - ay * (bx * cw - bw * cx) + aw * (bx * cy - by * cx);
+}
+
+/** @brief The near-clipped true projection of a triangle, as screen corners.
+ * @param t The three vertices.
+ * @param xy Receives up to four corners.
+ * @return The corner count, below 3 when the triangle lies behind the plane. */
+static int mnear_tri_poly(const proj_xy* const t[3], double xy[4][2]) {
+    const double z[3] = { t[0]->tvz, t[1]->tvz, t[2]->tvz };
+    ngte_clip_ref ref[4];
+    double zc = MOBY_NEAR_W;
+    int clipped = 0;
+    const int n = ngte_near_clip_tri(z, MOBY_NEAR_W, moby_clip_beyond, t, ref, &zc, &clipped);
+    for (int k = 0; k < n; k++) {
+        const proj_xy* A = t[ref[k].a];
+        const proj_xy* B = t[ref[k].b];
+        const double w = ref[k].cross ? zc : A->tvz;
+        xy[k][0] = (A->hx + ref[k].t * (B->hx - A->hx)) / w;
+        xy[k][1] = (A->hy + ref[k].t * (B->hy - A->hy)) / w;
+    }
+    return n;
 }
 
 /** @brief Whether a triangle's near-clipped true projection overlaps the pass view.
  * @param t The three vertices.
  * @return 1 when a clipped part's screen box overlaps the view, else 0. */
 static int mnear_tri_visible(const proj_xy* const t[3]) {
-    const double z[3] = { t[0]->tvz, t[1]->tvz, t[2]->tvz };
-    ngte_clip_ref ref[4];
-    double zc = MOBY_NEAR_W;
-    int clipped = 0;
-    const int n = ngte_near_clip_tri(z, MOBY_NEAR_W, moby_clip_beyond, t, ref, &zc, &clipped);
+    double xy[4][2];
+    const int n = mnear_tri_poly(t, xy);
     if (n < 3) return 0;
     double xlo = 1e30, xhi = -1e30, ylo = 1e30, yhi = -1e30;
     for (int k = 0; k < n; k++) {
-        const proj_xy* A = t[ref[k].a];
-        const proj_xy* B = t[ref[k].b];
-        const double w = ref[k].cross ? zc : A->tvz;
-        const double x = (A->hx + ref[k].t * (B->hx - A->hx)) / w;
-        const double y = (A->hy + ref[k].t * (B->hy - A->hy)) / w;
-        xlo = fmin(xlo, x); xhi = fmax(xhi, x); ylo = fmin(ylo, y); yhi = fmax(yhi, y);
+        xlo = fmin(xlo, xy[k][0]); xhi = fmax(xhi, xy[k][0]);
+        ylo = fmin(ylo, xy[k][1]); yhi = fmax(yhi, xy[k][1]);
     }
     return xhi >= s_view.xlo && xlo <= s_view.xhi && yhi >= 0.0 && ylo <= 2.0 * s_view.ofy;
 }
@@ -5163,35 +5186,64 @@ static void mnear_clip(const proj_xy* const p[3], const proj_xy* q, int n, int c
     r->flip += (a0 > 0.0 && a1 < 0.0) || (a0 < 0.0 && a1 > 0.0);
 }
 
-/** @brief Count a regime face's triangles the face test drops on the pinned positions but keeps on the true facing.
+/** @brief The triangles an emit-tree verdict draws, as a mask: bit 0 (v0, v1, v2), bit 1 the v1-v2-v3 half in either order.
+ * @param ord The verdict's vertex orders.
+ * @param n The verdict's triangle count.
+ * @return The mask. */
+static unsigned mnear_tri_mask(const int ord[2][3], int n) {
+    unsigned m = 0u;
+    for (int i = 0; i < n; i++) m |= ord[i][0] == 0 ? 1u : 2u;
+    return m;
+}
+
+/** @brief Count, and at the key asked for print, the triangles of one face in a disagreement mask.
+ * @param r The moby's census row.
+ * @param v The face's four vertices.
+ * @param mask The triangles (mnear_tri_mask bits).
+ * @param lost Nonzero for front faces the pinned test drops, zero for back
+ *        faces it keeps. */
+static void mnear_sel_count(mnear_row_t* r, const proj_xy* const v[4], unsigned mask, int lost) {
+    for (int b = 0; b < 2; b++) {
+        if (!(mask & (1u << b))) continue;
+        const proj_xy* const t[3] = { b ? v[1] : v[0], b ? v[3] : v[1], v[2] };
+        double xy[4][2];
+        const int n = mnear_tri_poly(t, xy);
+        const int vis = mnear_tri_visible(t);
+        if (lost) { r->lost++; r->lostvis += vis; } else { r->back++; r->backvis += vis; }
+        if (s_mnear_at < 2 || (unsigned long)s_mnear_at != s_mnear_key || !vis) continue;
+        fprintf(stderr, "[mnear-sel key=%u] kind=%s moby=%08X ext=%d view=(%.3f,%.3f,%.3f) n=%d",
+                s_mnear_key, lost ? "lost" : "back", s_cur_moby_key,
+                moby_pinned_extent(t), s_view.xlo, s_view.xhi, 2.0 * s_view.ofy, n);
+        for (int k = 0; k < n; k++) fprintf(stderr, " (%.2f,%.2f)", xy[k][0], xy[k][1]);
+        fputc('\n', stderr);
+    }
+}
+
+/** @brief Count a regime face's triangles on which the pinned facing and the true facing disagree.
  *
- * The test is moby_face_emit, the walk's emit tree, run on the true facing
- * values (mnear_true_nclip times the record's face sign); a triangle it
- * emits that the walk's verdict did not counts as lost, and as lostvis when
- * its near-clipped true projection overlaps the view.
+ * Both verdicts run moby_face_emit, the walk's emit tree: one on the NCLIPs
+ * of the pinned screen positions, the game's own test, and one on the true
+ * facing (moby_true_nclip), the test the walk applies to a regime face
+ * (face_nclips). A triangle the pinned test keeps and the true test drops
+ * counts as back, the reverse as lost (mnear_sel_count).
  * @param v The face's four vertices, v[3] NULL without a fourth.
  * @param fsign The record's face sign.
  * @param fresh The face's fresh flag.
- * @param bit0 The face's bit 0.
- * @param emit_a The walk's first-triangle verdict.
- * @param emit_b The walk's second-triangle verdict.
- * @param b_is_v3tri Nonzero when the walk's second triangle is (v3, v1, v2). */
-static void mnear_select(const proj_xy* const v[4], int fsign, int fresh, int bit0,
-                         int emit_a, int emit_b, int b_is_v3tri) {
+ * @param bit0 The face's bit 0. */
+static void mnear_select(const proj_xy* const v[4], int fsign, int fresh, int bit0) {
     mnear_row_t* r = mnear_row();
     if (!r) return;
-    const double n1 = fsign * mnear_true_nclip(v[0], v[1], v[2]);
-    const double n2 = v[3] ? fsign * mnear_true_nclip(v[3], v[1], v[2]) : -1.0;
-    int ord[2][3];
-    const int nt = moby_face_emit(fresh, bit0, 0, n1, n2, v[3] != NULL, ord);
-    for (int i = 0; i < nt; i++) {
-        const int code = ord[i][0] == 0 ? 0 : (ord[i][0] == 3 ? 1 : 2);   /* (0,1,2) (3,1,2) (1,3,2) */
-        const int had = code == 0 ? emit_a : (emit_b && (code == 1) == (b_is_v3tri != 0));
-        if (had) continue;
-        r->lost++;
-        const proj_xy* const t[3] = { v[ord[i][0]], v[ord[i][1]], v[ord[i][2]] };
-        r->lostvis += mnear_tri_visible(t);
-    }
+    const proj_xy* p3 = v[3];
+    const double pn1 = fsign * tri_nclip(v[0]->sx, v[0]->sy, v[1]->sx, v[1]->sy, v[2]->sx, v[2]->sy);
+    const double pn2 = p3 ? fsign * tri_nclip(p3->sx, p3->sy, v[1]->sx, v[1]->sy, v[2]->sx, v[2]->sy)
+                          : -1.0;
+    const double tn1 = fsign * moby_true_nclip(v[0], v[1], v[2]);
+    const double tn2 = p3 ? fsign * moby_true_nclip(p3, v[1], v[2]) : -1.0;
+    int po[2][3], to[2][3];
+    const unsigned pm = mnear_tri_mask(po, moby_face_emit(fresh, bit0, 0, pn1, pn2, p3 != NULL, po));
+    const unsigned tm = mnear_tri_mask(to, moby_face_emit(fresh, bit0, 0, tn1, tn2, p3 != NULL, to));
+    mnear_sel_count(r, v, pm & ~tm, 0);
+    mnear_sel_count(r, v, tm & ~pm, 1);
 }
 
 /** @brief Emit a triangle with a vertex in the GTE divide-overflow regime, clipped in view space at the near plane.
@@ -5203,8 +5255,8 @@ static void mnear_select(const proj_xy* const v[4], int fsign, int fresh, int bi
  * emit_wtri_store, each part keeping the face's paint key and texel fog
  * row. A face wholly behind the plane (every tvz below MOBY_NEAR_W, tested
  * first, since a re-clip only raises the plane) is dropped and counts into
- * nearbehind. The face test that selected the face read the pinned screen
- * positions, as the game's NCLIP does. A face whose pinned screen box
+ * nearbehind. The face test that selected the face read its true facing
+ * (face_nclips), the side of its plane the eye is on. A face whose pinned screen box
  * exceeds the GPU's primitive extent (moby_pinned_extent) is not emitted:
  * the GPU draws no such primitive, so the game never shows that face, and a
  * moby passing the camera (a collected gem) would otherwise cover the view.
@@ -6751,11 +6803,18 @@ static int moby_record_face_sign(CPUState* cpu, const rec_meta* R) {
     return sign;
 }
 
-/** @brief A face's two facing values on the float screen coordinates, times the record's face sign.
+/** @brief A face's two facing values, times the record's face sign.
  *
  * NCLIP1 is (p0, p1, p2) and NCLIP2 is (p3, p1, p2), -1 without a fourth
  * vertex. The draw of a mirrored record negates both before any test
- * (moby_record_face_sign).
+ * (moby_record_face_sign). A face with no vertex in the GTE divide-overflow
+ * regime takes them on the float screen coordinates. A face with one
+ * (moby_gte_near_fixup) takes them from the homogeneous positions
+ * (moby_true_nclip), the side of the face's plane the eye is on: its pinned
+ * screen positions need not keep the face's winding, and the face is drawn
+ * at its view-space shape clipped at the near plane (emit_wtri_near), so the
+ * test reads the same geometry the draw does. Where every vertex is in front
+ * of the eye the two agree in sign.
  * @param fsign The record's face sign, +1 or -1.
  * @param p0 The first vertex.
  * @param p1 The second vertex.
@@ -6765,6 +6824,11 @@ static int moby_record_face_sign(CPUState* cpu, const rec_meta* R) {
  * @param ncl2 Receives NCLIP2. */
 static void face_nclips(int fsign, const proj_xy* p0, const proj_xy* p1, const proj_xy* p2,
                         const proj_xy* p3, double* ncl1, double* ncl2) {
+    if (p0->unr || p1->unr || p2->unr || (p3 && p3->unr)) {
+        *ncl1 = fsign * moby_true_nclip(p0, p1, p2);
+        *ncl2 = p3 ? fsign * moby_true_nclip(p3, p1, p2) : -1.0;
+        return;
+    }
     *ncl1 = fsign * tri_nclip(p0->sx, p0->sy, p1->sx, p1->sy, p2->sx, p2->sy);
     *ncl2 = p3 ? fsign * tri_nclip(p3->sx, p3->sy, p1->sx, p1->sy, p2->sx, p2->sy) : -1.0;
 }
@@ -6897,7 +6961,9 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * int16): the 1px floor flips a near-zero-area face's sign at grazing angles,
              * culling genuinely front-facing thin-moby tops (Artisans water platforms,
              * cls 0x12 -> waterfall showed THROUGH the disc). Float is exact there, and the
-             * native Z-buffer sorts what survives. (PSX/PsyCross floor here and show gaps.) */
+             * native Z-buffer sorts what survives. (PSX/PsyCross floor here and show gaps.)
+             * A face with a vertex in the divide-overflow regime tests its true facing
+             * instead, the geometry its near-clipped draw shows (face_nclips). */
             double ncl1, ncl2;
             face_nclips(fsign, p0, p1, p2, p3, &ncl1, &ncl2);
             int emit_a = 0, emit_b = 0, b_is_v3tri = 0;
@@ -6928,7 +6994,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             ltop = moby_otk_top_entry(&s_proj[base].otk, ot_bk, ltop);
             if (s_mnear_at && (p0->unr || p1->unr || p2->unr || (p3 && p3->unr))) {
                 const proj_xy* const fv[4] = { p0, p1, p2, p3 };
-                mnear_select(fv, fsign, fresh, (int)F->bit0, emit_a, emit_b, b_is_v3tri);
+                mnear_select(fv, fsign, fresh, (int)F->bit0);
             }
             if (!emit_a && !emit_b) continue;
 
