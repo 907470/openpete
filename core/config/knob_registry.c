@@ -2355,7 +2355,7 @@ static const knob_desc_t g_builtin_debug[] = {
       "its pairing state and drawn position, the newest 1024 presents held "
       "in memory and written to a bug report as subtick.bin. Set 0 to drop "
       "the ring."),
-    ENVROW_LATCHED("BUGREPORT_GPU", "Debug", "0",
+    ENVROW_DEVICE("BUGREPORT_GPU", "Debug", "0",
       "Arm the GPU timestamp zones and keep one GPU_FRAME record per "
       "rendered frame in the pace ring (the span from the first zone's start "
       "to the last zone's end, and the sum of the top-level zones), written "
