@@ -368,10 +368,12 @@ row_format_ref() {
     CARD1_END="$(bash -c 'source "$1" >/dev/null 2>&1; echo "$CARD1_END"' _ "$RECIPE")"
     [[ -n "$CARD1_FIXTURE" ]] ||
         { echo "[card-boot] row=$ROW game=$GAME verdict=FAIL: $RECIPE sets no CARD1_FIXTURE"; return 1; }
-    # The unformatted card both sides boot, written fresh each run.
+    # The unformatted card both sides boot, written fresh each run by the
+    # recipe's card1_fixture_make.
     rm -f "${CARD1_FIXTURE:?}"
     mkdir -p "$(dirname "$CARD1_FIXTURE")"
-    head -c 131072 /dev/zero > "$CARD1_FIXTURE"
+    bash -c 'source "$1" >/dev/null 2>&1; card1_fixture_make "$2"' _ "$RECIPE" "$CARD1_FIXTURE" ||
+        { echo "[card-boot] row=$ROW game=$GAME verdict=FAIL: $RECIPE card1_fixture_make could not write $CARD1_FIXTURE"; return 1; }
     local OUT="${PG_BUILD_DIR:-build/linux-release}/card-boot/$GAME"
     mkdir -p "$OUT"
     local LOG="$OUT/$ROW.log" CW="$OUT/$ROW-card-window.txt" CARD="$OUT/$ROW-card1.mcr"

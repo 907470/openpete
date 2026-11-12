@@ -387,7 +387,7 @@ if [[ -n "$CARD1_FIXTURE" ]]; then
     CARD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/psx-oracle-card.XXXXXX")"
     cp "$CARD1_FIXTURE" "$CARD_DIR/card1.mcr"
     RUN_ARGS+=(--card1 "$CARD_DIR/card1.mcr")
-    echo "[psx-oracle] card fixture: $CARD1_FIXTURE (slot 1, scratch copy)"
+    echo "[psx-oracle] card fixture: $CARD1_FIXTURE (slot 1, scratch copy) sha256 $(sha256sum < "$CARD_DIR/card1.mcr" | cut -c1-64)"
 fi
 
 # The recipe's flags first: a caller's pass-through flag overrides them (the

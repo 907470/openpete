@@ -193,6 +193,14 @@ if [[ -n "$GAME" ]]; then
     GOLDEN=""; CAPTURE_ARGS=()
     # shellcheck disable=SC1090
     source "$CONF"
+    # A recipe whose card fixture is derived (`card1_fixture_make DST`, a
+    # deterministic writer) writes it when it is missing, before the import.
+    if [[ -n "${CARD1_FIXTURE:-}" && ! -f "$CARD1_FIXTURE" ]] && declare -F card1_fixture_make >/dev/null; then
+        mkdir -p "$(dirname "$CARD1_FIXTURE")"
+        card1_fixture_make "$CARD1_FIXTURE" ||
+            { echo "[capture-ds] card fixture $CARD1_FIXTURE: the recipe's card1_fixture_make failed" >&2; exit 64; }
+        echo "[capture-ds] card fixture $CARD1_FIXTURE written by the recipe's card1_fixture_make"
+    fi
     OUT="$GOLDEN"
     set -- "${CAPTURE_ARGS[@]}" "$@"
 fi
@@ -314,6 +322,7 @@ if [[ -n "$CARD_IMPORT" ]]; then
     [[ "$(stat -L -c %s "$CARD_IMPORT" 2>/dev/null || echo 0)" == 131072 ]] ||
         { echo "[capture-ds] --card-import $CARD_IMPORT is missing or not 131072 bytes" >&2; exit 64; }
     REC_ARGS+=(-card1 "$CARD_IMPORT")
+    echo "[capture-ds] card import: $CARD_IMPORT sha256 $(sha256sum < "$CARD_IMPORT" | cut -c1-64)"
 fi
 if [[ -n "$CARD_EXPORT_END" ]]; then
     [[ "$NO_CARD" == 1 ]] && { echo "[capture-ds] --card-export-end needs a card in slot 1 (drop --no-card)" >&2; exit 64; }
