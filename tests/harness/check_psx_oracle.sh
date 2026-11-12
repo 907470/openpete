@@ -32,7 +32,8 @@
 # and the missing-golden capture uses the same recipe. A recipe that sets
 # CARD1_FIXTURE (the slot 1 card image its capture exported) runs openpete
 # with a scratch copy of that image as --card1, so the fixture itself is
-# never written; a missing fixture beside a present golden exits 64. A
+# never written; a missing fixture beside a present golden exits 64, unless
+# the recipe defines `card1_fixture_make DST`, which writes it first. A
 # recipe that also sets CARD1_END (the slot 1 card the capture exported
 # after its last record) fails the run unless the card openpete left is
 # byte-identical to it; OPENPETE_ORACLE_CARD_OUT=PATH keeps openpete's card.
@@ -177,6 +178,7 @@ CONF="${RECIPE:-games/$GAME/oracle.conf}"
 CAPTURE_RECIPE=()
 [[ -n "$RECIPE" ]] && CAPTURE_RECIPE=(--recipe "$RECIPE")
 GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); CAPTURE_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLEAR_MAX=""; CARD1_FIXTURE=""; CARD1_END=""; CARD1_IMPORT=""; CARD1_SOURCE_RECIPE=""; CONSTANT_REGIONS_REASON=""
+declare -A CONSTANT_REGION_REASON=()
 # shellcheck disable=SC1090
 source "$CONF"
 TRACE="${TRACE:-$GOLDEN}"
@@ -191,6 +193,18 @@ if [[ "$GAME" == "spyro-3" ]]; then
     SCAN_WATCH=1
 fi
 DISC="${OPENPETE_DISC:-$DISC}"
+
+# A recipe whose card fixture is derived (it defines `card1_fixture_make DST`,
+# a deterministic writer) writes the fixture when it is missing, before a
+# capture imports it or a run copies it.
+if [[ -n "$CARD1_FIXTURE" && ! -f "$CARD1_FIXTURE" ]] && declare -F card1_fixture_make >/dev/null; then
+    mkdir -p "$(dirname "$CARD1_FIXTURE")"
+    card1_fixture_make "$CARD1_FIXTURE" || {
+        echo "[psx-oracle] card fixture $CARD1_FIXTURE: the recipe's card1_fixture_make failed" >&2
+        exit 64
+    }
+    echo "[psx-oracle] card fixture $CARD1_FIXTURE written by the recipe's card1_fixture_make"
+fi
 
 # The golden is generated, not committed: a missing default golden is
 # captured from the patched DuckStation build here, so a fresh checkout's
@@ -588,8 +602,11 @@ fi
 # Region engagement: a region whose oracle hash never changed over
 # the run was compared on a constant. The verifier names them; a row may be
 # constant only with `constant_ok = true` and its reason on the manifest row,
-# or over a whole run whose recipe sets CONSTANT_REGIONS_REASON (a capture
-# too short to reach the code that changes them).
+# by a recipe entry CONSTANT_REGION_REASON[<region>]=<reason> (the run's
+# records never reach that region's writers; an entry naming a region the
+# run changed fails as stale), or over a whole run whose recipe sets
+# CONSTANT_REGIONS_REASON (a capture too short to reach the code that
+# changes them).
 # Runs that reach EOF only: a truncated smoke run leaves late-changing rows
 # constant for no reason of their own.
 if [[ "$rc" == "0" ]] && grep -q 'openpete-exit: reason=psxtrace-eof' "$LOG"; then
@@ -619,6 +636,29 @@ if [[ "$rc" == "0" ]] && grep -q 'openpete-exit: reason=psxtrace-eof' "$LOG"; th
     if [[ -z "$UNJUST" ]]; then
         echo "[psx-oracle] region engagement: no zero-change summary line" >&2
         rc=2
+    elif (( ${#CONSTANT_REGION_REASON[@]} )); then
+        # Per-region reasons: every constant region named, every named region constant.
+        read -r -a _constant <<<"${UNJUST/#none/}"
+        _undeclared=(); _stale=()
+        for _r in "${_constant[@]}"; do
+            [[ -n "${CONSTANT_REGION_REASON[$_r]+set}" ]] || _undeclared+=("$_r")
+        done
+        for _r in "${!CONSTANT_REGION_REASON[@]}"; do
+            [[ " ${_constant[*]} " == *" $_r "* ]] || _stale+=("$_r")
+        done
+        for _r in "${_constant[@]}"; do
+            if [[ -n "${CONSTANT_REGION_REASON[$_r]+set}" ]]; then
+                echo "[psx-oracle] region engagement: $_r constant over the run: ${CONSTANT_REGION_REASON[$_r]}"
+            fi
+        done
+        if (( ${#_undeclared[@]} )); then
+            echo "[psx-oracle] region engagement: constant over the run without constant_ok or a recipe reason: ${_undeclared[*]}" >&2
+            rc=2
+        fi
+        if (( ${#_stale[@]} )); then
+            echo "[psx-oracle] region engagement: the recipe declares constant, the run changed: ${_stale[*]}" >&2
+            rc=2
+        fi
     elif [[ "$UNJUST" != "none" && -n "$CONSTANT_REGIONS_REASON" ]]; then
         echo "[psx-oracle] region engagement: constant over the run without constant_ok: $UNJUST;" \
              "accepted by the recipe: $CONSTANT_REGIONS_REASON"

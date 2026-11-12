@@ -398,8 +398,9 @@ charged= unmatched= unmade= ...; spureg charged= of ...; vblpos read
 rows= loads counted= delivered=` is the engagement (the last three: rows
 with an `rt`, loads of their words counted, rows delivered at a load); the gate reports a run with no VBL delivered, no libspu call
 or no register access charged as VACUOUS (exit 3).
-`scripts/check_psx_oracle_all.sh` runs a `clock` row per game after the
-`stock` rows; the stock row's GTE events, VBL events and gameplay bursts
+`scripts/check_psx_oracle_all.sh` runs a `clock` row beside each game's
+`stock` row and one for every `oracle-*-clock.conf` and
+`oracle-cutscene-*.conf` recipe; the stock row's GTE events, VBL events and gameplay bursts
 (see [Event ratchet](#event-ratchet)) measure the in-tick timing the
 shipped engine leaves unreplayed, and the clock row holds each at zero. Under
 `OPENPETE_SCHED_LOG` each delivery (`vblpos`, `vblpos-late`) and each
@@ -546,7 +547,11 @@ with `--no-card` on both sides; every PC comes from the game's `psyq.toml`.
 3: the same recorders with the fork's formatted card in slot 1 and slot 2
 empty, the card exported to `tests/golden/<game>/card-v6-blank.mcd`;
 `tests/harness/check_psx_oracle.sh --game <game> --recipe
-games/<game>/oracle-card.conf` runs openpete on a scratch copy of it. Without
+games/<game>/oracle-card.conf` runs openpete on a scratch copy of it. A
+recipe whose fixture is derived defines `card1_fixture_make DST`
+(`games/spyro-2/oracle-card-full-save-clock.conf`:
+`tests/harness/make_full_card.py` over the blank card), and the gate
+writes a missing fixture with it before a capture or a run. Without
 `--game`, `--out`, `--disc` and `--manifest` (or `OPENPETE_DISC`,
 `OPENPETE_REGIONS_MANIFEST`) name the inputs directly.
 
@@ -599,10 +604,25 @@ presses that start a new game, the reference one VBL early), the watched
 word 0x80068C50 (the speech ring's chunk index: -1 at the stream read
 issue, the chunk at the ring refill), `.spuq` `spuwrite` rows and the
 final-mix dump, over 1247 records (14 past the start of the load that
-follows the cutscene). The stock run diverges at record 216, after the
-load into the cutscene takes 272 VBLANKs inside work; the clock row
+follows the cutscene). The stock run diverges at record 215 in
+`main_bss_80068328`, after the load into the cutscene takes 272 VBLANKs
+inside work; the clock row
 (`OPENPETE_ORACLE_CLOCK=1 OPENPETE_ORACLE_GTE_STRICT=1`) matches every
-region over every record:
+region over every record. Four regions hold one value over the 1247
+records, each with its reason in the recipe's `CONSTANT_REGION_REASON`
+(see [Checking the gate is not vacuous](#checking-the-gate-is-not-vacuous)),
+measured by a write census (`OPENPETE_WRITE_CENSUS`) on this run and on the
+attract demo: `main_data_8006012c` changes on the demo only at
+`D_80061AAC` (set by level 41's `func_level_41_8007E998`, reset by
+`func_8001AAA4` on the return to the title), `main_sdata_80066d38` only
+at `D_80066D40` (the attract-demo index), and `overlay_image_0` and
+`overlay_image_5` lie inside the `titlescreen_and_loading` image, which
+only the CdRead of a level's code to 0x8006D264 replaces, after the
+capture's last record. Every store the cutscene run makes into the four
+writes the bytes already there. The table runs the recipe as the
+`cutscene-intro-clock` row only; its stock row is OUT (`STOCK_ROW_OUT`):
+the record-215 divergence is a hard failure in a strict region, which no
+[ratchet](#event-ratchet) list expresses:
 
 ```sh
 scripts/capture_psx_oracle_ds.sh --game spyro-2 --recipe games/spyro-2/oracle-cutscene-intro.conf
@@ -660,11 +680,39 @@ present rewrites one guest word (default RAM offset `0x10000`, or the address th
 value names) with the value already there; the oracle passes and the row
 fails.
 
-`scripts/check_psx_oracle_all.sh [-- flags]` runs every game's gate
-concurrently and prints one table (game, row, verdict, records consumed,
-`gte` GTE events/mismatching records, `vbl` VBL events/VBL-delta
-mismatches, `gp_b` gameplay bursts, clock engagement, first divergence
-outside the neutral rows); exit 2 when any game fails, 64 when none ran. The music-routing bounds (`MODE_RT_CLEARED_MIN`,
+`scripts/check_psx_oracle_all.sh [-- flags]` runs every oracle recipe of
+every game, at most `OPENPETE_ORACLE_JOBS` (default 3) gates at once, and
+prints one table (game, row, verdict, records consumed, `gte` GTE
+events/mismatching records, `vbl` VBL events/VBL-delta mismatches, `gp_b`
+gameplay bursts, clock engagement, first divergence outside the neutral
+rows). The rows come from the recipe file names: `oracle.conf` gives
+`stock` and `clock`; `oracle-*-clock.conf` one clock row named by the
+recipe (`card-load-clock`); `oracle-cutscene-*.conf` a stock row and a
+clock row (`cutscene-intro`, `cutscene-intro-clock`);
+`oracle-card-with-save.conf` the stock row `card+save`; any other
+`oracle-*.conf` one stock row named by the recipe (`card-load`,
+`card-save`, `card-format`). A recipe setting `STOCK_ROW_OUT` to a reason
+has its stock row printed `OUT` with that reason and not run. The flags
+after `--` reach the stock rows only. Exit 0 when every row ran and
+passed, 2 when any row fails, is VACUOUS or errors, 64 when none does and
+at least one row is SKIP (a golden, sidecar, fixture, binary or disc
+missing), with each SKIP row and its reason repeated on stderr; OUT rows
+do not count. The rows, with each row's openpete run time on a
+linux-release build:
+
+| Game | Rows | Records | Seconds per row |
+|---|---|---|---|
+| Spyro 1 | stock, clock | 20000 | 165 |
+| Spyro 2 | stock, clock, card, card+save | 20000 | 195 |
+| Spyro 2 | cutscene-intro-clock | 1247 | 11 |
+| Spyro 2 | card-load, card-save | 320, 420 | 3, 5 |
+| Spyro 2 | card-load-clock, card-full-save-clock | 1300, 520 | 12, 6 |
+| Spyro 2 | card-save-clock, card-format, card-format-clock | 600, 500, 800 | SKIP until their goldens are captured |
+| Spyro 2 | cutscene-intro | - | OUT: diverges at record 215 (above) |
+| Spyro 3 | stock, clock, card, card+save | 20000 | 173 |
+| Spyro 3 | card-load, card-save | 1200, 1490 | 12, 13 |
+
+The whole table took 957 s with `OPENPETE_ORACLE_JOBS=2`. The music-routing bounds (`MODE_RT_CLEARED_MIN`,
 `READS_RT_CLEAR_MAX`) come from the recipe and apply to a run that reached
 the trace's end; a recipe lacking them fails with the measured values.
 Each golden holds 20000 records over the manifest's rows (Spyro 1: 54),
@@ -801,7 +849,12 @@ region at zero: `zero-change regions justified (constant_ok):` for rows
 whose manifest entry carries `constant_ok = true` with its reason (a
 progression total the attract demo never advances), and `zero-change
 regions unjustified:` for the rest. On a run that reaches EOF the gate
-script fails a PASS whose unjustified list is not `none`.
+script fails a PASS whose unjustified list is not `none`, unless the
+recipe states why: `CONSTANT_REGION_REASON[<region>]=<reason>` per region
+(a bash associative array; the gate fails a constant region the array
+does not name and a named region the run changed, and prints each reason),
+or `CONSTANT_REGIONS_REASON` over the whole run (a capture too short to
+reach the code that changes them).
 
 Three further checks, each cheap, establish that a PASS is a comparison and not an
 accident. The trace's table hash equals the registered table's (the
