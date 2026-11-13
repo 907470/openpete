@@ -6467,8 +6467,8 @@ static long s_fp_hit, s_fp_miss;   /* tier-census counters */
  * bytecount bytes) and every word the list patches, which the .s writes at an
  * offset into the HP faceblock. The list is walked read-only first, since the
  * span must exist before the first write; the walk stops where
- * moby_frame_patch_apply stops or where the words exceed FPATCH_MAX. A span
- * above 0x20000 bytes is refused.
+ * moby_frame_patch_apply stops: on the terminating entry, or where the words or
+ * the entries exceed FPATCH_MAX. A span above 0x20000 bytes is refused.
  * @param cpu The guest CPU state, read only.
  * @param fb The faceblock the decode reads.
  * @param bytecount The faceblock's byte count.
@@ -6486,29 +6486,43 @@ static int moby_frame_patch_stage(CPUState* cpu, uint32_t fb, uint32_t bytecount
             uint32_t a0 = cpu->read_word(at); at += 4;
             uint32_t dst = fbHP + (a0 & 0xFFFFu);
             int cnt = (int)((a0 >> 24) & 0x7Fu);
-            if (n + cnt > FPATCH_MAX) break;         /* the apply rolls this back */
+            if (n + cnt > FPATCH_MAX || ++entries > FPATCH_MAX) break;   /* the apply rolls this back */
             n += cnt; at += 4u * (uint32_t)cnt;
             uint32_t end = dst + 4u * (uint32_t)cnt;
             if (dst < lo) lo = dst;
             if (end > hi) hi = end;
-            if ((int32_t)a0 <= 0 || ++entries > 128) break;
+            if ((int32_t)a0 <= 0) break;
         }
     }
     if (hi <= lo || hi - lo > 0x20000u) return 0;
     return openpete_subtick_view_stage(lo, hi - lo) != NULL;
 }
 
+/** @brief Write back the words a partly applied patch list replaced, in forward order.
+ *
+ * @param cpu The guest CPU state; the saved words are written.
+ * @param sv The (address, original) pairs the apply saved.
+ * @param n The count of pairs in sv.
+ * @return -1, moby_frame_patch_apply's result for a list it does not apply. */
+static int moby_frame_patch_rollback(CPUState* cpu, const fpsave_t* sv, int n) {
+    for (int k = 0; k < n; k++) cpu->write_word(sv[k].addr, sv[k].val);
+    return -1;
+}
+
 /** @brief Apply a keyframe's faceblock patch list to PSX RAM, saving each original word.
  *
  * Each entry is a header word, (cnt << 24) | the byte offset into the HP
  * faceblock with cnt in bits 24-30, followed by cnt replacement words; the
- * entry whose header word is <= 0 ends the list, and at most 129 entries
- * apply. The caller restores the saved words after the decode.
+ * entry whose header word is <= 0 ends the list, the only end the .s copy
+ * loops test (S1 r_moby.s:542-566, S2 mobydraw.s:947-964, S3
+ * mobydraw.s:943-960). Every entry applies; a list whose words or entries
+ * exceed FPATCH_MAX applies none. The caller restores the saved words after
+ * the decode.
  * @param cpu The guest CPU state; the patched words are written.
  * @param header The AnimationHeader whose ANIM_FACES_HP names the faceblock.
  * @param list The patch list.
  * @param sv Receives (address, original) per patched word, FPATCH_MAX entries.
- * @return The patched word count; 0 when the list or the HP faceblock is below KSEG0; -1 when the list exceeds FPATCH_MAX words, after rolling every write back. */
+ * @return The patched word count; 0 when the list or the HP faceblock is below KSEG0; -1 when the list exceeds FPATCH_MAX words or entries, after rolling every write back. */
 static int moby_frame_patch_apply(CPUState* cpu, uint32_t header, uint32_t list,
                                   fpsave_t* sv) {
     if (list < 0x80000000u) return 0;
@@ -6520,16 +6534,14 @@ static int moby_frame_patch_apply(CPUState* cpu, uint32_t header, uint32_t list,
         uint32_t a0 = cpu->read_word(at); at += 4;
         uint32_t dst = fbHP + (a0 & 0xFFFFu);
         int cnt = (int)((a0 >> 24) & 0x7Fu);
+        if (n + cnt > FPATCH_MAX || ++entries > FPATCH_MAX)   /* oversized: roll back */
+            return moby_frame_patch_rollback(cpu, sv, n);
         for (int q = 0; q < cnt; q++) {
-            if (n >= FPATCH_MAX) {                  /* malformed/huge: roll back */
-                for (int k = 0; k < n; k++) cpu->write_word(sv[k].addr, sv[k].val);
-                return -1;
-            }
             sv[n].addr = dst; sv[n].val = cpu->read_word(dst);
             cpu->write_word(dst, cpu->read_word(at));
             at += 4; dst += 4; n++;
         }
-        if ((int32_t)a0 <= 0 || ++entries > 128) break;
+        if ((int32_t)a0 <= 0) break;
     }
     return n;
 }
