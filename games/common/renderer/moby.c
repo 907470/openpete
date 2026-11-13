@@ -1100,15 +1100,18 @@ static double reveal_lateral_margin(CPUState* cpu, uint32_t header, double rr,
  * Returns vertex count. The caller set-matches these vs the emitted prims. */
 typedef struct { float sx, sy, vz; int sat; int unr; int rec;
                  float ex, ey, ez; float tvz;
-                 float kvz;            /* key depth: vz before the tie pull and the near-floor lift */
+                 float kvz;            /* written depth before the tie pull and the near-floor lift */
+                 float okz;            /* the game's ordering-table key depth (moby_project_vertex) */
                  moby_otk_vert_t iv;   /* the draw's integer RTPS output (paint key) */
                  moby_otk_rec_t otk;   /* the record's paint key; first vertex only */
                  float mv[3];          /* the model-space vertex projected (water-plane distance) */
                  float hx, hy;         /* the float projection times tvz (moby_vert_homog) */
                } proj_xy;  /* vz=view-Z; rec=source record (diag);
                  kvz = the written depth at the true distance (size correction
-                 and GPF depth restore applied) before the one-slot tie pull and
-                 the near-floor lift, the depth a face's true-depth key averages;
+                 and GPF factor applied) before the one-slot tie pull and the
+                 near-floor lift; okz = the depth the game's ordering table
+                 keys the vertex at, kvz except on a GPF record, the depth a
+                 face's key averages and a blended face is tested at;
                  unr = this vertex fell in the GTE divide-overflow regime (see
                  moby_gte_near_fixup); sx/sy are then the hardware-clamped pair;
                  ex/ey/ez = the model->view rotated vertex offset (M.v)/4096 = viewPos-TR,
@@ -1164,10 +1167,11 @@ static void moby_vert_homog(proj_xy* o, double sx, double sy, double vzz,
  * the record's terms in a moby_proj_rec. What differs between the passes is
  * per-record data: the translation, the screen offset and view, the factor
  * from the projected view-Z to the perspective W (2^scale byte on a record
- * pass; 2, or 64 / draw-scale byte, on the shaded pass; 2 on the second
- * kind, whose GTE runs in half world units), the
- * written depth's factor and GPF restore (1 and 0 on the shaded pass and the
- * second kind), the tie-pull gate and the paint key's inputs. */
+ * pass, times 32 / GPF byte on a GPF record; 2, or 64 / draw-scale byte, on
+ * the shaded pass; 2 on the second kind, whose GTE runs in half world
+ * units), the written depth's factor (1 on the shaded pass and the second
+ * kind), the ordering-table key's terms (identity outside a GPF record), the
+ * tie-pull gate and the paint key's inputs. */
 typedef struct {
     const int (*M)[3];          /* model-to-view rotation, 4096 = 1.0: paint key, Mf bound check */
     const float (*Mf)[3];       /* model-to-view rotation at unit scale: the projection */
@@ -1176,7 +1180,7 @@ typedef struct {
     double ofx, ofy;            /* the projection's screen offset */
     double wk;                  /* projected view-Z to tvz, the perspective W */
     double depth_k;             /* tvz-scaled depth to written depth (sized records) */
-    double vz_bias;             /* GPF depth restore, added to the projected view-Z */
+    double key_s, key_c;        /* ordering-table key depth = kvz key_s + key_c (1 and 0: kvz) */
     int tie_pull;               /* nonzero: the written depth takes OPENPETE_MOBY_TIE_PULL_VZ off */
     const moby_otk_rec_t* otk;  /* the record's paint key */
     const int* itr;             /* the integer translation the paint key's RTPS loads */
@@ -1217,7 +1221,7 @@ static openpete_gsab_inst* moby_gsab_open(const proj_xy* out, const moby_proj_re
     I->H = (float)P->v->H_eff; I->H_canon = (float)P->v->H_canon;
     I->div_cap = (float)(NGTE_DIV_CAP * P->v->s);
     I->unit = (float)P->wk;
-    I->depth_k = (float)P->depth_k; I->vz_bias = (float)P->vz_bias;
+    I->depth_k = (float)P->depth_k;
     I->tie_pull = P->tie_pull ? (float)OPENPETE_MOBY_TIE_PULL_VZ : 0.0f;
     I->alpha = (float)alpha;
     const float (*Mf)[3] = P->Mf;
@@ -1316,8 +1320,9 @@ static openpete_gsab_inst* moby_proj_open(moby_proj_rec* P, const proj_xy* out, 
 /** @brief Project one model-space vertex of a record and write every field the walks read.
  *
  * sx, sy from project(), replaced by moby_gte_near_fixup inside the GTE's
- * saturation regime; kvz = (vzz + vz_bias) wk depth_k, the depth at the
- * true distance; vz = kvz less OPENPETE_MOBY_TIE_PULL_VZ under the tie pull
+ * saturation regime; kvz = vzz wk depth_k, the depth at the true distance;
+ * okz = kvz key_s + key_c, the depth the game's ordering table keys the
+ * vertex at; vz = kvz less OPENPETE_MOBY_TIE_PULL_VZ under the tie pull
  * (the record's near-floor lift adds to it at moby_proj_close); tvz = vzz
  * wk, the perspective W; hx, hy the homogeneous screen position
  * (moby_vert_homog); ex, ey, ez the rotated offset Mf.v, the specular
@@ -1349,17 +1354,17 @@ static double moby_project_vertex(moby_proj_rec* P, int i, const double c[3], co
      * moby-vs-terrain ties to the MOBY (moby prims insert before the
      * environment), so a moby's surface wins ground it touches; 127 world
      * units < one OT slot, so it flips only pairs og calls a tie. */
-    const double kvz = (vzz + P->vz_bias) * P->wk * P->depth_k;
+    const double kvz = vzz * P->wk * P->depth_k;
     double fvz = kvz;
     if (P->tie_pull) fvz -= OPENPETE_MOBY_TIE_PULL_VZ;
     const double fl = moby_floor_depth(fvz, vzz * P->wk, P->depth_k);
     if (fl < P->minfvz) P->minfvz = fl;
     o->sx = (float)sx; o->sy = (float)sy;
     o->kvz = (float)kvz; o->vz = (float)fvz; o->sat = sat; o->unr = unr;
+    o->okz = (float)(kvz * P->key_s + P->key_c);
     moby_otk_vertex(P->otk, P->itr, P->M, vx, vy, vz, P->kofx, P->kofy, (int)P->v->H_canon, o);
     /* Perspective W = the view-Z the screen projection divided by, times wk:
-     * it excludes the pulls and the GPF depth restore, so the UV
-     * interpolation matches sx/sy. */
+     * it excludes the pulls, so the UV interpolation matches sx/sy. */
     o->tvz = (float)(vzz * P->wk);
     double e1, e2, e3;
     ngte_mac_f(P->Mf, vx, vy, vz, &e1, &e2, &e3);
@@ -1934,7 +1939,19 @@ static void moby_mf_bound_check(const int M[3][3], const float Mf_probe[3][3], c
             s_over, s_overp, s_worst);
 }
 
-/** @brief A record pass's projection translation and GPF depth restore from its stored translation.
+/** @brief The view-space factor 32 / byte of a moby whose translation the draw scaled by byte / 32.
+ *
+ * The draws scale the translation and leave the vertices at model size, so
+ * the image is the model scaled by this factor about its true centre; the
+ * record pass (a GPF byte) and the shaded pass (the draw-scale byte) both
+ * multiply their W factor by it.
+ * @param byte The scale byte, or its sub-tick lerp; positive.
+ * @return The factor. */
+static double moby_scale_override_k(double byte) {
+    return 32.0 / byte;
+}
+
+/** @brief A record pass's projection translation from its stored translation, with a GPF record's factor and key offset.
  *
  * C2_TR = (TR_stored << 2) >> m_Scale [F798 @8001F858/8001F8C8]; m_Scale is
  * the per-model shrink factor (AnimationHeader +0x05): 2 = identity, 1 =
@@ -1948,25 +1965,38 @@ static void moby_mf_bound_check(const int M[3][3], const float Mf_probe[3][3], c
  * sf=0, sra 5; the mtc2 int16 truncation kept), which scales the moby on
  * screen by moving it in depth (the Gnasty-blast dome); the fractional
  * flavour multiplies by gpf / 32, with gpf_frac >= 0 the sub-tick-lerped
- * byte. The .s OT key of a GPF record still derives from the raw TR.z
- * (block_8001F80C..F844), so the written depth stays at the true distance:
- * vz_bias is the unscaled TR.z less the scaled one, added to the projected
- * view-Z of every vertex while sx, sy keep the scaled projection.
+ * byte. The vertices keep their model size, so the image is the model
+ * scaled by gk = 32 / byte about its true centre: the projected view space
+ * times gk is that moby's view space, which the record pass takes as its W
+ * factor (moby_decode_project_body), as the shaded pass does with its
+ * draw-scale byte. The .s orders the record by the unscaled translation
+ * instead: its world bucket derives from the raw TR.z (block_8001F80C..F844)
+ * and each face's local bucket from its SZ less the scaled TR.z (GBK, BBK
+ * @8001F8D8..F8DC, spliced at .L8002074C), which keys a vertex at the raw
+ * centre plus its unscaled model offset: the projected view-Z plus key_b.
+ * On the integer path the scaled translation is truncated, so gk times it
+ * differs from the unscaled one by under gk GTE units, and key_b, taken
+ * from the unscaled translation, keeps the key exact. Where the shifted
+ * translation leaves int16 the mtc2 wraps it, the game draws the record at
+ * the wrapped position, and so does the projection here; the
+ * full-precision path never wraps.
  * @param m_scale The header's scale byte.
  * @param gpf The GPF byte, 0 when the rescale does not run.
  * @param gpf_frac The sub-tick-lerped GPF byte on the TR_frac path; negative takes gpf.
  * @param TR_raw The stored translation.
  * @param TR_frac The full-precision centre on TR_raw's scale, or NULL.
  * @param TR Receives the projection translation.
- * @return The GPF depth restore, 0 without the rescale. */
+ * @param key_b Receives the unscaled TR.z less the scaled one, 0 without the rescale.
+ * @return gk, 1 without the rescale. */
 static double moby_record_proj_tr(int m_scale, int gpf, double gpf_frac, const int TR_raw[3],
-                                  const double TR_frac[3], double TR[3]) {
+                                  const double TR_frac[3], double TR[3], double* key_b) {
     const int tr_final = game_layout.moby.rec_tr_final;
     const int sh = m_scale < 0 ? 0 : m_scale;
     const double sc_frac = 4.0 / (double)(1 << (sh > 30 ? 30 : sh));
+    double g = (double)gpf;
     if (TR_frac) {
         const double sc = tr_final ? 1.0 : sc_frac;
-        const double g = gpf_frac >= 0.0 ? gpf_frac : (double)gpf;
+        if (gpf_frac >= 0.0) g = gpf_frac;
         for (int k = 0; k < 3; k++) TR[k] = TR_frac[k] * sc;   /* == (TR_frac << 2) >> m_scale, fractional */
         if (gpf) for (int k = 0; k < 3; k++) TR[k] *= g / 32.0;
     } else if (gpf) {
@@ -1974,9 +2004,11 @@ static double moby_record_proj_tr(int m_scale, int gpf, double gpf_frac, const i
     } else {
         for (int k = 0; k < 3; k++) TR[k] = tr_final ? (double)TR_raw[k] : (double)((TR_raw[k] << 2) >> m_scale);
     }
-    if (!gpf) return 0.0;
+    *key_b = 0.0;
+    if (!gpf || !(g > 0.0)) return 1.0;
     const double tr2_true = TR_frac ? TR_frac[2] * sc_frac : (double)((TR_raw[2] << 2) >> m_scale);
-    return tr2_true - TR[2];
+    *key_b = tr2_true - TR[2];
+    return moby_scale_override_k(g);
 }
 
 /** @brief A record pass's W factor, 2^m_Scale with the byte clamped to 0..8: the projected view-Z times it is the full-world view-Z.
@@ -2056,9 +2088,11 @@ static void moby_depthdbg(uint32_t header, uint32_t w0, const int TR_raw[3], con
  * [.L8001F870..F8DC; spec twin @80021024]: TRi = (IR0 * int16((TRi << 2) >>
  * m_Scale)) >> 5, which scales the moby on screen by moving it in depth, and
  * the record is skipped when MAC3 >> 5 exceeds 63000 [.L8001F888, spec twin
- * @8002103C], since the game draws nothing past that depth. The depth written
- * for a GPF record stays at the unscaled distance, as the .s OT key derives
- * from the raw TR.z; only sx and sy take the scaled projection. Where the
+ * @8002103C], since the game draws nothing past that depth. A GPF record's
+ * W factor takes gk (moby_record_proj_tr), so its written depth, W, near
+ * clip and fog are those of the moby the image shows, and its okz is the
+ * key the .s orders it by, the raw centre plus the unscaled model offset
+ * (key_s = 1 / gk, key_c = key_b 2^m_Scale depth_k). Where the
  * cull stored a translation it scaled by the moby's size byte
  * (rec_tr_final), depth_k (moby_record_depth_k) multiplies the written depth
  * back to the true distance; sx, sy and the perspective W keep the scaled
@@ -2085,8 +2119,9 @@ static void moby_depthdbg(uint32_t header, uint32_t w0, const int TR_raw[3], con
  *
  * Each vertex projects through moby_project_vertex with the record's terms:
  * the translation of moby_record_proj_tr, the view's screen offset, W factor
- * 2^m_Scale (the projected view-Z times it is the full-world view-Z),
- * depth_k, the GPF depth restore, and the one-slot tie pull when the record
+ * 2^m_Scale times gk (the projected view-Z times it is the full-world view-Z
+ * of the moby the image shows), depth_k, the ordering-table key's terms, and
+ * the one-slot tie pull when the record
  * centre is in front of the camera (moby_tie_pull_on() off drops the pull),
  * since the .s resolves a same-slot moby-terrain tie to the moby;
  * moby_proj_close lifts the record onto the near floor and stores the paint
@@ -2138,8 +2173,8 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
      * (reextract_record_pass). */
     int gpf = game_layout.moby.rec_tr_final ? 0 : (int)(w0 & 0xFFu);
     if (gpf && ((gpf * (int)(int16_t)((TR_raw[2] << 2) >> m_scale)) >> 5) > 63000) return 0;
-    double TR[3];
-    const double vz_bias = moby_record_proj_tr(m_scale, gpf, gpf_frac, TR_raw, TR_frac, TR);
+    double TR[3], key_b;
+    const double gk = moby_record_proj_tr(m_scale, gpf, gpf_frac, TR_raw, TR_frac, TR, &key_b);
     /* .s OT bias, REGULAR/SPECULAR walks: the render loop keys the OT as
      * (TR.z_raw>>5) - signext(w0 byte2) [@8001F810..F828; spec twin @80020FB0].
      * That bias is an OT ORDERING KEY (slots, 128 world each), not geometry:
@@ -2174,7 +2209,8 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
     /* Optional prev pose (two-pass sub-tick shape lerp). */
     int blend_p = moby_prev_streams(cpu, prev, count, &Ap, &Bp);
     const double prev_k = moby_prev_unit(cpu, prev, blend_p, m_scale);
-    moby_proj_rec P = { M, Mf, TR, v, v->ofx, v->ofy, moby_scale_unit(m_scale), depth_k, vz_bias,
+    const double unit = moby_scale_unit(m_scale);
+    moby_proj_rec P = { M, Mf, TR, v, v->ofx, v->ofy, unit * gk, depth_k, 1.0 / gk, key_b * unit * depth_k,
                         moby_tie_pull_on() && centre_full > 0.0, &otr, itr, v->ofx, v->ofy, NULL, 0.0 };
     openpete_gsab_inst* gsab = moby_proj_open(&P, out, moby_rec_gsab_flags(gpf, do_blend, blend_p),
                                               blend_p >= 0 ? blend_alpha : 1.0, count);
@@ -4808,11 +4844,12 @@ static int trail_replay_admit(CPUState* cpu, uint32_t* recs, uint32_t* mobys, in
  * jitter-free (exact word0 indices) where a screen-proximity match against
  * the captured prims would jitter. */
 typedef struct { float sx, sy, vz; float u, v; uint32_t rgb;
-                 float ex, ey, ez; float tvz; float kvz; } ntri_vert;  /* vz=depth; u,v=texel; ex/ey/ez=env-UV input;
+                 float ex, ey, ez; float tvz; float kvz; float okz; } ntri_vert;  /* vz=depth; u,v=texel; ex/ey/ez=env-UV input;
                  tvz = the same vertex's UNSHIFTED view-Z, the perspective W (see
                  openpete_scene_vert.pvz): vz carries the OT-slot pull, which can
                  reach 16256 world units on a saturated authored bias.
-                 kvz = the vertex's key depth (proj_xy.kvz). */
+                 kvz = the vertex's written depth before the pulls (proj_xy.kvz);
+                 okz = its ordering-table key depth (proj_xy.okz). */
 typedef struct {
     ntri_vert v[3];
     int textured, tpage_x, tpage_y, clut_x, clut_y, bpp;  /* PSX material (VRAM px) */
@@ -5283,7 +5320,7 @@ static void emit_wtri_store(const proj_xy* const p[3], const float uv[3][2],
     ntri_t* t = &O->tri[O->n++];
     for (int k = 0; k < 3; k++)
         t->v[k] = (ntri_vert){ p[k]->sx, p[k]->sy, p[k]->vz, uv[k][0], uv[k][1], col[k],
-                               p[k]->ex, p[k]->ey, p[k]->ez, p[k]->tvz, p[k]->kvz };
+                               p[k]->ex, p[k]->ey, p[k]->ez, p[k]->tvz, p[k]->kvz, p[k]->okz };
     t->textured = m->tex; t->tpage_x = m->tpx; t->tpage_y = m->tpy;
     t->clut_x = m->clx; t->clut_y = m->cly; t->bpp = m->bpp; t->blend = m->blend;
     t->tmix = s_emit_tmix;
@@ -5345,6 +5382,7 @@ static void moby_clip_vertex(const proj_xy* const p[3], const float uv[3][2],
         o->hx = (float)x.m1; o->hy = (float)x.m2; o->tvz = (float)zc;
         o->vz  = A->vz  + t * (B->vz  - A->vz);
         o->kvz = A->kvz + t * (B->kvz - A->kvz);
+        o->okz = A->okz + t * (B->okz - A->okz);
         o->ex  = A->ex  + t * (B->ex  - A->ex);
         o->ey  = A->ey  + t * (B->ey  - A->ey);
         o->ez  = A->ez  + t * (B->ez  - A->ez);
@@ -5707,7 +5745,7 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
                              uint32_t ca, uint32_t cb, uint32_t cc,
                              float ua, float va, float ub, float vb, float uc, float vc,
                              int tex, int tpx, int tpy, int clx, int cly, int bpp, int blend) {
-    enum { AT_VZ, AT_TVZ, AT_KVZ, AT_EX, AT_EY, AT_EZ, AT_U, AT_V, AT_HX, AT_HY, AT_N };
+    enum { AT_VZ, AT_TVZ, AT_KVZ, AT_OKZ, AT_EX, AT_EY, AT_EZ, AT_U, AT_V, AT_HX, AT_HY, AT_N };
     proj_xy* const src[3] = { a, b, c };
     const uint32_t col[3] = { ca, cb, cc };
     const float uu[3] = { ua, ub, uc }, vv[3] = { va, vb, vc };
@@ -5716,6 +5754,7 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
         const proj_xy* p = src[k];
         in[k].sx = p->sx; in[k].sy = p->sy; in[k].w = p->tvz;
         in[k].at[AT_VZ] = p->vz; in[k].at[AT_TVZ] = p->tvz; in[k].at[AT_KVZ] = p->kvz;
+        in[k].at[AT_OKZ] = p->okz;
         in[k].at[AT_EX] = p->ex; in[k].at[AT_EY] = p->ey; in[k].at[AT_EZ] = p->ez;
         in[k].at[AT_U] = uu[k]; in[k].at[AT_V] = vv[k];
         in[k].at[AT_HX] = p->hx; in[k].at[AT_HY] = p->hy;
@@ -5738,7 +5777,7 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
             q[k] = *src[P[k].idx];
             q[k].sx = (float)P[k].sx; q[k].sy = (float)P[k].sy;
             q[k].vz = (float)P[k].at[AT_VZ]; q[k].tvz = (float)P[k].at[AT_TVZ];
-            q[k].kvz = (float)P[k].at[AT_KVZ];
+            q[k].kvz = (float)P[k].at[AT_KVZ]; q[k].okz = (float)P[k].at[AT_OKZ];
             q[k].ex = (float)P[k].at[AT_EX]; q[k].ey = (float)P[k].at[AT_EY];
             q[k].ez = (float)P[k].at[AT_EZ];
             q[k].hx = (float)P[k].at[AT_HX]; q[k].hy = (float)P[k].at[AT_HY];
@@ -5853,7 +5892,7 @@ void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)
      * projected view-Z is the GTE's own depth, which the divide-overflow test
      * (moby_gte_near_fixup) reads, and W factor 2 takes it to full world. */
     proj_xy* out = moby_simple_slots(n);
-    moby_proj_rec P = { x->R, x->Rf, x->TR, view, ofx, ofy, 2.0, 1.0, 0.0, 0,
+    moby_proj_rec P = { x->R, x->Rf, x->TR, view, ofx, ofy, 2.0, 1.0, 1.0, 0.0, 0,
                         x->otk, x->itr, ofx, ofy, NULL, 0.0 };
     openpete_gsab_inst* gsab = moby_proj_open(&P, out, OPENPETE_GSAB_F_SIMPLE
                                               | (s_cur_screen ? OPENPETE_GSAB_F_SCREEN : 0u), 1.0, n);
@@ -10901,21 +10940,67 @@ static uint32_t moby_scene_identity(uint32_t moby)
 
 /** @brief The true-depth key of a walk triangle, in world units.
  *
- * The mean of the three vertices' key depths (ntri_vert.kvz: the written
- * depth at the true distance, a sized record's size correction and a GPF
- * record's depth restore applied, before the tie pull and the near-floor
- * lift) less the authored m_DepthOffset (OPENPETE_OT_SLOT_WORLD per unit)
- * when bias is set, floored at 1 since the game floors its slot at 0. The projection W (tvz)
- * is not used: for a sized or GPF record it is the scaled projection's
- * depth, not the distance the face is drawn at.
+ * The mean of the three vertices' ordering-table key depths (ntri_vert.okz:
+ * the written depth at the true distance, a sized record's size correction
+ * applied, before the tie pull and the near-floor lift; on a GPF record the
+ * raw centre plus the unscaled model offset the game keys it at) less the
+ * authored m_DepthOffset (OPENPETE_OT_SLOT_WORLD per unit) when bias is set,
+ * floored at 1 since the game floors its slot at 0. The projection W (tvz)
+ * is not used: for a sized record it is the scaled projection's depth, not
+ * the distance the face is drawn at.
  * @param i The walk triangle's index.
  * @param bias Nonzero to subtract the authored m_DepthOffset.
  * @return The key. */
 static double moby_tri_true_key(int i, int bias) {
-    const double mean = ((double)s_wtri[i].v[0].kvz + (double)s_wtri[i].v[1].kvz
-                       + (double)s_wtri[i].v[2].kvz) / 3.0;
+    const double mean = ((double)s_wtri[i].v[0].okz + (double)s_wtri[i].v[1].okz
+                       + (double)s_wtri[i].v[2].okz) / 3.0;
     const double key = mean - (bias ? OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i] : 0.0);
     return key < 1.0 ? 1.0 : key;
+}
+
+/* Vertices of the current walk's blended faces tested at a cover depth
+ * other than their written depth (moby_cover_depth). */
+static long s_cover_verts;
+
+/** @brief Whether OPENPETE_MOBY_COVER_NEGCTL is set and not "0", read once: the cover depth's negative control tests every blended face at its written depth.
+ * @return 1 when set. */
+static int moby_cover_negctl(void) {
+    static int s_negctl = -1;
+    if (s_negctl < 0) { const char* e = getenv("OPENPETE_MOBY_COVER_NEGCTL");
+                        s_negctl = (e && *e && *e != '0') ? 1 : 0; }
+    return s_negctl;
+}
+
+/** @brief The depth a walk triangle's vertex is depth-tested at: its written depth, or a blended face's ordering-table cover depth.
+ *
+ * A blended face writes no depth, so its depth decides only what it covers.
+ * The game paints it over every prim its ordering-table key sorts it in
+ * front of, so it is tested at that key depth (okz) carrying the vertex's
+ * own pulls (vz - kvz): the cover depth. It differs from the written depth
+ * only on a GPF record, whose key keeps the model's unscaled relief while
+ * its image is the scaled moby (moby_record_proj_tr); every other blended
+ * face has okz equal to kvz and is tested at its written depth. An opaque
+ * face writes its depth, which other surfaces and its own faces test
+ * against, so it keeps the geometry's.
+ * @param i The walk triangle's index.
+ * @param k The vertex, 0 to 2.
+ * @return The view-Z. */
+static float moby_cover_depth(int i, int k) {
+    const ntri_vert* v = &s_wtri[i].v[k];
+    if (s_wtri[i].blend == 0 || v->okz == v->kvz || moby_cover_negctl()) return v->vz;
+    s_cover_verts++;
+    return v->vz + (v->okz - v->kvz);
+}
+
+/** @brief OPENPETE_MOBY_COVER_CENSUS: print the walk's count of blended-face vertices tested at a cover depth other than their written depth, an instrument.
+ *
+ * One line per walk with a nonzero count; the count restarts every walk. */
+static void moby_cover_census(void) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_COVER_CENSUS"); s_on = (e && *e && *e != '0'); }
+    if (s_on && s_cover_verts > 0)
+        fprintf(stderr, "[moby-cover vbl=%u] verts=%ld\n", openpete_frame, s_cover_verts);
+    s_cover_verts = 0;
 }
 
 /** @brief The ordering-table key a walk triangle contests the terrain with, in world units.
@@ -11447,7 +11532,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_wtri[i].v[k].sx;
             t.v[k].sy   = s_wtri[i].v[k].sy;
-            t.v[k].z    = openpete_native_scene_viewz(openpete_worldvz_full(s_wtri[i].v[k].vz));
+            t.v[k].z    = openpete_native_scene_viewz(openpete_worldvz_full(moby_cover_depth(i, k)));
             /* Perspective W: the vertex's unshifted view-Z (equal to z where
              * no OT pull moved it). */
             t.v[k].pvz  = openpete_native_scene_viewz(openpete_worldvz_full(s_wtri[i].v[k].tvz));
@@ -11513,6 +11598,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
         openpete_native_scene_add_tri(&t, cat, 0);
     }
     mst_add(MST_EMIT, t_em);
+    moby_cover_census();
     moby_td_census(-1, 0, stbit);
     openpete_native_scene_set_hq_fog(0u, 0u);
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
@@ -13864,7 +13950,7 @@ static double shaded_actor_tr(CPUState* cpu, uint32_t m, uint32_t cls, const int
         TR[k] = (PM[k][0] * Dy + PM[k][1] * Dz + PM[k][2] * Dx) / 4096.0 * 2.0;
     const uint8_t p57 = cpu->read_byte(m + game_layout.moby.size_off);
     if (p57) for (int k = 0; k < 3; k++) TR[k] = (double)p57 * TR[k] / 32.0;
-    return p57 ? 64.0 / (double)p57 : 2.0;
+    return p57 ? 2.0 * moby_scale_override_k((double)p57) : 2.0;
 }
 
 /* The shaded pass's view and camera, shared by every moby of the pass. */
@@ -13921,7 +14007,7 @@ static void shaded_rec_store(CPUState* cpu, uint32_t m, const shaded_model* md, 
  * canonical view; a 3D moby projects with ProjMatrix composed with its euler
  * rotation (block_80022CE4) and shaded_actor_tr through the pass view. The
  * record's terms: W factor 2 for a billboard (TR.z is half its depth) and
- * shaded_actor_tr's for a 3D moby, depth_k 1, no GPF restore, the tie pull on
+ * shaded_actor_tr's for a 3D moby, depth_k 1, the key at the written depth, the tie pull on
  * a 3D moby whose centre lies in front of the camera (shaded_tie_pull_on),
  * and the pass's paint key (shaded_otk_record). A billboard's ordering-table
  * index (pz >> 7) - (m_Rotation >> 24) at or below 0 (block_80022D90) puts it
@@ -13947,7 +14033,7 @@ static int shaded_project_moby(CPUState* cpu, uint32_t m, const shaded_view* V, 
     if (billboard && !hud_rec && !near_ot) NGTE_CENSUS_HIT(bb_untagged);
     int M[3][3]; float Mf[3][3]; double TR[3];
     moby_proj_rec P = { M, Mf, TR, (billboard || hud_rec) ? &s_view_shd_canon : V->v,
-                        V->v->ofx, V->v->ofy, 2.0, 1.0, 0.0, 0, NULL, NULL, 0.0, 0.0, NULL, 0.0 };
+                        V->v->ofx, V->v->ofy, 2.0, 1.0, 1.0, 0.0, 0, NULL, NULL, 0.0, 0.0, NULL, 0.0 };
     if (billboard) {
         static const int base[3][3] = { { 4096, 0, 0 }, { 0, 2560, 0 }, { 0, 0, 4096 } };
         shaded_compose_euler(cpu, base, m, M, Mf);
@@ -14313,6 +14399,7 @@ static proj_xy metal_plane_vertex(const metal_tri* t, mclip_pt p) {
     o.vz  = (float)(1.0 / (wa / a->vz + wb / b->vz + wc / c->vz));
     o.tvz = (float)(1.0 / (wa / a->tvz + wb / b->tvz + wc / c->tvz));
     o.kvz = (float)(1.0 / (wa / a->kvz + wb / b->kvz + wc / c->kvz));
+    o.okz = (float)(1.0 / (wa / a->okz + wb / b->okz + wc / c->okz));
     o.ex = (float)(wa * a->ex + wb * b->ex + wc * c->ex);
     o.ey = (float)(wa * a->ey + wb * b->ey + wc * c->ey);
     o.ez = (float)(wa * a->ez + wb * b->ez + wc * c->ez);
@@ -16106,6 +16193,7 @@ static void moby_sphere_shell_pull(CPUState* cpu, uint32_t moby, uint32_t header
     for (int i = 0; i < n; i++) {
         out[i].vz  = (float)(out[i].vz - rho);
         out[i].kvz = (float)(out[i].kvz - rho);
+        out[i].okz = (float)(out[i].okz - rho);
         if (out[i].tvz > 0.0f) minvz = fminf(minvz, out[i].vz);
     }
     if (minvz < 1.0f)

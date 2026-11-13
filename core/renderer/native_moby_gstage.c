@@ -299,7 +299,7 @@ static void gsab_pack_inst(const openpete_gsab_inst *I, float *q)
         q[4 * r + 3] = I->TR[r];
     }
     q[12] = I->ofx; q[13] = I->ofy; q[14] = I->H; q[15] = I->H_canon;
-    q[16] = I->div_cap; q[17] = I->unit; q[18] = I->depth_k; q[19] = I->vz_bias;
+    q[16] = I->div_cap; q[17] = I->unit; q[18] = I->depth_k;
     q[20] = I->tie_pull; q[21] = I->lift; q[22] = I->rho; q[23] = I->lift2;
     q[24] = I->alpha;
     memcpy(&q[25], &I->flags, sizeof I->flags);

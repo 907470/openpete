@@ -55,7 +55,6 @@ typedef struct {
     float div_cap;      /* capped quotient times the --fov scale */
     float unit;         /* projected view-Z to the perspective W */
     float depth_k;      /* projected to written depth */
-    float vz_bias;      /* GPF depth restore */
     float tie_pull;     /* tie pull, 0 when off */
     float lift;         /* decode near-floor lift, 0 when none */
     float rho;          /* sphere-shell pull, 0 when none */

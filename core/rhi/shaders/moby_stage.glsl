@@ -15,9 +15,10 @@
  *          capped quotient and the SXY saturation (ngte_screen_gte)
  *   sat  = |mac1| or |mac2| past int16, mac3 <= 0, or H_canon >= 2 mac3
  *   tvz  = mac3 * unit                  the perspective W (unit = 2^scale byte on a
- *                                       record pass; 2, or 64 / draw-scale byte, on
- *                                       the shaded pass)
- *   kvz  = (mac3 + vz_bias) * unit * depth_k
+ *                                       record pass, times 32 / GPF byte on a GPF
+ *                                       record; 2, or 64 / draw-scale byte, on the
+ *                                       shaded pass)
+ *   kvz  = mac3 * unit * depth_k
  *   vz   = kvz - tie_pull + lift, then - rho + lift2 (the sphere-shell pull)
  *   h    = (of * mac3 + mac12 * H) * unit, the homogeneous screen position
  * The record's near-floor lifts (lift, lift2) are per-record minima over
@@ -66,7 +67,6 @@ struct moby_inst {
     float div_cap;      /* the capped quotient 0x1FFFF / 65536 times the --fov scale */
     float unit;         /* projected view-Z to the perspective W: 2^scale byte, or the shaded pass's factor */
     float depth_k;      /* projected to written depth (sized records) */
-    float vz_bias;      /* a GPF record's depth restore */
     float tie_pull;     /* the one-slot tie pull, 0 when the gate is off */
     float lift;         /* the decode's near-floor lift, 0 when none */
     float rho;          /* the sphere-shell pull, 0 when none */
@@ -96,7 +96,7 @@ moby_inst moby_inst_unpack(vec4 q0, vec4 q1, vec4 q2, vec4 q3, vec4 q4, vec4 q5,
     I.m0 = q0.xyz; I.m1 = q1.xyz; I.m2 = q2.xyz;
     I.tr = vec3(q0.w, q1.w, q2.w);
     I.of = q3.xy; I.H = q3.z; I.H_canon = q3.w;
-    I.div_cap = q4.x; I.unit = q4.y; I.depth_k = q4.z; I.vz_bias = q4.w;
+    I.div_cap = q4.x; I.unit = q4.y; I.depth_k = q4.z;
     I.tie_pull = q5.x; I.lift = q5.y; I.rho = q5.z; I.lift2 = q5.w;
     I.alpha = q6.x; I.flags = floatBitsToUint(q6.y);
     I.tr_lo = vec3(q6.z, q6.w, q7.x);
@@ -192,7 +192,7 @@ moby_vout moby_stage(moby_inst I, vec3 c, vec3 p, vec3 dtr)
     o.unr = unr ? 1u : 0u;
     o.sat = (ir || I.H_canon >= 2.0 * mac3) ? 1u : 0u;
     precise float tvz = mac3 * I.unit;
-    precise float kvz = (mac3 + I.vz_bias) * I.unit * I.depth_k;
+    precise float kvz = mac3 * I.unit * I.depth_k;
     precise float vz = ((kvz - I.tie_pull) + I.lift - I.rho) + I.lift2;
     o.tvz = tvz;
     o.kvz = kvz - I.rho;

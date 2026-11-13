@@ -15,7 +15,7 @@
 #include <stdint.h>
 
 /* The attributes a cut interpolates besides screen position and colour. */
-#define WPLANE_ATTRS 10
+#define WPLANE_ATTRS 11
 
 /* One triangle corner on its way through the cut. `sx`, `sy` are the screen
  * position; `w` is the perspective divisor the screen position was projected
