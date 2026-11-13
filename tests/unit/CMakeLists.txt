@@ -284,6 +284,40 @@ target_compile_definitions(psx_span_test_nomirror PRIVATE OPENPETE_PSX_RAM_MIRRO
 set_target_properties(psx_span_test_nomirror PROPERTIES C_STANDARD 11)
 add_test(NAME psx_span_test_nomirror COMMAND psx_span_test_nomirror)
 set_tests_properties(psx_span_test_nomirror PROPERTIES WILL_FAIL TRUE)
+set_tests_properties(psx_span_test psx_span_test_nomirror PROPERTIES LABELS "mirror")
+
+# s2_grid_relink_test - Spyro 2's moby grid relink (func_80041538), its
+# recompiled body copied verbatim from the generated C, run on the bus of
+# psx_span_test against a RAM image holding only the grid pointer, the
+# grid and one moby moved to a negative X with flag 2: the moby must end in
+# bucket 159. The _nomirror build (mirror removed as above) passes only when
+# the unlink walk at 0x80041634 runs to the poll cap, proving the first
+# build's pass rests on the mirror. Needs Spyro 2's generated C.
+set(_s2_generated ${CMAKE_SOURCE_DIR}/games/spyro-2/generated/PSX.EXE_full.c)
+if("spyro-2" IN_LIST OPENPETE_GAMES AND EXISTS ${_s2_generated})
+    set(_s2_relink_c ${CMAKE_CURRENT_BINARY_DIR}/s2_func_80041538.gen.c)
+    add_custom_command(
+        OUTPUT  ${_s2_relink_c}
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/extract_recomp_function.py
+                ${_s2_generated} func_80041538 ${_s2_relink_c}
+        DEPENDS ${_s2_generated} ${CMAKE_CURRENT_SOURCE_DIR}/extract_recomp_function.py
+        COMMENT "Copying Spyro 2 func_80041538 out of the generated C")
+    foreach(_variant s2_grid_relink_test s2_grid_relink_test_nomirror)
+        add_executable(${_variant}
+            ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c
+            s2_grid_relink_test.c
+            ${_s2_relink_c}
+            ${CMAKE_SOURCE_DIR}/core/psx/cpu.c
+            ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
+        target_include_directories(${_variant} PRIVATE
+            ${CMAKE_SOURCE_DIR}/core/include
+            ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+        set_target_properties(${_variant} PROPERTIES C_STANDARD 11)
+        add_test(NAME ${_variant} COMMAND ${_variant})
+        set_tests_properties(${_variant} PROPERTIES LABELS "mirror" TIMEOUT 30)
+    endforeach()
+    target_compile_definitions(s2_grid_relink_test_nomirror PRIVATE OPENPETE_PSX_RAM_MIRROR_END=0x00200000u)
+endif()
 
 # knob_registry_test - the M-overlay knob table: module-contributed rows
 # (openpete_knob_add) landing inside their section, capacity refusal, and
