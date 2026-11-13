@@ -568,6 +568,23 @@ static uint32_t ngte_prim_payload_words(uint8_t code) {
     return w;
 }
 
+uint32_t ngte_rgb_mix(uint32_t a, uint32_t aq, uint32_t b, uint32_t bq, double t, uint32_t* q) {
+    uint32_t r = 0, rq = 0;
+    for (int s = 0; s < 24; s += 8) {
+        const double ca = (double)((a >> s) & 0xFFu) + (double)(int8_t)((aq >> s) & 0xFFu) / 256.0;
+        const double cb = (double)((b >> s) & 0xFFu) + (double)(int8_t)((bq >> s) & 0xFFu) / 256.0;
+        const double v = ca + (cb - ca) * t;
+        double c = floor(v + 0.5);
+        c = c < 0.0 ? 0.0 : (c > 255.0 ? 255.0 : c);
+        double d = floor((v - c) * 256.0 + 0.5);
+        d = d < -128.0 ? -128.0 : (d > 127.0 ? 127.0 : d);
+        r |= (uint32_t)c << s;
+        rq |= ((uint32_t)(int32_t)d & 0xFFu) << s;
+    }
+    if (q) *q = rq;
+    return r;
+}
+
 ngte_cvert ngte_clip_lerp(ngte_cvert a, ngte_cvert b, double zc) {
     double t = (zc - a.m3) / (b.m3 - a.m3);
     if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
@@ -580,22 +597,12 @@ ngte_cvert ngte_clip_lerp(ngte_cvert a, ngte_cvert b, double zc) {
     r.v  = a.v + (float)t * (b.v - a.v);
     r.fx = a.fx + (float)t * (b.fx - a.fx);
     r.fy = a.fy + (float)t * (b.fy - a.fy);
-    int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
-    int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
-    int rr=(int)(ar+t*(br-ar)+0.5), rg=(int)(ag+t*(bg-ag)+0.5), rb=(int)(ab+t*(bb-ab)+0.5);
-    r.rgb = (uint32_t)rr | ((uint32_t)rg<<8) | ((uint32_t)rb<<16);
-    r.rgbq = 0;
+    r.rgb = ngte_rgb_mix(a.rgb, a.rgbq, b.rgb, b.rgbq, t, &r.rgbq);
+    r.rgbf = 0;
     return r;
 }
 
-/** @brief One Sutherland-Hodgman pass of a triangle against z >= zc.
- *
- * @param z The three corners' depths.
- * @param zc The plane's depth.
- * @param out Receives the output corners.
- * @param clipped Receives 1 when a corner was cut, else 0.
- * @return The output corner count, below 3 when the face lies behind the plane. */
-static int ngte_clip_pass(const double z[3], double zc, ngte_clip_ref out[4], int* clipped) {
+int ngte_near_clip_tri(const double z[3], double zc, ngte_clip_ref out[4], int* clipped) {
     int nout = 0;
     *clipped = 0;
     for (int i = 0; i < 3; i++) {
@@ -609,21 +616,7 @@ static int ngte_clip_pass(const double z[3], double zc, ngte_clip_ref out[4], in
             *clipped = 1;
         }
     }
-    return nout;
-}
-
-int ngte_near_clip_tri(const double z[3], double zc, ngte_clip_beyond_fn beyond, const void* ctx,
-                       ngte_clip_ref out[4], double* zc_out, int* clipped) {
-    for (int round = 0; ; round++) {
-        const int nout = ngte_clip_pass(z, zc, out, clipped);
-        if (nout < 3) return 0;
-        int far = 0;
-        if (*clipped && round < 16 && beyond)
-            for (int i = 0; i < nout && !far; i++) far = beyond(ctx, &out[i], zc);
-        if (far) { zc *= 2.0; continue; }
-        *zc_out = zc;
-        return nout;
-    }
+    return nout < 3 ? 0 : nout;
 }
 
 void ngte_prim_decode(const uint32_t* w, int words, int raw_max, ngte_prim* t) {

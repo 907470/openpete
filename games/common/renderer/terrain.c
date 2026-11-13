@@ -1365,17 +1365,14 @@ static void tn_hqfog_nodes(const tn_wctx* W, ngte_cvert v[3]) {
 
 /** @brief Near-plane clips a camera-space triangle and pushes the result.
  *
- * ngte_near_clip_tri against the plane m3 >= s_nearz, with no projection
- * bound: 0 vertices behind gives 1 triangle, 1 gives a quad (2 triangles,
- * fanned from corner 0), 2 give 1 triangle, 3 drop the face and count
- * dbg_behind. A crossing corner is ngte_clip_lerp of its edge. A clipped
- * push counts dbg_clipped. The plane stays at s_nearz: a crossing far off
- * screen is clipped to the view by the rasterizer, whose clip w is the
- * view-Z (op_scene_clip), while a plane moved deeper would cut away the part
- * of the face between the two planes, which for a large face under a low
- * camera lies inside the frame. Under emit_hqfog_on each vertex first
- * takes terrain_fog_blend of its near (rgb) and far (rgbf) colours at its
- * own depth, so a cut interpolates fogged colours as the retained cache's
+ * ngte_near_clip_tri against the plane m3 >= s_nearz: 0 vertices behind
+ * gives 1 triangle, 1 gives a quad (2 triangles, fanned from corner 0), 2
+ * give 1 triangle, 3 drop the face and count dbg_behind. A crossing corner is
+ * ngte_clip_lerp of its edge. A clipped push counts dbg_clipped. A crossing
+ * far off screen is clipped to the view by the rasterizer, whose clip w is
+ * the view-Z (op_scene_clip). Under emit_hqfog_on each vertex first takes
+ * terrain_fog_blend of its near (rgb) and far (rgbf) colours at its own
+ * depth, so a cut interpolates fogged colours as the retained cache's
  * vertex stage does.
  * @param W The walk context receiving the triangles.
  * @param a The first vertex.
@@ -1387,12 +1384,12 @@ static void clip_push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, 
     tn_hqfog_nodes(W, in);
     const double z[3] = { in[0].m3, in[1].m3, in[2].m3 };
     ngte_clip_ref ref[4];
-    double zc; int clipped;
-    const int nout = ngte_near_clip_tri(z, s_nearz, NULL, NULL, ref, &zc, &clipped);
+    int clipped;
+    const int nout = ngte_near_clip_tri(z, s_nearz, ref, &clipped);
     if (nout < 3) { W->dbg_behind++; return; } /* fully behind the near plane */
     ngte_cvert out[4];
     for (int i = 0; i < nout; i++)
-        out[i] = ref[i].cross ? ngte_clip_lerp(in[ref[i].a], in[ref[i].b], zc) : in[ref[i].a];
+        out[i] = ref[i].cross ? ngte_clip_lerp(in[ref[i].a], in[ref[i].b], s_nearz) : in[ref[i].a];
     if (clipped) W->dbg_clipped++;
     push_tri(W, out[0], out[1], out[2], m);         /* fan the clipped polygon */
     if (nout == 4) push_tri(W, out[0], out[2], out[3], m);
@@ -1539,41 +1536,6 @@ static double tj_lerp_t(int k, double za, double zb) {
     return s * zb / ((1.0 - s) * za + s * zb);
 }
 
-/** @brief Mixes two 0x00BBGGRR colours per channel at a weight, rounded to nearest.
- * @param a The colour at weight 0.
- * @param b The colour at weight 1.
- * @param t The weight of b.
- * @return The mixed colour. */
-static uint32_t tj_rgb_lerp(uint32_t a, uint32_t b, double t) {
-    uint32_t r = 0;
-    for (int s = 0; s < 24; s += 8) {
-        const double ca = (double)((a >> s) & 0xFFu), cb = (double)((b >> s) & 0xFFu);
-        r |= (uint32_t)lround(ca + (cb - ca) * t) << s;
-    }
-    return r;
-}
-
-/** @brief Returns the residual of tj_rgb_lerp's rounded bytes from the unrounded mix.
- *
- * Each channel is the mix less its rounded byte, in 1/256 of a level, as one
- * signed byte: bits 0-7 red, 8-15 green, 16-23 blue. terrain.vert tj_rgbq is
- * the mirror.
- * @param a The colour at weight 0.
- * @param b The colour at weight 1.
- * @param t The weight of b.
- * @return The packed residual, 0 when every channel mixes onto a byte. */
-static uint32_t tj_rgb_residual(uint32_t a, uint32_t b, double t) {
-    uint32_t r = 0;
-    for (int s = 0; s < 24; s += 8) {
-        const double ca = (double)((a >> s) & 0xFFu), cb = (double)((b >> s) & 0xFFu);
-        const double v = ca + (cb - ca) * t;
-        long q = (long)floor((v - (double)lround(v)) * 256.0 + 0.5);
-        if (q > 127) q = 127;
-        r |= ((uint32_t)q & 0xFFu) << s;
-    }
-    return r;
-}
-
 static ngte_cvert nc4_pt(ngte_cvert a, ngte_cvert b, int k);
 
 /** @brief Places a node on the segment between its edge's two emitted corner points under the integer vertex snap.
@@ -1626,9 +1588,8 @@ static ngte_cvert tj_member_cv(const ngte_cvert B[3], int d) {
     const ngte_cvert* b = &B[(e + 1) % 3];
     ngte_cvert r = nc4_pt(*a, *b, k);
     const double t = tj_snap_node(&r, a, b, tj_lerp_t(k, a->m3, b->m3));
-    r.rgb = tj_rgb_lerp(a->rgb, b->rgb, t);
-    r.rgbq = tj_rgb_residual(a->rgb, b->rgb, t);
-    r.rgbf = tj_rgb_lerp(a->rgbf, b->rgbf, t);
+    r.rgb = ngte_rgb_mix(a->rgb, a->rgbq, b->rgb, b->rgbq, t, &r.rgbq);
+    r.rgbf = ngte_rgb_mix(a->rgbf, 0u, b->rgbf, 0u, t, NULL);
     r.u = (float)(a->u + (b->u - a->u) * t);
     r.v = (float)(a->v + (b->v - a->v) * t);
     r.fx = (float)(a->fx + (b->fx - a->fx) * t);

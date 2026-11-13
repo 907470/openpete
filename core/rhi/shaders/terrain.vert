@@ -1392,6 +1392,13 @@ int rim_classified(vec2 s0, vec2 s1, vec2 s2, float z0, float z1, float z2) {
     return 0;
 }
 
+/* The residual of a colour level v (bytes plus residual / 256) from its byte
+ * c, in 1/256 of a level rounded half up and clamped to [-128, 127]
+ * (native_gte.c ngte_rgb_mix). */
+ivec3 rgb8_residual(vec3 v, vec3 c) {
+    return ivec3(clamp(floor((v - c) * 256.0 + 0.5), vec3(-128.0), vec3(127.0)));
+}
+
 #ifdef TERRAIN_NEAR
 /* ---- near-plane clip fan (clip_push_tri / cv_lerp mirror) -----------------
  * A near-variant sector's faces may reach or cross the eye plane, so the walk
@@ -1439,14 +1446,15 @@ cvx cv_lerp_n(cvx a, cvx b, float zc) {
     precise float  pv = a.uv.y + float(t) * (b.uv.y - a.uv.y);
     precise float  fx = a.fl.x + float(t) * (b.fl.x - a.fl.x);
     precise float  fy = a.fl.y + float(t) * (b.fl.y - a.fl.y);
-    precise float cr = float(a.c.x) + t * float(b.c.x - a.c.x) + 0.5;
-    precise float cg = float(a.c.y) + t * float(b.c.y - a.c.y) + 0.5;
-    precise float cb = float(a.c.z) + t * float(b.c.z - a.c.z) + 0.5;
+    precise vec3 la = vec3(a.c) + vec3(a.q) / 256.0;
+    precise vec3 lb = vec3(b.c) + vec3(b.q) / 256.0;
+    precise vec3 lv = la + t * (lb - la);
+    vec3 cv = clamp(floor(lv + 0.5), vec3(0.0), vec3(255.0));
     cvx r;
     r.m  = vec3(px, py, zc);
     r.uv = vec2(pu, pv);
-    r.c  = ivec3(int(cr), int(cg), int(cb));
-    r.q  = ivec3(0);
+    r.c  = ivec3(cv);
+    r.q  = rgb8_residual(lv, cv);
     r.os = vec2(0.0); r.ov = false;
     r.fl = vec2(fx, fy);
 #ifdef TERRAIN_READBACK
@@ -1590,16 +1598,16 @@ float tj_t(int k, float za, float zb) {
 }
 
 /* Two colours on the 8-bit grid mixed at weight t and rounded half up, the
- * walk's tj_rgb_lerp. */
+ * walk's ngte_rgb_mix. */
 vec3 tj_mix8(vec3 a, vec3 b, float t) {
     return floor(mix(round(a * 255.0), round(b * 255.0), t) + 0.5) / 255.0;
 }
 
 /* The residual of tj_mix8's byte from the unrounded mix of two colours on the
- * 8-bit grid, in 1/256 of a level (terrain.c tj_rgb_residual). */
+ * 8-bit grid, in 1/256 of a level (native_gte.c ngte_rgb_mix). */
 ivec3 tj_rgbq(vec3 a, vec3 b, float t) {
     vec3 v = mix(round(a * 255.0), round(b * 255.0), t);
-    return ivec3(min(floor((v - floor(v + 0.5)) * 256.0 + 0.5), vec3(127.0)));
+    return rgb8_residual(v, floor(v + 0.5));
 }
 
 /* Member d's camera-space position. */

@@ -791,18 +791,36 @@ int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
  * colour in rgb, for a node it fogs before the cut. A cut does not carry it.
  *
  * rgbq: the residual of rgb's three bytes from a node's unrounded colour,
- * three signed bytes in 1/256 of a level (rhi_vertex.rgbq). Zero on every
- * other vertex. A cut interpolates the bytes and carries no residual.
+ * three signed bytes in 1/256 of a level (rhi_vertex.rgbq). Zero on a
+ * vertex whose colour is whole bytes. A cut carries it (ngte_rgb_mix).
  */
 typedef struct { double m1, m2, m3; uint32_t rgb; float u, v;
                  float osx, osy; uint8_t oflag;
                  float fx, fy;
                  uint32_t rgbf; uint32_t rgbq; } ngte_cvert;
 
+/** @brief Mixes two 0x00BBGGRR colours, each with its residual, per channel at a weight, rounded to the nearest byte.
+ *
+ * Each channel's level is its byte plus its residual's signed byte / 256;
+ * the mix of the two levels rounds half up to a byte clamped to [0, 255],
+ * and the mix less that byte, in 1/256 of a level rounded half up and
+ * clamped to [-128, 127], is the channel's residual. The byte and residual
+ * together reproduce the unrounded mix to 1/512 of a level, so a node or a
+ * cut placed anywhere on the edge keeps the colour the edge interpolates.
+ * @param a The colour at weight 0.
+ * @param aq Its residual (ngte_cvert.rgbq), 0 for whole bytes.
+ * @param b The colour at weight 1.
+ * @param bq Its residual.
+ * @param t The weight of b.
+ * @param q Receives the mix's residual; NULL drops it.
+ * @return The mixed colour's bytes. */
+uint32_t ngte_rgb_mix(uint32_t a, uint32_t aq, uint32_t b, uint32_t bq, double t, uint32_t* q);
+
 /** @brief The point where the edge a->b crosses the plane m3 == zc.
  *
  * Position, UV and the face-local coordinate interpolate linearly in camera
- * space; each colour channel rounds to nearest. The parameter is clamped to
+ * space; the colour is ngte_rgb_mix of the corners' colours, its residual
+ * kept in rgbq, and the far colour rgbf is not carried. The parameter is clamped to
  * [0,1], so an edge that does not cross yields the attributes of whichever
  * endpoint the caller's inside test already picked, with m3 set to zc. The
  * result projects normally: a crossing point is not one of the parent
@@ -813,53 +831,25 @@ typedef struct { double m1, m2, m3; uint32_t rgb; float u, v;
  * @return The crossing corner. */
 ngte_cvert ngte_clip_lerp(ngte_cvert a, ngte_cvert b, double zc);
 
-/* Max distance (PSX px) a near-clip crossing corner may project from the
- * screen centre. A face straddling the eye plane clipped at a near plane a
- * few world units out puts its crossing corners essentially at the eye -
- * they project 20k+ px offscreen, and rasterizers (llvmpipe and hardware)
- * drop the resulting sliver even though its on-screen wedge is large (the
- * face disappears while the camera is on its plane). Everything beyond this
- * bound is far outside any visible frame (about 600 PSX px at 32:9), so
- * re-clipping until crossing corners land inside it trims only invisible
- * geometry: the wedge's bounding edges are the projections of the same 3D
- * lines wherever the cut lands along them. The doubling also bounds the
- * accepted radius from below (about 0.4 x the limit, the crossing slides
- * about half the distance per doubling), so the closing cut never enters
- * the frame: 0.4 x 2048 = 819 px exceeds the widest supported visible
- * half-extent (32:9, about 683 PSX px). llvmpipe still under-rasters
- * slivers this long (a software-raster artifact; hardware draws them
- * exactly). */
-#define NGTE_CLIP_PROJ_LIMIT 2048.0f
-
 /* One output corner of a near-plane clip: input corner a when cross is 0,
  * else the crossing of edge a->b at parameter t (0 at a, 1 at b), the
  * parameter ngte_clip_lerp computes for the same edge and plane. */
 typedef struct { uint8_t a, b, cross; double t; } ngte_clip_ref;
-
-/* Whether a clip's output corner projects beyond NGTE_CLIP_PROJ_LIMIT from
- * the screen centre; ctx is the caller's corner array. */
-typedef int (*ngte_clip_beyond_fn)(const void* ctx, const ngte_clip_ref* r, double zc);
 
 /** @brief Sutherland-Hodgman clip of a triangle against the plane z >= zc, as a list of output corners.
  *
  * Walking the edges a->b in order (0->1, 1->2, 2->0), each corner on or in
  * front of the plane is kept and each edge whose ends lie on opposite sides
  * adds its crossing: 0 corners behind give the triangle, 1 gives a quad, 2
- * give a triangle, 3 give nothing. When a corner was cut and `beyond`
- * reports an output corner beyond NGTE_CLIP_PROJ_LIMIT, the whole triangle
- * is clipped again at a doubled zc, at most 16 times: crossing projections
- * shrink about as 1/zc, and a face that ends fully behind the raised plane
- * lay entirely in the invisible band. The caller fans the output from
+ * give a triangle, 3 give nothing. The cut is made once, at zc; a caller
+ * whose clip position's w is the view depth leaves a crossing that projects
+ * far off screen to the rasterizer's clip. The caller fans the output from
  * corner 0.
  * @param z The three corners' depths.
- * @param zc The plane's starting depth.
- * @param beyond The projection bound test, or NULL for none.
- * @param ctx The caller's corners, handed to `beyond`.
+ * @param zc The plane's depth.
  * @param out Receives the output corners.
- * @param zc_out Receives the plane depth the output was cut at.
  * @param clipped Receives 1 when a corner was cut, else 0.
  * @return The output corner count: 3 or 4, or 0 when the face lies behind the plane. */
-int ngte_near_clip_tri(const double z[3], double zc, ngte_clip_beyond_fn beyond, const void* ctx,
-                       ngte_clip_ref out[4], double* zc_out, int* clipped);
+int ngte_near_clip_tri(const double z[3], double zc, ngte_clip_ref out[4], int* clipped);
 
 #endif /* OPENPETE_NATIVE_GTE_H */

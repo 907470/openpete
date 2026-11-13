@@ -5328,44 +5328,27 @@ static void emit_wtri_store(const proj_xy* const p[3], const float uv[3][2],
     t_diag->emitted++;
 }
 
-/** @brief Whether one output corner of a moby near clip projects beyond NGTE_CLIP_PROJ_LIMIT from the pass view's centre.
- *
- * Only a corner on the plane is tested: a crossing, or an input corner whose
- * tvz equals zc, since only those move with zc.
- * @param ctx The clip's three input vertices (const proj_xy* const[3]).
- * @param r The output corner.
- * @param zc The plane, in tvz units.
- * @return 1 when the corner projects beyond the bound, else 0. */
-static int moby_clip_beyond(const void* ctx, const ngte_clip_ref* r, double zc) {
-    const proj_xy* const* p = (const proj_xy* const*)ctx;
-    const proj_xy* A = p[r->a];
-    const proj_xy* B = p[r->b];
-    if (!r->cross && (double)A->tvz != zc) return 0;
-    const double hx = A->hx + r->t * (B->hx - A->hx);
-    const double hy = A->hy + r->t * (B->hy - A->hy);
-    return fabs(hx / zc - s_view.ofx) > NGTE_CLIP_PROJ_LIMIT ||
-           fabs(hy / zc - s_view.ofy) > NGTE_CLIP_PROJ_LIMIT;
-}
-
 /** @brief Build one output corner of a moby near clip.
  *
  * An input corner is copied. A crossing takes its edge's first corner's
  * record (paint key, integer SXY, flags) with the homogeneous position, W,
  * colour and UV from ngte_clip_lerp of the edge at the plane and the depth,
  * key depth and rotated offset at the same parameter, all affine in view
- * space; it is flagged unr. A corner flagged unr takes the float projection
+ * space; it is flagged unr. The crossing's colour keeps the bytes and drops
+ * the residual ngte_clip_lerp computes: an actor face's vertex carries its
+ * key offset in the slot a residual takes (rhi_vertex.akc). A corner flagged
+ * unr takes the float projection
  * of its view-space point, hx / tvz and hy / tvz, in place of the pinned
  * position; any other corner keeps its float projection as computed.
  * @param p The clip's three input vertices.
  * @param uv Their texture coordinates.
  * @param col Their colour words.
  * @param r The output corner.
- * @param zc The plane, in tvz units.
  * @param o Receives the vertex.
  * @param ouv Receives its texture coordinates.
  * @param oc Receives its colour word. */
 static void moby_clip_vertex(const proj_xy* const p[3], const float uv[3][2],
-                             const uint32_t col[3], const ngte_clip_ref* r, double zc,
+                             const uint32_t col[3], const ngte_clip_ref* r,
                              proj_xy* o, float ouv[2], uint32_t* oc) {
     const proj_xy* A = p[r->a];
     *o = *A;
@@ -5377,9 +5360,9 @@ static void moby_clip_vertex(const proj_xy* const p[3], const float uv[3][2],
                                 .u = uv[r->a][0], .v = uv[r->a][1] };
         const ngte_cvert cb = { .m1 = B->hx, .m2 = B->hy, .m3 = B->tvz, .rgb = col[r->b],
                                 .u = uv[r->b][0], .v = uv[r->b][1] };
-        const ngte_cvert x = ngte_clip_lerp(ca, cb, zc);
+        const ngte_cvert x = ngte_clip_lerp(ca, cb, MOBY_NEAR_W);
         const float t = (float)r->t;
-        o->hx = (float)x.m1; o->hy = (float)x.m2; o->tvz = (float)zc;
+        o->hx = (float)x.m1; o->hy = (float)x.m2; o->tvz = (float)MOBY_NEAR_W;
         o->vz  = A->vz  + t * (B->vz  - A->vz);
         o->kvz = A->kvz + t * (B->kvz - A->kvz);
         o->okz = A->okz + t * (B->okz - A->okz);
@@ -5447,13 +5430,12 @@ static void face_nclips(int fsign, const proj_xy* p0, const proj_xy* p1, const p
 static int mnear_tri_poly(const proj_xy* const t[3], double xy[4][2]) {
     const double z[3] = { t[0]->tvz, t[1]->tvz, t[2]->tvz };
     ngte_clip_ref ref[4];
-    double zc = MOBY_NEAR_W;
     int clipped = 0;
-    const int n = ngte_near_clip_tri(z, MOBY_NEAR_W, moby_clip_beyond, t, ref, &zc, &clipped);
+    const int n = ngte_near_clip_tri(z, MOBY_NEAR_W, ref, &clipped);
     for (int k = 0; k < n; k++) {
         const proj_xy* A = t[ref[k].a];
         const proj_xy* B = t[ref[k].b];
-        const double w = ref[k].cross ? zc : A->tvz;
+        const double w = ref[k].cross ? MOBY_NEAR_W : A->tvz;
         xy[k][0] = (A->hx + ref[k].t * (B->hx - A->hx)) / w;
         xy[k][1] = (A->hy + ref[k].t * (B->hy - A->hy)) / w;
     }
@@ -5554,17 +5536,17 @@ static void mnear_select(const proj_xy* const v[4], int fsign, int fresh, int bi
 /** @brief Emit a triangle with a vertex in the GTE divide-overflow regime, clipped in view space at the near plane.
  *
  * The face's shape is the projection of its geometry: the triangle is
- * clipped against tvz >= MOBY_NEAR_W (ngte_near_clip_tri, with the
- * projection bound moby_clip_beyond), each output corner built by
+ * clipped once against tvz >= MOBY_NEAR_W (ngte_near_clip_tri), a crossing
+ * far off screen left to the rasterizer's clip, each output corner built by
  * moby_clip_vertex, and the polygon fanned from corner 0 into
  * emit_wtri_store, each part keeping the face's paint key and texel fog
- * row. A face wholly behind the plane (every tvz below MOBY_NEAR_W, tested
- * first, since a re-clip only raises the plane) is dropped and counts into
- * nearbehind. The face test that selected the face read its true facing
- * (face_nclips), the side of its plane the eye is on. A face whose pinned screen box
- * exceeds the GPU's primitive extent (moby_pinned_extent) is not emitted:
- * the GPU draws no such primitive, so the game never shows that face, and a
- * moby passing the camera (a collected gem) would otherwise cover the view.
+ * row. A face wholly behind the plane (every tvz below MOBY_NEAR_W) is
+ * dropped and counts into nearbehind. The face test that selected the face
+ * read its true facing (face_nclips), the side of its plane the eye is on.
+ * A face whose pinned screen box exceeds the GPU's primitive extent
+ * (moby_pinned_extent) is not emitted: the GPU draws no such primitive, so
+ * the game never shows that face, and a moby passing the camera (a collected
+ * gem) would otherwise cover the view.
  * @param p The three vertices.
  * @param uv Their texture coordinates.
  * @param col Their colour words.
@@ -5580,13 +5562,12 @@ static void emit_wtri_near(const proj_xy* const p[3], const float uv[3][2],
     }
     const double z[3] = { p[0]->tvz, p[1]->tvz, p[2]->tvz };
     ngte_clip_ref ref[4];
-    double zc = MOBY_NEAR_W;
     int clipped = 0;
-    const int n = ngte_near_clip_tri(z, MOBY_NEAR_W, moby_clip_beyond, p, ref, &zc, &clipped);
+    const int n = ngte_near_clip_tri(z, MOBY_NEAR_W, ref, &clipped);
     proj_xy q[4];
     float quv[4][2];
     uint32_t qc[4];
-    for (int k = 0; k < n; k++) moby_clip_vertex(p, uv, col, &ref[k], zc, &q[k], quv[k], &qc[k]);
+    for (int k = 0; k < n; k++) moby_clip_vertex(p, uv, col, &ref[k], &q[k], quv[k], &qc[k]);
     if (s_mnear_at) mnear_clip(p, q, n, clipped);
     if (n < 3) { t_diag->nearbehind++; return; }
     const int32_t otk = s_emit_otk;
