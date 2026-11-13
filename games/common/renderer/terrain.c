@@ -495,6 +495,9 @@ typedef struct {
                                                     * set when a quadrant of it folds */
     uint32_t hqfog[2];                             /* texel fade words (psx_hq_fog.glsl,
                                                     * tn_atmo_words); 0 = stock texels */
+    uint8_t nearclip;                              /* a part of a triangle the near plane
+                                                    * cut (clip_push_tri): the scene
+                                                    * triangle's OPENPETE_CB_TERRAIN_NEARCLIP */
 } ttri;
 /* The walk's triangle stream (before the scene feed), sized by the walk: a
  * dense extended-LOD vista routes every eligible face through the 4x4 cell
@@ -1288,11 +1291,14 @@ static int tn_room(tn_wctx* W, int need) {
  * @param a The first corner.
  * @param b The second corner.
  * @param c The third corner.
- * @param m The triangle's material. */
-static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const tmat* m) {
+ * @param m The triangle's material.
+ * @param nearclip 1 when the triangle is a part of one the near plane cut. */
+static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const tmat* m,
+                     int nearclip) {
     if (!tn_room(W, W->tri_n + 1)) return;
     ngte_cvert cc[3] = { a, b, c };
     ttri* t = &W->tri[W->tri_n++];
+    t->nearclip = (uint8_t)(nearclip != 0);
     int fsnap = openpete_native_vertex_snap_active();
     for (int k = 0; k < 3; k++) {
         if (cc[k].oflag) { t->sx[k] = cc[k].osx; t->sy[k] = cc[k].osy; }
@@ -1391,8 +1397,8 @@ static void clip_push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, 
     for (int i = 0; i < nout; i++)
         out[i] = ref[i].cross ? ngte_clip_lerp(in[ref[i].a], in[ref[i].b], s_nearz) : in[ref[i].a];
     if (clipped) W->dbg_clipped++;
-    push_tri(W, out[0], out[1], out[2], m);         /* fan the clipped polygon */
-    if (nout == 4) push_tri(W, out[0], out[2], out[3], m);
+    push_tri(W, out[0], out[1], out[2], m, clipped);   /* fan the clipped polygon */
+    if (nout == 4) push_tri(W, out[0], out[2], out[3], m, clipped);
 }
 
 /** @brief Emits one triangle of a sector's projected vertices through the near-plane clip.
@@ -21632,6 +21638,7 @@ static void terrain_feed_native(CPUState* cpu) {
             tri.v[k].rgbq = t->rgbq[k];
         }
         tri.koff = tn_tri_koff(t, tri.blend);   /* og OT key channel */
+        tri.cbits = (uint32_t)t->nearclip * OPENPETE_CB_TERRAIN_NEARCLIP;
         tri.kattr = tn_key_attr(t, &tri);
         openpete_native_scene_set_tag(tn_material_tag(cpu, t, tex, tex_slot));
         openpete_native_scene_set_fog_delta(t->fog_delta);

@@ -11,17 +11,21 @@
  * k_names, in render_path_t order); TC_FAMILY the paths that name a tag
  * family (tag bits 31:28 = 1..9). In a pattern, <path> is a TC_PATH name,
  * <family> a TC_FAMILY name and <n> a decimal integer. Every row of source
- * tally or cache may also be written under the prefix `backdrop.`: the
+ * tally, bit or cache may also be written under the prefix `backdrop.`: the
  * tally of the frozen backdrop a tile draws, taken when the backdrop was
  * rendered.
  *
  * TC_ROW(id, name, unit, source, path family, since, state, meaning)
  *   unit    tris, prims, sectors or flag
- *   source  tally (the presented scene's triangles), cache (the retained
- *           terrain state the scene selects), capture (the capture helpers)
+ *   source  tally (the presented scene's triangles), bit (the triangles
+ *           carrying one class bit, openpete_scene_tri.cbits), cache (the
+ *           retained terrain state the scene selects), capture (the
+ *           capture helpers)
  *   state   live or retired
+ * TC_BIT(bit, name) names the counter of class bit `bit` (OPENPETE_CB_*); a
+ * bit is never reused, and a retired bit keeps its line and its row.
  */
-TC_GEN(1)
+TC_GEN(2)
 
 TC_PATH("cyclorama") TC_PATH("spyro") TC_PATH("moby") TC_PATH("terrain")
 TC_PATH("shadow") TC_PATH("flame") TC_PATH("particles") TC_PATH("tracer")
@@ -98,3 +102,37 @@ TC_ROW(BACKDROP_UNKNOWN, "backdrop.unknown", "flag", "capture", "*", 1, live,
        "backdrop is not the headless settle's render, or the settle's tally "
        "was cleared by a render without a settle.")
 
+TC_BIT(0, "moby.gpf.tris") TC_BIT(1, "moby.env.tris") TC_BIT(2, "moby.simple.tris")
+TC_BIT(3, "moby.screen.tris") TC_BIT(4, "moby.unr.tris") TC_BIT(5, "moby.sat.tris")
+TC_BIT(6, "moby.nearcut.tris") TC_BIT(7, "moby.tiepull.tris")
+TC_BIT(8, "terrain.nearclip.tris")
+
+TC_ROW(MOBY_GPF_TRIS, "moby.gpf.tris", "tris", "bit", "moby", 2, live,
+       "Moby triangles of a record whose GPF translation rescale ran (the "
+       "record flags word's low byte nonzero on a game whose cull stores the "
+       "unscaled translation: the scale override).")
+TC_ROW(MOBY_ENV_TRIS, "moby.env.tris", "tris", "bit", "moby", 2, live,
+       "Moby triangles of a face that takes environment-map UVs: Spyro 1's "
+       "metal reflection faces, Spyro 2 and 3's mode-1 special faces whose "
+       "substitute page and generated coordinates apply.")
+TC_ROW(MOBY_SIMPLE_TRIS, "moby.simple.tris", "tris", "bit", "moby", 2, live,
+       "Moby triangles of a second-model-kind record.")
+TC_ROW(MOBY_SCREEN_TRIS, "moby.screen.tris", "tris", "bit", "moby", 2, live,
+       "Moby triangles of a second-model-kind record projected at a named "
+       "screen origin (screen space).")
+TC_ROW(MOBY_UNR_TRIS, "moby.unr.tris", "tris", "bit", "moby", 2, live,
+       "Moby triangles with a vertex in the GTE divide-overflow regime (the "
+       "hardware-clamped screen pair).")
+TC_ROW(MOBY_SAT_TRIS, "moby.sat.tris", "tris", "bit", "moby", 2, live,
+       "Moby triangles with a coordinate-saturated vertex.")
+TC_ROW(MOBY_NEARCUT_TRIS, "moby.nearcut.tris", "tris", "bit", "moby", 2, live,
+       "Moby triangles that are a part of a walk triangle the moby near clip "
+       "cut. A triangle wholly behind the plane is dropped and counts nowhere.")
+TC_ROW(MOBY_TIEPULL_TRIS, "moby.tiepull.tris", "tris", "bit", "moby", 2, live,
+       "Opaque keyed actor triangles whose cross-moby tie pull is nonzero (a "
+       "face coinciding with an earlier record's face of its world bucket). "
+       "Not the within-record coincident pull.")
+TC_ROW(TERRAIN_NEARCLIP_TRIS, "terrain.nearclip.tris", "tris", "bit", "terrain", 2, live,
+       "Terrain triangles that are a part of a walked triangle the near plane "
+       "cut. A triangle wholly behind the plane is dropped and counts nowhere; "
+       "retained cache sectors clip on the GPU and count nowhere.")

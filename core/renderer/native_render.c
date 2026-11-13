@@ -367,6 +367,7 @@ typedef struct {
     float skey;     /* snap-only key of a blended actor face - see openpete_scene_tri */
     float akc;      /* moby-against-moby key offset - see openpete_scene_tri */
     int akpx;       /* per-pixel actor key raster - see openpete_scene_tri */
+    uint32_t cbits; /* class bits - see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) - add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -16971,7 +16972,8 @@ static void census_tally_scene(tc_tally_t *t, const scene_tri_t *sc, int n)
                    | (q->kfold ? 1u << TC_FLAG_KFOLD : 0u) | (q->portal_rim ? 1u << TC_FLAG_PORTAL_RIM : 0u)
                    | (q->host_added ? 1u << TC_FLAG_HOST_ADDED : 0u) | (q->fog_delta ? 1u << TC_FLAG_FOG_DELTA : 0u),
             .prims = (q->over_fade ? 1u << TC_PRIM_OVER_FADE : 0u)
-                   | (q->under_player ? 1u << TC_PRIM_UNDER_PLAYER : 0u) | (q->carry ? 1u << TC_PRIM_CARRY : 0u) };
+                   | (q->under_player ? 1u << TC_PRIM_UNDER_PLAYER : 0u) | (q->carry ? 1u << TC_PRIM_CARRY : 0u),
+            .cbits = q->cbits };
         tc_tally_tri(t, &tri);
     }
     int gens[8];

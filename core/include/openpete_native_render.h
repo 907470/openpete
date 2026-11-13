@@ -1475,7 +1475,24 @@ typedef struct {
                   * moby-against-moby key (akc) instead of koff: every
                   * keyed opaque actor face except the key-order class,
                   * whose key the terrain yield reads (key_order).          */
+    uint32_t cbits;/* class bits (OPENPETE_CB_*): the record class or the
+                  * emit decision that applied to the triangle, set where it
+                  * is emitted; 0 from a feeder that sets none. Read by the
+                  * tile census only (core/diag/tile_census.def).          */
 } openpete_scene_tri;
+
+/* Class bits of a scene triangle (openpete_scene_tri.cbits). A bit is never
+ * reused; bits 0 to 6 are the ones the moby walk carries per walk triangle. */
+#define OPENPETE_CB_MOBY_GPF         (1u << 0)  /* the record's GPF translation rescale ran */
+#define OPENPETE_CB_MOBY_ENV         (1u << 1)  /* the face takes environment-map UVs */
+#define OPENPETE_CB_MOBY_SIMPLE      (1u << 2)  /* a second-model-kind record */
+#define OPENPETE_CB_MOBY_SCREEN      (1u << 3)  /* ... in screen space (a named screen origin) */
+#define OPENPETE_CB_MOBY_UNR         (1u << 4)  /* a vertex in the GTE divide-overflow regime */
+#define OPENPETE_CB_MOBY_SAT         (1u << 5)  /* a vertex coordinate-saturated */
+#define OPENPETE_CB_MOBY_NEARCUT     (1u << 6)  /* a part of a triangle the moby near clip cut */
+#define OPENPETE_CB_MOBY_TIEPULL     (1u << 7)  /* an opaque keyed face with a nonzero tie pull */
+#define OPENPETE_CB_TERRAIN_NEARCLIP (1u << 8)  /* a part of a terrain triangle the near plane cut */
+#define OPENPETE_CB_COUNT            9u         /* bits defined */
 
 /* The rank-channel value of a terrain face's kattr: in [0.25, 0.5), which
  * every rank reader takes as unranked and not an actor. */

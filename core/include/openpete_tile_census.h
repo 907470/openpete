@@ -1,8 +1,9 @@
 /* openpete_tile_census.h - per-tile engagement counters of a presentation capture.
  *
  * A tally counts the triangles of one presented scene by provenance-tag
- * family and kind, category, blend mode, triangle flag and moby class, plus
- * the retained terrain-cache sectors the scene's state draws. The renderer
+ * family and kind, category, blend mode, triangle flag, class bit
+ * (openpete_scene_tri.cbits) and moby class, plus the retained
+ * terrain-cache sectors the scene's state draws. The renderer
  * fills tallies from its private scene records; this module turns a tally
  * into named counters (core/diag/tile_census.def lists every name and what
  * it counts) and writes them to the sidecar file beside a capture.
@@ -27,6 +28,7 @@ extern "C" {
 #define TC_CATS       16   /* OPENPETE_SCENE_* 0..14; 15 holds any other value */
 #define TC_BLENDS     8    /* blend 0..6; 7 holds any other value */
 #define TC_MOBY_TYPES 512  /* distinct moby classes one tally holds */
+#define TC_CBITS      32   /* class bits of openpete_scene_tri.cbits */
 
 /* Per-triangle flags the tally counts in triangles. */
 enum {
@@ -45,6 +47,7 @@ typedef struct {
     int      blend;     /* blend mode */
     unsigned flags;     /* bit TC_FLAG_* */
     unsigned prims;     /* bit TC_PRIM_* */
+    uint32_t cbits;     /* class bits (OPENPETE_CB_*) */
 } tc_tri_t;
 
 /* The counts of one scene. Plain data: copied by assignment. */
@@ -54,6 +57,7 @@ typedef struct {
     uint32_t blend[TC_BLENDS];
     uint32_t flag[TC_FLAGS];
     uint32_t prim[TC_PRIMS];
+    uint32_t cbit[TC_CBITS];       /* triangles carrying each class bit */
     uint32_t prim_last[TC_PRIMS];  /* run state: primitive of the previous triangle */
     uint8_t  prim_open[TC_PRIMS];  /* run state: the previous triangle carried the flag */
     uint16_t mcls[TC_MOBY_TYPES];  /* moby class + 1 per hash slot, 0 empty */
@@ -68,8 +72,9 @@ typedef struct {
 void tc_tally_clear(tc_tally_t *t);
 /** @brief Add one triangle to a tally.
  *
- * Counts it under its tag family and kind, category, blend and flags; a
- * moby-family triangle also under its class (tag bits 15:0). A 2D flag adds
+ * Counts it under its tag family and kind, category, blend, flags and each
+ * class bit it carries; a moby-family triangle also under its class (tag
+ * bits 15:0). A 2D flag adds
  * a primitive when the previous triangle did not carry the flag or names
  * another primitive address; a flagged triangle with address 0 counts alone.
  * @param t The tally.

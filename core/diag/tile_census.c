@@ -19,17 +19,27 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The registry's generation is the one number this module needs from it;
- * every other row is read by scripts/golden-census.py. */
+/* The registry's generation and the class bits' counter names are what this
+ * module needs from it; every other row is read by scripts/golden-census.py. */
 #define TC_GEN(g) enum { TC_REGISTRY_GEN = (g) };
 #define TC_PATH(name)
 #define TC_FAMILY(name)
 #define TC_ROW(id, name, unit, source, family, since, state, meaning)
+#define TC_BIT(bit, name)
 #include "tile_census.def"
+#undef TC_GEN
+#undef TC_BIT
+#define TC_GEN(g)
+#define TC_BIT(bit, name) [bit] = name,
+/* Counter name of each class bit, indexed by bit; NULL for an unnamed bit. */
+static const char *const k_cbit_names[TC_CBITS] = {
+#include "tile_census.def"
+};
 #undef TC_GEN
 #undef TC_PATH
 #undef TC_FAMILY
 #undef TC_ROW
+#undef TC_BIT
 
 #define TC_NAMES_MAX 2048   /* counters one sidecar holds */
 #define TC_NAME_LEN  64
@@ -64,6 +74,8 @@ void tc_tally_tri(tc_tally_t *t, const tc_tri_t *tri)
     t->blend[(tri->blend >= 0 && tri->blend < TC_BLENDS - 1) ? tri->blend : TC_BLENDS - 1]++;
     for (int k = 0; k < TC_FLAGS; k++)
         t->flag[k] += (tri->flags >> k) & 1u;
+    for (uint32_t b = tri->cbits; b; b &= b - 1u)
+        t->cbit[__builtin_ctz(b)]++;
     for (int k = 0; k < TC_PRIMS; k++) {
         const int on = (int)((tri->prims >> k) & 1u);
         if (on && !(t->prim_open[k] && tri->prim && t->prim_last[k] == tri->prim))
@@ -198,6 +210,10 @@ void tc_sidecar_add_tally(const tc_tally_t *t, const char *prefix)
     for (int k = 0; k < TC_PRIMS; k++) sc_addf(t->prim[k], "%sflag.%s.prims", prefix, prim_names[k]);
     for (int k = 0; k < 4; k++)
         sc_addf(t->sec[k] > 0 ? (uint32_t)t->sec[k] : 0u, "%sterrain.sec.retained%s", prefix, sec_names[k]);
+    for (int b = 0; b < TC_CBITS; b++) {
+        if (t->cbit[b] && !k_cbit_names[b]) tc_sidecar_fail("a class bit with no registered counter");
+        if (k_cbit_names[b]) sc_addf(t->cbit[b], "%s%s", prefix, k_cbit_names[b]);
+    }
 }
 
 /** @brief qsort order of sidecar entries: by name, byte order.

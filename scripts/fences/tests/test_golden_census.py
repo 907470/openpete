@@ -73,10 +73,10 @@ def sidecar(gen, tree, vals):
     return "# gen %d tree %s\n" % (gen, tree) + "".join("%s\t%d\n" % (k, vals[k]) for k in sorted(vals))
 
 
-TILES = {CANON: {"moby.tris": 10, "flag.shell.tris": 4, "moby.type.254": 10},
-         IDENT: {"moby.tris": 10, "flag.shell.tris": 4},
+TILES = {CANON: {"moby.tris": 10, "moby.env.tris": 4, "moby.type.254": 10},
+         IDENT: {"moby.tris": 10, "moby.env.tris": 4},
          INTER: {"moby.tris": 9, "backdrop.terrain.tris": 4},
-         "row2__canon__200-vk.png": {"terrain.tris": 50, "flag.kfold.tris": 3},
+         "row2__canon__200-vk.png": {"terrain.tris": 50, "terrain.nearclip.tris": 3},
          "row3__canon__300-vk.png": {"terrain.tris": 20}}
 
 
@@ -154,6 +154,16 @@ class Registry(unittest.TestCase):
         for n in ("compose.vram", "backdrop.unknown"):
             self.assertIsNotNone(self.reg.resolve(n), n)
         self.assertIsNone(self.reg.resolve("backdrop.compose.vram"))
+
+    def test_bits(self):
+        """Nine bits 0 to 8, each a live `bit` row whose since is the generation that added it."""
+        self.assertEqual(sorted(self.reg.bits), list(range(9)))
+        for b, n in self.reg.bits.items():
+            r = self.reg.resolve(n)
+            self.assertEqual((r["source"], r["state"], r["name"]), ("bit", "live", n), n)
+            self.assertLessEqual(r["since"], self.reg.gen)
+        with open(os.path.join(ROOT, "core/include/openpete_native_render.h")) as f:
+            self.assertIn("#define OPENPETE_CB_COUNT            9u", f.read())
 
 
 class Store(Base):
@@ -295,7 +305,7 @@ class CountsSource(Base):
         self.assertEqual(rc, 1)
         self.assertIn("no completed unfiltered full run", out.getvalue())
         q = os.path.join(self.tmp, "q", "a.q")
-        write(q, "reason\tx\npred\tspyro-1\tflag.shell.tris>0\n")
+        write(q, "reason\tx\npred\tspyro-1\tmoby.env.tris>0\n")
         with quiet() as out:
             rc = gc.main(["expect", "--query", q, "--store", self.store])
         self.assertEqual(rc, 1)
@@ -331,7 +341,7 @@ class Predicates(Base):
 
     def test_stale_counter_unknown(self):
         """A counter newer than the sidecar's generation is unknown and engaged."""
-        ok, _v, unknown = self.holds("flag.shell.tris>100", gen=0)
+        ok, _v, unknown = self.holds("moby.env.tris>100", gen=0)
         self.assertTrue(ok and unknown)
 
     def test_unregistered_refused(self):
@@ -352,7 +362,7 @@ class QueryFiles(Base):
     def test_fix_and_stamp(self):
         """fix records the hash; the stamp keeps it; .tiles holds the selection and the unknown row."""
         q = os.path.join(self.qd, "agent.q")
-        write(q, "reason\tenv faces\npred\tspyro-1\tflag.shell.tris>0\n"
+        write(q, "reason\tenv faces\npred\tspyro-1\tmoby.env.tris>0\n"
                  "hand\tspyro-1\trow3__\tmissing:terrain.face.nearbehind\n")
         with quiet():
             self.assertEqual(gc.main(["fix", q]), 0)

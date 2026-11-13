@@ -421,6 +421,23 @@ if(NOT WIN32)
              COMMAND atomic_write_test ${CMAKE_CURRENT_BINARY_DIR}/atomic_write_test.d)
 endif()
 
+# tile_census_test - the tile census's class-bit counters on a synthetic
+# scene: every defined bit names a counter, own and backdrop forms, and a
+# bit with no registered counter refuses the sidecar.
+if(NOT WIN32)
+    add_executable(tile_census_test
+        tile_census_test.c
+        ${CMAKE_SOURCE_DIR}/core/diag/tile_census.c
+        ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+    target_include_directories(tile_census_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/include/psxrt
+        ${CMAKE_SOURCE_DIR}/core/diag)
+    set_target_properties(tile_census_test PROPERTIES C_STANDARD 11)
+    add_test(NAME tile_census_test COMMAND tile_census_test ${CMAKE_CURRENT_BINARY_DIR})
+endif()
+
 # config_resolve_test - openpete.toml precedence. The resolver decides which
 # of ~10 layers wins each knob and then materializes exactly one spelling of
 # it; this pins that ordering down so an edit can't quietly re-order the
