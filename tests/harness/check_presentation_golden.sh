@@ -106,6 +106,11 @@
 # file, so --verdict-only decides a candidate captured elsewhere the same way.
 # On a tier that runs the leg, an absent or unreadable file is a failure.
 #
+# The presentation tier's verdict also writes tile-digests.tsv (every
+# captured tile's digest16, for the tile census, scripts/golden-census.py),
+# and its capture legs run with OPENPETE_TILE_CENSUS, so every tile has its
+# <tile>.census sidecar.
+#
 # Every verdict writes verdict-report.txt into the candidate directory: the
 # verdict and exit code, the row census, the sha256 of the blessed.tsv and
 # identity baseline read, the credits, identity and diff exit codes, the
@@ -400,11 +405,19 @@ vr_verdict() {
   [[ -z "$VERDICT_ONLY" ]] && rs_stream_end
   rm -rf "$OUT/diff"
   rm -f "$OUT/verdict-ident.log" "$OUT/verdict-diff.log" "$OUT/$REPORT_NAME"
+  rm -f "${OUT:?}/tile-digests.tsv"
   # Identity leg: the alpha-0 re-extract against the canon tile of the same
   # capture (no golden).
   python3 tests/harness/presentation-ident-check.py "$OUT" --game "$GAME" --baseline "$PG_IDENT_BASELINE" \
     | tee "$OUT/verdict-ident.log"
   irc=${PIPESTATUS[0]}
+  # Every captured tile's digest: the fleet's sidecar pull checks each
+  # captured tile has its sidecar against it, and the census store keeps it
+  # (scripts/golden-census.py). A failure here fails the verdict.
+  if [[ "$PG_TIER" == "presentation" ]]; then
+    python3 scripts/golden-census.py digests "$OUT" \
+      || { echo "[presentation-golden] FAIL: tile-digests.tsv not written"; vr_finish 1; }
+  fi
   vr_read_credits
   # A filtered run captures part of the corpus on purpose, so the golden
   # tiles it did not capture are out of scope rather than missing. An

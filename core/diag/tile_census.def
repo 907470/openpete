@@ -1,0 +1,100 @@
+/* tile_census.def - the registry of tile-census counter names.
+ *
+ * One row per counter or counter family a sidecar may hold. A row is never
+ * deleted: a counter that stops being written is marked `retired`, so every
+ * name in an old sidecar stays resolvable (scripts/golden-census.py).
+ * TC_GEN is raised by one in every change that adds a row or changes what a
+ * row counts; that row's `since` is the new generation, and a sidecar
+ * written at a lower generation holds no value for it (unknown, not zero).
+ *
+ * TC_PATH lists the render-path names (games/common/renderer/render_paths.c,
+ * k_names, in render_path_t order); TC_FAMILY the paths that name a tag
+ * family (tag bits 31:28 = 1..9). In a pattern, <path> is a TC_PATH name,
+ * <family> a TC_FAMILY name and <n> a decimal integer. Every row of source
+ * tally or cache may also be written under the prefix `backdrop.`: the
+ * tally of the frozen backdrop a tile draws, taken when the backdrop was
+ * rendered.
+ *
+ * TC_ROW(id, name, unit, source, path family, since, state, meaning)
+ *   unit    tris, prims, sectors or flag
+ *   source  tally (the presented scene's triangles), cache (the retained
+ *           terrain state the scene selects), capture (the capture helpers)
+ *   state   live or retired
+ */
+TC_GEN(1)
+
+TC_PATH("cyclorama") TC_PATH("spyro") TC_PATH("moby") TC_PATH("terrain")
+TC_PATH("shadow") TC_PATH("flame") TC_PATH("particles") TC_PATH("tracer")
+TC_PATH("transition") TC_PATH("portal") TC_PATH("glow") TC_PATH("sparkle")
+TC_PATH("moby_shadow") TC_PATH("ui")
+
+TC_FAMILY("moby") TC_FAMILY("terrain") TC_FAMILY("spyro") TC_FAMILY("flame")
+TC_FAMILY("particles") TC_FAMILY("cyclorama") TC_FAMILY("shadow")
+TC_FAMILY("tracer") TC_FAMILY("portal")
+
+TC_ROW(PATH_TRIS, "<path>.tris", "tris", "tally", "<path>", 1, live,
+       "Triangles of the presented scene whose provenance tag maps to the path "
+       "(render_paths.c tag_kind_path). The tag is sticky: the level-transition "
+       "dome and the native GTE feed set none, so their triangles count under "
+       "the family set last. Untagged 2D, HUD and text triangles count under no "
+       "path (cat.<n>.tris). Retained cache sectors add no triangle.")
+TC_ROW(FAMILY_KIND_TRIS, "<family>.tris.k<n>", "tris", "tally", "<family>", 1, live,
+       "Triangles of tag family <family> and kind n (openpete_tag_kind): the "
+       "particle family's feeder kind (k2 glow rings, k3 sparkle flares, k4 "
+       "sparkle lines, k5 the dragon-rescue star), the shadow family's caster "
+       "kind (k0 moby, k1 player), k0 for every other family; kinds past 7 "
+       "fold into k7.")
+TC_ROW(TAG_UNMAPPED_TRIS, "tag.unmapped.tris", "tris", "tally", "*", 1, live,
+       "Triangles whose tag family (10 to 15) maps to no render path.")
+TC_ROW(CAT_TRIS, "cat.<n>.tris", "tris", "tally", "*", 1, live,
+       "Triangles of scene category n (OPENPETE_SCENE_*, 0 WORLD to 14 "
+       "TERRAIN_KEY); 15 holds any other value.")
+TC_ROW(BLEND_TRIS, "blend.<n>.tris", "tris", "tally", "*", 1, live,
+       "Triangles of blend mode n (0 opaque, 1 alpha, 2 additive, 3 subtract, "
+       "4 quarter-add); 7 holds any value outside 0 to 6.")
+TC_ROW(FLAG_SHELL_TRIS, "flag.shell.tris", "tris", "tally", "moby", 1, live,
+       "Triangles of front-shell record members (scene_tri_t.shell).")
+TC_ROW(FLAG_KEY_ORDER_TRIS, "flag.key_order.tris", "tris", "tally", "*", 1, live,
+       "Triangles that draw by key order against terrain (scene_tri_t.key_order).")
+TC_ROW(FLAG_KFOLD_TRIS, "flag.kfold.tris", "tris", "tally", "terrain", 1, live,
+       "Triangles whose drain quadrant folds (scene_tri_t.kfold).")
+TC_ROW(FLAG_PORTAL_RIM_TRIS, "flag.portal_rim.tris", "tris", "tally", "terrain", 1, live,
+       "Opaque terrain triangles accepted as a portal's inner rim "
+       "(scene_tri_t.portal_rim nonzero).")
+TC_ROW(FLAG_HOST_ADDED_TRIS, "flag.host_added.tris", "tris", "tally", "*", 1, live,
+       "Triangles the host added beyond the game's own render (scene_tri_t.host_added).")
+TC_ROW(FLAG_FOG_DELTA_TRIS, "flag.fog_delta.tris", "tris", "tally", "terrain", 1, live,
+       "Triangles drawn from a shifted fog CLUT row (scene_tri_t.fog_delta nonzero).")
+TC_ROW(FLAG_OVER_FADE_PRIMS, "flag.over_fade.prims", "prims", "tally", "ui", 1, live,
+       "2D primitives the game links after the frame's fade quad "
+       "(scene_tri_t.over_fade): runs of consecutive flagged triangles that "
+       "share one primitive address; a flagged triangle without one counts alone.")
+TC_ROW(FLAG_UNDER_PLAYER_PRIMS, "flag.under_player.prims", "prims", "tally", "ui", 1, live,
+       "Flat 2D primitives drawn before the player (scene_tri_t.under_player), "
+       "counted as flag.over_fade.prims is.")
+TC_ROW(FLAG_CARRY_PRIMS, "flag.carry.prims", "prims", "tally", "ui", 1, live,
+       "2D-UI sub-tick carry primitives (scene_tri_t.carry nonzero), counted as "
+       "flag.over_fade.prims is.")
+TC_ROW(MOBY_TYPE_TRIS, "moby.type.<n>", "tris", "tally", "moby", 1, live,
+       "Moby-family triangles of moby class n (tag bits 15:0, set where moby "
+       "triangles are emitted). A capture whose scene holds more distinct "
+       "classes than the tally's table fails its leg.")
+TC_ROW(TERRAIN_SEC_RETAINED, "terrain.sec.retained", "sectors", "cache", "terrain", 1, live,
+       "Retained terrain-cache sectors the scene's state draws "
+       "(openpete_tercache_frame_stats, OPTC_SF_DRAWN). Zero unless the cache "
+       "runs, which on a software device needs OPENPETE_TERRAIN_CACHE_FORCE=1.")
+TC_ROW(TERRAIN_SEC_RETAINED_HP, "terrain.sec.retained_hp", "sectors", "cache", "terrain", 1, live,
+       "Retained sectors drawn at the high-poly tier (OPTC_SF_DRAWHP).")
+TC_ROW(TERRAIN_SEC_RETAINED_LP, "terrain.sec.retained_lp", "sectors", "cache", "terrain", 1, live,
+       "Retained sectors drawn at the low-poly tier (OPTC_SF_DRAWLP).")
+TC_ROW(TERRAIN_SEC_RETAINED_NEAR, "terrain.sec.retained_near", "sectors", "cache", "terrain", 1, live,
+       "Retained sectors drawn through the near variant (OPTC_SF_NEARVAR).")
+TC_ROW(COMPOSE_VRAM, "compose.vram", "flag", "capture", "*", 1, live,
+       "1 when the compose found no content and shows the PSX VRAM framebuffer "
+       "(a load screen); the scene's counters then describe triangles the "
+       "compose did not draw.")
+TC_ROW(BACKDROP_UNKNOWN, "backdrop.unknown", "flag", "capture", "*", 1, live,
+       "1 when the tile draws a frozen backdrop whose tally is not kept: the "
+       "backdrop is not the headless settle's render, or the settle's tally "
+       "was cleared by a render without a settle.")
+

@@ -7,6 +7,7 @@
 #include "openpete.h"
 #include "openpete_knobs.h"          /* dev-overlay row bind */
 #include "openpete_native_render.h"  /* isolation toggle */
+#include "openpete_tile_census.h"    /* the tile census names paths through tag_kind_path */
 #include "renderer/orchestrator.h"  /* canonical-render epoch commit */
 #include "renderer/terrain.h"       /* deferred terrain feed fallback */
 #include "renderer/moby.h"          /* held overlay-pass feed */
@@ -256,6 +257,15 @@ static int tag_kind_path(int f, int k) {
     if (f == 7 && k == (int)OPENPETE_TAG_SHADOW_MOBY) return RP_MOBY_SHADOW;
     return k_tag_family_path[f];
 }
+/** @brief The render path of a tag family and kind, or of the family itself, for the tile census.
+ *
+ * @param f The tag family, tag bits 31:28; outside 0 to 15 maps to no path.
+ * @param k The kind (openpete_tag_kind), or -1 for the family's own path.
+ * @return The path index, or -1 when there is none. */
+static int tag_census_path(int f, int k) {
+    if (f < 0 || f > 15) return -1;
+    return k < 0 ? k_tag_family_path[f] : tag_kind_path(f, k);
+}
 /** @brief Sums the scene's tagged tris per render path.
  *
  * Reads openpete_native_scene_tag_kind_counts and adds each family kind's
@@ -456,7 +466,8 @@ static int rp_knob_set(knob_desc_t* k, const char* v) {
 
 /** @brief Parses --render-paths, syncs the native isolation background, and registers the per-canonical-present commit.
  *
- * Also binds the dev overlay's render_paths row and its path vocabulary.
+ * Also binds the dev overlay's render_paths row and its path vocabulary,
+ * and hands the tile census the tag-to-path mapping.
  * The module hooks no guest address: each path's own feature module records
  * its polybuf interval.
  * @param opts The parsed options; NULL leaves every path rendering. */
@@ -470,6 +481,7 @@ static void render_paths_apply_options(const openpete_options_t* opts) {
      * loop (renderer-agnostic), not psyq_DrawOTag (future-removed). */
     openpete_native_register_commit(render_paths_commit);
     openpete_native_scene_register_superseded(render_paths_superseded);
+    openpete_native_register_tag_paths(tag_census_path, k_names, RP_COUNT);
     /* Attach the live channel to the dev overlay's row. */
     (void)openpete_knob_bind_str("render_paths", rp_knob_get, rp_knob_set);
     (void)openpete_knob_bind_vocab("render_paths", k_names, RP_COUNT);

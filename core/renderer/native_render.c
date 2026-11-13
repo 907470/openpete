@@ -81,6 +81,7 @@ extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
 #include "openpete_moby_gstage.h"  /* the moby vertex stage readback (OPENPETE_MOBY_GSTAGE_AB) */
 #include "texture_pack.h"           /* texture-replacement registry */
 #include "openpete_thread_roles.h"
+#include "openpete_tile_census.h"  /* capture tallies and the sidecar beside a tile */
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
 static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* defined below */
 extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h);
@@ -16922,6 +16923,183 @@ static void draw_before_player_2d(const scene_tri_t* scene, int scene_n, const i
                             FLAT_PASS_OVER_PLAYER);
 }
 
+/* Tile census of a capture (openpete_tile_census.h). census_shot_record
+ * tallies the scene a capture composes, inside each compose attempt before
+ * the draw, and arms the submission count; draw_native_scene then counts
+ * the span it composes per category (census_submit_note); census_shot_write
+ * checks that the two agree and writes the sidecar beside the tile. Both
+ * capture helpers test OPENPETE_TILE_CENSUS themselves, so their call sites
+ * are unconditional. A mismatch found by an in-memory compose, which writes
+ * no sidecar, refuses the next sidecar. */
+static struct {
+    tc_tally_t own;              /* the composed scene, at the last record */
+    tc_tally_t bd;               /* the kept backdrop tally, copied at the record */
+    int        bd_drawn;         /* the composed scene draws a frozen backdrop */
+    int        bd_known;         /* ... and its tally is kept (bd holds it) */
+    int        armed;            /* a record is open: draws are counted */
+    int        draws;            /* scene draws counted since the record */
+    uint32_t   sub_cat[TC_CATS]; /* triangles those draws composed, per category */
+    char       fail[160];        /* a binding mismatch not yet reported in a sidecar */
+} s_cen;
+
+/* The frozen backdrop's tally, taken when freeze_src_settle renders the kept
+ * freeze source into shot_frozen. Every build takes it: the kept slot can be
+ * replaced by a newer source before a capture reads the backdrop, so the
+ * settle is the one point where the scene behind shot_frozen is known. Valid
+ * while shot_frozen holds that render; a render of shot_frozen without a
+ * settle clears it. */
+static struct {
+    tc_tally_t t;
+    uint32_t   stamp;            /* the counted scene's stamp */
+    int        valid;
+    unsigned   settles;          /* tallies taken */
+    op_time_t  pass_ns, pass_max_ns;   /* their wall time, total and longest */
+} s_bdt;
+
+/** @brief Tally a scene's triangles and the retained sectors of the selected terrain state.
+ * @param t Receives the tally.
+ * @param sc Scene triangles.
+ * @param n Triangle count. */
+static void census_tally_scene(tc_tally_t *t, const scene_tri_t *sc, int n)
+{
+    tc_tally_clear(t);
+    for (int i = 0; i < n; i++) {
+        const scene_tri_t *q = &sc[i];
+        const tc_tri_t tri = {
+            .tag = q->tag, .prim = q->prim, .category = q->category, .blend = q->blend,
+            .flags = (q->shell ? 1u << TC_FLAG_SHELL : 0u) | (q->key_order ? 1u << TC_FLAG_KEY_ORDER : 0u)
+                   | (q->kfold ? 1u << TC_FLAG_KFOLD : 0u) | (q->portal_rim ? 1u << TC_FLAG_PORTAL_RIM : 0u)
+                   | (q->host_added ? 1u << TC_FLAG_HOST_ADDED : 0u) | (q->fog_delta ? 1u << TC_FLAG_FOG_DELTA : 0u),
+            .prims = (q->over_fade ? 1u << TC_PRIM_OVER_FADE : 0u)
+                   | (q->under_player ? 1u << TC_PRIM_UNDER_PLAYER : 0u) | (q->carry ? 1u << TC_PRIM_CARRY : 0u) };
+        tc_tally_tri(t, &tri);
+    }
+    int gens[8];
+    openpete_tercache_frame_stats(&t->sec[0], &t->sec[1], &t->sec[2], &t->sec[3], gens);
+}
+
+/** @brief Tally the kept freeze source freeze_src_settle just rendered into shot_frozen.
+ *
+ * Reads the scene the settle selected (s_ps_slot on the kept slot) and the
+ * kept scene's retained terrain state, and times the pass. */
+static void census_backdrop_settle(void)
+{
+    const op_time_t t0 = op_now();   /* clock-guard: wall */ /* the pass's own cost */
+    int n; uint32_t bg, fade;
+    const scene_tri_t *sc = scene_present_buf(&n, &bg, &fade, NULL, NULL, NULL);
+    census_tally_scene(&s_bdt.t, sc, n);
+    s_bdt.stamp = scene_present_stamp();
+    s_bdt.valid = s_nr.shot_frozen.valid ? 1 : 0;
+    const op_time_t dt = op_now() - t0;   /* clock-guard: wall */ /* the pass's own cost */
+    s_bdt.settles++;
+    s_bdt.pass_ns += dt;
+    if (dt > s_bdt.pass_max_ns) s_bdt.pass_max_ns = dt;
+}
+
+/** @brief Count the triangles a scene draw composes, per category, while a census record is open.
+ *
+ * Called by draw_native_scene on every draw past its VRAM decision; does
+ * nothing unless census_shot_record armed it.
+ * @param sc The scene the draw composes.
+ * @param n Its triangle count. */
+static void census_submit_note(const scene_tri_t *sc, int n)
+{
+    if (!s_cen.armed) return;
+    s_cen.draws++;
+    for (int i = 0; i < n; i++) {
+        const int c = sc[i].category;
+        s_cen.sub_cat[(c >= 0 && c < TC_CATS - 1) ? c : TC_CATS - 1]++;
+    }
+}
+
+/** @brief Record the tile census of the scene a capture is about to draw (OPENPETE_TILE_CENSUS).
+ *
+ * Inside each compose attempt, before the draw; the last attempt's record
+ * stands. Tallies the selected scene, notes whether the compose falls back
+ * to the VRAM framebuffer (the draw's own content test) and whether it
+ * draws a frozen backdrop, copies the backdrop's kept tally when there is
+ * one, and arms the submission count. Does nothing unless the variable is
+ * set. */
+static void census_shot_record(void)
+{
+    if (!tile_census_on()) return;
+    int n; uint32_t sbg, fade, freeze;
+    const scene_tri_t *sc = scene_present_buf(&n, &sbg, &fade, &freeze, NULL, NULL);
+    census_tally_scene(&s_cen.own, sc, n);
+    int retained_only = 0;
+    const uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : sbg;
+    s_cen.own.vram = scene_content_test(sc, n, freeze, bg, &retained_only) ? 0 : 1;
+    const freeze_target_t *fz = active_frozen();
+    s_cen.bd_drawn = (freeze & (1u << 31)) && fz->valid;
+    s_cen.bd_known = s_cen.bd_drawn && fz == &s_nr.shot_frozen && s_bdt.valid;
+    if (s_cen.bd_known) s_cen.bd = s_bdt.t;
+    memset(s_cen.sub_cat, 0, sizeof s_cen.sub_cat);
+    s_cen.draws = 0;
+    s_cen.armed = 1;
+}
+
+/** @brief Compare the recorded tally with what the draws composed; note a mismatch in s_cen.fail.
+ *
+ * A VRAM-fallback compose must have composed no triangle; any other compose
+ * exactly one draw whose per-category counts equal the tally's. */
+static void census_binding_check(void)
+{
+    uint32_t sub = 0;
+    for (int c = 0; c < TC_CATS; c++) sub += s_cen.sub_cat[c];
+    char why[160] = "";
+    if (s_cen.own.vram && sub != 0)
+        snprintf(why, sizeof why, "binding: VRAM-fallback compose composed %u triangles", sub);
+    else if (!s_cen.own.vram && s_cen.draws != 1)
+        snprintf(why, sizeof why, "binding: the compose drew the scene %d times", s_cen.draws);
+    for (int c = 0; !why[0] && !s_cen.own.vram && c < TC_CATS; c++)
+        if (s_cen.own.cat[c] != s_cen.sub_cat[c])
+            snprintf(why, sizeof why, "binding: category %d tallied %u, composed %u",
+                     c, s_cen.own.cat[c], s_cen.sub_cat[c]);
+    if (why[0] && !s_cen.fail[0]) snprintf(s_cen.fail, sizeof s_cen.fail, "%s", why);
+}
+
+/** @brief The sidecar path of a capture: the -vk PNG's path with .census for its extension.
+ * @param base The capture's path base.
+ * @param out Receives the path.
+ * @param cap Size of out. */
+static void census_path(const char *base, char *out, size_t cap)
+{
+    const char *dot = strrchr(base, '.');
+    const char *slash = strrchr(base, '/');
+    if (dot && (!slash || dot > slash)) snprintf(out, cap, "%.*s-vk.census", (int)(dot - base), base);
+    else snprintf(out, cap, "%s-vk.census", base);
+}
+
+/** @brief Close the census record of a capture and write its sidecar (OPENPETE_TILE_CENSUS).
+ *
+ * After the compose loop, before the PNG write. Checks the binding of the
+ * last record; a compose read into memory writes nothing and keeps a
+ * mismatch for the next sidecar, which is then refused. The sidecar holds
+ * the scene's counters, compose.vram, and the backdrop's counters under
+ * `backdrop.` (or backdrop.unknown). Also logs the backdrop settles' count
+ * and pass time. Does nothing unless the variable is set.
+ * @param base The capture's path base.
+ * @param dump Nonzero for a capture written to files. */
+static void census_shot_write(const char *base, int dump)
+{
+    if (!tile_census_on()) return;
+    s_cen.armed = 0;
+    census_binding_check();
+    if (!dump) return;
+    tc_sidecar_begin();
+    if (s_cen.fail[0]) tc_sidecar_fail(s_cen.fail);
+    s_cen.fail[0] = '\0';
+    tc_sidecar_add_tally(&s_cen.own, "");
+    tc_sidecar_add("compose.vram", (uint32_t)s_cen.own.vram);
+    if (s_cen.bd_known) tc_sidecar_add_tally(&s_cen.bd, "backdrop.");
+    tc_sidecar_add("backdrop.unknown", (uint32_t)(s_cen.bd_drawn && !s_cen.bd_known));
+    char path[1100];
+    census_path(base, path, sizeof path);
+    if (tc_sidecar_write(path) == 0)
+        OPL_INFO_F("tile-census", "%s; backdrop settles %u, tally pass %.1f us total, %.1f us longest",
+                   path, s_bdt.settles, (double)s_bdt.pass_ns / 1e3, (double)s_bdt.pass_max_ns / 1e3);
+}
+
 static bool draw_native_scene(bool full_extent);
 /** @brief Draw the selected scene with the material view captured with it installed.
  *
@@ -17036,6 +17214,7 @@ static bool draw_native_scene(bool full_extent)
     const bool vram = !scene_compose_has_content(scene, scene_n, scene_freeze, bg);
     compose_note(vram);
     if (vram) return false;
+    census_submit_note(scene, scene_n);
 
     s_render_full_extent = full_extent ? 1 : 0;
 
@@ -22897,6 +23076,7 @@ static void freeze_src_settle(void) {
     openpete_tercache_frame_select(scene_present_stamp());   /* the kept scene's terrain */
     const int tc_content = openpete_tercache_frame_content();
     freeze_render_into(&s_nr.shot_frozen, s_frz.wf, 0);
+    census_backdrop_settle();
     openpete_mods_material_view_set(NULL);
     s_ps_slot = NULL;
     if (freeze_src_verify() && s_frz.vt.tex && s_nr.shot_frozen.tex) {
@@ -23496,6 +23676,7 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
         if (freeze_src_verify()) freeze_render_into(&s_frz.vt, cap_wf, 1);
         return;
     }
+    s_bdt.valid = 0;   /* shot_frozen now holds a render no settle tallied */
     freeze_render_into(&s_nr.shot_frozen, cap_wf, 1);
 }
 
@@ -23753,6 +23934,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
         hd_flush_pending();
         openpete_native_hdfold_flush();
         native_depth_prepass();
+        census_shot_record();
         /* Black clear + mod overlay + SCENE point: live-offscreen parity,
          * same rationale as the 4:3 dump compose (see screenshot_all_impl). */
         { int kw, kh; rhi_texture_extent(rt, &kw, &kh);
@@ -23774,6 +23956,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
     }
     s_render_freeze_wf = prev_wf;
     shot_chrome_note(menu_verts);
+    census_shot_write(base, cap_out == NULL);
 
     const size_t px = (size_t)Wc * (size_t)H;
     unsigned char *nat = malloc(px * 4);
@@ -24295,6 +24478,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
         tercache_readback_record();
         gsab_readback_record();
+        census_shot_record();
         /* BLACK clear - live-offscreen parity. The live present clears black and
          * relies on the scene's own bg-fill quad; clearing to the bg colour here
          * painted over exactly the class of bug where that quad is built but
@@ -24344,6 +24528,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
     shot_chrome_note(menu_verts);
     tercache_readback_write(base, cap_out == NULL);
     gsab_readback_write(base, cap_out == NULL);
+    census_shot_write(base, cap_out == NULL);
 
     unsigned char *nat = malloc(frame_px * 4);          /* native, top-down    */
     unsigned char *ref = with_ref ? malloc(frame_px * 4)     : NULL;  /* reference, top-down  */

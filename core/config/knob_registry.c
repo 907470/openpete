@@ -2858,6 +2858,14 @@ static const knob_desc_t g_builtin_debug[] = {
         "Visible-sector list diagnostics."),
     ENVROW_LATCHED("TERRAIN_ANIMDBG", "Debug diagnostics", "0",
         "Per-present env-anim change census."),
+    ENVROW_LATCHED("TILE_CENSUS", "Debug diagnostics", "0",
+        "Write <tile>-vk.census beside every native capture: integer counters "
+        "of the scene the capture composed (triangles per render path, tag kind, "
+        "category, blend mode, flag and moby class; retained terrain sectors; "
+        "the frozen backdrop's counters under backdrop.), named in "
+        "core/diag/tile_census.def. A 40-digit hex value is written as the "
+        "sidecar's source tree. Counting selects no code path; the presentation "
+        "corpus scripts set it on every leg."),
     ENVROW_LATCHED("MOD_TABLE_CENSUS", "Debug diagnostics", "0",
         "Mod-table census at exit: one line per growable mod table with "
         "its element count, the fixed capacity it used to have, its "

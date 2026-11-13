@@ -11,7 +11,7 @@
     golden-fleet.py run [--game G | --all] [--tier T | --all-tiers]
                     [--hosts a,b | --no-local] [--pull divergent|all] [--wait]
                     [--expect FILE] [--filter S] [--freecam-filter S] [--repeat N]
-                    [--no-takeover]
+                    [--no-takeover] [--commits RANGE] [--queries DIR]
     golden-fleet.py stop <run-id> [--unit U]
     golden-fleet.py move <run-id> --unit U --to <host> [--no-wait]
     golden-fleet.py resume <run-id> --unit U --to <host> [--from DIR]
@@ -166,7 +166,11 @@ coordinator:
      --verdict-only in the image), pulls verdict-report.txt, the capture
      record, capture-device.txt, credits-verdict.txt, the divergent and
      extra tiles (an extra tile is a new row's, with no blessed digest)
-     and both members of each identity pair over baseline (identity/) into
+     and both members of each identity pair over baseline (identity/), and
+     on the presentation tier tile-digests.tsv, row-cost.tsv and, by a
+     second rsync with an include pattern under either --pull mode, every
+     tile's `*-vk.census` sidecar (scripts/golden-census.py; a captured
+     tile without one refuses the unit), into
      the cleared local candidate directory (build/presentation-candidate and
      its per-game and dragon forms, or PRESENTATION_GOLDEN_OUT), refuses a
      unit whose report's blessed.tsv or identity-baseline hash or census
@@ -182,14 +186,26 @@ coordinator:
      the coordinator prints the promote command for it:
      tests/harness/presentation-corpus-promote.sh
      build/fleet-stream/<run-id>/<unit> <tile>... (game and tier read from
-     its capture record);
+     its capture record); each unit's row-cost.tsv is merged into the
+     uncommitted ~/.cache/openpete-fleet/row-cost.tsv (game, row, seconds,
+     host, slots, speed, run id; the newest kept); an accepted
+     presentation unit of a run whose run-args.json records no filter,
+     freecam_filter, rows or repeat, not stopped, whose every sidecar names
+     the capture record's source tree, is hard-linked (sidecars and
+     tile-digests.tsv) into the census store's
+     <local fleet_root>/census/<game>-<tier>/<run-id>.part/, which drive()
+     finalizes after the done marker (moved.txt from stream.log, copies of
+     run-args.json and done, entry.json last, renamed to <run-id>/) and
+     prunes to the unit's two newest entries, removing each .part older than
+     24 h; a resume finalizes at its own done marker
+     (scripts/golden-census.py reads the store);
   7. pulls every attempt's crashed capture legs (u-<unit>/cand.crashes, the
      harness's crash directory: leg log, argv, exit code, hang and core
      dumps) from every touched host into <local run dir>/crashes/<host>/
      and names each kept leg in the coordinator log, then deletes
      runs/<run-id>/ on every host on every exit path (the local directory
-     keeps its log, done marker, stream.log, expect.txt, stop-request,
-     canary-verdict.txt and crashes/).
+     keeps its log, done marker, stream.log, expect.txt, queries/,
+     stop-request, canary-verdict.txt and crashes/).
 Stream: a unit's supervisor sets OPENPETE_STREAM_FILE=<attempt base>.stream;
 each finished row appends one SAME|DIVERGE|EXTRA|IDENT|EXCEED line per tile
 (classified by the end verdict's functions), the credits leg `CREDITS rc=N`,
@@ -223,10 +239,16 @@ report must carry `repeat: N` and repeat-compared at least repeat-legs (N x
 the selected rows' blessed tiles plus one identity pair per canon tile),
 else the unit is refused (engagement); the unit's result line names each
 row's divergent count of N x legs. The repeat count is recorded in
-run-args.json, so `resume` repeats the same N.
+run-args.json, so `resume` repeats the same N. run-args.json also records
+the checkout's HEAD and source tree, the run's games and units, --commits
+RANGE (the batch's commit range) and, under --queries DIR, the sha256 of
+every file of DIR, all written before any leg starts: `run` copies DIR
+into <local run dir>/queries/ before detaching and records the copy, which
+the local run directory keeps (scripts/golden-census.py score refuses a
+file whose hash differs).
 --expect FILE: `<unit> <substring> <reason>` lines (unit = job name); a
-unit not in the run or a substring matching no blessed tile and no manifest
-row refuses the run (2). A tile of a row whose launch field sets extended
+unit not in the run or a substring matching no blessed tile, no blessed canon
+tile's `__ident__` twin and no manifest row refuses the run (2). A tile of a row whose launch field sets extended
 LOD (`--lod extended`, `--no-lod`) also matches as its `__lodext__`-tagged
 name, since both of that row's LOD legs run extended. Streamed moves are tagged EXPECTED or UNEXPECTED;
 each expectation ends moved, EXPECTED-NOT-MOVED or NOT-REACHED; the counts
@@ -358,8 +380,9 @@ recorded when PID and start time still match; exited fleet-labelled
 containers; trees/<key> this coordinator wrote whose checkout path is gone
 or unused for 14 days; images the fleet shipped (image.id and its history)
 other than the current :fleet one and named by no other tag. --tree PATH
-removes only this coordinator's trees of PATH. --all removes runs/, trees/,
-the lock and image records, every fleet-labelled container and the :fleet
+removes only this coordinator's trees of PATH; the census store (census/)
+is touched only by --all. --all removes runs/, trees/, census/, the lock
+and image records, every fleet-labelled container and the :fleet
 tag (the image itself only when no other tag names it), and fleet_root
 itself when nothing else is in it. On the local host it also removes the
 checkout's build/fleet-stream/<run-id>/ directories whose run directory is
@@ -376,6 +399,7 @@ tree whose lock a sync holds is kept.
 import argparse
 import datetime
 import fcntl
+import fnmatch
 import glob
 import hashlib
 import importlib.util
@@ -446,7 +470,8 @@ TAKEOVER_MIN_SAVING_S = 600
 TREE_MAX_AGE_S = 14 * 86400
 # Files of the coordinator's local run directory that outlive the run.
 RUN_KEEP = ("coordinator.log", "done", "active.lock", "stream.log", "expect.txt", "stop-request",
-            "crashes", "canary-verdict.txt", "canary", "kept", "move-request", "moves.log", "run-args.json")
+            "crashes", "canary-verdict.txt", "canary", "kept", "move-request", "moves.log", "run-args.json",
+            "queries")
 # Name prefixes of further kept files: a resume's log and the done markers it replaced.
 RUN_KEEP_PREFIX = ("coordinator-resume-", "done.", "stop-request.", "move-request.")
 CANARY_VERDICT = "canary-verdict.txt"
@@ -456,6 +481,14 @@ STREAM_K = 20                 # divergent and extra tiles and identity pairs pul
 STREAM_DIR = os.path.join("build", "fleet-stream")
 TILE_VERBS = ("SAME", "DIVERGE", "EXTRA", "IDENT", "EXCEED")
 MOVED_VERBS = ("DIVERGE", "EXTRA", "EXCEED")
+SIDECAR_GLOB = "*-vk.census"      # tile-census sidecars (scripts/golden-census.py)
+DIGESTS_NAME = "tile-digests.tsv"  # every captured tile's digest, written by the verdict step
+ROW_COST_NAME = "row-cost.tsv"     # per-leg capture seconds, written by the corpus scripts
+ROW_COST_CACHE = os.path.expanduser("~/.cache/openpete-fleet/row-cost.tsv")
+CENSUS_STORE = "census"           # <local fleet_root>/census/<unit>/<run-id>/ (scripts/golden-census.py)
+CENSUS_FILTER_KEYS = ("filter", "freecam_filter", "rows", "repeat")   # run-args keys of a filtered run
+CENSUS_KEEP = 2                   # finalized entries kept per unit
+CENSUS_PART_MAX_AGE_S = 24 * 3600 # an unfinished entry older than this is removed
 STREAM_ONLY_DIR = "stream-only"  # streamed tiles the accepted pull does not hold
 STOP_STATUS = "stopped by user"
 UNFINISHED_STATUS = ("attempts exhausted", "host lost")   # requeue's results of a unit out of attempts
@@ -1657,7 +1690,7 @@ if [ $have_engine = 1 ]; then
     fi
 fi
 if [ "$mode" = all ]; then
-    rm -rf "$root/trees"
+    rm -rf "$root/trees" "${root:?}/census"
     rmdir "$root/runs" 2>/dev/null || echo "kept $root/runs: a run in it is active"
     rm -f "$root/image.id" "$root/image.id.history" "$root/image.id.tmp" "$root/golden.lock"
     rmdir "$root" 2>/dev/null && echo "removed $root" || echo "kept $root: holds files the fleet did not write"
@@ -3907,7 +3940,7 @@ class Coordinator:
             dst = self.canary_dir(hs.name)
             shutil.rmtree(dst, ignore_errors=True)
             rc, err = rsync_pull(hs.host, f"{job.result['unit_dir']}/cand", dst,
-                                 includes=["*-vk.png", "verdict-report.txt", CREDITS_NAME,
+                                 includes=["*-vk.png", SIDECAR_GLOB, "verdict-report.txt", CREDITS_NAME,
                                            "capture-record.txt", "capture-device.txt"])
             if rc != 0:
                 job.result.update(rc=1, status=f"canary pull failed: {err}")
@@ -3938,7 +3971,7 @@ class Coordinator:
         first = ["verdict-report.txt", "capture-record.txt", "capture-device.txt",
                  "verdict-ident.log", "verdict-diff.log"]
         if job.tier == "presentation":
-            first.append(CREDITS_NAME)
+            first += [CREDITS_NAME, DIGESTS_NAME, ROW_COST_NAME]
         if self.a.pull == "all":
             rsync_pull(hs.host, rdir, local)
         else:
@@ -3946,20 +3979,70 @@ class Coordinator:
         report = parse_report(os.path.join(local, "verdict-report.txt"))
         self.note_census(job, report)
         tiles, pairs = report["divergent"] + report["extra"], report["identity"]
-        want = first + self.pull_tiles(hs, rdir, local, report)
+        # row-cost.tsv is absent when every row was imported from an earlier attempt.
+        want = [f for f in first if f != ROW_COST_NAME] + self.pull_tiles(hs, rdir, local, report)
+        if job.tier == "presentation":
+            # Every tile's sidecar (the tile census), in a call of its own: the
+            # include pattern's --exclude=* would filter the named-file list.
+            rc, err = rsync_pull(hs.host, rdir, local, includes=[SIDECAR_GLOB])
+            if rc != 0:
+                errs_pull = [f"sidecar pull failed: {err}"]
+            else:
+                errs_pull = census_pull_refusals(local)
+                if self.repeat():
+                    errs_pull += repeat_sidecar_refusals(self.pb, local)
+                merge_row_cost(local, job, hs, self.run_id)
+        else:
+            errs_pull = []
         errs = [f"pulled file absent: {f}" for f in want
                 if not os.path.exists(os.path.join(local, f))]
+        errs += errs_pull
         errs += self.check_report(job, report)
         if os.path.exists(os.path.join(local, RECORD_NAME)):
             self.stamp_record(local, hs)
         print(f"[fleet] {job.name}: pulled into {local}: report, record, device, credits, "
               f"{len(report['divergent'])} divergent tile(s), {len(report['extra'])} extra tile(s), "
-              f"{len(pairs)} identity tile(s)")
+              f"{len(pairs)} identity tile(s), "
+              f"{len(glob.glob(os.path.join(local, SIDECAR_GLOB)))} sidecar(s)")
         if tiles and not errs:
             self.heat_diffs(job, local)
         if not errs:
             self.keep_run_candidate(job, local)
+            self.census_store_part(job, local)
         return errs
+
+    def census_store_part(self, job, local):
+        """Hard-link an accepted unit's sidecars and tile-digests.tsv into the census store's <run-id>.part/.
+
+        Only a presentation unit that was not stopped, of a run whose
+        run-args.json records none of CENSUS_FILTER_KEYS, and only when every
+        sidecar names the capture record's source tree; a refusal is logged
+        and leaves no entry. drive() finalizes the .part after the done marker.
+        """
+        if job.tier != "presentation" or job.stopped or self.filtered() or self.repeat():
+            return
+        ra = read_json_file(os.path.join(self.local_run_dir, "run-args.json")) or {}
+        if any(ra.get(k) for k in CENSUS_FILTER_KEYS):
+            return
+        why = census_tree_refusal(local)
+        if why:
+            print(f"[fleet] {job.name}: census store entry refused: {why}")
+            return
+        part = os.path.join(census_root(self.local_run_dir), job.name, self.run_id + ".part")
+        shutil.rmtree(part, ignore_errors=True)
+        os.makedirs(part)
+        names = [n for n in os.listdir(local) if fnmatch.fnmatch(n, SIDECAR_GLOB) or n == DIGESTS_NAME]
+        for n in names:
+            link_or_copy(os.path.join(local, n), os.path.join(part, n))
+        rec = parse_kv(open(os.path.join(local, RECORD_NAME), encoding="utf-8").read())
+        f = parse_report(os.path.join(local, "verdict-report.txt"))["fields"]
+        accept = {"run_id": self.run_id, "unit": job.name, "attempt": job.result.get("attempt"),
+                  "head": rec.get("head"), "source_tree": rec.get("source-tree"),
+                  "rc": job.result.get("rc"), "compared": f.get("compared"),
+                  "sidecars": sum(1 for n in names if n != DIGESTS_NAME)}
+        with open(os.path.join(part, "accept.json"), "w", encoding="utf-8") as fh:
+            json.dump(accept, fh)
+        print(f"[fleet] {job.name}: census store: {accept['sidecars']} sidecar(s) into {part}")
 
     def pull_tiles(self, hs, rdir, local, report):
         """Pull a report's divergent and extra tiles and identity-pair members; return their paths relative to local.
@@ -4172,11 +4255,14 @@ class Coordinator:
         os.replace(path + ".tmp", path)
 
     def canary_digests(self, host_name):
-        """Return {tile: verdict digest} of the canary tiles pulled from one host."""
+        """Return {tile: verdict digest} of the canary tiles pulled from one host, and {sidecar: sha256} of their sidecars."""
         d = self.canary_dir(host_name)
         files = sorted(glob.glob(os.path.join(d, "*-vk.png")))
-        return {os.path.basename(p): (dg[0] if dg else "undecodable")
-                for p, dg in self.pb.digest_files(files).items()}
+        out = {os.path.basename(p): (dg[0] if dg else "undecodable")
+               for p, dg in self.pb.digest_files(files).items()}
+        out.update({os.path.basename(p): sha256_path(p)
+                    for p in sorted(glob.glob(os.path.join(d, SIDECAR_GLOB)))})
+        return out
 
     # -- teardown --
 
@@ -4289,8 +4375,20 @@ class Coordinator:
         return rc
 
     def write_run_args(self):
-        """Record the unit filters, repeat count and pull mode in <local run dir>/run-args.json, which `resume` reads."""
+        """Record the run's arguments and identity in <local run dir>/run-args.json, which `resume` and the tile census read.
+
+        The unit filters, repeat count and pull mode; the checkout's HEAD and
+        source tree (scripts/presentation-blessed.py source_tree), the games
+        and units, the batch's commit range (--commits) and the sha256 of
+        each query file (--queries, the run directory's copy), taken before
+        any leg starts.
+        """
         args = {k: getattr(self.a, k, None) for k in ("filter", "freecam_filter", "pull", "repeat")}
+        args.update(head=git_head(self.tree), source_tree=self.pb.source_tree(),
+                    games=sorted({g for g, _t in self.units}),
+                    units=sorted(f"{g}-{t}" for g, t in self.units),
+                    commits=getattr(self.a, "commits", None),
+                    queries=query_hashes(getattr(self.a, "queries", None)))
         with open(os.path.join(self.local_run_dir, "run-args.json.tmp"), "w") as f:
             json.dump(args, f)
         os.replace(os.path.join(self.local_run_dir, "run-args.json.tmp"),
@@ -4812,6 +4910,190 @@ def repeat_refusals(report, n):
     return errs
 
 
+def git_head(tree):
+    """Return the HEAD commit of a checkout, or None."""
+    p = subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"], capture_output=True, text=True)
+    return p.stdout.strip() if p.returncode == 0 else None
+
+
+def drop_option(argv, valued, flag):
+    """Return argv without a valued option (`--x V`, `--x=V`) and a bare flag."""
+    out, skip = [], False
+    for x in argv:
+        if skip:
+            skip = False
+        elif x == valued:
+            skip = True
+        elif not x.startswith(valued + "=") and x != flag:
+            out.append(x)
+    return out
+
+
+def query_hashes(d):
+    """Return {file: sha256} of a queries directory, or None without one."""
+    if not d:
+        return None
+    files = sorted(f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f)))
+    return {f: sha256_path(os.path.join(d, f)) for f in files}
+
+
+def read_json_file(path):
+    """Return a JSON file's object, or None when absent or unreadable."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def census_root(run_dir):
+    """Return the census store of a local run directory's fleet_root (<fleet_root>/census)."""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(run_dir))), CENSUS_STORE)
+
+
+def census_tree_refusal(local):
+    """Return why a pulled unit's sidecars cannot enter the census store, or None.
+
+    Every sidecar's header must name the capture record's source tree; a
+    sidecar of `tree unrecorded` or of another tree refuses the entry.
+    """
+    try:
+        tree = parse_kv(open(os.path.join(local, RECORD_NAME), encoding="utf-8").read()).get("source-tree", "")
+    except OSError:
+        return "no capture record"
+    if not re.match(r"^[0-9a-f]{40}$", tree):
+        return f"the capture record names no source tree ({tree or 'none'})"
+    for p in sorted(glob.glob(os.path.join(local, SIDECAR_GLOB))):
+        with open(p, encoding="utf-8") as f:
+            head = f.readline().split()
+        if len(head) != 5 or head[3] != "tree" or head[4] != tree:
+            return f"{os.path.basename(p)} names tree {head[4] if len(head) == 5 else '?'}, the capture {tree[:12]}"
+    return None
+
+
+def census_stream_moved(run_dir, unit, attempt):
+    """Return the sorted moved tiles (DIVERGE, EXTRA, EXCEED) of one unit's attempt in a run's stream.log."""
+    moved = set()
+    try:
+        lines = open(os.path.join(run_dir, "stream.log"), encoding="utf-8").read().splitlines()
+    except OSError:
+        return []
+    for ln in lines:
+        f = ln.split()
+        if len(f) >= 6 and f[0] == unit and f[2] == str(attempt) and f[4] in MOVED_VERBS:
+            moved.add(f[5])
+    return sorted(moved)
+
+
+def census_store_finalize(run_id, run_dir, now=None):
+    """Finalize every <run-id>.part of the census store once the run's done marker exists, then prune.
+
+    A .part gets moved.txt (the accepted attempt's moved tiles), copies of
+    run-args.json and done, and entry.json last, and is renamed to
+    <run-id>/ (replacing an earlier finalize of the same run). Each unit
+    keeps its CENSUS_KEEP newest finalized entries; a .part older than
+    CENSUS_PART_MAX_AGE_S is removed. Returns the finalized entries.
+    """
+    store = census_root(run_dir)
+    if not os.path.exists(os.path.join(run_dir, "done")) or not os.path.isdir(store):
+        return []
+    done = []
+    now = time.time() if now is None else now
+    for unit in sorted(os.listdir(store)):
+        ud = os.path.join(store, unit)
+        part = os.path.join(ud, run_id + ".part")
+        if os.path.isdir(part):
+            acc = read_json_file(os.path.join(part, "accept.json")) or {}
+            with open(os.path.join(part, "moved.txt"), "w", encoding="utf-8") as f:
+                f.writelines(t + "\n" for t in census_stream_moved(run_dir, unit, acc.get("attempt")))
+            for n in ("run-args.json", "done"):
+                shutil.copyfile(os.path.join(run_dir, n), os.path.join(part, n))
+            entry = dict(acc, written=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+            with open(os.path.join(part, "entry.json.tmp"), "w", encoding="utf-8") as f:
+                json.dump(entry, f)
+            os.replace(os.path.join(part, "entry.json.tmp"), os.path.join(part, "entry.json"))
+            final = os.path.join(ud, run_id)
+            shutil.rmtree(final, ignore_errors=True)
+            os.replace(part, final)
+            done.append(final)
+            print(f"[fleet] census store: {unit} entry {run_id} finalized ({entry.get('sidecars')} sidecar(s))")
+        census_store_prune(ud, now)
+    return done
+
+
+def census_store_prune(ud, now):
+    """Remove all but a unit's CENSUS_KEEP newest finalized entries, and each .part older than CENSUS_PART_MAX_AGE_S."""
+    names = sorted(n for n in os.listdir(ud) if os.path.isdir(os.path.join(ud, n)))
+    final = [n for n in names if not n.endswith(".part") and os.path.exists(os.path.join(ud, n, "entry.json"))]
+    for n in final[:-CENSUS_KEEP]:
+        shutil.rmtree(os.path.join(ud, n), ignore_errors=True)
+        print(f"[fleet] census store: pruned {os.path.basename(ud)} entry {n}")
+    for n in names:
+        p = os.path.join(ud, n)
+        if n.endswith(".part") and now - os.path.getmtime(p) > CENSUS_PART_MAX_AGE_S:
+            shutil.rmtree(p, ignore_errors=True)
+            print(f"[fleet] census store: removed unfinished {os.path.basename(ud)} {n}")
+
+
+def census_pull_refusals(local):
+    """Return a refusal per captured tile of a pulled unit (tile-digests.tsv) whose sidecar was not pulled."""
+    path = os.path.join(local, DIGESTS_NAME)
+    try:
+        tiles = [ln.split("\t", 1)[0] for ln in open(path, encoding="utf-8")
+                 if ln.strip() and not ln.startswith("#")]
+    except OSError:
+        return [f"pulled file absent: {DIGESTS_NAME}"]
+    missing = [t for t in tiles if not os.path.exists(os.path.join(local, t[:-len(".png")] + ".census"))]
+    return [f"{len(missing)} tile(s) without a sidecar, first {missing[0]}"] if missing else []
+
+
+def repeat_sidecar_refusals(pb, local):
+    """Return a refusal when the repeat copies of one tile wrote sidecars that differ, or none compared."""
+    groups = {}
+    for p in sorted(glob.glob(os.path.join(local, SIDECAR_GLOB))):
+        origin, k = pb.copy_origin(os.path.basename(p))
+        if k is not None:
+            with open(p, "rb") as f:
+                groups.setdefault(origin, set()).add(f.read())
+    differ = sorted(o for o, b in groups.items() if len(b) > 1)
+    if not groups:
+        return ["repeat: no repeat copy's sidecar pulled (VACUOUS)"]
+    print(f"[fleet] repeat sidecars: {len(groups)} tile(s), {len(differ)} with copies that differ")
+    return [f"repeat: {len(differ)} tile(s) whose copies' sidecars differ, first {differ[0]}"] if differ else []
+
+
+def merge_row_cost(local, job, hs, run_id):
+    """Merge a unit's per-leg capture seconds into ROW_COST_CACHE: one line per game and row, the newest kept.
+
+    A line: game, row key, seconds summed over the row's legs, host, slots,
+    host speed, run id. The cache is uncommitted; it answers what a row costs
+    to capture on which host.
+    """
+    rows = {}
+    try:
+        for ln in open(os.path.join(local, ROW_COST_NAME), encoding="utf-8"):
+            f = ln.rstrip("\n").split("\t")
+            if len(f) == 4 and re.match(r"^[0-9.]+$", f[3]):
+                rows[f[1]] = rows.get(f[1], 0.0) + float(f[3])
+    except OSError:
+        return
+    os.makedirs(os.path.dirname(ROW_COST_CACHE), exist_ok=True)
+    with open(ROW_COST_CACHE + ".lock", "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        keep = {}
+        if os.path.exists(ROW_COST_CACHE):
+            for ln in open(ROW_COST_CACHE, encoding="utf-8"):
+                f = ln.rstrip("\n").split("\t")
+                if len(f) == 7:
+                    keep[(f[0], f[1])] = f
+        for key, sec in rows.items():
+            keep[(job.game, key)] = [job.game, key, f"{sec:.1f}", hs.name, str(hs.slots),
+                                     f"{hs.speed:.2f}", run_id]
+        with open(ROW_COST_CACHE + ".tmp", "w", encoding="utf-8") as f:
+            f.writelines("\t".join(v) + "\n" for _k, v in sorted(keep.items()))
+        os.replace(ROW_COST_CACHE + ".tmp", ROW_COST_CACHE)
+
+
 def parse_report(path):
     """Parse verdict-report.txt into fields, divergent and extra tiles, identity-pair members and repeat-row lines."""
     out = {"fields": {}, "divergent": [], "extra": [], "identity": [], "repeat-rows": []}
@@ -5091,6 +5373,9 @@ def expect_refusals(tree, pb, units, exps):
     universe = {}
     for game, tier in units:
         tiles = {r["tile"] for r in pb.load_manifest(game, tier).rows}
+        # Each blessed canon tile's identity twin: identity tiles have no
+        # blessed row, and their EXCEED lines name them.
+        tiles |= {t.replace("__canon__", "__ident__", 1) for t in tiles if "__canon__" in t}
         universe[f"{game}-{tier}"] = (tiles, corpus_row_names(tree, game, tier))
     return check_expect(exps, set(universe), universe)
 
@@ -5309,7 +5594,9 @@ def drive(run_id, run_dir, factory):
 
     Returns (exit code, coordinator or None). SIGTERM, SIGINT and SIGHUP
     become Interrupted so teardown stops in-flight attempts and deletes the
-    run's directories; the done marker's first line is `rc=N`.
+    run's directories; the done marker's first line is `rc=N`. After the
+    marker the run's census-store entries are finalized
+    (census_store_finalize).
     """
     os.makedirs(run_dir, exist_ok=True)
     active = os.open(os.path.join(run_dir, "active.lock"), os.O_WRONLY | os.O_CREAT, 0o644)
@@ -5336,6 +5623,10 @@ def drive(run_id, run_dir, factory):
         with open(os.path.join(run_dir, "done.tmp"), "w") as f:
             f.write(f"rc={rc}\nrun={run_id}\n" + (f"reason={why}\n" if why else ""))
         os.replace(os.path.join(run_dir, "done.tmp"), os.path.join(run_dir, "done"))
+        try:
+            census_store_finalize(run_id, run_dir)
+        except OSError as e:  # the store never fails the run
+            print(f"[fleet] census store: finalize failed: {e}")
         os.close(active)
     return rc, co
 
@@ -5480,6 +5771,8 @@ def cmd_run(a):
         raise FleetError("--filter and --freecam-filter take a substring without whitespace", 2)
     if a.repeat is not None and (a.repeat < 1 or not (a.filter or a.freecam_filter)):
         raise FleetError("--repeat takes N >= 1 and needs --filter or --freecam-filter", 2)
+    if a.queries and not os.path.isdir(a.queries):
+        raise FleetError(f"--queries {a.queries}: no such directory", 2)
     a.run_id = new_run_id()
     run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
     os.makedirs(run_dir)
@@ -5487,7 +5780,12 @@ def cmd_run(a):
         shutil.copyfile(a.expect, os.path.join(run_dir, "expect.txt"))
     log = os.path.join(run_dir, "coordinator.log")
     argv = [sys.executable, os.path.abspath(__file__), "run", "--foreground",
-            "--run-id", a.run_id, *[x for x in sys.argv[2:] if x != "--wait"]]
+            "--run-id", a.run_id, *drop_option(sys.argv[2:], "--queries", "--wait")]
+    if a.queries:
+        # The coordinator reads the run directory's copy, which outlives the scratchpad.
+        qcopy = os.path.join(run_dir, "queries")
+        shutil.copytree(a.queries, qcopy)
+        argv += ["--queries", qcopy]
     with open(log, "w") as f:
         subprocess.Popen(argv, cwd=script_repo(), stdout=f, stderr=subprocess.STDOUT,
                          stdin=subprocess.DEVNULL, start_new_session=True)
@@ -5554,6 +5852,11 @@ def main(argv=None):
                    help="expected-moves file: `<unit> <tile substring> <reason>` per line")
     p.add_argument("--no-takeover", action="store_true",
                    help="never move a running unit to a free faster host (placement only)")
+    p.add_argument("--commits", metavar="RANGE",
+                   help="the batch's commit range, recorded in run-args.json for the grade")
+    p.add_argument("--queries", metavar="DIR",
+                   help="the batch's query files (scripts/golden-census.py); copied into the run "
+                        "directory, their sha256 recorded in run-args.json before any leg starts")
     p.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--run-id", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_run)

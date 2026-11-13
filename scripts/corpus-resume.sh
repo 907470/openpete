@@ -20,7 +20,10 @@
 #   binary: <sha256 of the capture binary>
 #   params: <kind, game, tier and the capture settings of pg_cap_settings>
 #   row: <the row's manifest line, verbatim>
-#   tile: <sha256 of the file> <name>      one per tile of the row
+#   tile: <sha256 of the file> <name>      one per tile of the row, and one
+#                                          per tile's tile-census sidecar
+#                                          (<tile base>.census), so an import
+#                                          moves the sidecars with the PNGs
 #   device: <the leg's Vulkan device line>  one per leg that logged one
 # A leg writes its own part under OUT/resume/legs/ when it finishes; the leg
 # that completes the row assembles the stamp under a lock and renames it into
@@ -111,7 +114,7 @@ rs_poke() {
   [[ -n "${OPENPETE_STREAM_POKE:-}" ]] || return 0
   local t
   for t in "$@"; do
-    [[ "$t" == *"$OPENPETE_STREAM_POKE"* ]] || continue
+    [[ "$t" == *-vk.png && "$t" == *"$OPENPETE_STREAM_POKE"* ]] || continue
     python3 -c '
 import sys
 from PIL import Image
@@ -170,7 +173,7 @@ rs_leg_done() {
   if [[ $? -eq 10 ]]; then
     if [[ -n "${RS_STREAM:-}" ]]; then
       local -a tiles=()
-      mapfile -t tiles < <(awk '$1 == "tile:" { print $3 }' "$d.row")
+      mapfile -t tiles < <(awk '$1 == "tile:" && $3 ~ /-vk\.png$/ { print $3 }' "$d.row")
       rs_stream_tiles "" "${tiles[@]}"
     fi
     rm -f "$d.row"

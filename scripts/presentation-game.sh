@@ -400,11 +400,66 @@ pg_leg_begin() {
 }
 
 # Print the environment entries that put the hang watchdog's dumps in the
-# leg's scratch directory instead of the shared logs state directory.
-# args: legdir
+# leg's scratch directory instead of the shared logs state directory, and on
+# the presentation tier OPENPETE_TILE_CENSUS (pg_census_init), which writes
+# each tile's sidecar. args: legdir
 pg_leg_env() {
   echo "OPENPETE_HANG_TRACE=$1/hang-trace.bin"
   echo "OPENPETE_HANG_RAM=$1/hang-ram.bin"
+  (( ${PG_CENSUS_ON:-0} )) && echo "OPENPETE_TILE_CENSUS=$PG_CENSUS_TREE"
+  return 0
+}
+
+# ---- tile census -------------------------------------------------------------
+#
+# Every leg of the presentation tier runs with OPENPETE_TILE_CENSUS, so the
+# binary writes <tile base>.census beside each -vk PNG (scripts/golden-census.py,
+# core/diag/tile_census.def). The variable's value is the capture record's
+# source tree, which the sidecar's header names; without a record it is 1 and
+# the header says `tree unrecorded`. A leg whose PNG exists without its
+# sidecar fails (pg_census_check); the leg's sidecars are deleted before it
+# runs. The dragons tier writes none.
+
+# Set PG_CENSUS_ON and PG_CENSUS_TREE for an output directory. args: outdir
+pg_census_init() {
+  PG_CENSUS_ON=0 PG_CENSUS_TREE=1
+  [[ "${PG_TIER:-presentation}" == presentation ]] || return 0
+  PG_CENSUS_ON=1
+  local t; t="$(sed -n 's/^source-tree=//p' "$1/capture-record.txt" 2>/dev/null | tail -1)"
+  [[ "$t" =~ ^[0-9a-f]{40}$ ]] && PG_CENSUS_TREE="$t"
+  return 0
+}
+
+# The sidecar of a -vk PNG name. args: png-name
+pg_census_name() { echo "${1%.png}.census"; }
+
+# Delete the sidecars of a leg's tiles before it runs. args: outdir png-name...
+pg_census_clear() {
+  (( ${PG_CENSUS_ON:-0} )) || return 0
+  local d="$1" t; shift
+  for t in "$@"; do rm -f -- "${d:?}/$(pg_census_name "$t")"; done
+}
+
+# Print `MISSING-CENSUS <sidecar>` per tile of a leg whose PNG exists and whose
+# sidecar does not, with the binary's tile-census failure lines; return 1 when
+# any is missing. args: outdir log png-name...
+pg_census_check() {
+  (( ${PG_CENSUS_ON:-0} )) || return 0
+  local d="$1" log="$2" t miss=0; shift 2
+  for t in "$@"; do
+    [[ -f "$d/$t" && ! -f "$d/$(pg_census_name "$t")" ]] || continue
+    echo "  MISSING-CENSUS $(pg_census_name "$t")"; miss=1
+  done
+  (( miss )) && grep -a 'tile-census' "$log" | grep -a 'FAIL' | head -4 | sed 's/^/    /'
+  return $miss
+}
+
+# Append a finished leg's capture seconds to <outdir>/row-cost.tsv
+# (`kind<TAB>row key<TAB>lod-leg<TAB>seconds`), which the golden fleet merges
+# into its per-row cost cache. args: outdir kind key lod-leg start-epoch
+pg_row_cost() {
+  local now="${EPOCHREALTIME:-$(date +%s.%N)}"
+  awk -v k="$2" -v r="$3" -v l="$4" -v a="$5" -v b="$now"     'BEGIN { printf "%s\t%s\t%s\t%.1f\n", k, r, l, b - a }' >>"$1/row-cost.tsv"
 }
 
 # Keep a crashed leg: copy its scratch directory to PG_CRASH_DIR/<leg>, write

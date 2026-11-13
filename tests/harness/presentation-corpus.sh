@@ -56,6 +56,11 @@
 # card to its own directory and passes --card1 with the copy, so a write the
 # run makes never reaches the committed image.
 #
+# On the presentation tier every leg runs with OPENPETE_TILE_CENSUS and must
+# leave each tile's <tile base>.census sidecar (scripts/presentation-game.sh,
+# tile census); a PNG without one is a missing capture. Each leg's capture
+# seconds are appended to <outdir>/row-cost.tsv.
+#
 # Exit: 0 = all captures produced, 1 = a capture is missing (hard failure) or
 #           the corpus manifest is missing (the message names the path),
 #       64 = SKIP (binary / disc / Vulkan loader missing),
@@ -152,6 +157,7 @@ if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_
 mkdir -p "$OUTDIR"
 pg_crash_init "$OUTDIR"
 rs_init "$OUTDIR" "$BIN" "$AFFINE_ENV"
+pg_census_init "$OUTDIR"
 echo "[presentation-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filter='$FILTER' -> $OUTDIR"
 fi
 
@@ -258,6 +264,10 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   # to be independent of any openpete.toml on the machine capturing them.
   # The row's own launch env and arguments go last, on every leg of the row, so
   # a variant row differs from its plain twin by exactly that field.
+  local -a pngs=() t; IFS=',' read -ra TS <<<"$targets"
+  for t in "${TS[@]}"; do pngs+=("${name}__${tag}${leg}__${t}-vk.png"); done
+  pg_census_clear "$OUTDIR" "${pngs[@]}"
+  local t_start="${EPOCHREALTIME:-$(date +%s.%N)}"
   local -a cmd=(env "${leg_env[@]}" "${run_env[@]}" timeout -k 10 "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${run_args[@]}"
     "${mod_args[@]}" "${bk2_arg[@]}" --screenshot-native-only
@@ -266,8 +276,8 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   op_own_run "${cmd[@]}" >"$log" 2>&1
   local rc=$?
   pg_note_device "$log" "$OUTDIR"
-  local miss=0 t
-  IFS=',' read -ra TS <<<"$targets"
+  local miss=0
+  pg_row_cost "$OUTDIR" bk2 "$name" "$lod-$leg" "$t_start"
   # A row's mod must have loaded: without it the leg captures the unmodded
   # scene, which is a different picture, not this row. Its tiles are deleted
   # and the leg fails and is kept.
@@ -283,12 +293,13 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
     if [[ ! -f "$OUTDIR/${name}__${tag}${leg}__${t}-vk.png" ]]; then
       echo "  MISSING ${name}__${tag}${leg}__${t}-vk.png (rc=$rc)"; miss=1; fi
   done
+  (( miss )) || pg_census_check "$OUTDIR" "$log" "${pngs[@]}" || miss=1
   if [[ $rc -ne 0 || $miss -ne 0 ]]; then
     pg_keep_crash_leg "$legdir" "${name}__${tag}${leg}" "$rc" "${cmd[@]}"
   fi
   if [[ $miss -eq 0 ]]; then
-    local -a tiles=()
-    for t in "${TS[@]}"; do tiles+=("${name}__${tag}${leg}__${t}-vk.png"); done
+    local -a tiles=("${pngs[@]}")
+    (( PG_CENSUS_ON )) && for t in "${pngs[@]}"; do tiles+=("$(pg_census_name "$t")"); done
     rs_leg_done bk2 "$name" "$row" "$lod-$leg" "$log" "${tiles[@]}"
   fi
   rm -rf -- "${legdir:?}"

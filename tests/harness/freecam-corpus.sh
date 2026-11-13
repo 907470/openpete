@@ -132,6 +132,7 @@ if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_
 mkdir -p "$OUTDIR"
 pg_crash_init "$OUTDIR"
 rs_init "$OUTDIR" "$BIN" "$AFFINE_ENV"
+pg_census_init "$OUTDIR"
 echo "[freecam-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT lods=[$CAP_LODS] filter='$FILTER' -> $OUTDIR"
 fi
 
@@ -148,6 +149,9 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch row-li
   mapfile -t -O "${#leg_env[@]}" leg_env < <(pg_leg_env "$legdir")
   # --no-config: the tiles are compared pixel-for-pixel, so the run is
   # independent of any openpete.toml in the capturing machine's home.
+  local png="${slug}__${tag}${leg}__${target}-vk.png"
+  pg_census_clear "$OUTDIR" "$png"
+  local t_start="${EPOCHREALTIME:-$(date +%s.%N)}"
   local -a cmd=(env "${leg_env[@]}" "${ROW_ENV[@]}" timeout -k 10 "$LEG_TIMEOUT" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${PG_RUN_ARGS[@]}"
     "${PG_SKIP_ARGS[@]}" --freecam-pose "$pose"
@@ -155,10 +159,12 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch row-li
     --frame-limit "$flim" --max-runtime-seconds "$((LEG_TIMEOUT - 20))" "${ROW_ARGS[@]}")
   op_own_run "${cmd[@]}" >"$log" 2>&1
   local rc=$? miss=0
+  pg_row_cost "$OUTDIR" freecam "$slug" "$lod-$leg" "$t_start"
   pg_note_device "$log" "$OUTDIR"
   if [[ ! -f "$OUTDIR/${slug}__${tag}${leg}__${target}-vk.png" ]]; then
     echo "  MISSING ${slug}__${tag}${leg}__${target}-vk.png (rc=$rc)"; miss=1
   fi
+  (( miss )) || pg_census_check "$OUTDIR" "$log" "$png" || miss=1
   # A leg that wrote its tile and then exited nonzero (an abort at shutdown)
   # keeps the tile and its verdict, and is kept as a crashed leg.
   [[ $rc -ne 0 || $miss -ne 0 ]] && pg_keep_crash_leg "$legdir" "${slug}__${tag}${leg}" "$rc" "${cmd[@]}"
@@ -177,7 +183,8 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch row-li
       rm -rf -- "${legdir:?}"; return 1
     fi
   fi
-  rs_leg_done freecam "$slug" "$row" "$lod-$leg" "$log" "${slug}__${tag}${leg}__${target}-vk.png"
+  local -a done_files=("$png"); (( PG_CENSUS_ON )) && done_files+=("$(pg_census_name "$png")")
+  rs_leg_done freecam "$slug" "$row" "$lod-$leg" "$log" "${done_files[@]}"
   rm -rf -- "${legdir:?}"; return 0
 }
 

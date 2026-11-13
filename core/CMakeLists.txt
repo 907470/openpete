@@ -13,8 +13,10 @@ add_library(openpete_core STATIC
     # the sub-tick spine identity audit (OPENPETE_IDENT_AUDIT: composes
     # the canonical scene and the alpha-1 re-extract of the same tick and
     # reports their pixel difference), the per-present frame-time recorder
-    # (--frame-time-log PATH), the psxtrace schedule and verifier, and the
-    # host disc-read trace (OPENPETE_DISC_TRACE PATH).
+    # (--frame-time-log PATH), the psxtrace schedule and verifier, the
+    # host disc-read trace (OPENPETE_DISC_TRACE PATH), and the tile census
+    # (per-capture tallies of the presented scene and the sidecar beside
+    # each tile, OPENPETE_TILE_CENSUS; counter registry tile_census.def).
     diag/log.c
     diag/disc_trace.c
     diag/log_file.c
@@ -27,6 +29,7 @@ add_library(openpete_core STATIC
     diag/profile.c
     diag/func_trace.c
     diag/ident_audit.c
+    diag/tile_census.c
     diag/openpete_frame_time_log.c
     diag/psxtrace_ratchet.c
     diag/psxtrace_schedule.c
@@ -773,6 +776,17 @@ if(NOT CMAKE_HOST_WIN32)
     # interpolation alpha is (present clock - tick stamp) / period, and a
     # channel phased by op_now() sits at alpha~0 under eager production and
     # flakes under deterministic capture - both invisible to every gate.
+    # The tile census counts what every build composes; OPENPETE_TILE_CENSUS
+    # gates only the capture's tally record and sidecar write.
+    # scripts/fences/tile_census_accessor.py refuses its accessor outside the
+    # two capture helpers and a read of the variable outside its module, so
+    # setting it for a golden capture selects no code path.
+    add_custom_target(openpete_tile_census_guard ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking the tile-census accessor..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/tile_census_accessor.py tree ${CMAKE_SOURCE_DIR}
+        COMMENT "tile-census fence: the capture variable selects no code path"
+        VERBATIM)
+
     add_custom_target(openpete_clock_guard ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking scene-producer clocks..."
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/clock_guard.py ${CMAKE_SOURCE_DIR}
