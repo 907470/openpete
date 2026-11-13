@@ -169,6 +169,7 @@ scripts/golden-fleet.py stop <run-id>                       # every running and 
 | `--freecam-filter S` | Freecam rows whose name field or tile key (`<level>-<pose md5 prefix>`) contains `S`, in place of `--filter` for the freecam corpus; a tile key selects one pose. Without `--filter`, the bk2 rows and the credits leg run none. |
 | `--repeat N` | Capture every row the filters select `N` times on its one host and compare every copy against the blessed row (Repeat rows). Needs a filter. |
 | `--expect FILE` | Expected-moves file (Streamed divergences); a line naming a unit not in the run, or a substring matching nothing, refuses the run with exit 2 before it detaches. |
+| `--no-takeover` | Placement only: a free host never takes over a running unit (Takeover). |
 
 `run` detaches the coordinator (`setsid`) and prints its log and done
 marker, `<local fleet_root>/runs/<run-id>/coordinator.log` and `done`.
@@ -234,7 +235,9 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    (the supervisor's session by PID and start time, its containers by the
    label `org.openpete.fleet=<run-id>`) and re-queued, at most 2 attempts;
    a host unreachable for 10 min is dropped. A re-queued attempt on the same
-   host resumes at row level (Row resume, below). Every poll also reads the
+   host resumes at row level (Row resume, below). A free host that no
+   queued job fits takes over the running unit predicted to finish last
+   when that pays (Takeover, below). Every poll also reads the
    attempt's streamed row verdicts, pulls new divergences and renders their
    heat diffs, and acts on a `stop` request (Streamed divergences, below).
 7. Canary. With two or more capture hosts, every host first captures one
@@ -348,6 +351,57 @@ a synthetic candidate directory (no binary or image): a finished, a
 partial and a tampered row, another run id, binary, tree, LOD set,
 manifest line and filter, an interrupted import, concurrent legs, and
 resume off.
+
+## Takeover
+
+Placement gives each free host the next queued job, one per host. Once
+the queue holds nothing a free host may take, the host looks at the units
+running on the other hosts and takes over the one predicted to finish
+last, through the `move` mechanism: the running attempt is stopped, its
+stamped rows are carried to the free host (through the coordinator for a
+remote source), and the unit is re-queued pinned there; the new attempt
+imports the carried rows (Row resume), captures the rest and runs
+`--verdict-only` over the whole unit. The prediction, for running host
+`a` and free host `b`:
+
+| Term | Value |
+|---|---|
+| `done`, `total` | the running attempt's streamed SAME and DIVERGE tiles (imported included); the unit's blessed tiles |
+| `left` | `1 - done / total` |
+| `E`, `B` | the ledger's expected time at speed 1.00 and candidate bytes |
+| `rows` | the unit's corpus rows (bk2 rows and freecam levels) |
+| remaining on `a` | `left x E / s_a - E x min(slots_a, left x rows) / (2 x rows x s_a)`; the second term is the half-done rows in flight, which `b` recaptures |
+| cost | `120 s + hops x (1 - left) x B / 10 MiB/s`: kill, preflight, launch and import, plus the carry (one hop per remote host of the two) |
+| remaining on `b` | `left x E / s_b + cost` |
+| saving | remaining on `a` minus remaining on `b` |
+
+The takeover happens when `s_b > s_a` (never from a faster host to a
+slower one), remaining on `a` exceeds the cost, and the saving exceeds
+600 s (`TAKEOVER_MIN_SAVING_S`: a unit's time on the shared local host
+varies by tens of percent with user load, so a smaller saving is within
+the error of its prediction). A taken-over unit is taken over again only by
+the same test, so only by a still faster host. A refusal is logged once
+per free host and attempt (`takeover not taken: ...`). A unit whose done
+marker appears while its stop is in flight keeps that attempt's result;
+nothing is carried and the takeover is refused.
+
+Each takeover logs `takeover: <unit> on <a> -> <b>`, the share streamed,
+both predicted remaining times, the cost and the saving, then the rows and
+tiles carried. The summary prints, per takeover, the measured time on `b`
+(from the stop to its done marker) and the saving against the predicted
+remaining time on `a`. Takeover is off under `--no-takeover`, a filter,
+`OPENPETE_FLEET_STREAM=0` (no progress), `OPENPETE_FLEET_CANARY_ONLY`,
+`resume` and `calibrate`.
+
+The unit-time ledger prices a unit over the attempts that captured its
+rows: `norm_s` is wall x speed summed over the accepted attempt and each
+earlier attempt of the run whose stamped rows it imported (the previous
+attempt on the same host, or one a move carried), and `host` names the
+chain (`ptah>local`). A whole unit's single attempt gives the same row as
+before. Each attempt is priced at its own host's speed, which is how a
+single attempt is normalised; the rows in flight at each kill are counted
+twice (a few percent of a unit). A filtered unit, a resumed unit and an
+attempt that imported rows from outside the run write no row.
 
 ## Repeat rows
 
@@ -508,7 +562,11 @@ one) and runs `tests/harness/fleet-stream-check.py`, which places fake
 supervisors on this machine through the coordinator: poll framing, the
 unit-end check and its refusals under `OPENPETE_STREAM_DROP`, a kill in the
 last poll interval and the re-queued attempt, the exemptions, `stop`
-(running, pending, local, racing completion) and expected moves.
+(running, pending, local, racing completion) and expected moves. Its
+takeover cases run the coordinator over simulated hosts on a virtual clock
+(no ssh, no supervisor): the takeover of the last-finishing unit and its
+ledger row, a takeover that does not pay, a free slower host,
+`--no-takeover`, and a unit finishing while its stop is in flight.
 
 ## Exit codes
 

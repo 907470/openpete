@@ -11,6 +11,7 @@
     golden-fleet.py run [--game G | --all] [--tier T | --all-tiers]
                     [--hosts a,b | --no-local] [--pull divergent|all] [--wait]
                     [--expect FILE] [--filter S] [--freecam-filter S] [--repeat N]
+                    [--no-takeover]
     golden-fleet.py stop <run-id> [--unit U]
     golden-fleet.py move <run-id> --unit U --to <host> [--no-wait]
     golden-fleet.py resume <run-id> --unit U --to <host> [--from DIR]
@@ -123,10 +124,12 @@ coordinator:
      marker process, which a build lock can test for; it then hashes the
      synced disc bytes against the blessed headers;
   4. places units longest first (ledger fleet-unit-times.tsv beside the
-     store, one row per accepted whole unit: a filtered run's unit or one
-     whose accepted attempt imported stamped rows captured part of it and
-     writes no row; a unit without a record is scaled from the spyro-1
-     presentation unit's 60 min by candidate size) on free hosts, one per
+     store, one row per accepted unit: norm_s is wall x speed summed over
+     the accepted attempt and the earlier attempts of this run whose
+     stamped rows it imported (same host, or carried by a move), host the
+     chain `a>b`; a filtered run's unit, a resumed unit and an import from
+     outside the run write no row; a unit without a record is scaled from
+     the spyro-1 presentation unit's 60 min by candidate size) on free hosts, one per
      host, each under a detached supervisor holding the host golden lock,
      with CORPUS_JOBS = slots, PRESENTATION_LEG_TIMEOUT = 300 / speed x 1.5 and the deadline
      expected time / speed x 2; a lost, dead or overdue attempt is killed
@@ -138,7 +141,9 @@ coordinator:
      on the same host imports the stamped rows whose run, tree, binary,
      manifest line and tile digests match, deletes the rest of the previous
      attempt's output and captures only the other rows (`move` and `resume`
-     carry the stamped rows to another host);
+     carry the stamped rows to another host); a free host with no queued
+     job takes over the running unit predicted to finish last (Takeover,
+     below), unless --no-takeover;
   5. runs a canary (one bk2 and one freecam level of the first unit's game)
      on every host first when two or more hosts capture, and refuses the run
      when a canary tile's digest differs between hosts; at the run's end
@@ -269,8 +274,9 @@ reads the request once per loop iteration after the legs start and:
      source, its binaries against ship/binaries.sha256 and its disc against
      the blessed header, and its base refreshed. A joiner and every run host
      without a canary get one, compared at the run's end as at run start;
-  3. stops the unit's running attempt (an attempt that finished first keeps
-     its result and the move is refused); its rows in flight are lost, every
+  3. stops the unit's running attempt (an attempt that finished first, or
+     whose done marker appears while the stop is in flight, keeps its result
+     and the move is refused); its rows in flight are lost, every
      stamped row is kept. The stopped attempt does not count against
      MAX_ATTEMPTS;
   4. copies that attempt's stamps and the files they name into
@@ -279,8 +285,33 @@ reads the request once per loop iteration after the legs start and:
      import accepts them under the importer's own checks (run, tree, binary,
      manifest line, tile digests) and streams them tagged `imported`, so the
      unit's verdict, stream check and expected-move tags cover every row. A
-     moved unit writes no ledger row; its result line names each move. A
+     moved unit's ledger row sums its attempts (step 4); its result line
+     names each move. A
      moved unit whose pinned host is later dropped is unpinned.
+
+Takeover: each loop iteration, a free, undropped host that no queued job
+fits looks at the running units of the other hosts. With done = the
+running attempt's streamed SAME and DIVERGE tiles (imported included),
+total = the unit's blessed tiles, left = 1 - done/total, rows = its corpus
+rows, E = the ledger's expected time at speed 1.00, B = its candidate
+bytes, s_a and slots_a the running host's speed and slots, s_b the free
+host's speed and hops the carry's transfers (1 per remote host of the two):
+  remaining on a = left x E / s_a - E x min(slots_a, left x rows) / (2 x rows x s_a)
+  cost           = TAKEOVER_FIXED_S (120) + hops x (1 - left) x B / CARRY_BPS (10 MiB/s)
+  remaining on b = left x E / s_b + cost
+  saving         = remaining on a - remaining on b
+(the subtracted term is the half-done rows in flight on a, which b
+recaptures). The unit with the largest remaining on a is taken over through
+`move` when s_b > s_a, remaining on a exceeds the cost and the saving
+exceeds TAKEOVER_MIN_SAVING_S (600 s); a refusal is logged once per free
+host and attempt. A taken-over unit is taken over again only by the same
+test (so only by a faster host). A unit whose done marker appears while
+its stop is in flight keeps that attempt's result and nothing is carried.
+Each takeover logs the unit, both hosts, the prediction and the rows
+carried; the summary prints each one's measured time on the receiving host
+and its saving against the predicted remaining time on the source. Off
+under --no-takeover, a filter, OPENPETE_FLEET_STREAM=0, CANARY_ONLY,
+resume and calibrate.
 
 resume: finishes a unit whose run is done (a stop, lost host or exhausted
 attempts; refused when its last logged result is a verdict, while the run's
@@ -378,6 +409,22 @@ POLL_S = 20
 START_GRACE_S = 120
 GRACE_S = 600
 MAX_ATTEMPTS = 2
+# Takeover (a free host with no queued job takes over the running unit
+# predicted to finish last; Coordinator.take_over). The fixed cost is the kill
+# (KILL_SCRIPT's 10 s TERM grace and the container removal), the receiving
+# host's preflight, the launch and container start, and the importer's
+# digest check of the carried tiles; the receiving host already holds the
+# run's snapshot, so no sync is owed. The carry runs at CARRY_BPS per hop
+# (the coordinator relays a remote source's rows, so remote -> remote is two
+# hops), the rate of the run-start sync to a remote host.
+TAKEOVER_FIXED_S = 120
+CARRY_BPS = 10 * 2**20
+# The saving a takeover must predict: the ledger's times of one unit on the
+# shared local host vary by tens of percent with user load, so a saving
+# under 10 min is within the error of the prediction it rests on, and a
+# takeover that does not pay costs the run its fixed cost and the source's
+# rows in flight.
+TAKEOVER_MIN_SAVING_S = 600
 TREE_MAX_AGE_S = 14 * 86400
 # Files of the coordinator's local run directory that outlive the run.
 RUN_KEEP = ("coordinator.log", "done", "active.lock", "stream.log", "expect.txt", "stop-request",
@@ -559,10 +606,6 @@ def script_repo():
 
 def default_hosts_path():
     """Return ${XDG_CONFIG_HOME:-~/.config}/openpete/fleet-hosts.toml."""
-    common = subprocess.run(
-        ["git", "-C", script_repo(), "rev-parse", "--path-format=absolute",
-         "--git-common-dir"], capture_output=True, text=True, check=True).stdout.strip()
-    main = os.path.dirname(common.rstrip("/"))
     cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return os.path.join(cfg, "openpete", "fleet-hosts.toml")
 
@@ -2038,6 +2081,49 @@ def cand_bytes(unit, ledger):
     return UNIT_MB[unit] * 10**6
 
 
+def takeover_prediction(done, total, rows, norm_s, cand_b, src_speed, src_slots, dst_speed, hops):
+    """Return the predicted remaining wall times of a running unit on its host and on a takeover host, and the saving.
+
+    left = 1 - done / total is the unit's share not yet streamed (tiles). On
+    the source, left x norm_s / src_speed counts the rows in flight as not
+    started; they are on average half done, so their half is subtracted:
+    in_flight = norm_s x min(src_slots, left x rows) / (2 x rows x src_speed),
+    one row taking norm_s x src_slots / (rows x src_speed) of wall at
+    src_slots rows in parallel. The takeover host recaptures every row not
+    stamped, rows in flight included: left x norm_s / dst_speed, plus the
+    cost TAKEOVER_FIXED_S + hops x (done / total) x cand_b / CARRY_BPS.
+    @param done tiles the running attempt has streamed (imported included)
+    @param total blessed tiles of the unit
+    @param rows corpus rows of the unit
+    @param norm_s the unit's expected wall time at speed 1.00
+    @param cand_b the unit's candidate-set bytes
+    @param src_speed the running host's speed
+    @param src_slots the running host's slots
+    @param dst_speed the free host's speed
+    @param hops transfers of the carried rows (0 to 2)
+    @return dict of left, src_s, dst_s, cost_s, carry_s, saving_s
+    """
+    left = max(0.0, 1.0 - done / total) if total else 1.0
+    in_flight = norm_s * min(src_slots, left * rows) / (2 * rows * src_speed) if rows else 0.0
+    src_s = max(0.0, left * norm_s / src_speed - in_flight)
+    carry_s = hops * (1.0 - left) * cand_b / CARRY_BPS
+    cost_s = TAKEOVER_FIXED_S + carry_s
+    dst_s = left * norm_s / dst_speed + cost_s
+    return {"left": left, "src_s": src_s, "dst_s": dst_s, "cost_s": cost_s, "carry_s": carry_s,
+            "saving_s": src_s - dst_s}
+
+
+def takeover_refusal(pred, src_speed, dst_speed):
+    """Return why a takeover does not pay ('' when it does): a slower or equal host, a remainder under the cost, a saving under the threshold."""
+    if dst_speed <= src_speed:
+        return f"speed {dst_speed:.2f} is not above the source's {src_speed:.2f}"
+    if pred["src_s"] <= pred["cost_s"]:
+        return f"remaining {pred['src_s']:.0f} s is under the takeover cost {pred['cost_s']:.0f} s"
+    if pred["saving_s"] <= TAKEOVER_MIN_SAVING_S:
+        return f"saving {pred['saving_s']:.0f} s is under {TAKEOVER_MIN_SAVING_S} s"
+    return ""
+
+
 def lp_threads(info, slots):
     """Return LP_NUM_THREADS for a host: $LP_NUM_THREADS, else ceil(cores / slots).
 
@@ -2302,6 +2388,8 @@ class Job:
         self.attempts = 0
         self.moves = 0            # attempts ended by a move, outside the MAX_ATTEMPTS budget
         self.moved = []           # (from host, to host) per move, in order
+        self.carried = set()      # attempt numbers whose stamped rows a move carried on
+        self.last_carry = (0, 0)  # (rows, -vk.png tiles) of the last move's carry
         self.result = None
         self.atts = {}
         self.stopped = False
@@ -2331,6 +2419,7 @@ class Attempt:
         job.attempts += 1
         self.job, self.hs, self.n = job, hs, job.attempts
         self.t0 = time.monotonic()
+        self.t_end = None         # coordinator clock at its done marker, kill or loss
         self.deadline = self.t0 + deadline_s
         self.lost_since = None
         self.stream_off = 0       # bytes of <base>.stream read so far
@@ -2417,6 +2506,9 @@ class Coordinator:
         self.src_bytes = 0
         self.move_path = os.path.join(local_run_dir, "move-request")
         self.moves_seen = set()
+        self.takeovers = []       # one dict per takeover: job, hosts, prediction, rows carried
+        self.takeover_noted = set()
+        self.size_cache = {}
 
     @staticmethod
     def parse_poke(spec):
@@ -2821,6 +2913,7 @@ class Coordinator:
             while True:
                 self.apply_stop(pending)
                 self.apply_moves(pending, on_done)
+                self.take_over(pending, on_done)
                 self.place(pending, deadline)
                 running = [hs for hs in self.hosts if hs.current]
                 if not running:
@@ -2902,6 +2995,7 @@ class Coordinator:
         for line in out.splitlines():
             if not line.startswith("lock="):
                 print(f"[fleet] {hs.name}: {line}")
+        att.t_end = att.t_end or time.monotonic()
         if "lock=free" not in out:
             self.drop(hs, "could not confirm the golden lock released after a kill")
 
@@ -3166,9 +3260,18 @@ class Coordinator:
                 self.finish_attempt(att, parse_kv(state[1].replace(" ", "\n")), pending, on_done)
                 raise FleetError(f"{name} finished before the move; its result stands")
             self.kill_attempt(att)
+            # The supervisor may have written its done marker while the kill
+            # was in flight: the attempt finished, and its result stands.
+            state = self.poll_attempt(att)
+            if state and state[0] == "done":
+                self.finish_attempt(att, parse_kv(state[1].replace(" ", "\n")), pending, on_done)
+                raise FleetError(f"{name} finished while its stop was in flight; its result stands")
             running.current = None
             job.moves += 1
         rows, png = self.carry_rows(att, tgt) if att else (0, 0)
+        if att:
+            job.carried.add(att.n)
+        job.last_carry = (rows, png)
         src = att.hs.name if att else "-"
         job.moved.append((src, to))
         job.pinned = to
@@ -3186,6 +3289,100 @@ class Coordinator:
             self.measure_skew([tgt])
         return (f"{name} {'attempt ' + str(att.n) + ' on ' if att else ''}{src} -> {to}: "
                 f"carried {rows} row(s), {png} tile(s); re-queued pinned to {to}")
+
+    # -- takeover: a free host takes over the unit predicted to finish last --
+
+    def takeover_enabled(self):
+        """True when units stream rows (progress), import carried rows and capture whole corpora, and run --no-takeover is unset."""
+        return (self.resume and self.stream and not self.resumed and not self.canary_only
+                and not self.filtered() and not getattr(self.a, "no_takeover", False))
+
+    def unit_size(self, job):
+        """Return a unit's (blessed tiles, corpus rows), cached."""
+        if job.unit not in self.size_cache:
+            self.size_cache[job.unit] = (len(self.pb.load_manifest(job.game, job.tier).rows),
+                                         len(corpus_row_names(self.tree, job.game, job.tier)))
+        return self.size_cache[job.unit]
+
+    @staticmethod
+    def streamed_tiles(att):
+        """Return the number of blessed tiles an attempt has streamed (SAME or DIVERGE, imported included)."""
+        return len({r["tile"] for r in att.lines if r["verb"] in ("SAME", "DIVERGE")})
+
+    def predict(self, att, dst):
+        """Return takeover_prediction for a running unit attempt moving to host dst."""
+        job, src = att.job, att.hs
+        total, rows = self.unit_size(job)
+        hops = int(not src.host.local) + int(not dst.host.local)
+        return takeover_prediction(self.streamed_tiles(att), total, rows,
+                                   expected_s(job.unit, self.ledger), cand_bytes(job.unit, self.ledger),
+                                   src.speed, src.slots, dst.speed, hops)
+
+    def take_over(self, pending, on_done):
+        """Give each free host with no queued job the running unit predicted to finish last, when takeover_refusal passes; act through move().
+
+        A refusal is logged once per free host and attempt. A takeover whose
+        move is refused (the unit finished first, the host failed its
+        preflight) leaves the unit where it was.
+        """
+        if not self.takeover_enabled():
+            return
+        for hs in sorted(self.hosts, key=lambda h: -h.speed):
+            if hs.current or hs.dropped or not hs.touched or self.next_job(pending, hs):
+                continue
+            running = [h.current for h in self.hosts
+                       if h is not hs and h.current and h.current.job.kind == "unit"
+                       and h.current.job.result is None and not h.current.job.stopped]
+            if not running:
+                continue
+            preds = {id(a): self.predict(a, hs) for a in running}
+            att = max(running, key=lambda a: preds[id(a)]["src_s"])
+            pred = preds[id(att)]
+            src, job = att.hs, att.job
+            why = takeover_refusal(pred, src.speed, hs.speed)
+            text = (f"{job.name} on {src.name} -> {hs.name}: {1 - pred['left']:.0%} streamed; predicted "
+                    f"remaining {pred['src_s']:.0f} s on {src.name}, {pred['dst_s']:.0f} s on "
+                    f"{hs.name} (cost {pred['cost_s']:.0f} s: fixed {TAKEOVER_FIXED_S} + carry "
+                    f"{pred['carry_s']:.0f}), saving {pred['saving_s']:.0f} s")
+            if why:
+                key = (hs.name, job.name, att.n)
+                if key not in self.takeover_noted:
+                    self.takeover_noted.add(key)
+                    print(f"[fleet] takeover not taken: {text}; {why}")
+                continue
+            print(f"[fleet] takeover: {text} (threshold {TAKEOVER_MIN_SAVING_S} s)")
+            t0 = time.monotonic()
+            try:
+                note = self.move(job.name, hs.name, pending, on_done)
+            except FleetError as e:
+                print(f"[fleet] takeover of {job.name} refused: {e}")
+                continue
+            rows, png = job.last_carry
+            print(f"[fleet] takeover: {note}")
+            self.takeovers.append({"job": job, "src": src.name, "dst": hs.name, "t": t0,
+                                   "pred": pred, "rows": rows, "tiles": png})
+
+    def takeover_summary(self):
+        """Print each takeover's prediction beside the measured remaining time on the receiving host.
+
+        The receiving host's time runs from the takeover's start (the kill)
+        to the done marker of the attempt it launched; the saving against
+        the prediction is the source's predicted remaining time minus it,
+        since the source's own finish was not observed.
+        """
+        for tk in self.takeovers:
+            job, pred = tk["job"], tk["pred"]
+            r = job.result or {}
+            att = job.atts.get(r.get("attempt"))
+            head = (f"[fleet] takeover {job.name} {tk['src']} -> {tk['dst']} ({tk['rows']} row(s), "
+                    f"{tk['tiles']} tile(s) carried): predicted {pred['src_s']:.0f} s on "
+                    f"{tk['src']}, {pred['dst_s']:.0f} s on {tk['dst']}, saving {pred['saving_s']:.0f} s")
+            if att is None or att.hs.name != tk["dst"] or att.t_end is None or job.stopped:
+                print(f"{head}; not measured ({r.get('status') or 'no result'} on {r.get('host', '-')})")
+                continue
+            got = att.t_end - tk["t"]
+            print(f"{head}; measured {got:.0f} s on {tk['dst']}, saving {pred['src_s'] - got:.0f} s "
+                  f"against the predicted {pred['src_s']:.0f} s on {tk['src']}")
 
     def keep_unfinished(self):
         """Keep each unfinished unit's stamped rows, the ship directory and the local snapshot under <local run dir>/kept, which `resume` reads.
@@ -3458,6 +3655,7 @@ class Coordinator:
     def requeue(self, att, pending, killed):
         """Re-queue an attempt's job while attempts remain, else record its failure."""
         att.hs.current = None
+        att.t_end = att.t_end or time.monotonic()
         job = att.job
         if job.attempts - job.moves < MAX_ATTEMPTS and job.kind != "build":
             pending.insert(0, job)
@@ -3471,6 +3669,7 @@ class Coordinator:
         """Accept the current attempt's done marker (or drop a busy host) and record the result."""
         hs, job = att.hs, att.job
         hs.current = None
+        att.t_end = time.monotonic()
         if str(done.get("attempt")) != str(att.n):
             print(f"[fleet] {hs.name}: {job.name}: done marker of attempt {done.get('attempt')} "
                   f"ignored (current {att.n})")
@@ -3522,8 +3721,7 @@ class Coordinator:
                 job.result.update(rc=1, status="; ".join(errs))
                 for e in errs:
                     print(f"[fleet] {job.name}: REFUSED: {e}")
-            elif job.result["rc"] in (0, 1) and not job.moved and not self.resumed \
-                    and not self.partial(job):
+            elif job.result["rc"] in (0, 1):
                 self.record_time(job)
         if self.stream:
             att = job.atts.get(job.result.get("attempt"))
@@ -3680,22 +3878,52 @@ class Coordinator:
             if not line.startswith("ok "):
                 print(f"[fleet] {job.name}: {line}")
 
-    def partial(self, job):
-        """True when a unit's accepted attempt captured part of the unit: a filtered run, or an attempt that imported stamped rows.
+    def unit_time(self, job):
+        """Return (wall_s, norm_s, hosts) of an accepted unit over the attempts that captured its rows, or None when the time is not the whole unit's.
 
-        Its wall time does not price the whole unit, so it writes no ledger
-        row: expected_s reads the latest row as the whole unit's time and
-        the deadline is that time / speed x 2.
+        norm_s sums wall x speed over the accepted attempt and, when it
+        imported stamped rows, each earlier attempt whose rows it imported:
+        walking back, an attempt counts while it ran on the same host as
+        its successor (a re-queue imports from the unit directory) or a
+        move carried its rows. Each attempt's time is priced at its own
+        host's speed, so the sum estimates the unit at speed 1.00 the way a
+        single attempt's wall x speed does, and a whole unit's row is
+        unchanged. Over-count: the rows in flight at each kill, recaptured.
+        None: a filtered run, a resumed unit, an import whose source attempt
+        is not this coordinator's, or an attempt time not recorded.
         """
-        return self.filtered() or job.result.get("imported_rows", 0) > 0
+        r = job.result
+        att = job.atts.get(r.get("attempt"))
+        if att is None or self.filtered() or self.resumed:
+            return None
+        chain = [(att, float(r["wall"]))]
+        if r.get("imported_rows", 0) > 0:
+            cur = att
+            for n in range(att.n - 1, 0, -1):
+                prev = job.atts.get(n)
+                if prev is None or not (prev.hs is cur.hs or n in job.carried):
+                    break
+                if prev.t_end is None:
+                    return None
+                chain.append((prev, prev.t_end - prev.t0))
+                cur = prev
+            if len(chain) == 1:
+                return None
+        wall = sum(w for _a, w in chain)
+        norm = sum(w * a.hs.speed for a, w in chain)
+        return wall, norm, ">".join(a.hs.name for a, _w in reversed(chain))
 
     def record_time(self, job):
-        """Append an accepted unit's time to the ledger."""
-        r = job.result
+        """Append an accepted unit's time (unit_time) to the ledger; nothing when it has none."""
+        got = self.unit_time(job)
+        if got is None:
+            return
+        wall, norm, hosts = got
         append_ledger({"date": datetime.datetime.now().isoformat(timespec="seconds"),
                        "run": self.run_id, "game": job.game, "tier": job.tier,
-                       "host": r["host"], "speed": f"{r['speed']:.2f}", "wall_s": r["wall"],
-                       "norm_s": int(r["wall"] * r["speed"]), "cand_bytes": r["cand_bytes"]})
+                       "host": hosts, "speed": f"{norm / wall if wall else job.result['speed']:.2f}",
+                       "wall_s": int(wall), "norm_s": int(norm),
+                       "cand_bytes": job.result["cand_bytes"]})
 
     def compare_canaries(self, jobs):
         """Refuse the run when a canary tile's digest differs between hosts (step 8); write the per-host verdict file."""
@@ -3912,6 +4140,7 @@ class Coordinator:
                 print(f"[fleet] result {j.name}: repeat {r['repeat']}")
             if r.get("stream_mismatch"):
                 print(f"[fleet] result {j.name}: stream mismatch: {r['stream_mismatch']}")
+        self.takeover_summary()
         if self.expect:
             self.expect_summary()
         print(f"[fleet] run {self.run_id}: " + {0: "PASS", EXIT_SKIP: "SKIP"}.get(rc, "FAIL")
@@ -5124,6 +5353,8 @@ def main(argv=None):
     p.add_argument("--wait", action="store_true", help="follow the detached run to its end")
     p.add_argument("--expect", metavar="FILE",
                    help="expected-moves file: `<unit> <tile substring> <reason>` per line")
+    p.add_argument("--no-takeover", action="store_true",
+                   help="never move a running unit to a free faster host (placement only)")
     p.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--run-id", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_run)

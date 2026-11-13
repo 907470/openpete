@@ -56,7 +56,8 @@ write. Cases (each prints its counts):
               unit's own host refused; an accepted move to a second host of
               the run carries the stamped rows (not an unstamped tile), the
               re-queued attempt runs pinned there outside the attempt budget,
-              its stream covers every row, no ledger row; a finished unit
+              its stream covers every row, one ledger row over both
+              attempts (host local>b); a finished unit
               refused; the CLI's request line, unknown host, done run and
               unknown run
   keep        a stopped unit's stamped rows and ship kept under kept/ at
@@ -66,20 +67,30 @@ write. Cases (each prints its counts):
               exhausted` and its last attempt's stamped rows are kept the
               same way
   ledger      a whole unit writes a ledger row; a filtered run's unit and an
-              accepted attempt that imported stamped rows write none, so the
-              deadline on a speed-0.25 host stays the whole unit's time /
-              speed x 2
+              accepted attempt that imported stamped rows from no attempt of
+              this run write none, so the deadline on a speed-0.25 host stays
+              the whole unit's time / speed x 2
   repeat      run --repeat N: the unit's FILTERS carry --repeat=N (a
               canary's do not); a unit of copy tiles streams SAME, equals its
               report and passes; its result names the row's divergent count
               of N x legs; check_report refuses fewer compared than N x legs,
               a report repeat count unlike the run's, a repeat that compared
               nothing and a report without a repeat-row line
+  takeover-rule  takeover_prediction and takeover_refusal on fixed numbers
+  takeover    simulated hosts (local 1.00, steam-machine 0.47, ptah 0.25) on
+              a virtual clock (SimCo): the free local host takes over the
+              unit predicted to finish last (spyro-2 on ptah), a later
+              takeover saving under the threshold is not taken, the run
+              ends earlier than under --no-takeover, the moved unit's
+              stream holds every tile once and its ledger row sums both
+              attempts (ptah>local); --no-takeover evaluates nothing
+  takeover-slow  a free host slower than the running unit's takes nothing
+  takeover-race  the unit finishes while its stop is in flight: its own
+              attempt's result, no carry, one ledger row
 
 Exit: 0 every case holds, 1 a case failed (named).
 """
 import argparse
-import fcntl
 import importlib.util
 import os
 import shutil
@@ -434,7 +445,7 @@ def case_kill(tmp):
     imported = "\n".join(f"emit_imported SAME {t} 0123456789abcdef" for t in a + b)
     co.plan(UNIT, imported + "\n" + "\n".join(f"emit SAME {t} 0123456789abcdef" for t in c)
             + "\nemit CREDITS rc=0\nemit END\n"
-            + f"report 'verdict: PASS' 'exit: 0' 'compared: 6' 'credits-rc: 0'\nfinish 0 verdict\n",
+            + "report 'verdict: PASS' 'exit: 0' 'compared: 6' 'credits-rc: 0'\nfinish 0 verdict\n",
             attempt=2)
 
     def hook(att):
@@ -875,14 +886,14 @@ class MoveCo(FakeCo):
 
 
 def case_move(tmp):
-    """`move`: refusals, an accepted move carrying stamped rows to another host, a pinned re-queue outside the attempt budget, no ledger row."""
+    """`move`: refusals, an accepted move carrying stamped rows to another host, a pinned re-queue outside the attempt budget, one ledger row over both attempts."""
     n0 = len(ledger_rows())
     a, b = TILES[0:2], TILES[2:4]
     co = MoveCo(tmp, "move")
     co.hosts = [co.hs, co.hb]
     stamp = "".join(f"tile: 00 {t}\\n" for t in a)
     rows_a = "\n".join(f"emit SAME {t} 0123456789abcdef" for t in a)
-    co.plan_on(co.hs, UNIT, f'mkdir -p "$UNIT_DIR/cand/resume"\n'
+    co.plan_on(co.hs, UNIT, 'mkdir -p "$UNIT_DIR/cand/resume"\n'
                + "".join(f'echo png >"$UNIT_DIR/cand/{t}"\n' for t in a)
                + f'printf "run: r\\n{stamp}" >"$UNIT_DIR/cand/resume/bk2.rowa.stamp"\n'
                + 'echo partial >"$UNIT_DIR/cand/unstamped-vk.png"\n'
@@ -894,8 +905,8 @@ def case_move(tmp):
                + "\n".join(f"emit_imported SAME {t} 0123456789abcdef" for t in a) + "\n"
                + "\n".join(f"emit SAME {t} 0123456789abcdef" for t in b)
                + "\nemit CREDITS rc=0\nemit END\n"
-               + "report 'verdict: PASS' 'exit: 0' 'compared: 4' 'credits-rc: 0'\nfinish 0 verdict\n",
-               attempt=2)
+               + "report 'verdict: PASS' 'exit: 0' 'compared: 4' 'credits-rc: 0' 'imported-rows: 1'\n"
+               + "finish 0 verdict\n", attempt=2)
     co.request_move_later(1.0, ["id=r1 unit=spyro-9-presentation to=b",
                                 f"id=r2 unit={UNIT} to=nowhere",
                                 f"id=r3 unit={UNIT} to=local",
@@ -910,10 +921,12 @@ def case_move(tmp):
     check("move", verdicts == ["refused", "refused", "refused", "accepted"]
           and job.result["rc"] == 0 and job.result["host"] == "b" and job.result["attempt"] == 2
           and job.moves == 1 and job.moved == [("local", "b")] and job.pinned == "b"
-          and keys >= want and not job.result.get("stream_mismatch") and len(ledger_rows()) == n0,
+          and keys >= want and not job.result.get("stream_mismatch") and len(ledger_rows()) == n0 + 1
+          and ledger_rows()[-1].split("\t")[gf.LEDGER_COLS.index("host")] == "local>b",
           f"moves.log {verdicts}; result rc {job.result['rc']} on {job.result['host']} attempt "
           f"{job.result.get('attempt')}; moves {job.moves} {job.moved}; stream keys of attempt 2 "
-          f"cover the unmoved tiles: {keys >= want}; ledger rows +{len(ledger_rows()) - n0}; "
+          f"cover the unmoved tiles: {keys >= want}; ledger rows +{len(ledger_rows()) - n0} "
+          f"({ledger_rows()[-1].split(chr(9))[gf.LEDGER_COLS.index('host')] if ledger_rows() else '-'}); "
           f"accepted line: {log[-1] if log else '-'}")
     co.request_move_later(0.0, [f"id=r5 unit={UNIT} to=local"])
     time.sleep(0.2)
@@ -1198,6 +1211,244 @@ def case_run_candidate(tmp):
           f"entries {sorted(os.listdir(dest))}")
 
 
+class SimClock:
+    """A virtual clock standing in for golden-fleet.py's `time` module: sleep advances it."""
+
+    def __init__(self):
+        """Start at 0."""
+        self.t = 0.0
+
+    def monotonic(self):
+        """The virtual time."""
+        return self.t
+
+    def time(self):
+        """The virtual time as an epoch."""
+        return 1.0e9 + self.t
+
+    def sleep(self, s):
+        """Advance the virtual time."""
+        self.t += s
+
+
+SIM_TILES, SIM_ROWS = 640, 64          # per unit; a row is 10 tiles, streamed when the row finishes
+SIM_START_S, SIM_KILL_S = 30, 10       # supervisor start to the first leg; KILL_SCRIPT's wall
+SIM_HOSTS = (("local", True, 1.00, 6), ("steam-machine", False, 0.47, 4), ("ptah", False, 0.25, 4))
+SIM_NORM = {"spyro-1": 3450, "spyro-2": 2970, "spyro-3": 3650}
+
+
+class SimCo(gf.Coordinator):
+    """A Coordinator over simulated hosts on a virtual clock: no ssh, no supervisor, no capture.
+
+    Each host captures a unit's rows in order at norm_s / speed for the
+    whole unit, streaming a row's tiles as it finishes; launch, poll, kill,
+    carry, admit and pull are replaced, and run_jobs, take_over, move,
+    finish_attempt, unit_done and the ledger run as they are. race_unit's
+    attempt finishes while a kill of it is in flight.
+    """
+
+    def __init__(self, tmp, name, norm=None, hosts=SIM_HOSTS, no_takeover=False, race_unit=None):
+        """Build the run directory, the ledger times and the hosts."""
+        self.tmp = os.path.join(tmp, name)
+        local = os.path.join(self.tmp, "local")
+        os.makedirs(local)
+        a = argparse.Namespace(game="spyro-1", tier=TIER, all=True, all_tiers=False, hosts="",
+                               no_local=False, pull="divergent", expect=None, filter=None,
+                               freecam_filter=None, repeat=None, no_takeover=no_takeover)
+        super().__init__(a, f"sim-{name}", local)
+        self.ledger = {(g, TIER): {"norm_s": str(n), "cand_bytes": str(10**9)}
+                       for g, n in (norm or SIM_NORM).items()}
+        for hname, is_local, speed, slots in hosts:
+            cfg = {"transport": "local" if is_local else "ssh", "ssh": f"sim@{hname}", "speed": speed}
+            hs = gf.HostState(gf.Host(hname, cfg), {"root": f"/sim/{hname}", "engine": "podman"},
+                              slots, self.run_id)
+            hs.touched = True
+            self.hosts.append(hs)
+            self.skew[hname] = 0.0
+        self.race_unit = race_unit
+        self.carry = {}
+
+    def canary_on(self):
+        """No canary: the schedule of the units alone."""
+        return False
+
+    def unit_size(self, job):
+        """Every simulated unit has SIM_TILES tiles in SIM_ROWS rows."""
+        return SIM_TILES, SIM_ROWS
+
+    def stream_dir(self, job):
+        """Stream pulls into the case's own directory."""
+        return os.path.join(self.tmp, "stream", job.name)
+
+    def launch(self, job, hs, deadline_s):
+        """Start a simulated attempt: its carried rows import at once, the rest capture at the host's speed."""
+        att = gf.Attempt(job, hs, deadline_s)
+        hs.current = att
+        att.imported = self.carry.pop(job.name, 0)
+        att.start = gf.time.monotonic() + SIM_START_S
+        att.row_s = gf.expected_s(job.unit, self.ledger) / hs.speed / SIM_ROWS
+        att.finish_at = att.start + (SIM_TILES - att.imported) // 10 * att.row_s
+        att.emitted, att.killed, att.done = 0, False, False
+        print(f"[fleet] {hs.name}: {job.name} attempt {att.n} started (sim, {att.imported} tile(s) "
+              f"imported, finish at {att.finish_at:.0f} s)")
+        return att
+
+    def emit(self, att):
+        """Stream the tiles the attempt has finished by now (imported first)."""
+        now = gf.time.monotonic()
+        own = 0 if att.killed else min(SIM_TILES - att.imported,
+                                        int(max(0.0, now - att.start) // att.row_s) * 10)
+        if att.done:
+            own = SIM_TILES - att.imported
+        while att.emitted < att.imported + own:
+            i = att.emitted
+            tag = " imported" if i < att.imported else ""
+            self.receive_line(att, f"SAME {att.job.name}-t{i:03d}-vk.png 0123456789abcdef "
+                                   f"{gf.time.time():.3f}{tag}")
+            att.emitted += 1
+
+    def poll_attempt(self, att):
+        """Report the simulated attempt's state: done at its finish time, dead once killed."""
+        if att.killed:
+            return ["dead"]
+        if gf.time.monotonic() >= att.finish_at:
+            att.done = True
+        self.emit(att)
+        if att.done:
+            return ["done", f"rc=0 status=verdict attempt={att.n} "
+                            f"wall={int(att.finish_at - att.t0)} cand-bytes=1000"]
+        return ["running"]
+
+    def kill_attempt(self, att):
+        """Spend SIM_KILL_S; the race unit finishes inside it, else the attempt dies."""
+        self.emit(att)
+        if att.job.name == self.race_unit:
+            att.finish_at = gf.time.monotonic() + SIM_KILL_S / 2
+        gf.time.sleep(SIM_KILL_S)
+        if gf.time.monotonic() >= att.finish_at:
+            att.done = True
+        else:
+            att.killed = True
+        att.t_end = att.t_end or gf.time.monotonic()
+
+    def carry_rows(self, att, tgt):
+        """Carry the attempt's finished rows (every streamed tile is a stamped row's)."""
+        tiles = att.emitted // 10 * 10
+        self.carry[att.job.name] = tiles
+        return tiles // 10, tiles
+
+    def add_host(self, name):
+        """Admit a host of the run as is."""
+        return self.host_state(name)
+
+    def pull_unit(self, job, hs):
+        """Record the census the importer would report."""
+        att = job.atts[job.result["attempt"]]
+        job.result["imported_rows"] = att.imported // 10
+        job.result["census"] = f"captured={SIM_TILES - att.imported} imported={att.imported}"
+        return []
+
+    def go(self):
+        """Run the units to their results on the virtual clock; return the run's end time."""
+        real, gf.time = gf.time, SimClock()
+        try:
+            self.jobs = self.make_jobs()
+            self.run_jobs(self.jobs, on_done=self.unit_done)
+            self.print_summary(self.run_rc())
+            return gf.time.monotonic()
+        finally:
+            gf.time = real
+
+
+def sim_ledger(run_id):
+    """The redirected ledger's rows of one run, as dicts keyed by game."""
+    rows = [dict(zip(gf.LEDGER_COLS, ln.split("\t"))) for ln in ledger_rows()]
+    return {r["game"]: r for r in rows if r["run"] == run_id}
+
+
+def case_takeover(tmp):
+    """Simulated three-host schedule: the free fast host takes over the unit predicted to finish last, a non-paying one is not taken, --no-takeover keeps placement only, the ledger prices the moved unit over both attempts."""
+    base = SimCo(tmp, "takeover-off", no_takeover=True)
+    end_off = base.go()
+    co = SimCo(tmp, "takeover-on")
+    end_on = co.go()
+    jobs = {j.game: j for j in co.jobs}
+    tks = co.takeovers
+    s2 = jobs["spyro-2"]
+    att1, att2 = s2.atts.get(1), s2.atts.get(s2.result.get("attempt"))
+    tiles = [r["tile"] for r in att2.lines] if att2 else []
+    imported = sum(1 for r in att2.lines if r["imported"]) if att2 else 0
+    noted = [k for k in co.takeover_noted if k[1] == "spyro-1-presentation"]
+    check("takeover", len(tks) == 1 and tks[0]["job"] is s2 and tks[0]["src"] == "ptah"
+          and tks[0]["dst"] == "local" and s2.result["host"] == "local" and s2.moved == [("ptah", "local")]
+          and len(tiles) == len(set(tiles)) == SIM_TILES and imported == tks[0]["tiles"] > 0
+          and noted and jobs["spyro-1"].result["host"] == "steam-machine"
+          and end_on < end_off - gf.TAKEOVER_MIN_SAVING_S,
+          f"takeovers {[(t['job'].name, t['src'], t['dst'], t['rows']) for t in tks]}; spyro-2 on "
+          f"{s2.result['host']} ({len(tiles)} tiles streamed, {len(set(tiles))} distinct, {imported} "
+          f"imported); spyro-1 not taken {noted}; end {end_on:.0f} s, {end_off:.0f} s without")
+    off = [j.result["host"] for j in base.jobs]
+    check("takeover-off", not base.takeovers and not base.takeover_noted
+          and all(not j.moved for j in base.jobs) and sorted(off) == ["local", "ptah", "steam-machine"],
+          f"--no-takeover: takeovers {len(base.takeovers)}, evaluations {len(base.takeover_noted)}, "
+          f"hosts {off}, end {end_off:.0f} s")
+    led = sim_ledger(co.run_id)
+    want = (att1.t_end - att1.t0) * 0.25 + s2.result["wall"] * 1.0 if att1 and att1.t_end else -1
+    check("takeover-ledger", set(led) == set(SIM_NORM) and led["spyro-2"]["host"] == "ptah>local"
+          and int(led["spyro-2"]["norm_s"]) == int(want)
+          and abs(int(led["spyro-2"]["norm_s"]) - SIM_NORM["spyro-2"]) < 0.1 * SIM_NORM["spyro-2"]
+          and int(led["spyro-3"]["norm_s"]) == int(jobs["spyro-3"].result["wall"]),
+          f"rows {sorted(led)}; spyro-2 host {led.get('spyro-2', {}).get('host')} norm_s "
+          f"{led.get('spyro-2', {}).get('norm_s')} (want {want:.0f}, ledger time {SIM_NORM['spyro-2']}); "
+          f"spyro-3 norm_s {led.get('spyro-3', {}).get('norm_s')} = wall {jobs['spyro-3'].result['wall']}")
+
+
+def case_takeover_slow(tmp):
+    """A free host slower than every running unit's host takes over nothing."""
+    co = SimCo(tmp, "takeover-slow", norm={"spyro-3": 20000, "spyro-1": 500, "spyro-2": 400},
+               hosts=(SIM_HOSTS[0], SIM_HOSTS[2]))
+    co.go()
+    why = [k for k in co.takeover_noted if k[0] == "ptah"]
+    check("takeover-slow", not co.takeovers and why and all(not j.moved for j in co.jobs)
+          and {j.game: j.result["host"] for j in co.jobs}["spyro-3"] == "local",
+          f"takeovers {len(co.takeovers)}; ptah's refusals {why}")
+
+
+def case_takeover_race(tmp):
+    """The taken-over unit finishes while the stop is in flight: its own attempt's result stands, nothing carried, one ledger row; the free host then takes the next-last unit."""
+    co = SimCo(tmp, "takeover-race", race_unit="spyro-2-presentation")
+    co.go()
+    s2 = next(j for j in co.jobs if j.game == "spyro-2")
+    att = s2.atts.get(s2.result.get("attempt"))
+    tiles = [r["tile"] for r in att.lines] if att else []
+    led = sim_ledger(co.run_id)
+    check("takeover-race", not [t for t in co.takeovers if t["job"] is s2] and not s2.moved and s2.moves == 0 and s2.attempts == 1
+          and s2.result["host"] == "ptah" and s2.result["rc"] == 0
+          and len(tiles) == len(set(tiles)) == SIM_TILES and not any(r["imported"] for r in att.lines)
+          and led["spyro-2"]["host"] == "ptah" and "spyro-2-presentation" not in co.carry,
+          f"result rc {s2.result['rc']} on {s2.result['host']} attempt {s2.result.get('attempt')}; "
+          f"moved {s2.moved}; {len(tiles)} tiles, {len(set(tiles))} distinct; ledger host "
+          f"{led.get('spyro-2', {}).get('host')}")
+
+
+def case_takeover_rule(tmp):
+    """takeover_prediction and takeover_refusal on fixed numbers: the formula, the cost floor, the threshold, the speed rule."""
+    p = gf.takeover_prediction(done=200, total=640, rows=64, norm_s=2970, cand_b=10**9,
+                               src_speed=0.25, src_slots=4, dst_speed=1.0, hops=1)
+    left = 440 / 640
+    in_flight = 2970 * 4 / (2 * 64 * 0.25)
+    carry = (200 / 640) * 10**9 / gf.CARRY_BPS
+    ok = abs(p["src_s"] - (left * 2970 / 0.25 - in_flight)) < 1e-6 \
+        and abs(p["dst_s"] - (left * 2970 + gf.TAKEOVER_FIXED_S + carry)) < 1e-6
+    late = gf.takeover_prediction(638, 640, 64, 2970, 10**9, 0.25, 4, 1.0, 1)
+    small = gf.takeover_prediction(560, 640, 64, 2970, 10**9, 0.47, 4, 1.0, 1)
+    refusals = (gf.takeover_refusal(p, 0.25, 1.0), gf.takeover_refusal(late, 0.25, 1.0),
+                gf.takeover_refusal(small, 0.47, 1.0), gf.takeover_refusal(p, 1.0, 0.25))
+    check("takeover-rule", ok and refusals[0] == "" and "under the takeover cost" in refusals[1]
+          and f"under {gf.TAKEOVER_MIN_SAVING_S} s" in refusals[2] and "not above" in refusals[3],
+          f"src {p['src_s']:.0f} s, dst {p['dst_s']:.0f} s, saving {p['saving_s']:.0f} s; refusals {refusals}")
+
+
 def main():
     """Run every case in a temporary directory with the ledger redirected."""
     tmp = tempfile.mkdtemp(prefix="fleet-stream-check.")
@@ -1206,7 +1457,8 @@ def main():
         for case in (case_framing, case_pool, case_stream_off, case_equality, case_extra, case_drain, case_exempt,
                      case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_transport, case_clean,
                      case_expect, case_canary_verdict, case_run_candidate, case_move, case_move_cli,
-                     case_keep_and_resume_inputs, case_keep_exhausted, case_ledger, case_repeat):
+                     case_keep_and_resume_inputs, case_keep_exhausted, case_ledger, case_repeat,
+                     case_takeover_rule, case_takeover, case_takeover_slow, case_takeover_race):
             case(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

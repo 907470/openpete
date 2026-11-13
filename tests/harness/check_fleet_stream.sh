@@ -35,8 +35,10 @@
 # completion, no ledger row), the transport retry of a connect failure
 # (transient, persistent, a remote exit not retried), expected moves, the run candidate an accepted
 # pull leaves in the stream directory, the kept rows of a stopped and
-# of an attempts-exhausted unit, and no ledger row from a filtered unit or an
-# attempt that imported rows.
+# of an attempts-exhausted unit, no ledger row from a filtered unit or an
+# import from outside the run, and takeover over simulated hosts on a
+# virtual clock (last-finishing unit, not paying, slower host, --no-takeover,
+# completion racing the stop, the ledger row over both attempts).
 #
 # Exit: 0 every case holds, 1 a case failed (named).
 set -u
