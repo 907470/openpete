@@ -303,6 +303,7 @@ python3 -I tools/bugreport.py diff-hashes A B
 | 1 | a member fails its manifest hash or size |
 | 2 | DIVERGED |
 | 3 | VACUOUS: no rows compared, no verdict line, or the replay timed out |
+| 4 | REPRODUCED: the replay of a fatal bundle exited fatally as the tester's run did |
 | 64 | refused: malformed bundle, bad arguments, no anchor, disc not found, replay refused |
 
 ## Replay routes
@@ -338,7 +339,8 @@ bundle's card images extracted to `<work>/cards/` as `--card1`/`--card2`
 
 A debug flag (absent from `--help` in the `*-launcher` builds). PATH is a
 zip or an extracted directory. `--disc` is required: the tester's disc
-path is not in the bundle.
+path is not in the bundle, and a replay without it is refused with
+`REFUSED pass --disc ...` naming the manifest's disc and SHA-256.
 
 1. Every member is verified against `manifest.json` and copied to the
    scratch directory, `<bundle without .zip>.replay/`
@@ -355,7 +357,18 @@ path is not in the bundle.
    config tiers (`--no-config` when it holds none). Every other
    `OPENPETE_*` variable of the developer's environment is unset, except
    the `OPENPETE_BUGREPORT_REPLAY_*` ones and those
-   `OPENPETE_BUGREPORT_REPLAY_ENV` names (below).
+   `OPENPETE_BUGREPORT_REPLAY_ENV` names (below): the tester's session is
+   replayed on the tester's environment, and an instrument variable of the
+   developer's reaches it only when named there. One line lists the
+   variables unset:
+   `bug-report-replay: env not forwarded from this shell (N): A B ...; ...
+   name an instrument variable in OPENPETE_BUGREPORT_REPLAY_ENV to forward it`.
+   The replay adds `--input-lock 1`: no host input reaches the game. A
+   headless replay without a screenshot request brings up no native
+   renderer (`--renderer vk ignored under --headless`), so a native-path
+   census reads nothing unless `OPENPETE_HEADLESS_NATIVE=1` is forwarded
+   (`OPENPETE_BUGREPORT_REPLAY_ENV=OPENPETE_HEADLESS_NATIVE`) or a
+   screenshot is requested.
    The launch scripts, `--skip-to-level`, `--skip-to-area`,
    `--skip-to-cutscene`, `--player-pose` (and `OPENPETE_PLAYER_POSE` in
    `env.txt`) and `--cheats`, write guest RAM once at a point of the
@@ -378,7 +391,15 @@ path is not in the bundle.
    differs), `cross-module` (codegen stamp differs), `cross-build` (build
    version differs), `cross-regions` (the region tables do not share every
    name; totals are then not compared).
-5. The anchor loads at its park site on an empty CD queue, waiting up to
+5. The replay writes nothing into the user's directories. After
+   `env.txt` it sets `OPENPETE_LOG_FILE` to `<scratch>/openpete.log` and
+   `OPENPETE_HANG_TRACE`, `OPENPETE_HANG_RAM` to `<scratch>/hang/`
+   (a tester's values of these are never used; `OPENPETE_BUGREPORT_REPLAY_ENV`
+   may still name the two hang variables, and the developer's `--log-file`
+   wins), and a bundle the replay writes (its own fatal exit, a key press)
+   goes to `<scratch>/bugreports/`. The `bug-report-replay: outputs under`
+   line names the directory.
+6. The anchor loads at its park site on an empty CD queue, waiting up to
    9000 park waits (`OPENPETE_BUGREPORT_REPLAY_SITE_WAIT`), with the movie
    held until the load commits and the anchor's card images restored at
    the load. Each tick's region-hash row is compared with `hashes.csv`; at
@@ -386,15 +407,48 @@ path is not in the bundle.
    section by section. A fatal-exit bundle (manifest `press` null, trigger
    `hang` or `cdsync-spin`) holds no `press.state`: it replays to the last
    row of `hashes.csv`, compares hash rows only, and the verdict line
-   carries `sections=skipped fatal=<trigger>`.
+   carries `sections=skipped fatal=<trigger>`. It then runs one more tick,
+   the one the tester's run did not complete.
+7. `--bug-report-replay-beyond TICKS` (debug flag, default 0) runs TICKS
+   ticks past the end frame (the press frame, or a fatal bundle's last
+   row; a fatal bundle runs at least one), with no hash row or section
+   compared there, and prints `bug-report-replay: beyond the recorded
+   window: ticks A..B run on neutral input`. Input there is neutral: the
+   movie ends at the press, so the pad holds no button from the first row
+   past the segment (the bk2 log line `release=[...]` at that row), and
+   the input lock keeps host input out. Neutral rather than the last row
+   held: the tester's input past the last row is not recorded (a hung
+   game reads none), a held row would invent a hold (a charge, a run
+   into a wall) the tester may never have made, and neutral needs no
+   input path beyond the movie's own end. It is the
+   way to see what a build does after the tick where a hang bundle's
+   build hung: on a build without the hang (or with the watchdog
+   threshold forwarded higher), add `--screenshot-on-frame` or a census
+   at a tick inside the window. A replay with `--screenshot-on-frame` and
+   the `-og` leg on runs at least one tick past the end frame: the `-og`
+   file pairs with the PsyCross present that rasterized its scene's OT,
+   one tick after the key when the game submits after VSync, and a run
+   stopped at the end frame leaves the provisional image of the tick
+   before (`rule=provisional` on the `screenshot: wrote` line).
+8. A fatal exit of the replay itself (the hang watchdog, the CdSync spin
+   guard) prints the verdict from the exit flush, before its own bundle is
+   written, and exits with the verdict's status. The line carries
+   `replay-fatal=<reason> tick=<T>`, the tick that did not complete
+   (the frame counter plus one), and for a hang `hang-at=0x<addr>
+   hang-kind=entries|loop|stall`: the guest function whose entry crossed
+   the entry threshold, the header of the call-free loop whose quanta
+   crossed theirs, or the entry or header that took the stall monitor's
+   request (0 when it dumped off-thread). The next line names the scratch
+   directory holding the hang files and the bundle.
 
 The verdict line on stderr:
 
 ```
-bug-report-replay: IDENTICAL rows=N sections=equal labels=L taint=T [vram-differs=...]
-bug-report-replay: IDENTICAL rows=N sections=skipped fatal=hang labels=L taint=T
-bug-report-replay: DIVERGED tick=F region=R section=S rows=N [fatal=...] labels=L taint=T
-bug-report-replay: VACUOUS rows=0 (the run ended at frame F, press frame P) labels=L taint=T
+bug-report-replay: IDENTICAL rows=N sections=equal [beyond=K/B] [replay-fatal=...] labels=L taint=T [vram-differs=...]
+bug-report-replay: IDENTICAL rows=N sections=skipped fatal=hang recurred=no beyond=K/B [replay-fatal=...] labels=L taint=T
+bug-report-replay: REPRODUCED rows=N matched=N fatal=hang replay-fatal=hang tick=T hang-at=0xA hang-kind=K labels=L taint=T
+bug-report-replay: DIVERGED tick=F region=R|fatal section=S rows=N matched=M [fatal=...] [beyond=...] [replay-fatal=...] labels=L taint=T
+bug-report-replay: VACUOUS rows=0 matched=0 (the run ended at frame F, press frame P) [replay-fatal=...] labels=L taint=T
 bug-report-replay: REFUSED <reason> labels=L
 ```
 
@@ -402,10 +456,28 @@ bug-report-replay: REFUSED <reason> labels=L
 | --- | --- |
 | 0 | IDENTICAL |
 | 2 | DIVERGED or VACUOUS |
+| 4 | REPRODUCED |
 | 64 | refused |
 
+The verdict word is decided on the recorded window: the hash rows, the
+press sections, and for a fatal bundle the tick after its last row.
+`matched` counts the rows compared equal before the first difference.
+REPRODUCED is a fatal bundle replayed to a successful reproduction: every
+row matched and the replay's own fatal exit has the bundle's trigger at
+the tick after the last row, the tick the tester's run did not complete.
+`recurred=no` on a fatal bundle's IDENTICAL says that tick completed: on
+the build that failed, the fatal exit is not reproducible from the anchor
+(a stall-monitor trip measures wall time); on a build with a fix, it is
+the fix's evidence. A fatal exit of the replay inside the window that is
+not the bundle's (another trigger, another tick, or any in a press
+bundle's window) is DIVERGED with `region=fatal` and its tick. `beyond=K/B`
+counts the ticks run past the end frame of the B asked; a fatal exit
+there is printed on the line and decides neither the word nor the exit
+status.
+
 A run that ends before the press frame (for a fatal bundle, `last hash
-row`) after comparing rows reports DIVERGED in the VACUOUS form. A DIVERGED line is followed by a
+row`) after comparing equal rows reports DIVERGED in the VACUOUS form,
+`section=not-reached` when a row differed first. A DIVERGED line is followed by a
 `sections differing:` line naming every press-state section that differs. VRAM is not
 gameplay state: a VRAM difference is printed (`vram-differs=` on
 IDENTICAL, a `vram differs (not counted)` line on DIVERGED) and does not
@@ -423,7 +495,18 @@ anchor, one after it, under `OPENPETE_BUGREPORT_KNOB_AT`) and requires the
 replay to apply all three, a native screenshot at feed key 4390 equal to
 the recording's, the same screenshot to differ under
 `OPENPETE_BUGREPORT_REPLAY_KNOBS=0`, zero applied knobs to read VACUOUS,
-and the bundle without `knobs.txt` to replay IDENTICAL.
+and the bundle without `knobs.txt` to replay IDENTICAL. Its hang case
+records a fatal bundle under `OPENPETE_HANG_THRESHOLD=2000` (the entry
+watchdog trips as Summer Forest goes live) and requires the replay on
+the same build to exit 4 REPRODUCED at the bundle's last row plus one,
+with its log, hang files and bundle in the scratch directory and none in
+the directories standing for the user's; the same bundle with the
+threshold forwarded at 50000000 and `--bug-report-replay-beyond 300` to
+replay IDENTICAL `recurred=no beyond=300/300`; the skip bundle with the
+low threshold forwarded to be DIVERGED `region=fatal`; a bundle pressed
+while a corpus movie holds square to release it at the first row past
+the segment under `--bug-report-replay-beyond 60`; the `env not
+forwarded` line; and the refusal without `--disc`.
 
 ## Release archive
 

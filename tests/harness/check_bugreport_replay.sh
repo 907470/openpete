@@ -19,6 +19,12 @@
 #           = game and hide_player = on at feed key 1400 (before the
 #           bundle's anchor, the session's second) and dither = on at 3000
 #           (after it); a native screenshot at feed key 4390
+#   hang    as skip, under OPENPETE_HANG_THRESHOLD=2000 and with XDG_STATE_HOME
+#           in the scratch directory: the entry watchdog trips at VBL 1357,
+#           as the level goes live, and the exit flush writes a fatal bundle
+#           (trigger hang)
+#   charge  games/spyro-2/bk2/10-second-charge.bk2 from boot (square held
+#           from VBL 1398 to 2022), press at VBL 1800 with square held
 #   display as plain, under the display and output-modifier flags a
 #           tester's argv can hold: --renderer vk --fullscreen 1 --window
 #           2560x1440 --vsync 0 --gpu NoSuchGpu --ssaa 2 --background 1
@@ -26,7 +32,7 @@
 #           --screenshot-overlays 1 --record-fps-overlay 1 --no-record-audio
 #           (dropped with the outputs they modify); a native screenshot at
 #           feed key 890
-# and thirteen replays:
+# and nineteen replays and one refused launch:
 #   skip         the skip bundle as written
 #   skip-late    the skip bundle with its manifest's anchor seq set to 2:
 #                the replay drops the launch flags (negative control)
@@ -54,6 +60,21 @@
 #   native-only  the plain bundle with the developer's own
 #                --screenshot-native-only and no screenshot request (the
 #                replay passes the developer's flags unfiltered)
+#   hang         the hang bundle on this build, with XDG_DATA_HOME and
+#                XDG_STATE_HOME naming a directory that stands for the
+#                user's: the replay's own watchdog trips at the same tick
+#   hang-fixed   the hang bundle with OPENPETE_HANG_THRESHOLD=50000000
+#                forwarded through OPENPETE_BUGREPORT_REPLAY_ENV (a build
+#                without the hang) and --bug-report-replay-beyond 300
+#   skip-hang    the skip bundle (a press bundle) with
+#                OPENPETE_HANG_THRESHOLD=2000 forwarded: a hang the bundle
+#                does not hold (negative control)
+#   charge       the charge bundle with --bug-report-replay-beyond 60
+#   og           the charge bundle with a screenshot at the press VBL 1800
+#                (the -og leg on)
+#   env-dropped  the plain bundle with OPENPETE_TERRAIN_TSC_AUDIT=1 set and
+#                not forwarded
+#   no-disc      the plain bundle with no --disc (the binary run directly)
 #
 # Every recording runs under --mute 1.
 #
@@ -84,12 +105,26 @@
 # absent; vk-noshot, display and native-only exit 0 IDENTICAL with
 # rows > 0 (the replay ran and compared that many tick hashes; zero rows
 # reads VACUOUS), and the argv line of vk-noshot and display keeps every
-# display flag and holds none of the dropped modifiers.
+# display flag and holds none of the dropped modifiers; hang exit 4 with a
+# `REPRODUCED` line whose rows equal matched (> 0, else VACUOUS), whose
+# tick is the bundle's last hash row plus one and which names hang-at,
+# its log file, hang files and nested bundle under its scratch directory
+# and none of them under the user's stand-in directory; hang-fixed exit 0
+# IDENTICAL with recurred=no and beyond=300/300; skip-hang exit 2 DIVERGED
+# with region=fatal and replay-fatal=hang; charge exit 0 IDENTICAL with
+# beyond=60/60, its bk2 log releasing square at the first row past the
+# segment and no pad transition after it; og an `og-pair target=1800
+# rule=otag` line (the run stopped at the press frame wrote only the
+# provisional image of the tick before); env-dropped an `env not
+# forwarded` line naming OPENPETE_TERRAIN_TSC_AUDIT and
+# OPENPETE_BUGREPORT_REPLAY_ENV; no-disc exit 64 naming --disc.
 #
 # Verdict line:
 #   [bugreport-replay] skip=.. skip-late=.. plain=.. mods=.. mods-held=.. env=.. env-refused=.. audio=<events>
 #                      knobs=<applied>|VACUOUS knobs-off=<verdict>/<capture> knobs-old=..
-#                      vk-noshot=<verdict>/<rows> display=<verdict>/<rows> native-only=<verdict>/<rows> verdict=PASS|FAIL
+#                      vk-noshot=<verdict>/<rows> display=<verdict>/<rows> native-only=<verdict>/<rows>
+#                      hang=<verdict>/<matched>/<rows> hang-fixed=.. skip-hang=.. charge=.. og=.. env-dropped=ok|FAIL
+#                      no-disc=<exit> verdict=PASS|FAIL
 #
 # Usage: tests/harness/check_bugreport_replay.sh [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL, 64 SKIP (binary or disc missing).
@@ -112,6 +147,8 @@ pg_resolve "$GAME"
 OUT="${PG_BUILD_DIR:-build/linux-release}/bugreport-replay"
 rm -rf "${OUT:?}"
 mkdir -p "$OUT"
+# Absolute, for the XDG bases the hang cases set.
+ABS_OUT="$(cd "$OUT" && pwd)"
 PG_CAPTURE_TIMEOUT=600
 
 # record TAG AT [args...]: one headless run pressing at feed key AT; prints the bundle path.
@@ -140,7 +177,7 @@ replay() {
 # verdict LOG: the verdict word of a replay log, or "none".
 verdict() {
     local v
-    v="$(grep -oE 'bug-report-replay: (IDENTICAL|DIVERGED|REFUSED|VACUOUS)' "$1" | tail -n 1)"
+    v="$(grep -oE 'bug-report-replay: (IDENTICAL|DIVERGED|REFUSED|VACUOUS|REPRODUCED)' "$1" | tail -n 1)"
     v="${v#bug-report-replay: }"
     echo "${v:-none}"
 }
@@ -161,6 +198,16 @@ DISPLAY_DROPPED=(--screenshot-native-only --screenshot-overlays --record-fps-ove
 display_zip="$(record display 900 "${DISPLAY_KEPT[@]}" --screenshot-native-only --screenshot-overlays 1 \
     --record-fps-overlay 1 --no-record-audio --screenshot-on-frame 890 --screenshot-output "$OUT/display-rec__{n}.png")" ||
     fail+=("display recording failed (see $OUT/rec-display.log)")
+# The hang recording exits 2 at the trip, so record() reports no bundle: find it.
+REC_ENV=("XDG_STATE_HOME=$ABS_OUT/xdg-hang/state" "OPENPETE_HANG_THRESHOLD=2000")
+record hang 2400 --skip-to-level summer_forest >/dev/null
+grep -q 'watchdog: hang detected: 2001 dispatch entries' "$OUT/rec-hang.log" ||
+    fail+=("hang recording: the watchdog did not trip (see $OUT/rec-hang.log)")
+hang_zip="$(find "$OUT/xdg-hang" -name 'bug-*-hang.zip' | head -n 1)"
+[[ -n "$hang_zip" ]] || fail+=("hang recording wrote no fatal bundle (see $OUT/rec-hang.log)")
+REC_ENV=()
+charge_zip="$(record charge 1800 --bk2 games/spyro-2/bk2/10-second-charge.bk2)" ||
+    fail+=("charge recording failed (see $OUT/rec-charge.log)")
 if (( ${#fail[@]} )); then
     printf 'bugreport-replay: %s\n' "${fail[@]}"
     echo "[bugreport-replay] verdict=FAIL"
@@ -415,10 +462,94 @@ replay native-only "$plain_zip" --screenshot-native-only
 noshot native-only
 r_nat="$NOSHOT"
 
+# The hang bundle on the build that hung, the user's directories stood in by
+# $OUT/user-hang.
+user="$ABS_OUT/user-hang"
+rm -rf "${OUT:?}/user-hang"
+REPLAY_ENV=("XDG_DATA_HOME=$user/data" "XDG_STATE_HOME=$user/state")
+replay hang "$hang_zip"
+v_hang="$(verdict "$LOG")"
+(( RC == 4 )) || fail+=("hang: exit $RC, want 4 (see $LOG)")
+[[ "$v_hang" == REPRODUCED ]] || fail+=("hang: $v_hang, want REPRODUCED")
+line="$(grep -m1 '^bug-report-replay: REPRODUCED' "$LOG")"
+h_rows="$(grep -oE ' rows=[0-9]+' <<<"$line" | grep -oE '[0-9]+')"
+h_ok="$(grep -oE ' matched=[0-9]+' <<<"$line" | grep -oE '[0-9]+')"
+h_tick="$(grep -oE ' tick=[0-9]+' <<<"$line" | grep -oE '[0-9]+')"
+last="$(python3 -I -c 'import sys, zipfile
+rows = zipfile.ZipFile(sys.argv[1]).read("hashes.csv").decode().split()
+print(rows[-1].split(",")[0])' "$hang_zip")"
+if (( ${h_rows:-0} == 0 )); then
+    fail+=("hang: VACUOUS: no tick hash compared")
+    h_rows=VACUOUS
+fi
+[[ "${h_ok:-x}" == "$h_rows" ]] || fail+=("hang: matched=${h_ok:-none}, rows=$h_rows")
+[[ "${h_tick:-x}" == "$((last + 1))" ]] || fail+=("hang: tick=${h_tick:-none}, want the last row $last plus one")
+grep -qE ' hang-at=0x[0-9A-F]{8} hang-kind=entries' <<<"$line" || fail+=("hang: the verdict names no hang-at")
+scr="$OUT/scratch-hang"
+for f in hang/hang-trace.bin hang/hang-ram.bin openpete.log; do
+    [[ -f "$scr/$f" ]] || fail+=("hang: no $f under the scratch directory")
+done
+compgen -G "$scr/bugreports/bug-*-hang.zip" >/dev/null || fail+=("hang: no nested bundle under the scratch directory")
+leak="$(find "$user" -type f \( -name 'bug-*.zip' -o -name 'hang-*.bin' -o -name 'openpete.log' \) 2>/dev/null)"
+[[ -z "$leak" ]] || fail+=("hang: the replay wrote into the user's directories: $leak")
+r_hang="$v_hang/${h_ok:-none}/$h_rows"
+
+REPLAY_ENV=("OPENPETE_HANG_THRESHOLD=50000000" "OPENPETE_BUGREPORT_REPLAY_ENV=OPENPETE_HANG_THRESHOLD")
+replay hang-fixed "$hang_zip" --bug-report-replay-beyond 300
+v_hfix="$(verdict "$LOG")"
+(( RC == 0 )) || fail+=("hang-fixed: exit $RC, want 0 (see $LOG)")
+grep -qE '^bug-report-replay: IDENTICAL rows=[1-9][0-9]* .* recurred=no beyond=300/300 ' "$LOG" ||
+    fail+=("hang-fixed: no IDENTICAL line with recurred=no beyond=300/300")
+
+REPLAY_ENV=("XDG_DATA_HOME=$user/data" "XDG_STATE_HOME=$user/state" "OPENPETE_HANG_THRESHOLD=2000"
+            "OPENPETE_BUGREPORT_REPLAY_ENV=OPENPETE_HANG_THRESHOLD")
+replay skip-hang "$skip_zip"
+v_shang="$(verdict "$LOG")"
+(( RC == 2 )) || fail+=("skip-hang: exit $RC, want 2 (see $LOG)")
+grep -qE '^bug-report-replay: DIVERGED tick=[0-9]+ region=fatal .*replay-fatal=hang ' "$LOG" ||
+    fail+=("skip-hang: no DIVERGED line with region=fatal and replay-fatal=hang")
+leak="$(find "$user" -type f \( -name 'bug-*.zip' -o -name 'hang-*.bin' -o -name 'openpete.log' \) 2>/dev/null)"
+[[ -z "$leak" ]] || fail+=("skip-hang: the replay wrote into the user's directories: $leak")
+
+REPLAY_ENV=()
+replay charge "$charge_zip" --bug-report-replay-beyond 60
+v_charge="$(verdict "$LOG")"
+(( RC == 0 )) || fail+=("charge: exit $RC, want 0 (see $LOG)")
+grep -qE '^bug-report-replay: IDENTICAL rows=[1-9][0-9]* .* beyond=60/60 ' "$LOG" ||
+    fail+=("charge: no IDENTICAL line with beyond=60/60")
+seg_rows="$(grep -oE 'bk2: loaded [0-9]+ frames' "$LOG" | grep -oE ' [0-9]+ ' | tr -d ' ')"
+tail_bk2="$(grep -oE 'bk2: openpete_frame=[0-9]+ bk2_frame=[0-9]+ press=\[[^]]*\] release=\[[^]]*\]' "$LOG" | tail -n 1)"
+[[ "$tail_bk2" == *" bk2_frame=${seg_rows:-x} press=[] release=[Q]" ]] ||
+    fail+=("charge: the last pad transition is '$tail_bk2', want square released at row ${seg_rows:-?} (the first past the segment)")
+
+replay og "$charge_zip" --screenshot-on-frame 1800 --screenshot-output "$OUT/og__{n}.png"
+v_og="$(verdict "$LOG")"
+grep -q 'screenshot: og-pair target=1800 rule=otag ' "$LOG" ||
+    fail+=("og: the -og capture at the press VBL did not pair with its scene's OT (see $LOG)")
+
+REPLAY_ENV=("OPENPETE_TERRAIN_TSC_AUDIT=1")
+replay env-dropped "$plain_zip"
+if grep -qE '^bug-report-replay: env not forwarded from this shell \([0-9]+\): .*OPENPETE_TERRAIN_TSC_AUDIT.*OPENPETE_BUGREPORT_REPLAY_ENV' "$LOG"; then
+    v_drop=ok
+else
+    v_drop=FAIL
+    fail+=("env-dropped: no 'env not forwarded' line naming the variable and OPENPETE_BUGREPORT_REPLAY_ENV")
+fi
+
+LOG="$OUT/replay-no-disc.log"
+rm -f "${OUT:?}/replay-no-disc.log"
+mkdir -p "$OUT/cards-no-disc"
+env OPENPETE_VIBRATION=0 "OPENPETE_CARD_DIR=$OUT/cards-no-disc" "OPENPETE_BUGREPORT_REPLAY_DIR=$OUT/scratch-no-disc" \
+    timeout 120 "$PG_BIN" --game "$GAME" --headless --no-config --mute 1 --bug-report-replay "$plain_zip" \
+    </dev/null >"$LOG" 2>&1
+RC=$?
+(( RC == 64 )) || fail+=("no-disc: exit $RC, want 64 (see $LOG)")
+grep -q 'bug-report-replay: REFUSED pass --disc ' "$LOG" || fail+=("no-disc: the refusal does not name --disc")
+
 res=PASS
 if (( ${#fail[@]} )); then
     printf 'bugreport-replay: %s\n' "${fail[@]}"
     res=FAIL
 fi
-echo "[bugreport-replay] skip=$v_skip skip-late=$v_late plain=$v_plain mods=$v_mods mods-held=$v_held env=$v_env env-refused=$v_ref audio=$n_audio knobs=$n_knobs knobs-off=$v_koff/${c_off// /:} knobs-old=$v_kold vk-noshot=$r_vk display=$r_disp native-only=$r_nat verdict=$res"
+echo "[bugreport-replay] skip=$v_skip skip-late=$v_late plain=$v_plain mods=$v_mods mods-held=$v_held env=$v_env env-refused=$v_ref audio=$n_audio knobs=$n_knobs knobs-off=$v_koff/${c_off// /:} knobs-old=$v_kold vk-noshot=$r_vk display=$r_disp native-only=$r_nat hang=$r_hang hang-fixed=$v_hfix skip-hang=$v_shang charge=$v_charge og=$v_og env-dropped=$v_drop no-disc=$RC verdict=$res"
 [[ "$res" == PASS ]]

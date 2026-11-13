@@ -13,6 +13,7 @@
 #include "openpete.h"
 #include "openpete_bugrec.h"
 #include "openpete_bugrec_subtick.h"
+#include "openpete_bugreport_replay.h"
 #include "openpete_config.h"
 #include "openpete_crash.h"
 #include "openpete_devui.h"
@@ -174,7 +175,29 @@ static int br_mkdir(const char* dir)
 #endif
 }
 
-/** @brief Name the bundle and create its staging directory under the bugreports data directory.
+/** @brief Resolve the directory a bundle is written to: `<scratch>/bugreports` in a bug-report replay, else the bugreports data directory.
+ *
+ * A replay runs the tester's session on the developer's machine; what it
+ * writes stays in its scratch directory, never among the developer's own
+ * bundles.
+ * @param out Receives the directory, created.
+ * @param cap Capacity of @p out.
+ * @return 0, or -1 when no directory resolves (logged). */
+static int bundle_out_dir(char* out, size_t cap)
+{
+    const char* rd = openpete_bugreport_replay_output_dir();
+    if (!rd) {
+        if (openpete_paths_data_dir("bugreports", out, cap, 1) == 0) return 0;
+        OPL_ERROR_F("bugreport", "no bugreports data directory resolves");
+        return -1;
+    }
+    openpete_paths_join(out, cap, rd, "bugreports");
+    if (br_mkdir(out) == 0 || errno == EEXIST) return 0;
+    OPL_ERROR_F("bugreport", "cannot create %s: %s", out, strerror(errno));
+    return -1;
+}
+
+/** @brief Name the bundle and create its staging directory under the bundle directory (bundle_out_dir).
  * @param j The job.
  * @return 0, or -1 when no directory could be made (logged). */
 static int job_paths(br_job_t* j)
@@ -188,10 +211,7 @@ static int job_paths(br_job_t* j)
     snprintf(j->stem, sizeof j->stem, "bug-%s-%04d%02d%02d-%02d%02d%02d%s%s", j->game, dt.year,
              dt.month, dt.day, dt.hour, dt.minute, dt.second, j->fatal ? "-" : "",
              j->fatal ? j->fatal : "");
-    if (openpete_paths_data_dir("bugreports", j->out_dir, sizeof j->out_dir, 1) != 0) {
-        OPL_ERROR_F("bugreport", "no bugreports data directory resolves");
-        return -1;
-    }
+    if (bundle_out_dir(j->out_dir, sizeof j->out_dir) != 0) return -1;
     char leaf[128];
     snprintf(leaf, sizeof leaf, ".stage-%s", j->stem);
     openpete_paths_join(j->stage, sizeof j->stage, j->out_dir, leaf);

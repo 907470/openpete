@@ -495,6 +495,17 @@ size_t openpete_hang_rings_image(uint8_t** out);
  * @return Its guest address, or 0 when the watchdog is disarmed or nothing was entered. */
 uint32_t openpete_hang_last_entry(void);
 
+/** @brief Return the kind and address of the hang-watchdog trip being handled, for an exit flush to report.
+ *
+ * Set on the tripping thread before the exit flushes run.
+ * @param addr Receives the trip address: the guest function whose entry
+ *     crossed the entry threshold ("entries"), the header of the call-free
+ *     loop whose quanta crossed theirs ("loop"), or the entry or header that
+ *     took the stall monitor's request, 0 for its off-thread dump ("stall").
+ *     May be NULL.
+ * @return "entries", "loop" or "stall", or NULL when no trip happened. */
+const char* openpete_hang_trip(uint32_t* addr);
+
 /** @brief Write the path a hang trip writes one of its files to: OPENPETE_HANG_TRACE / OPENPETE_HANG_RAM, else the logs state directory.
  * @param leaf "hang-trace.bin" or "hang-ram.bin".
  * @param out Receives the path.

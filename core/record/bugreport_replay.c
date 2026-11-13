@@ -13,6 +13,7 @@
 #include "openpete_bugreport.h"
 #include "openpete_build_id.h"
 #include "openpete_config.h"
+#include "openpete_crash.h"
 #include "openpete_fiber.h"
 #include "openpete_handoff.h"
 #include "openpete_log.h"
@@ -284,11 +285,21 @@ static struct {
     rp_col_t* map;            /* per region of this build */
     size_t   nmap;
     /* The run. */
+    unsigned beyond;          /* --bug-report-replay-beyond: ticks past the last recorded one */
+    unsigned end_frame;       /* the frame the run stops at: the end frame plus rp_beyond() */
     int      loaded;          /* the anchor load committed */
     int      done;            /* the end-state compare ran */
+    int      finished;        /* the shutdown was requested at end_frame */
     int      refused;
     char     reason[RP_REASON];
     uint64_t rows_compared;
+    uint64_t rows_matched;    /* rows compared equal before the first difference */
+    /* A fatal exit of the replay itself (the hang watchdog, the CdSync spin
+     * guard): its reason, the tick it did not complete, the hang trip. */
+    const char* run_fatal;
+    unsigned run_fatal_tick;
+    const char* hang_kind;
+    uint32_t hang_at;
     unsigned div_frame;       /* 0 = no row differed */
     int      div_vbl;
     char     div_regions[256];
@@ -698,6 +709,10 @@ static int rp_replay_args(rp_argv_t* a)
      * builds: occlusion readback and eager production differ there. */
     int rc = rp_arg(a, "--vibration") | rp_arg(a, "0");
     if (!getenv("OPENPETE_BUGREPORT_REPLAY_WINDOWED")) rc |= rp_arg(a, "--headless");
+    /* No host input reaches the game: before the anchor load the pad is
+     * neutral, and past the movie's last row (--bug-report-replay-beyond)
+     * input_bk2_stamp stamps no row, so the pad stays neutral there too. */
+    rc |= rp_arg(a, "--input-lock") | rp_arg(a, "1");
     rc |= rp_card_args(a, 1) | rp_card_args(a, 2);
     rp_join(p, sizeof p, R.scratch, "mods");
     if (rp_mkdirs(p) != 0) rc = -1;
@@ -929,7 +944,64 @@ static char** rp_env_names(int* n)
     return out;
 }
 
-/** @brief Unset every OPENPETE_* variable of this process except the replay's own, then set env.txt's (remapped), OPENPETE_BUGREPORT_REPLAY_ENV's and OPENPETE_VIBRATION=0.
+/** @brief Report whether OPENPETE_BUGREPORT_REPLAY_ENV names a variable. */
+static int rp_env_allowed(const char* name)
+{
+    for (int i = 0; i < s_allow_n; i++)
+        if (!strcmp(s_allow[i].name, name)) return 1;
+    return 0;
+}
+
+/** @brief Unset this process's OPENPETE_* variables, the replay's own excepted, and print one line naming those OPENPETE_BUGREPORT_REPLAY_ENV does not forward.
+ *
+ * A tester's environment is not replayed from the developer's shell: the
+ * replay runs on env.txt, and only OPENPETE_BUGREPORT_REPLAY_ENV forwards an
+ * instrument variable. The line names what a developer set and lost. */
+static void rp_env_clear(void)
+{
+    int nn = 0;
+    char** names = rp_env_names(&nn);
+    char lost[1024] = "";
+    size_t k = 0;
+    int nlost = 0;
+    for (int i = 0; i < nn; i++) {
+        if (!rp_env_allowed(names[i]) && strcmp(names[i], "OPENPETE_VIBRATION") != 0) {
+            if (k < sizeof lost)
+                k += (size_t)snprintf(lost + k, sizeof lost - k, "%s%s", nlost ? " " : "", names[i]);
+            nlost++;
+        }
+        rp_setenv(names[i], NULL);
+        free(names[i]);
+    }
+    free(names);
+    if (nlost)
+        fprintf(stderr, "bug-report-replay: env not forwarded from this shell (%d): %s; the replay runs on the "
+                "bundle's env.txt; name an instrument variable in OPENPETE_BUGREPORT_REPLAY_ENV to forward it\n",
+                nlost, lost);
+}
+
+/** @brief Point the log file, the hang watchdog's files and the bundle writer at the scratch directory.
+ *
+ * Set after env.txt, so a tester's OPENPETE_HANG_TRACE or OPENPETE_HANG_RAM
+ * never names a path here, and before OPENPETE_BUGREPORT_REPLAY_ENV, so a
+ * developer can still forward either. Bundles take the scratch directory
+ * through openpete_bugreport_replay_output_dir. */
+static void rp_env_outputs(void)
+{
+    char d[RP_PATH], p[RP_PATH];
+    rp_join(d, sizeof d, R.scratch, "hang");
+    (void)rp_mkdirs(d);
+    rp_join(p, sizeof p, d, "hang-trace.bin");
+    rp_setenv("OPENPETE_HANG_TRACE", p);
+    rp_join(p, sizeof p, d, "hang-ram.bin");
+    rp_setenv("OPENPETE_HANG_RAM", p);
+    rp_join(p, sizeof p, R.scratch, "openpete.log");
+    rp_setenv("OPENPETE_LOG_FILE", p);
+    fprintf(stderr, "bug-report-replay: outputs under %s: openpete.log (the log file), hang/ (the hang watchdog's "
+            "files), bugreports/ (a bundle the replay writes); none in the user's directories\n", R.scratch);
+}
+
+/** @brief Unset every OPENPETE_* variable of this process except the replay's own, then set env.txt's (remapped), the scratch output paths, OPENPETE_BUGREPORT_REPLAY_ENV's and OPENPETE_VIBRATION=0.
  *
  * An allowed variable is set after env.txt, so the developer's value wins
  * over the tester's. Each is printed with its class: not on the gameplay
@@ -938,10 +1010,7 @@ static char** rp_env_names(int* n)
 static int rp_env_apply(void)
 {
     if (rp_env_allow_read() != 0) return -1;
-    int nn = 0;
-    char** names = rp_env_names(&nn);
-    for (int i = 0; i < nn; i++) { rp_setenv(names[i], NULL); free(names[i]); }
-    free(names);
+    rp_env_clear();
     char p[RP_PATH];
     rp_join(p, sizeof p, R.scratch, "env.txt");
     size_t n = 0;
@@ -963,6 +1032,7 @@ static int rp_env_apply(void)
         }
         free(d);
     }
+    rp_env_outputs();
     for (int i = 0; i < s_allow_n; i++) {
         rp_setenv(s_allow[i].name, s_allow[i].value);
         fprintf(stderr, "bug-report-replay: env kept %s=%s (instrument: not on the gameplay list; the row "
@@ -1269,9 +1339,22 @@ static void rp_labels(void)
     if (strcmp(openpete_build_version(), j_s(&R.man, "build_version")) != 0) rp_label("cross-build");
 }
 
+static void rp_exit_flush(void);
+
 int openpete_bugreport_replay_admit(const openpete_options_t* opts)
 {
     if (!R.on) return 0;
+    openpete_crash_set_exit_flush(OP_EXIT_FLUSH_REPLAY, rp_exit_flush);
+    R.beyond = opts->bug_report_replay_beyond;
+    /* A -og capture pairs with the PsyCross present that rasterized its
+     * scene's OT, one tick after the key when the game submits after VSync;
+     * a run stopped at the end frame leaves the provisional image, the tick
+     * before. */
+    if (R.beyond == 0u && opts->screenshot_frame_count > 0 && !opts->screenshot_native_only) {
+        R.beyond = 1u;
+        fprintf(stderr, "bug-report-replay: one tick past the end frame for the -og capture, which pairs with "
+                "the PsyCross present after its key (--bug-report-replay-beyond 1)\n");
+    }
     if (R.refused) return OPENPETE_BUGREPORT_REPLAY_REFUSED;
     const char* id = game_get_id();
     if (!id || strcmp(id, R.game) != 0) {
@@ -1333,7 +1416,7 @@ void openpete_bugreport_replay_tick(unsigned frame, int vbl, uint64_t total, con
         differ = 1;
         snprintf(R.div_regions, sizeof R.div_regions, "total");
     }
-    if (!differ) return;
+    if (!differ) { R.rows_matched++; return; }
     R.div_frame = frame;
     R.div_vbl = vbl;
     OPL_ERROR_F("bugreport", "replay: tick %u (vbl %d, bundle vbl %llu) differs from the bundle in %s",
@@ -1476,9 +1559,37 @@ static void rp_cards_restore(void)
     }
 }
 
+/** @brief Return the ticks the run goes on past the end frame: --bug-report-replay-beyond's, at least 1 for a fatal bundle.
+ *
+ * A fatal bundle's end frame is its last completed tick; the tick after it
+ * is the one the tester's run did not complete, where the replay looks for
+ * the same fatal exit. */
+static unsigned rp_beyond(void)
+{
+    return R.fatal && R.beyond < 1u ? 1u : R.beyond;
+}
+
+/** @brief Take the end-state compare at the end frame (the press frame, or a fatal bundle's last hash row) and print the window the run goes on for past it. */
+static void rp_reach_end(const CPUState* cpu) OP_REQUIRES(sim)
+{
+    if (R.fatal) {
+        R.done = 1;
+        R.sections_equal = 1;
+        OPL_INFO_F("bugreport", "replay: fatal bundle (trigger %s): the last hash row, frame %u, is reached; "
+                   "the press-section compare is skipped (no press.state)", R.trigger, R.press_frame);
+    } else {
+        rp_end_compare(cpu);
+    }
+    R.end_frame = R.press_frame + rp_beyond();
+    if (R.end_frame == R.press_frame) return;
+    fprintf(stderr, "bug-report-replay: beyond the recorded window: ticks %u..%u run on neutral input (the movie "
+            "has ended; host input is locked), compared with nothing%s\n", R.press_frame + 1u, R.end_frame,
+            R.fatal ? "; the first is the tick the tester's run did not complete" : "");
+}
+
 void openpete_bugreport_replay_step(const CPUState* cpu) OP_REQUIRES(sim)
 {
-    if (!R.on || R.refused || R.done) return;
+    if (!R.on || R.refused || R.finished) return;
     if (!R.loaded) {
         const int r = openpete_handoff_resume_result(&R.load_site_waits, &R.load_cd_waits);
         if (r == 0) return;
@@ -1497,55 +1608,153 @@ void openpete_bugreport_replay_step(const CPUState* cpu) OP_REQUIRES(sim)
                    R.load_cd_waits, R.anchor_consume);
     }
     if (openpete_frame < R.press_frame) return;
-    if (R.fatal) {
-        R.done = 1;
-        R.sections_equal = 1;
-        OPL_INFO_F("bugreport", "replay: fatal bundle (trigger %s): the last hash row, frame %u, is reached; "
-                   "the press-section compare is skipped (no press.state)", R.trigger, R.press_frame);
-    } else {
-        rp_end_compare(cpu);
-    }
+    if (!R.done) rp_reach_end(cpu);
+    if (openpete_frame < R.end_frame) return;
+    R.finished = 1;
     openpete_request_shutdown();
 }
 
-/** @brief Name the end-state compare's outcome for the verdict line: skipped for a fatal bundle, else the first differing section, else equal. */
+/** @brief Name the end-state compare's outcome for the verdict line: skipped for a fatal bundle, not-reached before the press frame, else the first differing section, else equal. */
 static const char* rp_sections_term(void)
 {
     if (R.fatal) return "skipped";
+    if (!R.done) return "not-reached";
     return R.section[0] ? R.section : "equal";
+}
+
+/** @brief Format the replay's own fatal exit for a verdict line: its reason, the tick it did not complete and, for a hang, the trip.
+ * @param out Receives the fields with a leading space, "" when the run had no fatal exit.
+ * @param cap Capacity of @p out. */
+static void rp_fatal_fields(char* out, size_t cap)
+{
+    out[0] = '\0';
+    if (!R.run_fatal) return;
+    const int n = snprintf(out, cap, " replay-fatal=%s tick=%u", R.run_fatal, R.run_fatal_tick);
+    if (R.hang_kind && n > 0 && (size_t)n < cap)
+        snprintf(out + n, cap - (size_t)n, " hang-at=0x%08X hang-kind=%s", R.hang_at, R.hang_kind);
+}
+
+/** @brief Report whether the replay's fatal exit is the bundle's, at the tick the tester's run did not complete, after identical rows. */
+static int rp_reproduced(void)
+{
+    return R.fatal && R.run_fatal && !strcmp(R.run_fatal, R.trigger) && R.done &&
+           R.run_fatal_tick == R.press_frame + 1u && R.rows_compared > 0 && !R.div_frame &&
+           R.rows_matched == R.rows_compared;
+}
+
+/* The fields a verdict line carries besides its word. */
+typedef struct {
+    const char* lab;          /* the labels, "none" when there are none */
+    char        fat[64];      /* " fatal=<trigger>" for a fatal bundle */
+    const char* sec;          /* rp_sections_term */
+    char        run[160];     /* rp_fatal_fields */
+    char        bey[48];      /* " beyond=<run>/<asked>" when ticks past the end frame were asked */
+    unsigned long long rows, ok;
+} rp_line_t;
+
+/** @brief Fill a verdict line's fields from the run's state.
+ * @param L Receives the fields. */
+static void rp_line_fill(rp_line_t* L)
+{
+    memset(L, 0, sizeof *L);
+    L->lab = R.labels[0] ? R.labels : "none";
+    /* A fatal bundle has no press sections: its verdict names the trigger. */
+    if (R.fatal) snprintf(L->fat, sizeof L->fat, " fatal=%s", R.trigger);
+    L->sec = rp_sections_term();
+    rp_fatal_fields(L->run, sizeof L->run);
+    const unsigned asked = rp_beyond();
+    const unsigned past = R.done && openpete_frame > R.press_frame ? openpete_frame - R.press_frame : 0u;
+    if (asked) snprintf(L->bey, sizeof L->bey, " beyond=%u/%u", past < asked ? past : asked, asked);
+    L->rows = (unsigned long long)R.rows_compared;
+    L->ok = (unsigned long long)R.rows_matched;
+}
+
+/** @brief Report whether the replay's own fatal exit fell inside the recorded window: at or before the end frame, or a fatal bundle's tick after it. */
+static int rp_fatal_in_window(void)
+{
+    return R.run_fatal && R.run_fatal_tick <= R.press_frame + (R.fatal ? 1u : 0u);
+}
+
+/** @brief Print the DIVERGED line naming the first differing row's tick and regions, else the replay's fatal exit's tick and `fatal`, and the differing sections.
+ * @param L The line's fields.
+ * @return 2. */
+static int rp_print_diverged(const rp_line_t* L)
+{
+    const int fat = !R.div_frame && rp_fatal_in_window();
+    fprintf(stderr, "bug-report-replay: DIVERGED tick=%u region=%s section=%s rows=%llu matched=%llu%s%s%s "
+            "labels=%s taint=%s\n", R.div_frame ? R.div_frame : fat ? R.run_fatal_tick : 0u,
+            R.div_frame ? R.div_regions : fat ? "fatal" : "none", L->sec, L->rows, L->ok, L->fat, L->bey, L->run,
+            L->lab, R.taint);
+    if (R.section_all[0]) fprintf(stderr, "bug-report-replay: sections differing: %s\n", R.section_all);
+    if (R.vram_note[0]) fprintf(stderr, "bug-report-replay: vram differs (not counted): %s\n", R.vram_note);
+    return 2;
+}
+
+/** @brief Print the verdict line and return the replay's exit status.
+ *
+ * The verdict word is decided on the recorded window: the hash rows, the
+ * press sections, and for a fatal bundle the fatal exit at the tick after
+ * its last row. A fatal exit of the replay inside that window that is not
+ * the bundle's makes it DIVERGED; one past it (--bug-report-replay-beyond)
+ * is reported on the line and decides nothing.
+ * @return 0 IDENTICAL, 2 DIVERGED or VACUOUS, OPENPETE_BUGREPORT_REPLAY_REPRODUCED, or
+ *         OPENPETE_BUGREPORT_REPLAY_REFUSED. */
+static int rp_verdict(void)
+{
+    br_knobs_replay_report();
+    rp_line_t L;
+    rp_line_fill(&L);
+    if (R.refused) {
+        fprintf(stderr, "bug-report-replay: REFUSED %s labels=%s\n", R.reason, L.lab);
+        return OPENPETE_BUGREPORT_REPLAY_REFUSED;
+    }
+    if (rp_reproduced()) {
+        fprintf(stderr, "bug-report-replay: REPRODUCED rows=%llu matched=%llu%s%s labels=%s taint=%s\n", L.rows, L.ok,
+                L.fat, L.run, L.lab, R.taint);
+        return OPENPETE_BUGREPORT_REPLAY_REPRODUCED;
+    }
+    if (R.div_frame || (R.done && !R.sections_equal) || (rp_fatal_in_window() && R.loaded))
+        return rp_print_diverged(&L);
+    if (!R.done || R.rows_compared == 0) {
+        fprintf(stderr, "bug-report-replay: %s rows=%llu matched=%llu (the run ended at frame %u, %s %u)%s%s "
+                "labels=%s taint=%s\n", R.rows_compared ? "DIVERGED" : "VACUOUS", L.rows, L.ok, openpete_frame,
+                R.fatal ? "last hash row" : "press frame", R.press_frame, L.fat, L.run, L.lab, R.taint);
+        return 2;
+    }
+    fprintf(stderr, "bug-report-replay: IDENTICAL rows=%llu sections=%s%s%s%s%s labels=%s taint=%s%s%s\n", L.rows,
+            L.sec, L.fat, R.fatal ? " recurred=no" : "", L.bey, L.run, L.lab, R.taint,
+            R.vram_note[0] ? " vram-differs=" : "", R.vram_note);
+    return 0;
+}
+
+/** @brief The replay's slot of the fatal exit flush: record the replay's own fatal exit, print the verdict and make its status the process's.
+ *
+ * Runs on the exiting thread before the nested bundle is written: the hang
+ * watchdog's on the game fiber's thread (or the stall monitor's, whose
+ * fallback runs while the guest may still run, so the counters read can be
+ * one tick stale), or the CdSync spin guard's. The tick named is the one in
+ * progress: the frame counter plus one. */
+static void rp_exit_flush(void)
+{
+    if (!R.on) return;
+    const char* why = openpete_crash_exit_reason();
+    R.run_fatal = why && *why ? why : "fatal";
+    R.run_fatal_tick = openpete_frame + 1u;
+    if (!strcmp(R.run_fatal, "hang")) R.hang_kind = openpete_hang_trip(&R.hang_at);
+    const int code = rp_verdict();
+    fprintf(stderr, "bug-report-replay: the fatal exit's files are under %s (hang/, bugreports/)\n", R.scratch);
+    fflush(stderr);
+    openpete_log_file_sync();
+    openpete_crash_set_fatal_status(code);
 }
 
 int openpete_bugreport_replay_exit(int rc)
 {
     if (!R.on) return rc;
-    br_knobs_replay_report();
-    const char* lab = R.labels[0] ? R.labels : "none";
-    /* A fatal bundle has no press sections: its verdict names the trigger. */
-    char fat[64] = "";
-    if (R.fatal) snprintf(fat, sizeof fat, " fatal=%s", R.trigger);
-    const char* end = R.fatal ? "last hash row" : "press frame";
-    const char* sec = rp_sections_term();
-    int out;
-    if (R.refused) {
-        fprintf(stderr, "bug-report-replay: REFUSED %s labels=%s\n", R.reason, lab);
-        out = OPENPETE_BUGREPORT_REPLAY_REFUSED;
-    } else if (!R.done || R.rows_compared == 0) {
-        fprintf(stderr, "bug-report-replay: %s rows=%llu (the run ended at frame %u, %s %u)%s "
-                "labels=%s taint=%s\n", R.rows_compared ? "DIVERGED" : "VACUOUS",
-                (unsigned long long)R.rows_compared, openpete_frame, end, R.press_frame, fat, lab, R.taint);
-        out = 2;
-    } else if (R.div_frame || !R.sections_equal) {
-        fprintf(stderr, "bug-report-replay: DIVERGED tick=%u region=%s section=%s rows=%llu%s labels=%s "
-                "taint=%s\n", R.div_frame, R.div_frame ? R.div_regions : "none",
-                sec, (unsigned long long)R.rows_compared, fat, lab, R.taint);
-        if (R.section_all[0]) fprintf(stderr, "bug-report-replay: sections differing: %s\n", R.section_all);
-        if (R.vram_note[0]) fprintf(stderr, "bug-report-replay: vram differs (not counted): %s\n", R.vram_note);
-        out = 2;
-    } else {
-        fprintf(stderr, "bug-report-replay: IDENTICAL rows=%llu sections=%s%s labels=%s taint=%s%s%s\n",
-                (unsigned long long)R.rows_compared, sec, fat, lab, R.taint,
-                R.vram_note[0] ? " vram-differs=" : "", R.vram_note);
-        out = 0;
-    }
-    return out;
+    return rp_verdict();
+}
+
+const char* openpete_bugreport_replay_output_dir(void)
+{
+    return R.on && R.scratch[0] ? R.scratch : NULL;
 }

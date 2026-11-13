@@ -512,7 +512,12 @@ static const openpete_help_only_t k_help_only[] = {
       "PATH", 25,
       "replay a bug-report bundle (zip or extracted directory) headless\n"
       "from its anchor and compare every tick's region hashes and the end\n"
-      "state; exit 0 IDENTICAL, 2 DIVERGED, 64 refused; pass --disc" },
+      "state; exit 0 IDENTICAL, 2 DIVERGED, 4 REPRODUCED (a fatal bundle's\n"
+      "fatal exit recurred at its tick), 64 refused; pass --disc" },
+    { "--bug-report-replay-beyond",          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "TICKS", 26,
+      "with --bug-report-replay, run TICKS ticks past the bundle's last\n"
+      "recorded tick on neutral input, compared with nothing (default 0)" },
     { "--debug-triangle",                    KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
       NULL, 460,
       "emit a hardcoded POLY_F3 each frame (infra-only validation)" },
@@ -1771,6 +1776,15 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
     } else if (strcmp(a, "--bug-report-replay") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->bug_report_replay = v; i++;
+    } else if (strcmp(a, "--bug-report-replay-beyond") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        char* end = NULL;
+        const unsigned long n = strtoul(v, &end, 10);
+        if (!*v || *end || v[0] == '-' || n > 1000000ul) {
+            fprintf(stderr, "openpete: --bug-report-replay-beyond expects a tick count 0..1000000, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->bug_report_replay_beyond = (unsigned)n; i++;
     } else if (strcmp(a, "--unlock-frames") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->unlock_frames_spec = v;

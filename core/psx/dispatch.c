@@ -516,6 +516,15 @@ uint32_t openpete_hang_last_entry(void) {
     return s_hang_recent[(s_hang_recent_head + HANG_RECENT - 1u) % HANG_RECENT].addr;
 }
 
+/* The trip openpete_hang_dump_and_exit is handling, for the exit flushes. */
+static uint32_t    s_hang_trip_addr = 0u;
+static const char* s_hang_trip_kind = NULL;
+
+const char* openpete_hang_trip(uint32_t* addr) {
+    if (addr) *addr = s_hang_trip_addr;
+    return s_hang_trip_kind;
+}
+
 void openpete_hang_output_path(const char* leaf, char* out, size_t cap) {
     const char* env = strcmp(leaf, "hang-trace.bin") == 0 ? getenv("OPENPETE_HANG_TRACE")
                       : strcmp(leaf, "hang-ram.bin") == 0 ? getenv("OPENPETE_HANG_RAM") : NULL;
@@ -540,6 +549,8 @@ void openpete_hang_output_path(const char* leaf, char* out, size_t cap) {
  * @param off_thread Nonzero when called on the stall monitor thread. */
 static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta,
                                         uint32_t stall_ms, int off_thread) {
+    s_hang_trip_addr = trip_addr;
+    s_hang_trip_kind = stall_ms ? "stall" : quanta ? "loop" : "entries";
     char path[1100], rampath[1100];
     openpete_hang_output_path("hang-trace.bin", path, sizeof path);
     openpete_hang_output_path("hang-ram.bin", rampath, sizeof rampath);

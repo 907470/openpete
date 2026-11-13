@@ -205,6 +205,18 @@ void openpete_crash_crumb_clear(void) {
 
 static void rep_flush(void);
 
+/* openpete_crash_set_fatal_status's status, -1 when none is set. */
+static SDL_AtomicInt s_fatal_status = {-1};
+
+void openpete_crash_set_fatal_status(int code) { SDL_SetAtomicInt(&s_fatal_status, code); }
+
+/** @brief Return the status set by openpete_crash_set_fatal_status, else @p code.
+ * @param code The caller's exit code. */
+static int fatal_status(int code) {
+    const int set = SDL_GetAtomicInt(&s_fatal_status);
+    return set >= 0 ? set : code;
+}
+
 /** @brief Append at most n bytes of s, stopping at a NUL. */
 static void rep_strn(const char* s, size_t n) {
     for (size_t i = 0; i < n && s[i] && s_rep_len < sizeof s_rep; i++) s_rep[s_rep_len++] = s[i];
@@ -414,7 +426,7 @@ void openpete_psx_install_crash_handler(void) {
 }
 
 void openpete_crash_terminate_now(int code) {
-    _Exit(code);
+    _Exit(fatal_status(code));
 }
 
 #else  /* _WIN32 - Win32 SEH unhandled-exception filter */
@@ -570,6 +582,7 @@ void openpete_psx_install_crash_handler(void) {
 }
 
 void openpete_crash_terminate_now(int code) {
+    code = fatal_status(code);
     TerminateProcess(GetCurrentProcess(), (UINT)code);
     _Exit(code);
 }

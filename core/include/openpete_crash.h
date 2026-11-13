@@ -22,9 +22,17 @@ void openpete_crash_thread_attach(void);
  * Windows: TerminateProcess, since the CRT's _Exit leaves through
  * ExitProcess, which ends the other threads where they stand and then runs
  * every DLL's static destructors (a C++ condition variable whose waiter
- * was ended mid-wait asserts there). POSIX: _Exit.
+ * was ended mid-wait asserts there). POSIX: _Exit. A status set by
+ * openpete_crash_set_fatal_status replaces @p code.
  * @param code Process exit code. */
 void openpete_crash_terminate_now(int code);
+
+/** @brief Replace the exit status every later openpete_crash_terminate_now call ends the process with.
+ *
+ * An exit flush sets it to turn a fatal exit's status into its own (the
+ * bug-report replay's verdict); -1 restores the caller's code.
+ * @param code The status, or -1. */
+void openpete_crash_set_fatal_status(int code);
 
 /* Longest breadcrumb kept, terminator included; longer text is cut. */
 #define OPENPETE_CRASH_CRUMB_MAX 768
@@ -43,10 +51,12 @@ void openpete_crash_crumb_set(const char* text);
 void openpete_crash_crumb_clear(void);
 
 /* The exit flush slots, run in this order: the movie being recorded
- * first, so a bundle that fails or runs out of time cannot cost it. */
+ * first, so a bundle that fails or runs out of time cannot cost it; the
+ * replay's verdict before the bundle for the same reason. */
 typedef enum {
     OP_EXIT_FLUSH_RECORD = 0,     /* --bk2-record's movie */
-    OP_EXIT_FLUSH_BUGREPORT = 1,  /* the bug-report bundle of a fatal exit */
+    OP_EXIT_FLUSH_REPLAY = 1,     /* --bug-report-replay's verdict line and exit status */
+    OP_EXIT_FLUSH_BUGREPORT = 2,  /* the bug-report bundle of a fatal exit */
     OP_EXIT_FLUSH_SLOTS
 } op_exit_flush_slot_t;
 

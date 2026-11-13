@@ -66,11 +66,14 @@ Subcommands:
 A bundle written at a fatal exit (manifest `trigger` other than `press`: the
 hang watchdog's `hang`, the CdSync spin guard's `cdsync-spin`) holds no
 press.state and no screen.png; its hang/ members are that run's dump. Its
-replay compares hash rows only, to the last row of hashes.csv.
+replay compares hash rows only, to the last row of hashes.csv, then runs
+the tick after it: REPRODUCED when the replay's own fatal exit is the
+bundle's at that tick.
 
 Exit codes: 0 pass (verified, IDENTICAL), 1 a member fails its manifest
 hash or size, 2 DIVERGED, 3 VACUOUS (no rows compared, no verdict line),
-64 refused (malformed bundle, bad arguments, replay refused).
+4 REPRODUCED (replay), 64 refused (malformed bundle, bad arguments, replay
+refused).
 """
 import argparse
 import csv
@@ -152,7 +155,7 @@ AUDIO_INT_COLS = {"vbl", "consumed", "fifo", "underruns", "slips", "pushed"}
 AUDIO_TEXT_COLS = {"event", "phase", "flags"}
 AUDIO_KV_RE = re.compile(r"([A-Za-z_0-9]+)=(-?[0-9][0-9.e+-]*|[A-Za-z_]+)")
 
-VERDICT_RE = re.compile(r"bug-report-replay:\s*(IDENTICAL|DIVERGED|REFUSED)\b.*")
+VERDICT_RE = re.compile(r"bug-report-replay:\s*(IDENTICAL|DIVERGED|REFUSED|REPRODUCED)\b.*")
 
 
 class BundleError(Exception):
