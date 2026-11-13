@@ -2418,6 +2418,7 @@ enum { MOBY_CLR_PAST = 1, MOBY_CLR_CAPPED = 2 };
 typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b, faceblock, w0;
                  int metal; uint32_t mscol; uint32_t moby; int zsf4;
                  int32_t tr_z;     /* the view-space translation's Z as the cull stores it */
+                 float tr_zf;      /* the same Z at full precision: the centre the record projects through */
                  float env_az;     /* view azimuth atan2(TR.z, TR.x), from the full-precision centre where the record has one */
                  uint32_t frameA;
                  uint32_t frameA_p, header_p; float clr_alpha;
@@ -3259,6 +3260,7 @@ static void canon_rec_put(CPUState* cpu, int nrec, uint32_t rec, const moby_reco
     double ctr[3];
     const double* c = moby_record_centre(cpu, R, ctr);
     m->env_az = c ? (float)atan2(c[2], c[0]) : atan2f((float)R->TR_raw[2], (float)R->TR_raw[0]);
+    m->tr_zf = c ? (float)c[2] : (float)R->TR_raw[2];
     memcpy(m->Mf, Mf, sizeof m->Mf);
     m->heat = moby_game.spec_colour_off
         ? (uint8_t)moby_heat_scalar(cpu->read_word(m->moby + moby_game.spec_colour_off)) : 0u;
@@ -3763,7 +3765,7 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
         .faceblock = moby_tier_faceblock(cpu, f->header, dzsf4), .w0 = f->w0,
         .metal = f->metal, .mscol = f->mscol, .moby = m, .zsf4 = dzsf4,
         .env_az = (float)atan2(f->TR_frac[2], f->TR_frac[0]), .frameA = f->frameA,
-        .tr_z = f->TR_raw[2],
+        .tr_z = f->TR_raw[2], .tr_zf = (float)f->TR_frac[2],
         .frameA_p = pd.prev.frame_a, .header_p = pd.prev.header,
         .clr_alpha = (float)pd.clr_alpha };
     s_recs[s_nrecs].model_held = pd.model_held;
@@ -7484,7 +7486,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 float mv[4][3];
                 for (int q = 0; q < 4; q++)
                     for (int j = 0; j < 3; j++) mv[q][j] = pv4[q]->mv[j];
-                const moby_face_rec_t frec = { R->addr, R->w0, R->header, R->tr_z };
+                const moby_face_rec_t frec = { R->addr, R->w0, R->header, R->tr_z, R->tr_zf };
                 int applied = moby_game.special_face(cpu, R->mscol, (const float (*)[3])R->Mf, R->moby,
                                                      &frec, F, cc, mv, &tex2, &stex);
                 if (applied && stex.set) {
@@ -8268,6 +8270,13 @@ static const int* compare_walk_vs_prims(void) {
     return s_assign;
 }
 
+/* Set while the verify probe re-walks a pass to score it against the captured
+ * prims: a coordinate-generating treatment then emits the game's own integer
+ * coordinates, the reference env_uv_ab scores, instead of the drawn ones. */
+static int s_env_ref;
+
+int moby_env_reference(void) { return s_env_ref; }
+
 /** @brief Whether every pair of a prim triangle's corners lies more than a distance apart.
  * @param P The prim triangle.
  * @param d The distance in screen px.
@@ -8465,69 +8474,104 @@ static void recolor_walk_from_prims(void) {
  *
  * The metal matrix and the camera heading are tick-held game values. A present
  * inside a tick interval shows both blended between the interp ring's two
- * snapshots by the present's alpha (specular_env_present): the pair and alpha
+ * snapshots by the present's alpha (specular_env_present,
+ * env_heading_at_present): the pair and alpha
  * the staged camera takes, so the reflection follows the interpolated view
  * instead of stepping at the tick. */
 static float  s_envM[3][3];   /* the metal matrix at the present, 1.0 = 1 */
-static float  s_envHead;      /* the camera heading at the present, 4096 per turn */
+static float  s_envHead;      /* the camera heading at the present (env_heading_at_present) */
 static double s_rc_alpha;     /* the present's alpha; defined with its initializer below */
 /* s_specL[3]/s_specLlen forward-declared above build_walk_tris (highlight uses them) */
-/** @brief Blend the metal matrix and camera heading toward the interp ring's earlier snapshot by 1 - alpha.
+/** @brief The interp ring's snapshot pair the present lies between, and the camera and metal rows' indices.
  *
- * Both endpoints come from the ring pair the present lies between: the metal
- * matrix from its own row (GAME_INTERP_METAL_ROW), the heading from its
- * halfword in the camera row. The matrix blends per element; the heading
- * blends along the shorter way round the 4096-unit circle, the period the map
- * reads it with. Leaves M and head as they are when the ring holds no pair or
- * the game registers no metal row.
- * @param alpha The present's position in the tick interval, below 1.
- * @param M Receives the blended metal matrix at unit scale.
- * @param head Receives the blended heading. */
-static void specular_env_present(double alpha, float M[3][3], float* head) {
-    static int cam_row = -2, metal_row = -2;
-    if (cam_row == -2) {
-        cam_row = game_interp_row_index(GAME_INTERP_CAM_ROW);
-        metal_row = game_interp_row_index(GAME_INTERP_METAL_ROW);
+ * @param pv Receives the earlier snapshot.
+ * @param cu Receives the later snapshot.
+ * @param cam_row Receives the camera row's index, negative when the game registers none.
+ * @param metal_row Receives the metal-matrix row's index, negative when the game registers none.
+ * @return 1 when the ring holds a pair for the present, else 0. */
+static int env_ring_pair(const openpete_interp_snapshot_t** pv, const openpete_interp_snapshot_t** cu,
+                         int* cam_row, int* metal_row) {
+    static int s_cam = -2, s_metal = -2;
+    if (s_cam == -2) {
+        s_cam = game_interp_row_index(GAME_INTERP_CAM_ROW);
+        s_metal = game_interp_row_index(GAME_INTERP_METAL_ROW);
     }
-    if (cam_row < 0 || metal_row < 0) return;
+    *cam_row = s_cam; *metal_row = s_metal;
     double qa = 0.0;
+    return openpete_interp_query(openpete_interp_present_now(), g_openpete_tick_period_ns, &qa, pv, cu);
+}
+
+/** @brief Blend the metal matrix toward the interp ring's earlier snapshot by 1 - alpha.
+ *
+ * Both endpoints come from the ring pair the present lies between, the
+ * matrix's own row (GAME_INTERP_METAL_ROW), blended per element. Leaves M as
+ * it is when the ring holds no pair or the game registers no metal row.
+ * @param alpha The present's position in the tick interval, below 1.
+ * @param M Receives the blended metal matrix at unit scale. */
+static void specular_env_present(double alpha, float M[3][3]) {
     const openpete_interp_snapshot_t *pv = NULL, *cu = NULL;
-    if (!openpete_interp_query(openpete_interp_present_now(), g_openpete_tick_period_ns, &qa, &pv, &cu))
-        return;
+    int cam_row, metal_row;
+    if (!env_ring_pair(&pv, &cu, &cam_row, &metal_row) || metal_row < 0) return;
     const openpete_interp_snapshot_t* snap[2] = { pv, cu };
     int Mq[2][3][3];
-    uint16_t hq[2];
-    const uint32_t hoff = moby_game.cam_heading - game_layout.cam.base;
     for (int k = 0; k < 2; k++) {
         uint32_t w[5];
         memcpy(w, snap[k]->data + snap[k]->region_offsets[metal_row], sizeof w);
         ngte_unpack_matrix(w[0], w[1], w[2], w[3], w[4], Mq[k]);
-        memcpy(&hq[k], snap[k]->data + snap[k]->region_offsets[cam_row] + hoff, sizeof hq[k]);
     }
     const double rest = 1.0 - alpha;
     for (int r = 0; r < 3; r++)
         for (int c = 0; c < 3; c++)
             M[r][c] = (float)(((double)Mq[1][r][c] - (double)(Mq[1][r][c] - Mq[0][r][c]) * rest) / 4096.0);
-    const double d = fmod((double)hq[1] - (double)hq[0] + 65536.0 + 2048.0, 4096.0) - 2048.0;
-    *head = (float)((double)hq[1] - d * rest);
 }
+
+/** @brief The camera heading halfword the environment map reads, at the present.
+ *
+ * The halfword at the game's heading address: moby_game.cam_heading, else
+ * game_layout.moby.env_bias_word. A present inside a tick interval blends the
+ * interp ring's two camera-row snapshots by alpha along the shorter way round
+ * the heading's period (moby_game.cam_heading_period, 4096 when 0), the
+ * period the map reads it with; a canonical present, or one with no ring
+ * pair, reads the live halfword the tick left.
+ * @param cpu The guest CPU state, read only.
+ * @return The heading in the halfword's units; 0 when the game names no heading. */
+static float env_heading_at_present(CPUState* cpu) {
+    const uint32_t addr = moby_game.cam_heading ? moby_game.cam_heading : game_layout.moby.env_bias_word;
+    if (!addr) return 0.0f;
+    float head = (float)(uint16_t)cpu->read_half(addr);
+    if (s_rc_alpha >= 1.0) return head;
+    const openpete_interp_snapshot_t *pv = NULL, *cu = NULL;
+    int cam_row, metal_row;
+    const uint32_t hoff = addr - game_layout.cam.base;
+    if (!env_ring_pair(&pv, &cu, &cam_row, &metal_row) || cam_row < 0) return head;
+    uint16_t hq[2];
+    memcpy(&hq[0], pv->data + pv->region_offsets[cam_row] + hoff, sizeof hq[0]);
+    memcpy(&hq[1], cu->data + cu->region_offsets[cam_row] + hoff, sizeof hq[1]);
+    const double period = moby_game.cam_heading_period ? (double)moby_game.cam_heading_period : 4096.0;
+    const double d = fmod((double)hq[1] - (double)hq[0] + 65536.0 + period * 0.5, period) - period * 0.5;
+    return (float)((double)hq[1] - d * (1.0 - s_rc_alpha));
+}
+
+float moby_env_heading(void) { return s_envHead; }
+
 /** @brief Load the specular pass's inputs at the present: the metal matrix, camera heading, specular light and metal env texture page.
  *
- * Reads the metal matrix at spec_light + 0x18 (the camera rotation with z
- * negated) and the camera heading halfword, which a present inside a tick
- * interval replaces with their blend at its alpha (specular_env_present); the
- * specular light direction at spec_light + 0xC..0x14 and its length (floored
- * at 1); and decodes the metal Tiledef (word 0 high half the CLUT, word 1 high
- * half the tpage) into the env texture fields. A game without a specular
- * light or metal Tiledef leaves them untouched.
+ * Reads the camera heading at the present (env_heading_at_present) on every
+ * game; then the metal matrix at spec_light + 0x18 (the camera rotation with
+ * z negated), which a present inside a tick interval replaces with its blend
+ * at its alpha (specular_env_present); the specular light direction at
+ * spec_light + 0xC..0x14 and its length (floored at 1); and decodes the metal
+ * Tiledef (word 0 high half the CLUT, word 1 high half the tpage) into the
+ * env texture fields. A game without a specular light or metal Tiledef
+ * leaves those untouched.
  * @param cpu The guest CPU state, read only. */
 static void specular_env_load(CPUState* cpu) {
+    s_envHead = env_heading_at_present(cpu);
     if (!moby_game.spec_light || !moby_game.metal_tiledef) return;   /* no specular material */
     int M[3][3];
     ngte_read_matrix(cpu, moby_game.spec_light + 0x18u, M);
     ngte_mat_unit_f((const int (*)[3])M, s_envM);
-    s_envHead = (float)(uint16_t)cpu->read_half(moby_game.cam_heading);
-    if (s_rc_alpha < 1.0) specular_env_present(s_rc_alpha, s_envM, &s_envHead);
+    if (s_rc_alpha < 1.0) specular_env_present(s_rc_alpha, s_envM);
     s_specL[0] = (float)(int32_t)cpu->read_word(moby_game.spec_light + 0xCu);
     s_specL[1] = (float)(int32_t)cpu->read_word(moby_game.spec_light + 0x10u);
     s_specL[2] = (float)(int32_t)cpu->read_word(moby_game.spec_light + 0x14u);
@@ -12150,7 +12194,9 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
         if (target && !s_dumped) { hex_dump(cpu, start, end); s_dumped = 1; }
         if (target) {
             compare_and_report(nrec);
+            s_env_ref = 1;                    /* the walk's env coordinates: the game's integer routine */
             build_walk_tris(cpu);             /* independent walk + topology A/B */
+            s_env_ref = 0;
             env_uv_ab(compare_walk_vs_prims());
             if (mat && mat[0] == 'S' && mat[1] == 'P') {   /* confirm specular recolor attaches the prim colour */
                 specular_env_calibrate(cpu);  /* env-UV calibration dump (native refl vs prim UV) */
@@ -12881,6 +12927,30 @@ int moby_record_angles_at_present(CPUState* cpu, uint32_t moby, double ang[3]) {
     if (!o) return 0;
     const uint32_t ao = game_layout.moby.angle_off;
     for (uint32_t k = 0; k < 3u; k++) ang[k] = lerp_byte_angle(o->prev[ao + k], o->curr[ao + k], t);
+    return 1;
+}
+
+int moby_env_matrix_at_present(CPUState* cpu, uint32_t moby, float R[3][3]) {
+    const uint32_t ro = game_layout.moby.rot_off;
+    int Mc[3][3];
+    double t;
+    const openpete_interp_obj_t* o = record_euler_pair(cpu, moby, &t);
+    if (!o || (uint32_t)o->blob_len < ro + 20u) {
+        ngte_read_matrix(cpu, moby + ro, Mc);
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++) R[r][c] = (float)((double)Mc[r][c] / 4096.0);
+        return 0;
+    }
+    uint32_t wp[5], wc[5];
+    int Mp[3][3];
+    memcpy(wp, o->prev + ro, sizeof wp);
+    memcpy(wc, o->curr + ro, sizeof wc);
+    ngte_unpack_matrix(wp[0], wp[1], wp[2], wp[3], wp[4], Mp);
+    ngte_unpack_matrix(wc[0], wc[1], wc[2], wc[3], wc[4], Mc);
+    const double rest = 1.0 - t;
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            R[r][c] = (float)(((double)Mc[r][c] - (double)(Mc[r][c] - Mp[r][c]) * rest) / 4096.0);
     return 1;
 }
 
@@ -17480,7 +17550,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             .faceblock = moby_tier_faceblock(cpu, f.header, zsf4),
             .w0 = f.w0, .metal = f.metal, .mscol = f.mscol, .moby = mobys[i], .zsf4 = zsf4,
             .env_az = (float)atan2(f.TR_frac[2], f.TR_frac[0]), .frameA = f.frameA,
-            .tr_z = f.TR_raw[2],
+            .tr_z = f.TR_raw[2], .tr_zf = (float)f.TR_frac[2],
             .frameA_p = prev->frame_a, .header_p = prev->header,
             .clr_alpha = (float)pd.clr_alpha };
         s_recs[s_nrecs].clr_flags = (uint8_t)pd.clr_flags;

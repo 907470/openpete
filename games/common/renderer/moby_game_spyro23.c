@@ -332,6 +332,11 @@ static int s23_clamp_ir(long v) {
  * so a vertex shared by several faces is transformed once; the walk computes
  * per face corner instead, which gives the same coordinate for the same
  * vertex.
+ *
+ * The walk draws the continuous map the routine's tables sample, unrounded,
+ * from its inputs at the present (s23_env_uv_f, s23_env_present_read). The
+ * integer routine below is kept as the reference the verify probe scores
+ * against the game's primitives (s23_env_face_uv).
  */
 
 /** @brief The GTE's LZCS/LZCR count: leading zeroes of a positive value, leading ones of a negative one.
@@ -357,6 +362,23 @@ static int s23_lzcr(uint32_t v) {
  * vertex stage stored the vertex through the packed word that borrows. */
 typedef struct { int R[3][3]; int32_t bias; int borrow; } s23_env_setup;
 
+/** @brief The shift the azimuth bias's depth term takes: the difference of bytes 3 and 2 of the cull record's word at +0x18, or the header's scale byte for a host-built record.
+ *
+ * The amount's low five bits, as SLLV reads it (mobydraw.s:2103-2106). A
+ * record the walk built itself has no word at +0x18; the cull stores there
+ * the header's byte 3 and that byte plus the header's scale byte
+ * (mobydraw.s:499-501), so the shift is the scale byte.
+ * @param cpu The guest CPU state, read only.
+ * @param rec The cull record.
+ * @return The shift, 0..31. */
+static int s23_env_depth_shift(CPUState* cpu, const moby_face_rec_t* rec) {
+    if (rec->addr) {
+        const uint32_t w = moby_rec_word(cpu, rec->addr + S23_REC_ENV_SHIFT_OFF);
+        return ((int)(w >> 24) - (int)((w >> 16) & 0xFFu)) & 31;
+    }
+    return (int)(cpu->read_byte(rec->header + game_layout.moby.anim_scale_off) & 31u);
+}
+
 /** @brief Resolves a record's environment-map setup: the Moby's own rotation, the azimuth bias the draw leaves in GTE control 17, and the vertex slot's borrow.
  *
  * The rotation is the five words at the Moby's +0x20 (mobydraw.s:2082-2093).
@@ -365,10 +387,8 @@ typedef struct { int R[3][3]; int32_t bias; int borrow; } s23_env_setup;
  * difference of bytes 3 and 2 of the record's word at +0x18 (the shift
  * amount's low five bits, as SLLV reads it) and logically right by 6, plus
  * the global word at `env_bias_word` shifted arithmetically right by 3
- * (mobydraw.s:2096-2112). Only its low byte reaches the azimuth. A record the
- * walk built itself has no word at +0x18; the cull stores there the header's
- * byte 3 and that byte plus the header's scale byte (mobydraw.s:499-501), so
- * the shift is the scale byte. A record with a zero keyframe blend takes the
+ * (mobydraw.s:2096-2112), the shift s23_env_depth_shift's. Only its low
+ * byte reaches the azimuth. A record with a zero keyframe blend takes the
  * draw's unblended vertex path (mobydraw.s:922-923, 986), which stores the
  * vertex's X and Y as the one word VX + (VY << 16) (mobydraw.s:1027-1028,
  * 1035), so a negative X borrows one from the Y the routine reads back; the
@@ -379,13 +399,7 @@ typedef struct { int R[3][3]; int32_t bias; int borrow; } s23_env_setup;
  * @param E Receives the setup. */
 static void s23_env_setup_read(CPUState* cpu, uint32_t moby, const moby_face_rec_t* rec, s23_env_setup* E) {
     ngte_read_matrix(cpu, moby + game_layout.moby.rot_off, E->R);
-    int sh;
-    if (rec->addr) {
-        const uint32_t w = moby_rec_word(cpu, rec->addr + S23_REC_ENV_SHIFT_OFF);
-        sh = ((int)(w >> 24) - (int)((w >> 16) & 0xFFu)) & 31;
-    } else {
-        sh = (int)(cpu->read_byte(rec->header + game_layout.moby.anim_scale_off) & 31u);
-    }
+    const int sh = s23_env_depth_shift(cpu, rec);
     const uint32_t depth = ((uint32_t)rec->tr_z << sh) >> 6;
     const int32_t g = game_layout.moby.env_bias_word
                     ? (int32_t)cpu->read_word(game_layout.moby.env_bias_word) : 0;
@@ -417,7 +431,7 @@ static int s23_env_azimuth(long z, long nx, int at) {
     return minor_z ? 0xC0 - at : 0x80 + at;
 }
 
-/** @brief One face corner's mode-1 environment coordinate pair, from that corner's model-space vertex.
+/** @brief One face corner's mode-1 environment coordinate pair as the game computes it, the verify probe's reference.
  *
  * The per-vertex routine of mobydraw.s:2377-2547: the vertex as the vertex
  * stage stored it (the unblended path's borrow, s23_env_setup_read, and each
@@ -487,6 +501,96 @@ static void s23_env_uv(CPUState* cpu, const s23_env_setup* E, const float mv[3],
     int sn = (int16_t)cpu->read_half(sp);
     *pu = (uint8_t)(((((long)rad * cs) >> 12) + 0x40) & 0xFF);
     *pv = (uint8_t)(((((long)rad * sn) >> 12) + 0x40) & 0xFF);
+}
+
+/* The drawn form of the per-record setup: the Moby's rotation and the azimuth
+ * bias, each at the present the walk draws and unrounded. */
+typedef struct { float R[3][3]; double bias; } s23_env_present;
+
+/** @brief Resolves a record's environment-map inputs at the present: the Moby's rotation and the azimuth bias, unrounded.
+ *
+ * The rotation is the Moby's own at this present (moby_env_matrix_at_present).
+ * The bias is s23_env_setup_read's sum in float: the record's depth at full
+ * precision (rec->tr_zf, the centre it projects through) times 2^shift over
+ * 64, plus the camera heading at the present (moby_env_heading) over 8, both
+ * in 256ths of a turn. The integer form keeps only the depth's and the
+ * heading's whole bits; the sum here is their exact value, so the map turns
+ * continuously under a pan and a dolly.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby the record draws.
+ * @param rec The cull record.
+ * @param P Receives the inputs. */
+static void s23_env_present_read(CPUState* cpu, uint32_t moby, const moby_face_rec_t* rec,
+                                 s23_env_present* P) {
+    moby_env_matrix_at_present(cpu, moby, P->R);
+    const double depth = (double)rec->tr_zf * ldexp(1.0, s23_env_depth_shift(cpu, rec)) / 64.0;
+    P->bias = depth + (double)moby_env_heading() / 8.0;
+}
+
+/** @brief One face corner's drawn environment coordinate pair: the continuous map the routine's tables sample, unrounded.
+ *
+ * With e the Moby's rotation applied to the corner's model-space vertex, the
+ * azimuth is atan2(-x, z) plus the bias, and the radius (128 / pi) acos(c)
+ * for c = -y / |e| clamped to [0, 1]; the pair is 0x40 plus the radius times
+ * the azimuth's cosine and sine. The routine's tables are samples of the same
+ * functions: its arctangent table holds atan in 256ths of a turn, its radius
+ * table (256 / pi) acos(i / 128) halved by the routine, its sine table 4096
+ * sin (s23_env_uv).
+ * @param P The record's inputs at the present.
+ * @param mv The corner's model-space vertex at the present.
+ * @param pu Receives U, in texels.
+ * @param pv Receives V, in texels. */
+static void s23_env_uv_f(const s23_env_present* P, const float mv[3], float* pu, float* pv) {
+    double e[3];
+    for (int i = 0; i < 3; i++)
+        e[i] = (double)P->R[i][0] * mv[0] + (double)P->R[i][1] * mv[1] + (double)P->R[i][2] * mv[2];
+    const double len = sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+    double c = len > 0.0 ? -e[1] / len : 0.0;
+    if (c < 0.0) c = 0.0; else if (c > 1.0) c = 1.0;
+    const double phi = atan2(-e[0], e[2]) + M_PI / 128.0 * fmod(P->bias, 256.0);
+    const double r = 128.0 / M_PI * acos(c);
+    *pu = (float)(64.0 + r * cos(phi));
+    *pv = (float)(64.0 + r * sin(phi));
+}
+
+/** @brief One face's four corner coordinate pairs: the drawn float map, or inside the verify probe's reference walk the game's integer routine.
+ *
+ * OPENPETE_MOBY_ENVUV_DUMP=1 adds, in the reference walk, one line per corner
+ * with the routine's inputs and pair and the drawn map's inputs and pair, the
+ * input of the float-against-integer calibration.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby the record draws.
+ * @param rec The cull record.
+ * @param mv The four corners' model-space vertices.
+ * @param tex Receives the coordinates. */
+static void s23_env_face_uv(CPUState* cpu, uint32_t moby, const moby_face_rec_t* rec,
+                            const float mv[4][3], moby_face_tex_t* tex) {
+    s23_env_present P;
+    s23_env_present_read(cpu, moby, rec, &P);
+    if (!moby_env_reference()) {
+        for (int k = 0; k < 4; k++) s23_env_uv_f(&P, mv[k], &tex->u[k], &tex->v[k]);
+        return;
+    }
+    static int s_dump = -1;
+    if (s_dump < 0) { const char* d = getenv("OPENPETE_MOBY_ENVUV_DUMP"); s_dump = (d && *d && *d != '0'); }
+    s23_env_setup E;
+    s23_env_setup_read(cpu, moby, rec, &E);
+    for (int k = 0; k < 4; k++) {
+        uint8_t iu, iv;
+        s23_env_uv(cpu, &E, mv[k], &iu, &iv);
+        tex->u[k] = (float)iu;
+        tex->v[k] = (float)iv;
+        if (!s_dump) continue;
+        float fu, fv;
+        s23_env_uv_f(&P, mv[k], &fu, &fv);
+        fprintf(stderr, "[s23env-cal vbl=%u] m=%08X mv=%.4f,%.4f,%.4f R=%d,%d,%d,%d,%d,%d,%d,%d,%d "
+                "bias=%d borrow=%d uv=%u,%u Rf=%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f fbias=%.5f fuv=%.4f,%.4f\n",
+                openpete_frame, moby, mv[k][0], mv[k][1], mv[k][2],
+                E.R[0][0], E.R[0][1], E.R[0][2], E.R[1][0], E.R[1][1], E.R[1][2], E.R[2][0], E.R[2][1], E.R[2][2],
+                (int)E.bias, E.borrow, iu, iv,
+                P.R[0][0], P.R[0][1], P.R[0][2], P.R[1][0], P.R[1][1], P.R[1][2], P.R[2][0], P.R[2][1], P.R[2][2],
+                P.bias, fu, fv);
+    }
 }
 
 /** @brief Which of the two forms the special material's mode 0 takes.
@@ -719,12 +823,8 @@ static int s23_special_face(CPUState* cpu, uint32_t mat, const float M[3][3],
         }
         /* The coordinates the emit generates per corner in place of the face's
          * own, from that corner's model-space vertex. */
-        {
-            s23_env_setup E; s23_env_setup_read(cpu, moby, rec, &E);
-            for (int k = 0; k < 4; k++)
-                s23_env_uv(cpu, &E, mv[k], &tex->u[k], &tex->v[k]);
-            tex->uv_set = 1u;
-        }
+        s23_env_face_uv(cpu, moby, rec, mv, tex);
+        tex->uv_set = 1u;
         /* The colour half runs off one IR0 for the whole moby, bits 24-27 << 8
          * (mobydraw.s:2079), carried in GTE control 12. The emit reads that
          * register first and skips every DPCS when it is zero
@@ -3055,6 +3155,9 @@ const moby_game_t moby_game_spyro23 = {
     .reveal_record      = s23_reveal_record,
     .cull_view_admits   = s23_cull_view_admits,
     .special_face      = s23_special_face,
+    /* The heading the mode-1 bias reads is game_layout.moby.env_bias_word
+     * (cam_heading 0); the routine keeps its bits 3-10, a period of 2048. */
+    .cam_heading_period = 2048u,
     .material_tint     = s23_material_tint,
     .record_face_sign  = s23_record_face_sign,
     .water_plane       = s23_water_plane,

@@ -105,13 +105,16 @@ typedef struct moby_wface {
 
 /* The cull record a special face belongs to, as the walk holds it: the
  * record's guest address (0 for a record the walk built itself, which has
- * none), its flags word, its AnimationHeader, and the Z of its view-space
- * translation as the cull stores it. */
+ * none), its flags word, its AnimationHeader, the Z of its view-space
+ * translation as the cull stores it, and that Z at full precision, the
+ * centre the record projects through at this present (the stored Z where the
+ * record has no such centre). */
 typedef struct moby_face_rec {
     uint32_t addr;
     uint32_t w0;
     uint32_t header;
     int32_t  tr_z;
+    float    tr_zf;
 } moby_face_rec_t;
 
 /* A texture page and CLUT one face draws from instead of its own, in the same
@@ -122,9 +125,10 @@ typedef struct moby_face_tex {
     int16_t tpx, tpy, clx, cly;
     uint8_t bpp, abr, set;
     /* Texture coordinates the treatment generates for the face's four corners,
-     * in place of the ones the face record carries. `uv_set` 0 keeps the
-     * face's own. */
-    uint8_t u[4], v[4], uv_set;
+     * in place of the ones the face record carries, in texels, unrounded.
+     * `uv_set` 0 keeps the face's own. */
+    float   u[4], v[4];
+    uint8_t uv_set;
 } moby_face_tex_t;
 
 /* The water-plane split one record's draw runs (water_plane.h). Each model
@@ -473,8 +477,12 @@ typedef struct moby_game {
      * no such bit, and the host reveal then claims no specular draw. */
     uint32_t renderer_shiny_mask;
     /* The camera's fine heading word, which the env reflection folds into its
-     * azimuth so the reflection stays world-anchored under a pan. */
+     * azimuth so the reflection stays world-anchored under a pan; 0 takes
+     * game_layout.moby.env_bias_word. `cam_heading_period` is the period the
+     * map reads the halfword with, the circle a sub-tick blend wraps on
+     * (0 = 4096). */
     uint32_t cam_heading;
+    uint16_t cam_heading_period;
     /* The second model kind's base-colour tables, flat and metal. */
     uint32_t shade_coltab, metal_coltab;
 } moby_game_t;
@@ -497,6 +505,21 @@ extern moby_game_t moby_game;
  * @param addr The guest address of the word.
  * @return The word. */
 uint32_t moby_rec_word(CPUState* cpu, uint32_t addr);
+/** @brief Whether the walk running is the verify probe's reference walk.
+ *
+ * The probe re-walks a pass to score it against the prims the game drew; a
+ * treatment that generates texture coordinates then emits the game's own
+ * integer coordinates, the reference the probe scores, in place of the drawn
+ * ones.
+ * @return 1 inside the reference walk, else 0. */
+int      moby_env_reference(void);
+/** @brief The camera heading the environment map reads, at the present the walk draws.
+ *
+ * The halfword at moby_game.cam_heading (or game_layout.moby.env_bias_word),
+ * blended at a sub-tick present along the shorter way round
+ * moby_game.cam_heading_period; loaded once per walk before any face.
+ * @return The heading in the halfword's units. */
+float    moby_env_heading(void);
 /** @brief Read a cull record's packed rotation matrix, each word through moby_rec_word.
  *
  * Unpacks five words at addr..addr+16 with ngte_unpack_matrix.

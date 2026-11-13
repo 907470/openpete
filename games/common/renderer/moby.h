@@ -282,6 +282,20 @@ int moby_record_euler_at_present(struct CPUState* cpu, uint32_t moby,
  * @return 1 when the pair supplies the angles, else 0 (the caller takes the m_Rotation word). */
 int moby_record_angles_at_present(struct CPUState* cpu, uint32_t moby, double ang[3]);
 
+/** @brief A Moby's own rotation (the five words at game_layout.moby.rot_off) at this present, at unit scale.
+ *
+ * Under the conditions moby_record_euler_at_present samples its angles, the
+ * rotation blends per element between the object's previous and current
+ * snapshot at the same phase, so it turns with the record's mesh and holds
+ * where the mesh holds (a jump hold pins the phase at 0, a facing reversal
+ * steps). Otherwise, on every canonical present among them, it is the live
+ * matrix the tick left. At phase 1 the blend is the current snapshot itself.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param R Receives the rotation, 1.0 = 1.
+ * @return 1 when the snapshot pair supplied it, 0 for the live matrix. */
+int moby_env_matrix_at_present(struct CPUState* cpu, uint32_t moby, float R[3][3]);
+
 /** @brief Set the occlusion cull's pan allowance: the camera's rotation this tick as screen-pixel motion.
  *
  * The value is rad/tick times an overestimated pixels-per-radian. The feeder
