@@ -44,7 +44,10 @@ status: per host, reachability (ssh with ConnectTimeout=5 and
 keepalives), engine, the Id of openpete-linux-capture:fleet beside the
 local image's Id, `<fleet_root>/image.id`, the golden lock (tried
 non-blocking; the holder record the capture wrapper writes into it),
-governor, calibration, free space and the size of fleet_root.
+governor, calibration, free space and the size of fleet_root, and each
+tree under trees/: a repository base's size, age since its last refresh,
+repository and last checkout path; a checkout-keyed tree's size, age and
+path.
 
 preflight: drops a host that is disabled, unreachable, without an engine,
 uncalibrated, running a governor other than the calibrated one, short of
@@ -117,9 +120,16 @@ coordinator:
      submodules included; games/*/generated, the manifest globals and
      symbols, each run game's disc cue and bin, third_party/psxrecomp/build;
      the build tree minus home/) to <fleet_root>/runs/<run-id>/tree on every
-     host with --link-dest from <fleet_root>/trees/<key>, then re-checks every
-     copy with rsync -n --checksum over the same lists and refuses the run as
-     torn on any change. While it reads the checkout it holds the checkout's
+     host, the hosts concurrently, with --checksum --link-dest from the
+     repository base <fleet_root>/trees/<key> (<key>: the coordinator's
+     hostname and the repository's git common directory, so every checkout
+     of the repository shares it; a file whose content equals the base's is
+     not sent; the base is linked from only when its record names this
+     coordinator and repository, and is read under trees/<key>.lock held
+     shared), then re-checks every copy with rsync -n --checksum over the
+     same lists and refuses the run as torn on any change, then refreshes
+     each host's base from its snapshot (hard links, renamed over the base
+     under the lock held exclusive). While it reads the checkout it holds the checkout's
      build/linux-release-container.build-lock and runs a `golden-fleet-sync`
      marker process, which a build lock can test for; it then hashes the
      synced disc bytes against the blessed headers;
@@ -354,6 +364,13 @@ tag (the image itself only when no other tag names it), and fleet_root
 itself when nothing else is in it. On the local host it also removes the
 checkout's build/fleet-stream/<run-id>/ directories whose run directory is
 gone.
+
+clean, trees: a tree whose record names repo= is the repository base;
+"checkout path" above reads as its repository (git common directory) for
+staleness and 14 days count from its last refresh; --tree never removes
+it, since every checkout of the repository shares it. A tree whose record
+has no repo= was keyed on a checkout path by an earlier coordinator. A
+tree whose lock a sync holds is kept.
 """
 
 import argparse
@@ -370,6 +387,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 IMAGE_TAG = "openpete-linux-capture:fleet"
@@ -1291,7 +1309,36 @@ def cmd_status(a):
               f"{int(i.get('memavail_kib') or 0) / GIB_KIB:.1f} GiB; load {i.get('loadavg1')}")
         print(f"  free under {i['root']}: {fmt_bytes(i.get('free_bytes'))}; "
               f"fleet_root size {fmt_bytes(i.get('root_bytes'))}")
+        try:
+            trees = list_trees(h, sizes=True)
+        except FleetError as e:
+            print(f"  trees: {e}")
+            continue
+        for line in tree_lines(trees):
+            print(f"  {line}")
     return 0
+
+
+def tree_lines(trees, now=None):
+    """Return status's line per trees/<key> record: kind, size, age, owner."""
+    me, now = os.uname().nodename, now or time.time()
+    if not trees:
+        return ["trees: none"]
+    out = []
+    for t in trees:
+        try:
+            age = f"{(now - float(t.get('last-run'))) / 3600:.1f} h"
+        except (TypeError, ValueError):
+            age = "unknown"
+        size = fmt_bytes(t.get("bytes")) if t.get("present") == "1" else "absent"
+        owner = "" if t.get("coordinator") == me else f", coordinator {t.get('coordinator', '?')}"
+        if t.get("repo"):
+            out.append(f"base {t['key']}: {size}, refreshed {age} ago, repository {t['repo']}, "
+                       f"last checkout {t.get('path', '?')}{owner}")
+        else:
+            out.append(f"tree {t['key']} (keyed on a checkout path): {size}, last run {age} ago, "
+                       f"checkout {t.get('path', '?')}{owner}")
+    return out
 
 
 def print_preflight(results):
@@ -1528,14 +1575,25 @@ kill_helpers() {
 
 # ---- clean ------------------------------------------------------------------
 
+# One line per trees/<key>.src: key=, the record's lines, and with a second
+# argument of 1 the tree's size (bytes=, du -sb) and whether it exists
+# (present=1/0). args: root [sizes]
 TREE_LIST_SCRIPT = r'''
 set -u
-root="$1"
+root="$1"; sizes="${2:-0}"; tab="$(printf '\t')"
 case "$root" in "~") root="$HOME";; "~/"*) root="$HOME/${root#\~/}";; esac
 for f in "$root"/trees/*.src; do
     [ -f "$f" ] || continue
     k="$(basename "$f" .src)"
-    printf 'key=%s\t%s\n' "$k" "$(tr '\n' '\t' <"$f")"
+    extra=""
+    if [ "$sizes" = 1 ]; then
+        if [ -d "$root/trees/$k" ]; then
+            extra="present=1${tab}bytes=$(du -sb "$root/trees/$k" 2>/dev/null | cut -f1)${tab}"
+        else
+            extra="present=0${tab}bytes=0${tab}"
+        fi
+    fi
+    printf 'key=%s\t%s%s\n' "$k" "$extra" "$(tr '\n' '\t' <"$f")"
 done
 '''
 
@@ -1608,9 +1666,23 @@ exit 0
 '''
 
 
-def tree_key(path):
-    """Return the trees/<key> name of a checkout path on this coordinator."""
-    raw = f"{os.uname().nodename}\0{os.path.abspath(path)}".encode()
+def repo_dir(tree):
+    """Return a checkout's git common directory, resolved: one per repository, shared by its worktrees."""
+    cp = subprocess.run(["git", "-C", tree, "rev-parse", "--git-common-dir"],
+                        capture_output=True, text=True)
+    if cp.returncode != 0 or not cp.stdout.strip():
+        raise FleetError(f"{tree}: no git common directory: {cp.stderr.strip()[-200:]}")
+    return os.path.realpath(os.path.join(tree, cp.stdout.strip()))
+
+
+def base_key(tree):
+    """Return the trees/<key> name of a checkout's repository base on this coordinator.
+
+    The key hashes the coordinator's hostname and the repository's git
+    common directory, so the main checkout and every worktree of the
+    repository share one base per host.
+    """
+    raw = f"{os.uname().nodename}\0repo\0{repo_dir(tree)}".encode()
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
@@ -1619,24 +1691,36 @@ def parse_tree_src(line):
     return parse_kv(line.replace("\t", "\n"))
 
 
-def trees_to_remove(host, tree_path=None, now=None):
-    """Return the tree keys on a host this coordinator may remove (stale, or those of tree_path)."""
-    cp = host.run_script(TREE_LIST_SCRIPT, [host.fleet_root], timeout=60)
+def list_trees(host, sizes=False):
+    """Return the parsed trees/<key>.src records on a host, with bytes= and present= when sizes."""
+    cp = host.run_script(TREE_LIST_SCRIPT, [host.fleet_root, int(sizes)], timeout=600 if sizes else 60)
     if cp.returncode != 0:
         raise FleetError(f"{host.name}: listing trees failed: {cp.stderr.strip()[-200:]}")
+    return [parse_tree_src(line) for line in cp.stdout.splitlines() if line.strip()]
+
+
+def trees_to_remove(host, tree_path=None, now=None):
+    """Return the tree keys on a host this coordinator may remove (stale, or those of tree_path).
+
+    A repository base (its record names repo=) is stale when the
+    repository's git common directory is gone or no run refreshed it for
+    TREE_MAX_AGE_S; tree_path never selects it, since every checkout of the
+    repository shares it. A checkout-keyed tree (no repo=, written before
+    bases were keyed per repository) is stale when its checkout path is gone
+    or unused for TREE_MAX_AGE_S, and tree_path selects those of that path.
+    """
     me, now = os.uname().nodename, now or time.time()
     keys = []
-    for line in cp.stdout.splitlines():
-        src = parse_tree_src(line)
+    for src in list_trees(host):
         if src.get("coordinator") != me:
             continue
-        path = src.get("path", "")
+        path, repo = src.get("path", ""), src.get("repo")
         if tree_path is not None:
-            if os.path.abspath(path) == os.path.abspath(tree_path):
+            if not repo and os.path.abspath(path) == os.path.abspath(tree_path):
                 keys.append(src["key"])
             continue
         age = now - float(src.get("last-run") or 0)
-        if not os.path.exists(path) or age > TREE_MAX_AGE_S:
+        if not os.path.exists(repo or path) or age > TREE_MAX_AGE_S:
             keys.append(src["key"])
     return keys
 
@@ -1925,19 +2009,27 @@ done
 '''
 
 # Refresh trees/<key> from this run's snapshot by hard links, under the
-# key's lock, and record who owns it. A snapshot without a build tree (a
-# remote build's host before it builds) keeps the base's previous build tree,
-# which seeds the next build. args: root key run-id src-lines...
+# key's lock held exclusive (a sync reading the base holds it shared), and
+# record who owns it. The base is replaced by a rename, never written in
+# place, so a snapshot linked from the old base keeps its content. A
+# snapshot without a build tree (a remote build's host before it builds)
+# keeps the base's previous build tree, which seeds the next build, only
+# when the previous record names the same checkout path: a build tree of
+# another checkout's sources can hold objects newer than this checkout's
+# changed sources. args: root key run-id src-lines...
 REFRESH_BASE = r'''
 set -eu
 root="$1"; key="$2"; run="$3"; shift 3
 bt=build/linux-release-container
+path=""
+for l in "$@"; do case "$l" in path=*) path="$l";; esac; done
 mkdir -p "$root/trees"
 exec 6>"$root/trees/$key.lock"
 flock 6
 rm -rf "$root/trees/$key.new"
 cp -al "$root/runs/$run/tree" "$root/trees/$key.new"
-if [ ! -d "$root/trees/$key.new/$bt" ] && [ -d "$root/trees/$key/$bt" ]; then
+if [ ! -d "$root/trees/$key.new/$bt" ] && [ -d "$root/trees/$key/$bt" ] \
+   && grep -qxF -- "$path" "$root/trees/$key.src" 2>/dev/null; then
     mkdir -p "$root/trees/$key.new/build"
     mv "$root/trees/$key/$bt" "$root/trees/$key.new/$bt"
 fi
@@ -1950,14 +2042,20 @@ printf '%s\n' "$@" >"$root/trees/$key.src"
 '''
 
 # Copy the base's build tree into the snapshot as real files (a build writes
-# its objects in place, which would write through hard links into the base).
-# args: root key run-id
+# its objects in place, which would write through hard links into the base),
+# under the key's lock held shared, only when the base's record names this
+# checkout path (see REFRESH_BASE). args: root key run-id checkout-path
 SEED_BUILD = r'''
 set -eu
-root="$1"; key="$2"; run="$3"
+root="$1"; key="$2"; run="$3"; path="$4"
 src="$root/trees/$key/build/linux-release-container"
 dst="$root/runs/$run/tree/build/linux-release-container"
-if [ -d "$src" ] && [ ! -e "$dst" ]; then
+mkdir -p "$root/trees"
+exec 6>"$root/trees/$key.lock"
+flock -s 6
+if ! grep -qxF -- "path=$path" "$root/trees/$key.src" 2>/dev/null; then
+    echo "no-seed (the base is another checkout's)"
+elif [ -d "$src" ] && [ ! -e "$dst" ]; then
     mkdir -p "$(dirname "$dst")"
     cp -a "$src" "$dst"
     echo "seeded"
@@ -2249,12 +2347,22 @@ def sha256_path(path):
 
 # ---- run: transfer ----------------------------------------------------------
 
-def rsync_base(host):
-    """Return rsync's transport arguments for a host; a running run's remote rsync server carries its tag."""
+def rsync_base(host, server_lock=None):
+    """Return rsync's transport arguments for a host; a running run's remote rsync server carries its tag.
+
+    server_lock names a lock file on a remote host that the rsync server
+    holds shared (flock -s) for its lifetime, its directory created first.
+    """
     if host.local:
         return []
-    tag = [f"--rsync-path={RUN_TAG_VAR}={shlex.quote(_run_tag)} rsync"] if _run_tag else []
-    return ["-e", "ssh " + " ".join(SSH_OPTS), *tag]
+    tag = f"{RUN_TAG_VAR}={shlex.quote(_run_tag)} " if _run_tag else ""
+    if server_lock:
+        lock = shlex.quote(server_lock)
+        path = [f"--rsync-path=mkdir -p {shlex.quote(os.path.dirname(server_lock))} && "
+                f"{tag}flock -s {lock} rsync"]
+    else:
+        path = [f"--rsync-path={tag}rsync"] if tag else []
+    return ["-e", "ssh " + " ".join(SSH_OPTS), *path]
 
 
 def remote_path(host, path):
@@ -2262,13 +2370,23 @@ def remote_path(host, path):
     return path if host.local else f"{host.cfg['ssh']}:{path}"
 
 
-def rsync_push(host, src, listfile, dest, link_dest=None):
-    """Copy a --files-from list from local src to dest on the host (symlinks dereferenced)."""
+def rsync_push(host, src, listfile, dest, link_dest=None, base_lock=None):
+    """Copy a --files-from list from local src to dest on the host (symlinks dereferenced).
+
+    With link_dest, a file whose content (--checksum, not size and mtime)
+    equals the base's is not sent: rsync hard-links it from the base when
+    its attributes match, else copies it there from the base. base_lock is
+    the base's lock file, held shared on the host while rsync reads the base.
+    """
+    lock = base_lock if link_dest else None
     argv = ["rsync", "-a", "-L", "--from0", f"--files-from={listfile}", "--stats",
-            *rsync_base(host)]
+            *rsync_base(host, lock)]
     if link_dest:
-        argv.append(f"--link-dest={link_dest}")
+        argv += ["--checksum", f"--link-dest={link_dest}"]
     argv += [src.rstrip("/") + "/", remote_path(host, dest.rstrip("/")) + "/"]
+    if lock and host.local:
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        argv = ["flock", "-s", lock, *argv]
     t0 = time.monotonic()
     cp = transport_run(host, f"rsync to {dest}", argv, text=True)
     if cp.returncode != 0:
@@ -2327,6 +2445,53 @@ def rsync_pull(host, src_dir, dst_dir, names=None, includes=None):
     if lst:
         os.unlink(lst)
     return cp.returncode, cp.stderr.strip()[-300:]
+
+
+def on_hosts(hosts, fn):
+    """Run fn(hs) for every host, each in its own thread, and return the results in host order.
+
+    Nothing in a host's sync or recheck reads another host's state, so the
+    hosts run concurrently. While they run, the stop predicate run_proc
+    polls also holds once any thread has failed or the caller was
+    interrupted, so every other thread's child (rsync, ssh) is killed at its
+    next STOP_POLL_S poll; the first failure is raised after every thread
+    has ended.
+    @param hosts the HostState list
+    @param fn the per-host function
+    @return fn's results, in the order of hosts
+    """
+    if len(hosts) < 2:
+        return [fn(hs) for hs in hosts]
+    abort, guard, first = threading.Event(), threading.Lock(), []
+    results = [None] * len(hosts)
+    prev = _stop_watch
+
+    def work(i, hs):
+        try:
+            results[i] = fn(hs)
+        except BaseException as e:  # re-raised in the calling thread
+            with guard:
+                if not abort.is_set():
+                    first.append(e)
+                abort.set()
+
+    with stop_watch(lambda: abort.is_set() or (prev is not None and prev())):
+        threads = [threading.Thread(target=work, args=(i, hs), daemon=True)
+                   for i, hs in enumerate(hosts)]
+        for t in threads:
+            t.start()
+        try:
+            for t in threads:
+                while t.is_alive():
+                    t.join(0.5)
+        except BaseException:
+            abort.set()
+            for t in threads:
+                t.join()
+            raise
+    if first:
+        raise first[0]
+    return results
 
 
 # ---- run: the checkout-reading span -------------------------------------------
@@ -2603,30 +2768,56 @@ class Coordinator:
         write_list(lst, files)
         rsync_push(hs.host, self.ship_dir, lst, f"{hs.run_dir}/ship")
 
+    @property
+    def base_key(self):
+        """The trees/<key> name of this checkout's repository base."""
+        if getattr(self, "_base_key", None) is None:
+            self._base_key = base_key(self.tree)
+        return self._base_key
+
     def refresh_base(self, hs):
-        """Refresh the host's trees/<key> from this run's snapshot."""
-        src = [f"coordinator={os.uname().nodename}", f"path={self.tree}",
-               f"last-run={int(time.time())}"]
-        self.script(hs, REFRESH_BASE, [hs.root, tree_key(self.tree), self.run_id, *src],
+        """Refresh the host's repository base trees/<key> from this run's snapshot."""
+        src = [f"coordinator={os.uname().nodename}", f"repo={repo_dir(self.tree)}",
+               f"path={self.tree}", f"last-run={int(time.time())}"]
+        self.script(hs, REFRESH_BASE, [hs.root, self.base_key, self.run_id, *src],
                     timeout=1800, what="base refresh")
 
-    def base_exists(self, hs):
-        """True when the host holds trees/<key>."""
-        cp = self.script(hs, 'test -d "$1"', [f"{hs.root}/trees/{tree_key(self.tree)}"],
-                         check=False, what="base check")
-        return cp.returncode == 0
+    def usable_base(self, hs):
+        """Return (the host's base directory or None, a note for the sync line).
+
+        The base is used only when trees/<key> exists and its record names
+        this coordinator and this repository; anything else (absent,
+        unrecorded, another coordinator's or repository's) is not linked
+        from and is replaced by this run's refresh. The base's content is
+        never trusted: the sync compares each file's checksum to the
+        checkout's before linking it, and the recheck compares the snapshot.
+        """
+        d = f"{hs.root}/trees/{self.base_key}"
+        cp = self.script(hs, 'test -d "$1" || exit 3; cat "$2" 2>/dev/null; exit 0',
+                         [d, f"{d}.src"], check=False, what="base check")
+        if cp.returncode == 3:
+            return None, "no base"
+        if cp.returncode != 0:
+            return None, f"no base: check exited {cp.returncode}"
+        rec = parse_kv(cp.stdout)
+        want = {"coordinator": os.uname().nodename, "repo": repo_dir(self.tree)}
+        wrong = [f"{k}={rec.get(k, '')!r}" for k, v in want.items() if rec.get(k) != v]
+        if wrong:
+            return None, "foreign base ignored: " + ", ".join(wrong)
+        try:
+            age = f"{(time.time() - float(rec.get('last-run'))) / 3600:.1f} h old"
+        except (TypeError, ValueError):
+            age = "age unknown"
+        return d, f"base {self.base_key} from {rec.get('path', '?')}, {age}"
 
     # -- sync --
 
-    def sync_segment(self, hs, src_root, files, label, link_dest=True):
-        """Copy one segment's list to the host's snapshot with --link-dest from its base."""
-        lst = os.path.join(self.local_run_dir, f"{label}.lst")
-        write_list(lst, files)
-        base = f"{hs.root}/trees/{tree_key(self.tree)}" if link_dest and self.base_exists(hs) else None
-        secs, sent = rsync_push(hs.host, src_root, lst, f"{hs.run_dir}/tree", base)
-        print(f"[fleet] {hs.name}: synced {label}: {len(files)} files, {sent / 2**20:.0f} MiB "
-              f"sent in {secs:.0f} s" + ("" if base else " (no base)"))
-        return lst
+    def sync_segment(self, hs, src_root, lst, nfiles, label, base, note):
+        """Copy one segment's list to the host's snapshot with --link-dest from its base (None: no base)."""
+        lock = f"{hs.root}/trees/{self.base_key}.lock"
+        secs, sent = rsync_push(hs.host, src_root, lst, f"{hs.run_dir}/tree", base, lock)
+        print(f"[fleet] {hs.name}: synced {label}: {nfiles} files, {sent / 2**20:.0f} MiB "
+              f"sent in {secs:.0f} s ({note})")
 
     def recheck(self, hs, src_root, lst, label):
         """Refuse the run when the host's snapshot differs from src_root over a segment's list."""
@@ -2711,26 +2902,34 @@ class Coordinator:
         self.check_discs()
 
     def sync_hosts(self, segs, hosts):
-        """Sync every segment to every host, run the after-sync hook, then recheck every copy."""
+        """Sync every segment to every host, the hosts concurrently, run the after-sync hook, then recheck every copy."""
         lists = {}
-        for hs in hosts:
+        for label, _root, files in segs:
+            lists[label] = os.path.join(self.local_run_dir, f"{label}.lst")
+            write_list(lists[label], files)
+
+        def sync(hs):
+            base, note = self.usable_base(hs)
             for label, root, files in segs:
-                lists[(hs.name, label)] = self.sync_segment(hs, root, files, label)
-        self.after_sync_hook()
-        for hs in hosts:
+                self.sync_segment(hs, root, lists[label], len(files), label, base, note)
+
+        def recheck(hs):
             for label, root, _files in segs:
-                self.recheck(hs, root, lists[(hs.name, label)], label)
+                self.recheck(hs, root, lists[label], label)
+
+        on_hosts(hosts, sync)
+        self.after_sync_hook()
+        on_hosts(hosts, recheck)
 
     def refresh_bases(self, hosts):
-        """Refresh each host's link-dest base from its complete snapshot."""
-        for hs in hosts:
-            self.refresh_base(hs)
+        """Refresh each host's link-dest base from its complete snapshot, the hosts concurrently."""
+        on_hosts(hosts, self.refresh_base)
 
     def remote_build(self):
         """Build in the build host's snapshot, then relay its build tree to the other hosts."""
         bh = self.build_hs
-        cp = self.script(bh, SEED_BUILD, [bh.root, tree_key(self.tree), self.run_id], timeout=1800,
-                         what="build seed")
+        cp = self.script(bh, SEED_BUILD, [bh.root, self.base_key, self.run_id, self.tree],
+                         timeout=1800, what="build seed")
         print(f"[fleet] {bh.name}: build tree {cp.stdout.strip()} from its base")
         self.push_ship(bh)
         job = Job("build", pinned=bh.name)
@@ -5384,7 +5583,8 @@ def main(argv=None):
     p.set_defaults(fn=cmd_resume)
     p = sub.add_parser("clean")
     p.add_argument("--hosts", default="")
-    p.add_argument("--tree", help="remove only the trees this coordinator keyed on PATH")
+    p.add_argument("--tree", help="remove only the trees this coordinator keyed on checkout PATH "
+                   "(the repository base stays)")
     p.add_argument("--all", action="store_true",
                    help="remove every fleet file, fleet container and the :fleet tag")
     p.set_defaults(fn=cmd_clean)

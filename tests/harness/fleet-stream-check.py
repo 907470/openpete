@@ -87,6 +87,24 @@ write. Cases (each prints its counts):
   takeover-slow  a free host slower than the running unit's takes nothing
   takeover-race  the unit finishes while its stop is in flight: its own
               attempt's result, no carry, one ledger row
+  base-*      the repository sync base over a git repository and a second
+              worktree of it, local hosts (and FAKE_SSH for base-ssh): the
+              first run makes the base (no base, every byte sent); a run
+              from the worktree (other path, other mtimes, one file changed)
+              sends only that file and its snapshot equals the worktree; a
+              base file tampered in place (size and mtime kept) is sent, not
+              linked; a linked base file changed after the sync is refused
+              by the recheck; a base recorded for another repository is not
+              linked from and is replaced; two concurrent runs from both
+              checkouts plus a later refresh leave each snapshot equal to
+              its checkout; a refresh waits for a sync's shared lock and a
+              sync for a refresh's exclusive one; the build seed only from a
+              base of the same checkout path; status lines, a stale clean
+              and --tree keep the base, --tree removes a checkout-keyed
+              tree, a base of a gone repository and --all go; the ssh form
+              (rsync server under flock and the run tag)
+  on-hosts    hosts run concurrently (three 1 s children in 1 s); one
+              host's failure kills the others' children and is raised
 
 Exit: 0 every case holds, 1 a case failed (named).
 """
@@ -1449,6 +1467,296 @@ def case_takeover_rule(tmp):
           f"src {p['src_s']:.0f} s, dst {p['dst_s']:.0f} s, saving {p['saving_s']:.0f} s; refusals {refusals}")
 
 
+class BaseCo(gf.Coordinator):
+    """A Coordinator reduced to the sync, recheck and base refresh of one checkout onto local hosts."""
+
+    def __init__(self, tmp, name, tree, roots, ssh=False):
+        """Bind the checkout, the run id and one host per fleet root (local, or ssh through FAKE_SSH); no preflight, build or units."""
+        self.tree, self.run_id = tree, f"test-{name}"
+        self.local_run_dir = os.path.join(tmp, "runs-local", name)
+        os.makedirs(self.local_run_dir)
+        self.hosts = []
+        for i, root in enumerate(roots):
+            cfg = {"transport": "ssh", "ssh": "u@sim"} if ssh else {"transport": "local"}
+            host = gf.Host(f"{name}-h{i}", dict(cfg, fleet_root=root))
+            self.hosts.append(gf.HostState(host, {"root": root, "engine": "podman"}, 1, self.run_id))
+
+    def sync_raw(self, files, refresh=True):
+        """Sync files to every host, recheck, refresh the bases; output to stdout."""
+        for hs in self.hosts:
+            self.mkdirs(hs)
+        self.sync_hosts([("source", self.tree, files)], self.hosts)
+        if refresh:
+            self.refresh_bases(self.hosts)
+
+    def sync(self, files, refresh=True):
+        """sync_raw with stdout captured; return (FleetError or None, output)."""
+        return captured(lambda: self.sync_raw(files, refresh))
+
+    def tree_of(self, hs=None):
+        """Return the run's snapshot directory on a host."""
+        return f"{(hs or self.hosts[0]).run_dir}/tree"
+
+
+SYNC_RE = r"\[fleet\] (\S+): synced source: (\d+) files, (\d+) MiB sent in \d+ s \((.*)\)"
+
+
+def synced(out):
+    """Return {host: (MiB sent, note)} from a sync's output."""
+    import re
+    return {m.group(1): (int(m.group(3)), m.group(4)) for m in re.finditer(SYNC_RE, out)}
+
+
+def make_repo(tmp, nfiles=8):
+    """Make a git repository of nfiles 1 MiB files and a second worktree of it; return (main, worktree, files)."""
+    main, wt = os.path.join(tmp, "repo"), os.path.join(tmp, "repo-wt")
+    os.makedirs(main)
+    files = [f"d/f{i}.bin" for i in range(nfiles)]
+    os.makedirs(os.path.join(main, "d"))
+    for f in files:
+        with open(os.path.join(main, f), "wb") as fh:
+            fh.write(os.urandom(1 << 20))
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", main]
+    subprocess.run(git + ["init", "-q"], check=True)
+    subprocess.run(git + ["add", "."], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "files"], check=True)
+    subprocess.run(git + ["worktree", "add", "-q", wt], check=True)
+    for f in files:   # the worktree's files carry other mtimes than the main checkout's
+        os.utime(os.path.join(wt, f), (1_600_000_000, 1_600_000_000))
+    return main, wt, files
+
+
+def rewrite(path, keep_mtime=True):
+    """Change a file's content in place (same size, mtime restored when keep_mtime)."""
+    st = os.stat(path)
+    with open(path, "r+b") as fh:
+        fh.write(os.urandom(4096))
+    if keep_mtime:
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+
+def same(a, b):
+    """True when two files hold the same bytes."""
+    return open(a, "rb").read() == open(b, "rb").read()
+
+
+def drop_run(co):
+    """Remove a run's directories on its hosts, as its teardown does."""
+    for hs in co.hosts:
+        shutil.rmtree(hs.run_dir, ignore_errors=True)
+
+
+def case_sync_base(tmp):
+    """The repository base: made by a first run, reused by a run from another checkout, never trusted, locked, cleaned."""
+    tmp = os.path.join(tmp, "sync-base")
+    os.makedirs(tmp)
+    main, wt, files = make_repo(tmp)
+    root = os.path.join(tmp, "root")
+    key = gf.base_key(main)
+
+    # 1. First run, from the main checkout: no base, every byte sent, the base made.
+    co1 = BaseCo(tmp, "b1", main, [root])
+    err, out = co1.sync(files)
+    s1 = synced(out).get(co1.hosts[0].name, (None, ""))
+    rec = gf.parse_kv(open(os.path.join(root, "trees", f"{key}.src")).read())
+    check("base-first", err is None and s1 == (8, "no base") and gf.base_key(wt) == key
+          and rec.get("repo") == gf.repo_dir(main) and rec.get("path") == main
+          and os.path.isdir(os.path.join(root, "trees", key)),
+          f"sent {s1[0]} MiB ({s1[1]}); base {key} recorded repo={rec.get('repo')}, path={rec.get('path')}; "
+          f"the worktree's key {'equals' if gf.base_key(wt) == key else 'differs from'} the main checkout's; {err}")
+    drop_run(co1)
+
+    # 2. Second run, from the worktree (another path, other mtimes), one file changed: only it is sent.
+    rewrite(os.path.join(wt, files[3]), keep_mtime=False)
+    co2 = BaseCo(tmp, "b2", wt, [root])
+    err, out = co2.sync(files)
+    s2 = synced(out).get(co2.hosts[0].name, (None, ""))
+    equal = all(same(os.path.join(wt, f), os.path.join(co2.tree_of(), f)) for f in files)
+    check("base-reuse", err is None and s2[0] == 1 and s2[1].startswith(f"base {key} from {main}")
+          and "recheck source: 0 changes" in out and equal,
+          f"sent {s2[0]} MiB of 8 ({s2[1]}); snapshot equals the worktree: {equal}; {err}")
+    drop_run(co2)
+
+    # 3. A tampered base (content changed in place, size and mtime kept): the
+    #    checksum sync sends the file instead of linking it.
+    base_f = os.path.join(root, "trees", key, files[5])
+    rewrite(base_f)
+    co3 = BaseCo(tmp, "b3", wt, [root])
+    err, out = co3.sync(files, refresh=False)
+    s3 = synced(out).get(co3.hosts[0].name, (None, ""))
+    ok3 = err is None and s3[0] == 1 and same(os.path.join(wt, files[5]), os.path.join(co3.tree_of(), files[5]))
+    # 4. A base file the snapshot links, changed after the sync: the recheck refuses the run.
+    linked = next(f for f in files if f != files[5])
+    rewrite(os.path.join(root, "trees", key, linked))
+    err4, out4 = captured(lambda: co3.recheck(co3.hosts[0], wt, os.path.join(co3.local_run_dir, "source.lst"), "source"))
+    check("base-tampered", ok3 and isinstance(err4, gf.FleetError) and "torn sync" in str(err4)
+          and linked in str(err4),
+          f"tampered base file sent, not linked ({s3[0]} MiB; snapshot equals the checkout: {ok3}); a linked base "
+          f"file changed after the sync: {str(err4).splitlines()[0] if err4 else 'no refusal'}")
+    drop_run(co3)
+
+    # 5. A foreign base (its record names another repository): not linked from, replaced by the refresh.
+    srcf = os.path.join(root, "trees", f"{key}.src")
+    text = open(srcf).read()
+    with open(srcf, "w") as fh:
+        fh.write(text.replace(f"repo={gf.repo_dir(main)}", "repo=/elsewhere/.git"))
+    co5 = BaseCo(tmp, "b5", wt, [root])
+    err, out = co5.sync(files)
+    s5 = synced(out).get(co5.hosts[0].name, (None, ""))
+    rec5 = gf.parse_kv(open(srcf).read())
+    check("base-foreign", err is None and s5[0] == 8 and s5[1].startswith("foreign base ignored: repo=")
+          and rec5.get("repo") == gf.repo_dir(main),
+          f"sent {s5[0]} MiB ({s5[1]}); the refresh recorded repo={rec5.get('repo')}")
+    drop_run(co5)
+
+    # 6. Overlap: runs from both checkouts (the worktree's file 3 differs) sync
+    #    and refresh concurrently onto one host; each snapshot equals its checkout.
+    coa, cob = BaseCo(tmp, "ov-a", main, [root]), BaseCo(tmp, "ov-b", wt, [root])
+    errs = []
+
+    def run(co):
+        try:
+            co.sync_raw(files)
+        except gf.FleetError as e:
+            errs.append(e)
+
+    def both():
+        threads = [threading.Thread(target=run, args=(c,)) for c in (coa, cob)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    _r, out6 = captured(both)
+    s6 = synced(out6)
+    # A third run swaps the base again while both snapshots stand.
+    coc = BaseCo(tmp, "ov-c", main, [root])
+    errc, _outc = coc.sync(files)
+    rechecks = [captured(lambda c=c: c.recheck(c.hosts[0], c.tree, os.path.join(c.local_run_dir, "source.lst"),
+                                               "source"))[0] for c in (coa, cob)]
+    ta, tb = coa.tree_of(), cob.tree_of()
+    ok6 = (not errs and errc is None and rechecks == [None, None] and out6.count("recheck source: 0 changes") == 2
+           and not same(os.path.join(ta, files[3]), os.path.join(tb, files[3])))
+    check("base-overlap", ok6,
+          f"two concurrent runs (sent {[v[0] for v in s6.values()]} MiB) and a later refresh: errors {[str(e) for e in errs]}"
+          f"{'' if errc is None else errc}; each snapshot rechecked against its checkout: "
+          f"{['0 changes' if r is None else str(r).splitlines()[0] for r in rechecks]}")
+
+    # 7. The lock: a refresh waits while a sync holds the base's lock shared.
+    lock = os.path.join(root, "trees", f"{key}.lock")
+    holder = subprocess.Popen(["flock", "-s", lock, "sleep", "30"], start_new_session=True)
+    time.sleep(0.3)
+    done = threading.Event()
+    th = threading.Thread(target=lambda: (coc.refresh_base(coc.hosts[0]), done.set()))
+    th.start()
+    waited = not done.wait(1.5)
+    os.killpg(holder.pid, signal.SIGKILL)
+    holder.wait()
+    th.join(30)
+    # A sync reading the base waits while a refresh holds the lock exclusive.
+    cod = BaseCo(tmp, "ov-d", wt, [root])
+    holder = subprocess.Popen(["flock", "-x", lock, "sleep", "30"], start_new_session=True)
+    time.sleep(0.3)
+    sdone = threading.Event()
+    th2 = threading.Thread(target=lambda: (captured(lambda: cod.sync_raw(files, refresh=False)), sdone.set()))
+    th2.start()
+    swaited = not sdone.wait(1.5)
+    os.killpg(holder.pid, signal.SIGKILL)
+    holder.wait()
+    th2.join(30)
+    check("base-lock", waited and done.is_set() and swaited and sdone.is_set(),
+          f"refresh blocked while a sync held the lock shared: {waited}, then finished: {done.is_set()}; "
+          f"sync blocked while a refresh held it exclusive: {swaited}, then finished: {sdone.is_set()}")
+    for c in (coa, cob, coc, cod):
+        drop_run(c)
+
+    # 8. Build seed: only from a base whose record names the same checkout path.
+    bt = os.path.join(root, "trees", key, gf.BUILD_TREE)
+    os.makedirs(bt, exist_ok=True)
+    open(os.path.join(bt, "obj"), "w").write("x")
+    seeds = []
+    for co in (BaseCo(tmp, "seed-wt", wt, [root]), BaseCo(tmp, "seed-main", main, [root])):
+        hs = co.hosts[0]
+        co.mkdirs(hs)
+        seeds.append(hs.host.run_script(gf.SEED_BUILD, [root, key, co.run_id, co.tree]).stdout.strip())
+        drop_run(co)
+    check("base-seed", seeds == ["no-seed (the base is another checkout's)", "seeded"],
+          f"seed into a worktree run, then a main-checkout run (base recorded from {main}): {seeds}")
+
+    # 9. Status, clean and --tree: a stale clean and --tree keep the base; a
+    #    checkout-keyed tree of the path goes with --tree; a base of a gone
+    #    repository goes with a stale clean; --all removes trees/.
+    host = gf.Host("h0", {"transport": "local", "fleet_root": root, "engine": "no-such-engine"})
+    lines = gf.tree_lines(gf.list_trees(host, sizes=True))
+    legacy = "0123456789abcdef"
+    os.makedirs(os.path.join(root, "trees", legacy))
+    with open(os.path.join(root, "trees", f"{legacy}.src"), "w") as fh:
+        fh.write(f"coordinator={os.uname().nodename}\npath={wt}\nlast-run={int(time.time())}\n")
+    captured(lambda: gf.clean_host(host, "stale"))
+    kept_stale = os.path.isdir(os.path.join(root, "trees", key))
+    captured(lambda: gf.clean_host(host, "tree", wt))
+    kept_tree = os.path.isdir(os.path.join(root, "trees", key))
+    legacy_gone = not os.path.exists(os.path.join(root, "trees", legacy))
+    gone_key = "fedcba9876543210"
+    os.makedirs(os.path.join(root, "trees", gone_key))
+    with open(os.path.join(root, "trees", f"{gone_key}.src"), "w") as fh:
+        fh.write(f"coordinator={os.uname().nodename}\nrepo={tmp}/gone/.git\npath={tmp}/gone\n"
+                 f"last-run={int(time.time())}\n")
+    captured(lambda: gf.clean_host(host, "stale"))
+    gone_removed = not os.path.exists(os.path.join(root, "trees", gone_key))
+    captured(lambda: gf.clean_host(host, "all"))
+    all_removed = not os.path.exists(os.path.join(root, "trees"))
+    check("base-clean", len(lines) == 1 and lines[0].startswith(f"base {key}: ")
+          and kept_stale and kept_tree and legacy_gone and gone_removed and all_removed,
+          f"status: {lines}; stale clean keeps the base: {kept_stale}; --tree keeps it: {kept_tree} and removes "
+          f"the checkout-keyed tree: {legacy_gone}; a base of a gone repository removed: {gone_removed}; "
+          f"--all removes trees/: {all_removed}")
+
+    # 10. The ssh form (FAKE_SSH runs the remote command here): the rsync
+    #     server holds the base's lock shared under the run tag; a second run
+    #     from the worktree sends only file 3's changed blocks.
+    fake = FakeSsh(tmp)
+    try:
+        fake.arm(0)
+        sent = []
+        for name, tree in (("ssh-1", main), ("ssh-2", wt)):
+            co = BaseCo(tmp, name, tree, [root], ssh=True)
+            with gf.run_tag(f"test-{name}"):
+                err, out = co.sync(files)
+            sent.append((synced(out).get(co.hosts[0].name, (None, "")), err))
+            drop_run(co)
+    finally:
+        fake.restore()
+    (s_a, e_a), (s_b, e_b) = sent
+    check("base-ssh", e_a is None and e_b is None and s_a == (8, "no base") and s_b[0] == 0
+          and s_b[1].startswith(f"base {key} from {main}") and os.path.exists(lock),
+          f"first run {s_a[0]} MiB ({s_a[1]}), second from the worktree {s_b[0]} MiB ({s_b[1]}); errors {e_a}, {e_b}")
+
+
+def case_on_hosts(tmp):
+    """on_hosts runs hosts concurrently; one host's failure stops the others' children and is raised."""
+    hosts = [gf.HostState(gf.Host(f"p{i}", {"transport": "local"}), {"root": tmp}, 1, "p") for i in range(3)]
+    t0 = time.monotonic()
+    res = gf.on_hosts(hosts, lambda hs: (gf.run_proc(["sleep", "1"]).returncode, hs.name))
+    wall = time.monotonic() - t0
+    check("on-hosts", res == [(0, "p0"), (0, "p1"), (0, "p2")] and wall < 2.0,
+          f"three 1 s children took {wall:.1f} s; results {res}")
+    pid_file = os.path.join(tmp, "on-hosts-{}.pid")
+
+    def fn(hs):
+        if hs.name == "p0":
+            time.sleep(0.5)
+            raise gf.FleetError("p0 failed")
+        return gf.run_proc(["bash", "-c", f'echo $$ >"{pid_file.format(hs.name)}"; exec sleep 30'])
+    t0 = time.monotonic()
+    err, _out = captured(lambda: gf.on_hosts(hosts, fn))
+    wall = time.monotonic() - t0
+    alive = [p for p in (open(pid_file.format(n)).read().strip() for n in ("p1", "p2"))
+             if os.path.exists(f"/proc/{p}")]
+    check("on-hosts-fail", isinstance(err, gf.FleetError) and str(err) == "p0 failed"
+          and wall < gf.STOP_POLL_S + 3 and not alive,
+          f"raised {err!r} after {wall:.1f} s; the other hosts' children alive: {len(alive)} of 2")
+
+
 def main():
     """Run every case in a temporary directory with the ledger redirected."""
     tmp = tempfile.mkdtemp(prefix="fleet-stream-check.")
@@ -1458,6 +1766,7 @@ def main():
                      case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_transport, case_clean,
                      case_expect, case_canary_verdict, case_run_candidate, case_move, case_move_cli,
                      case_keep_and_resume_inputs, case_keep_exhausted, case_ledger, case_repeat,
+                     case_sync_base, case_on_hosts,
                      case_takeover_rule, case_takeover, case_takeover_slow, case_takeover_race):
             case(tmp)
     finally:

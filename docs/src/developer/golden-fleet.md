@@ -131,7 +131,8 @@ scripts/golden-fleet.py add box2 --ssh user@box2 --timings box2-legs.json
 scripts/golden-fleet.py calibrate
 scripts/golden-fleet.py calibrate --hosts box2
 # Reachability, engine, :fleet image Id against the local image, image.id,
-# golden lock and its holder, governor, calibration, free space, fleet_root size.
+# golden lock and its holder, governor, calibration, free space, fleet_root size,
+# and each tree under trees/ (the repository base: size, age, last checkout).
 scripts/golden-fleet.py status
 scripts/golden-fleet.py status --hosts box2
 # Drop reasons per host; exit 0 with a usable host, 64 with none.
@@ -179,7 +180,7 @@ line of `done`.
 ```sh
 scripts/golden-fleet.py clean                     # stale files on every enabled host
 scripts/golden-fleet.py clean --hosts box2
-scripts/golden-fleet.py clean --tree "$PWD"       # this coordinator's trees of one checkout
+scripts/golden-fleet.py clean --tree "$PWD"       # checkout-keyed trees of one checkout (the base stays)
 scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
 ```
 
@@ -209,7 +210,8 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    Every unit then runs `gate --no-build`, which verifies the binaries with
    `sha256sum -c` before capturing.
 4. Sync. The positive set is copied to `<fleet_root>/runs/<run-id>/tree`
-   with `rsync --link-dest` from `<fleet_root>/trees/<key>`: git's tracked
+   on every host concurrently, with `rsync --checksum --link-dest` from the
+   repository base `<fleet_root>/trees/<key>` (Sync base): git's tracked
    and non-ignored untracked files (submodules included),
    `games/*/generated`, each game's manifest `globals.toml` and
    `symbols.toml`, each run game's disc cue and bin,
@@ -222,9 +224,10 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    capture-fields` (a snapshot has no `.git`; the capture record reads them
    through `OPENPETE_CAPTURE_FIELDS`).
 5. Torn-sync recheck. Every copy is compared again with
-   `rsync -n --checksum` over the same lists; any change refuses the run as
-   torn. The synced disc cue and bin are hashed on every host against the
-   blessed manifest headers.
+   `rsync -n --checksum` over the same lists, the hosts concurrently; any
+   change refuses the run as torn. The synced disc cue and bin are hashed
+   on every host against the blessed manifest headers. Each host's base
+   is then refreshed from its snapshot.
 6. Placement. Units are placed longest first, one per free host, from the
    unit-time ledger `fleet-unit-times.tsv` beside the reference store (a
    unit without a record is scaled from 60 min for the spyro-1
@@ -588,9 +591,9 @@ host, attempt and wall time.
   golden.lock            flock: one presentation golden per host; holds the holder record
   image.id               Id of the :fleet image the fleet shipped
   image.id.history       earlier shipped Ids, removed by clean
-  trees/<key>/           link-dest base: the last snapshot of one checkout
-  trees/<key>.src        coordinator, checkout path, last-run time
-  trees/<key>.lock
+  trees/<key>/           the repository base: the last refreshed snapshot of any checkout of the repository
+  trees/<key>.src        coordinator, repository (git common directory), last checkout path, last-run time
+  trees/<key>.lock       flock: shared while a sync or build seed reads the base, exclusive while a refresh or clean replaces it
   runs/<run-id>/
     coordinator.log      local host only
     done                 local host only: rc=N, run=, reason=
@@ -610,16 +613,62 @@ host, attempt and wall time.
 ```
 
 `<key>` is the first 16 hex digits of the SHA-256 of the coordinator's
-hostname and the checkout's absolute path.
+hostname and the repository's git common directory (`git rev-parse
+--git-common-dir`, resolved), so the main checkout and every worktree of the
+repository share one base per host. A tree whose record has no `repository`
+line was keyed on a checkout path by an earlier coordinator; `clean`
+removes it once its checkout is gone or unused for 14 days, or by `--tree`.
+
+## Sync base
+
+- Bytes sent. `--checksum` makes rsync compare each file's content with the
+  base's file, not its size and mtime: a gate worktree's files carry the
+  worktree's checkout time, so a size-and-mtime match never holds against a
+  base from another checkout and every file would be sent. A file whose
+  content equals the base's is not sent: rsync hard-links it from the base
+  when its mode and mtime also match, else copies it there from the base. A
+  run from a new gate worktree sends only the files whose content differs
+  from the last synced tree; the log line ends `(base <key> from <last
+  checkout>, <age>)`, `(no base)`, or `(foreign base ignored: ...)`.
+- Trust. The base's content is never trusted. A base file whose content
+  differs from the checkout's (tampered, stale, torn by a killed refresh)
+  is sent, not linked, by the checksum comparison; the torn-sync recheck
+  then compares every listed file of the snapshot with the checkout by
+  checksum, whatever its origin. A base whose record is missing or names
+  another coordinator or repository is not linked from; the run's refresh
+  replaces it.
+- Separation. A run reads only its own snapshot, `runs/<run-id>/tree`. The
+  refresh builds `trees/<key>.new` by hard links from a snapshot and
+  renames it over the base, so no fleet step writes a base file in place
+  and a snapshot linked from an earlier base keeps its content. A sync
+  holds `trees/<key>.lock` shared on the host while rsync reads the base
+  (the remote rsync server runs under `flock -s`); the refresh and
+  `clean` take it exclusive, so a base is never swapped under a sync.
+  The units' in-place writers stay off linked files: the container home
+  and the disc-hash memo are excluded from the sync and the base, and a
+  remote build runs in a build tree copied, not linked, from the base.
+- Build seed. A remote build host's build tree is seeded from the base
+  only when the base's record names the same checkout path: another
+  checkout's objects can be newer than this checkout's changed sources,
+  which the build would then not rebuild. A refresh from a snapshot
+  without a build tree keeps the previous build tree on the same rule.
+- Disk per host. Between runs: one base, about the source set plus the
+  build tree (2.3 + 1.1 GiB). During a run from a new checkout the
+  snapshot's files are copies (their mtimes differ from the base's), so
+  the run's tree adds the same again until the run's directory is
+  removed; a rerun from the same checkout links its unchanged files.
 
 `clean` works per host under its golden lock (a busy host is skipped) and
 removes: `runs/` directories no process holds and with no done marker
 newer than 24 h (signalling the `dbus-daemon` helpers their supervisors
 recorded, when PID and start time still match); exited fleet-labelled
-containers; `trees/<key>` this coordinator wrote whose checkout path is
-gone or unused for 14 days; shipped images other than the current `:fleet`
-one and named by no other tag. `--tree PATH` removes only this
-coordinator's trees of PATH. `--all` removes `runs/`, `trees/`, the lock
+containers; a repository base this coordinator wrote whose repository is
+gone or that no run refreshed for 14 days, and a checkout-keyed tree whose
+checkout path is gone or unused for 14 days; shipped images other than the
+current `:fleet` one and named by no other tag. A tree whose lock a sync
+holds is kept. `--tree PATH` removes only this coordinator's
+checkout-keyed trees of PATH; the repository base stays, so a gate
+worktree's teardown leaves it for the next run. `--all` removes `runs/`, `trees/`, the lock
 and image records, every fleet-labelled container and the `:fleet` tag
 (the image itself only when no other tag names it), and `fleet_root` when
 nothing else is in it. On the local host `clean` also removes the
@@ -649,8 +698,9 @@ main checkout, so a regen on main before the run's sync recheck changes
 the gated sources; the capture record's `generated-tree` records what was
 captured. The run's candidates land in the worktree's
 `build/fleet-stream/<run-id>/<unit>/`; promote them (below) before
-`worktree-teardown.sh gate-<batch>` removes the worktree and its fleet
-trees.
+`worktree-teardown.sh gate-<batch>` removes the worktree. Its
+`clean --tree` keeps the repository base, from which the next batch's
+worktree syncs only its changed files.
 
 ## Promote
 

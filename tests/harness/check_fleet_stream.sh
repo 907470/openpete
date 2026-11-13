@@ -38,7 +38,9 @@
 # of an attempts-exhausted unit, no ledger row from a filtered unit or an
 # import from outside the run, and takeover over simulated hosts on a
 # virtual clock (last-finishing unit, not paying, slower host, --no-takeover,
-# completion racing the stop, the ledger row over both attempts).
+# completion racing the stop, the ledger row over both attempts), and the
+# repository sync base (reuse from another checkout, checksum trust, recheck,
+# locks, concurrent runs, build seed, status and clean) with concurrent hosts.
 #
 # Exit: 0 every case holds, 1 a case failed (named).
 set -u
