@@ -1726,7 +1726,9 @@ int openpete_get_render_fps(void) {
  * PsyCross raster. A windowed run with any screenshot request keeps the GL
  * path, --screenshot-native-only included. A headless
  * --screenshot-native-only run reads only the native capture, whose scene
- * is composed from game state. A windowed run whose launcher found no
+ * is composed from game state, when a headless native consumer is armed
+ * (openpete_native_headless_consumer); without one the native renderer
+ * stays off and PsyCross keeps the GL path. A windowed run whose launcher found no
  * Vulkan device (opts->native_unavailable) keeps the GL path: PsyCross's
  * GL window is then its display. In every run the CPU VRAM mirror stays
  * live, so StoreImage reads what LoadImage, MoveImage and ClearImage
@@ -1742,7 +1744,8 @@ static bool psycross_raster_unread(const openpete_options_t* opts) {
         return false;
     if (!opts->headless)
         return opts->screenshot_frame_count == 0;
-    return opts->screenshot_native_only && !opts->record_path;
+    return opts->screenshot_native_only && !opts->record_path
+        && openpete_native_headless_consumer(opts);
 }
 
 void openpete_game_window_size(const openpete_options_t* opts, int* out_w, int* out_h)

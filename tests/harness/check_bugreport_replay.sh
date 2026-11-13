@@ -19,7 +19,14 @@
 #           = game and hide_player = on at feed key 1400 (before the
 #           bundle's anchor, the session's second) and dither = on at 3000
 #           (after it); a native screenshot at feed key 4390
-# and ten replays:
+#   display as plain, under the display and output-modifier flags a
+#           tester's argv can hold: --renderer vk --fullscreen 1 --window
+#           2560x1440 --vsync 0 --gpu NoSuchGpu --ssaa 2 --background 1
+#           --input-lock 1 (kept by the replay) and --screenshot-native-only
+#           --screenshot-overlays 1 --record-fps-overlay 1 --no-record-audio
+#           (dropped with the outputs they modify); a native screenshot at
+#           feed key 890
+# and thirteen replays:
 #   skip         the skip bundle as written
 #   skip-late    the skip bundle with its manifest's anchor seq set to 2:
 #                the replay drops the launch flags (negative control)
@@ -40,16 +47,20 @@
 #                control: the live values are not applied)
 #   knobs-old    the knobs bundle without knobs.txt and its manifest entry,
 #                the shape a bundle written before the member has, a native
-#                screenshot at feed key 4390 (the tester's argv names
-#                --renderer vk, which a headless run without a screenshot
-#                request refuses: no display path)
+#                screenshot at feed key 4390
+#   vk-noshot    the knobs bundle (argv: --renderer vk --screenshot-native-only)
+#                with no screenshot request
+#   display      the display bundle with no screenshot request
+#   native-only  the plain bundle with the developer's own
+#                --screenshot-native-only and no screenshot request (the
+#                replay passes the developer's flags unfiltered)
 #
 # Every recording runs under --mute 1.
 #
 # Instrument: the replay's verdict line (`bug-report-replay: IDENTICAL |
 # DIVERGED | REFUSED ...`), its `launch flags kept|dropped` line, the level
 # skip's `[skip-to-level] induced` line, and the audit's `[tsc-audit] total`
-# line; `tools/bugreport.py audio` over each recording's audio-feed.txt
+# line; the replay's `argv:` line; `tools/bugreport.py audio` over each recording's audio-feed.txt
 # (exit 3 when the feed played data and holds no event); `tools/bugreport.py
 # info` over the knobs bundle; the replay's `knob` and `knobs:` lines; the
 # decoded pixels of the screenshots at feed key 4390.
@@ -70,11 +81,15 @@
 # zero applied and a screenshot that differs from the recording's (equal
 # means the case cannot fail); knobs-old IDENTICAL with the `no knobs.txt`
 # line and a screenshot equal to knobs-off's, and `info` naming the member
-# absent.
+# absent; vk-noshot, display and native-only exit 0 IDENTICAL with
+# rows > 0 (the replay ran and compared that many tick hashes; zero rows
+# reads VACUOUS), and the argv line of vk-noshot and display keeps every
+# display flag and holds none of the dropped modifiers.
 #
 # Verdict line:
 #   [bugreport-replay] skip=.. skip-late=.. plain=.. mods=.. mods-held=.. env=.. env-refused=.. audio=<events>
-#                      knobs=<applied>|VACUOUS knobs-off=<verdict>/<capture> knobs-old=.. verdict=PASS|FAIL
+#                      knobs=<applied>|VACUOUS knobs-off=<verdict>/<capture> knobs-old=..
+#                      vk-noshot=<verdict>/<rows> display=<verdict>/<rows> native-only=<verdict>/<rows> verdict=PASS|FAIL
 #
 # Usage: tests/harness/check_bugreport_replay.sh [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL, 64 SKIP (binary or disc missing).
@@ -140,6 +155,12 @@ knobs_zip="$(record knobs 4400 --skip-to-level summer_forest --renderer vk --asp
     --screenshot-on-frame 4390 --screenshot-native-only --screenshot-output "$OUT/knobs-rec__{n}.png")" ||
     fail+=("knobs recording failed (see $OUT/rec-knobs.log)")
 REC_ENV=()
+DISPLAY_KEPT=(--renderer vk --fullscreen 1 --window 2560x1440 --vsync 0 --gpu NoSuchGpu --ssaa 2 --background 1
+              --input-lock 1)
+DISPLAY_DROPPED=(--screenshot-native-only --screenshot-overlays --record-fps-overlay --no-record-audio)
+display_zip="$(record display 900 "${DISPLAY_KEPT[@]}" --screenshot-native-only --screenshot-overlays 1 \
+    --record-fps-overlay 1 --no-record-audio --screenshot-on-frame 890 --screenshot-output "$OUT/display-rec__{n}.png")" ||
+    fail+=("display recording failed (see $OUT/rec-display.log)")
 if (( ${#fail[@]} )); then
     printf 'bugreport-replay: %s\n' "${fail[@]}"
     echo "[bugreport-replay] verdict=FAIL"
@@ -352,10 +373,52 @@ grep -q 'bug-report-replay: knobs: the bundle has no knobs.txt' "$LOG" || fail+=
 python3 -I tools/bugreport.py info "$OUT/knobs-old.zip" 2>&1 | grep -q '^knobs: no knobs.txt' ||
     fail+=("knobs-old: info does not name knobs.txt absent")
 
+# noshot TAG: exit 0 and IDENTICAL with rows > 0 for the last replay; sets NOSHOT to <verdict>/<rows>.
+noshot() {
+    local tag="$1" v rows
+    v="$(verdict "$LOG")"
+    rows="$(grep -oE 'bug-report-replay: IDENTICAL rows=[0-9]+' "$LOG" | grep -oE '[0-9]+$')"
+    (( RC == 0 )) || fail+=("$tag: exit $RC, want 0 (see $LOG)")
+    [[ "$v" == IDENTICAL ]] || fail+=("$tag: $v, want IDENTICAL")
+    if (( ${rows:-0} == 0 )); then
+        fail+=("$tag: VACUOUS: no tick hash compared")
+        rows=VACUOUS
+    fi
+    NOSHOT="$v/$rows"
+}
+# argv_check TAG: the last replay's argv line keeps DISPLAY_KEPT's pairs and holds no DISPLAY_DROPPED flag.
+argv_check() {
+    local tag="$1" line k
+    line="$(grep -m1 '^bug-report-replay: argv:' "$LOG")"
+    for ((k = 0; k < ${#DISPLAY_KEPT[@]}; k += 2)); do
+        [[ "$line" == *" ${DISPLAY_KEPT[k]} ${DISPLAY_KEPT[k + 1]} "* ]] ||
+            fail+=("$tag: argv lost ${DISPLAY_KEPT[k]} ${DISPLAY_KEPT[k + 1]}")
+    done
+    for k in "${DISPLAY_DROPPED[@]}"; do
+        [[ "$line" == *" $k "* || "$line" == *" $k" ]] && fail+=("$tag: argv kept $k")
+    done
+}
+
+REPLAY_ENV=()
+replay vk-noshot "$knobs_zip"
+noshot vk-noshot
+r_vk="$NOSHOT"
+grep -q '^bug-report-replay: argv:.* --renderer vk ' "$LOG" || fail+=("vk-noshot: argv lost --renderer vk")
+grep -q '^bug-report-replay: argv:.* --screenshot-native-only' "$LOG" && fail+=("vk-noshot: argv kept --screenshot-native-only")
+
+replay display "$display_zip"
+noshot display
+r_disp="$NOSHOT"
+argv_check display
+
+replay native-only "$plain_zip" --screenshot-native-only
+noshot native-only
+r_nat="$NOSHOT"
+
 res=PASS
 if (( ${#fail[@]} )); then
     printf 'bugreport-replay: %s\n' "${fail[@]}"
     res=FAIL
 fi
-echo "[bugreport-replay] skip=$v_skip skip-late=$v_late plain=$v_plain mods=$v_mods mods-held=$v_held env=$v_env env-refused=$v_ref audio=$n_audio knobs=$n_knobs knobs-off=$v_koff/${c_off// /:} knobs-old=$v_kold verdict=$res"
+echo "[bugreport-replay] skip=$v_skip skip-late=$v_late plain=$v_plain mods=$v_mods mods-held=$v_held env=$v_env env-refused=$v_ref audio=$n_audio knobs=$n_knobs knobs-off=$v_koff/${c_off// /:} knobs-old=$v_kold vk-noshot=$r_vk display=$r_disp native-only=$r_nat verdict=$res"
 [[ "$res" == PASS ]]

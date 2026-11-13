@@ -543,11 +543,17 @@ static int rp_arg(rp_argv_t* a, const char* s)
     return 0;
 }
 
-/* Flags of the tester's argv the replay drops, with the values they take:
- * the game and disc (the developer's --disc decides, the admission checks
- * it), the cards, mods root and config (replaced by the bundle's), the
- * boot route and movie (the replay's own), the run's bounds, and every
- * output file. */
+/* Flags of the tester's argv the replay drops, with the values they take
+ * (-1: an optional 0|1|on|off): the game and disc (the developer's --disc
+ * decides, the admission checks it), the cards, mods root and config
+ * (replaced by the bundle's), the boot route and movie (the replay's own),
+ * the run's bounds, every output file, and every flag that only modifies an
+ * output (the screenshot and record modifiers): the developer's own
+ * capture flags decide the replay's outputs, and a modifier left without
+ * its output can select a path no consumer brings up. Display flags
+ * (--renderer, --window, --fullscreen, --vsync, --gpu, --ssaa, --aspect)
+ * pass: --headless leaves the window ones inert, and the renderer ones
+ * reach the developer's captures as they reached the tester's display. */
 static const struct { const char* flag; int values; } k_drop[] = {
     {"--disc", 1}, {"--card1", 1}, {"--card2", 1}, {"--card-dir", 1}, {"--no-card", 0},
     {"--no-card1", 0}, {"--no-card2", 0}, {"--mods-dir", 1}, {"--config", 1}, {"--no-config", 0},
@@ -556,10 +562,13 @@ static const struct { const char* flag; int values; } k_drop[] = {
     {"--screenshot-on-frame", 1}, {"--screenshot-on-tick", 1},
     {"--screenshot-intermediate-on-frame", 1}, {"--screenshot-output", 1},
     {"--screenshot-presents-start", 1}, {"--screenshot-presents-count", 1},
+    {"--screenshot-native-only", 0}, {"--screenshot-overlays", -1},
+    {"--screenshot-freeze-backdrop", 0},
     {"--ram-dump-on-frame", 1}, {"--ram-dump-output", 1}, {"--state-save-on-frame", 1},
     {"--state-save-output", 1}, {"--state-load-on-frame", 1}, {"--state-load-input", 1},
     {"--record", 1}, {"--record-encoder", 1}, {"--record-crf", 1}, {"--record-gop", 1},
     {"--record-pixfmt", 1}, {"--record-audio-encoder", 1}, {"--record-frames", 1},
+    {"--record-cfr", 1}, {"--record-fps-overlay", 1}, {"--no-record-audio", 0},
     {"--log-file", 1}, {"--exe-path", 1}, {"--recomp-module", 1}, {"--position-log", 1},
     {"--gameplay-hash-log", 1}, {"--frame-time-log", 1}, {"--pace-log", 1}, {"--profile-out", 1},
     {"--psxtrace-verify", 1}, {"--psxtrace-anchor-pc", 1}, {"--psxtrace-anchor-hit", 1},
@@ -596,8 +605,13 @@ static int rp_launch_span(const char* a)
 static int rp_drop_span(const char* a, const char* next)
 {
     if (!strcmp(a, "--bk2-record")) return (next && next[0] != '-') ? 2 : 1;
-    for (size_t i = 0; i < sizeof k_drop / sizeof k_drop[0]; i++)
-        if (!strcmp(a, k_drop[i].flag)) return 1 + k_drop[i].values;
+    for (size_t i = 0; i < sizeof k_drop / sizeof k_drop[0]; i++) {
+        if (strcmp(a, k_drop[i].flag) != 0) continue;
+        if (k_drop[i].values >= 0) return 1 + k_drop[i].values;
+        const bool val = next && (!strcmp(next, "0") || !strcmp(next, "1") ||
+                                  !strcmp(next, "on") || !strcmp(next, "off"));
+        return val ? 2 : 1;
+    }
     return 0;
 }
 

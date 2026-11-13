@@ -7890,12 +7890,18 @@ static void hide_classes_parse(const char* list)
 
 /** @brief Return whether OPENPETE_HEADLESS_NATIVE asks for the surfaceless native bring-up under --headless without a capture consumer.
  *
- * Read once at bring-up; any value other than empty or "0" arms it.
+ * Read at each call; any value other than empty or "0" arms it.
  * @return True when armed. */
 static bool nr_headless_native_armed(void)
 {
     const char *e = getenv("OPENPETE_HEADLESS_NATIVE");
     return e && *e && strcmp(e, "0") != 0;
+}
+
+bool openpete_native_headless_consumer(const openpete_options_t *opts)
+{
+    return opts->screenshot_frame_count > 0 || opts->screenshot_intermediate_count > 0 ||
+           openpete_ident_audit_armed() || nr_headless_native_armed();
 }
 
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
@@ -7927,9 +7933,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * so a headless gate runs the per-tick native feed a windowed run runs:
      * the game-side feeders and canonical capture are gated on the scene
      * being live, and the headless device services run once per VBL. */
-    if (headless && opts->screenshot_frame_count <= 0 &&
-                    opts->screenshot_intermediate_count <= 0 &&
-                    !openpete_ident_audit_armed() && !nr_headless_native_armed()) {
+    if (headless && !openpete_native_headless_consumer(opts)) {
         OPL_WARN_F("native", "--renderer vk ignored under --headless (no screenshots requested)");
         scene_box_note_inactive("native renderer not brought up (--headless without screenshots)");
         return 0;

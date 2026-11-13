@@ -377,6 +377,17 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
  *         bring-up failed. */
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h);
 
+/** @brief Return whether a --headless run has a consumer for the surfaceless native device.
+ *
+ * The consumers are a screenshot or intermediate-capture request, the
+ * identity audit and OPENPETE_HEADLESS_NATIVE=1. Without one,
+ * openpete_native_render_init leaves the native renderer off under
+ * --headless, so a caller deciding whether PsyCross may skip its GPU asks
+ * this first.
+ * @param opts Resolved launch options.
+ * @return true when a headless native consumer is armed. */
+bool openpete_native_headless_consumer(const openpete_options_t *opts);
+
 /** @brief Return whether native bring-up succeeded and this process composes through a Vulkan device.
  *
  * Says nothing about where the picture comes from: it is true in PsyCross
