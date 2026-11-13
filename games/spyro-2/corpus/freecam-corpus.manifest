@@ -261,3 +261,6 @@ glimmer | pos=(94780, 109001, 9635) yaw=0 pitch=197
 # on), before it moves: its faces near the camera hold their shape as the
 # view pans.
 metropolis | pos=(96562, 73200, 41786) yaw=2019 pitch=214
+# The camera on the Metropolis round platform with its near wedges crossing
+# the near plane: they are drawn clipped in view space, whole and unbent.
+metropolis | pos=(93600, 73185, 41300) yaw=2048 pitch=300
