@@ -1363,31 +1363,17 @@ static void tn_hqfog_nodes(const tn_wctx* W, ngte_cvert v[3]) {
     }
 }
 
-/** @brief Whether one output corner of a terrain near clip projects beyond NGTE_CLIP_PROJ_LIMIT from the screen centre.
- *
- * Only a corner on the plane is tested: a crossing, or an input corner whose
- * m3 equals zc, since only those move with zc.
- * @param ctx The clip's three input corners (ngte_cvert[3]).
- * @param r The output corner.
- * @param zc The plane depth.
- * @return 1 when the corner projects beyond the bound, else 0. */
-static int tn_clip_beyond(const void* ctx, const ngte_clip_ref* r, double zc) {
-    const ngte_cvert* in = (const ngte_cvert*)ctx;
-    const ngte_cvert v = r->cross ? ngte_clip_lerp(in[r->a], in[r->b], zc) : in[r->a];
-    if (v.m3 != zc) return 0;
-    float sx, sy;
-    proj_screen(v.m1, v.m2, v.m3, &sx, &sy);
-    return fabsf(sx - (float)s_ofx) > NGTE_CLIP_PROJ_LIMIT ||
-           fabsf(sy - (float)s_ofy) > NGTE_CLIP_PROJ_LIMIT;
-}
-
 /** @brief Near-plane clips a camera-space triangle and pushes the result.
  *
- * ngte_near_clip_tri against the plane m3 >= s_nearz, with the projection
- * bound tn_clip_beyond: 0 vertices behind gives 1 triangle, 1 gives a quad
- * (2 triangles, fanned from corner 0), 2 give 1 triangle, 3 drop the face
- * and count dbg_behind. A crossing corner is ngte_clip_lerp of its edge. A
- * clipped push counts dbg_clipped. Under emit_hqfog_on each vertex first
+ * ngte_near_clip_tri against the plane m3 >= s_nearz, with no projection
+ * bound: 0 vertices behind gives 1 triangle, 1 gives a quad (2 triangles,
+ * fanned from corner 0), 2 give 1 triangle, 3 drop the face and count
+ * dbg_behind. A crossing corner is ngte_clip_lerp of its edge. A clipped
+ * push counts dbg_clipped. The plane stays at s_nearz: a crossing far off
+ * screen is clipped to the view by the rasterizer, whose clip w is the
+ * view-Z (op_scene_clip), while a plane moved deeper would cut away the part
+ * of the face between the two planes, which for a large face under a low
+ * camera lies inside the frame. Under emit_hqfog_on each vertex first
  * takes terrain_fog_blend of its near (rgb) and far (rgbf) colours at its
  * own depth, so a cut interpolates fogged colours as the retained cache's
  * vertex stage does.
@@ -1402,7 +1388,7 @@ static void clip_push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, 
     const double z[3] = { in[0].m3, in[1].m3, in[2].m3 };
     ngte_clip_ref ref[4];
     double zc; int clipped;
-    const int nout = ngte_near_clip_tri(z, s_nearz, tn_clip_beyond, in, ref, &zc, &clipped);
+    const int nout = ngte_near_clip_tri(z, s_nearz, NULL, NULL, ref, &zc, &clipped);
     if (nout < 3) { W->dbg_behind++; return; } /* fully behind the near plane */
     ngte_cvert out[4];
     for (int i = 0; i < nout; i++)

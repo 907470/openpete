@@ -1458,12 +1458,6 @@ cvx cv_lerp_n(cvx a, cvx b, float zc) {
 /* push_tri's screen resolution for one clip-fan corner: the installed
  * override when the subdivide left one, otherwise the (snapped) projection. */
 vec2 scr_of(cvx v) { return v.ov ? v.os : snap_of(proj_of(v.m)); }
-
-/* Max distance (PSX px) a crossing vertex may project from the screen centre
- * before the whole face is re-clipped at a doubled zc - the walk's own
- * CLIP_PROJ_LIMIT (crossing projections shrink ~1/zc, so this terminates
- * fast, and everything it trims lies far outside any visible frame). */
-#define CLIP_PROJ_LIMIT 2048.0
 #endif
 
 #if defined(TERRAIN_CELLS) || defined(TERRAIN_NEAR)
@@ -2914,37 +2908,20 @@ void main()
             cin = c2;
         }
 
-        /* Sutherland-Hodgman against m3 >= zc, with the walk's doubling
-         * retry: a crossing vertex still projecting beyond CLIP_PROJ_LIMIT
-         * re-clips the whole face at a doubled zc (<= 16 rounds). */
+        /* Sutherland-Hodgman against m3 >= G_NEAR (the walk's
+         * clip_push_tri): the plane never moves deeper, since a deeper cut
+         * removes the part of the face between the planes, which for a large
+         * face under a low camera lies inside the frame. */
         cvx outv[4];
         int nout = 0;
-        float zc = G_NEAR;
-        for (int rnd = 0; rnd < 24; rnd++) {
-            nout = 0;
-            bool clipped = false;
-            for (int i = 0; i < 3; i++) {
-                cvx cur = cin[i], nxt = cin[(i + 1) % 3];
-                bool curIn = cur.m.z >= zc, nxtIn = nxt.m.z >= zc;
-                if (curIn) outv[nout++] = cur;
-                if (curIn != nxtIn && nout < 4) {
-                    outv[nout++] = cv_lerp_n(cur, nxt, zc);
-                    clipped = true;
-                }
-            }
-            if (nout < 3) { kill_vert(); return; }   /* fully behind the plane */
-            if (clipped && rnd < 16) {
-                bool sane = true;
-                for (int i = 0; i < nout && sane; i++) {
-                    if (outv[i].m.z != zc) continue;   /* crossings move with zc */
-                    vec2 sp = proj_of(outv[i].m);
-                    if (abs(sp.x - float(G_OF.x)) > CLIP_PROJ_LIMIT ||
-                        abs(sp.y - float(G_OF.y)) > CLIP_PROJ_LIMIT) sane = false;
-                }
-                if (!sane) { zc *= 2.0; continue; }
-            }
-            break;
+        const float zc = G_NEAR;
+        for (int i = 0; i < 3; i++) {
+            cvx cur = cin[i], nxt = cin[(i + 1) % 3];
+            bool curIn = cur.m.z >= zc, nxtIn = nxt.m.z >= zc;
+            if (curIn) outv[nout++] = cur;
+            if (curIn != nxtIn && nout < 4) outv[nout++] = cv_lerp_n(cur, nxt, zc);
         }
+        if (nout < 3) { kill_vert(); return; }   /* fully behind the plane */
         /* Fan the clipped polygon: (out0,out1,out2) + (out0,out2,out3). */
         bool spare = (f16 & 0x8000u) != 0u;
         if (spare && nout < 4) { kill_vert(); return; }
