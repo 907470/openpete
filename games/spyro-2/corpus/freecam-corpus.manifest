@@ -264,3 +264,7 @@ metropolis | pos=(96562, 73200, 41786) yaw=2019 pitch=214
 # The camera on the Metropolis round platform with its near wedges crossing
 # the near plane: they are drawn clipped in view space, whole and unbent.
 metropolis | pos=(93600, 73185, 41300) yaw=2048 pitch=300
+# The camera very close over the Metropolis round platform at two positions a
+# hundred units apart: the platform is drawn down to the near plane at both.
+metropolis | pos=(92900, 73185, 40800) yaw=2048 pitch=250
+metropolis | pos=(92800, 73185, 40800) yaw=2048 pitch=250
