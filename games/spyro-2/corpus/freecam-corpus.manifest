@@ -254,3 +254,6 @@ icy_speedway | pos=(62236, 86740, 17376) yaw=2548 pitch=111
 # each face is drawn as its near-clipped view-space shape and selected on its
 # true facing, as the animated kind's are.
 summer_forest | pos=(52301, 47195, 44105) yaw=-946 pitch=303
+# The camera a few units above the Glimmer ground: large ground faces cross
+# the near plane and are drawn clipped at it, never cut farther out.
+glimmer | pos=(94780, 109001, 9635) yaw=0 pitch=197

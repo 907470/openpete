@@ -320,3 +320,6 @@ misty_bog | pos=(124375, 100894, 23444) yaw=-5022 pitch=249
 misty_bog@fogorig | pos=(124375, 100894, 23444) yaw=-5022 pitch=249 | | --fog original
 misty_bog@fogpp | pos=(124375, 100894, 23444) yaw=-5022 pitch=249 | | --fog per-pixel
 misty_bog@fogoff | pos=(124375, 100894, 23444) yaw=-5022 pitch=249 | | --fog off
+# The camera a few units above the Peace Keepers ground: large ground faces
+# cross the near plane and are drawn clipped at it, never cut farther out.
+peace_keepers | pos=(63754, 160317, 53576) yaw=0 pitch=197
