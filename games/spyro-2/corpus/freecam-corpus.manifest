@@ -257,3 +257,7 @@ summer_forest | pos=(52301, 47195, 44105) yaw=-946 pitch=303
 # The camera a few units above the Glimmer ground: large ground faces cross
 # the near plane and are drawn clipped at it, never cut farther out.
 glimmer | pos=(94780, 109001, 9635) yaw=0 pitch=197
+# The camera low over the Metropolis round platform (a moby the player stands
+# on), before it moves: its faces near the camera hold their shape as the
+# view pans.
+metropolis | pos=(96562, 73200, 41786) yaw=2019 pitch=214
