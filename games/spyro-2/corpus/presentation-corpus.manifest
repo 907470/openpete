@@ -205,7 +205,7 @@ summer-forest-moneybags-fall|1910|2||1912,1914,1916,1918,1920,1922|--skip-to-cut
 sunny-beach-intro-chest-tie|2772|2||2776,2780,2784,2786,2787,2788|--skip-to-cutscene sunny_beach_intro
 # attract-demo-spawn-jump: a class 0x1e3 moby placed without a marker the
 # native path reads (named residual); the sub-tick view lerps across it.
-# Blessed pre-fix.
+#
 attract-demo-spawn-jump|14612|2||14614,14615,14616,14617,14618
 # glimmer-32x9-leftedge: the reported free-camera pose at 32:9; the terrain
 # occlusion cull's frustum half bounded each sector's sphere with a square
@@ -278,15 +278,25 @@ crushs-dungeon|1504|2||1504,1506
 # crush-intro-dragon-shores-portal: at 16:9 the Dragon Shores picture (baked
 # from an eye off the sky's centre) registers against no sky, so the side
 # band shows the flat backdrop; 4169 is the present the reporter saw.
-# Blessed pre-fix.
+#
 crush-intro-dragon-shores-portal|4165|2||4169|--skip-to-cutscene crush_intro
 # robotica-farms-spark-wrap: barrel-blast sparks (class-1 streaks) with a
 # position halfword just below 0x10000 (Z 0xFFEF, -17 as int16). The routine's
 # camera-relative difference wraps through the GTE's int16 load; a build that
 # reads the halfword unsigned projects the endpoint ~65000 units off and draws
 # a full-height vertical line on the canonical and intermediate legs.
-# Blessed pre-fix.
+#
 robotica-farms-spark-wrap|1921|2||1923,1925,1957,1959|--skip-to-level robotica_farms
+# robotica-farms-barrier-ring (games/spyro-2/bk2/robotica-farms-barrier-ring.bk2):
+# Spyro, placed on a raised ledge at the level's edge, runs into the boundary
+# wall and bounces; the fourth contact's ring (class 0x2CC, 144 additive faces
+# in three rings) is in view. Each keyframe re-points every face's colour index
+# through a 144-entry faceblock patch list, which fades the rings outward.
+# 2147 is the ring fully formed, 2153 the inner ring faded, 2161 the outer
+# ring mid-fade. A walk that applies fewer than all 144 entries leaves the
+# last faces on the base colour index and draws them as a flat pale band.
+#
+robotica-farms-barrier-ring|2147|2||2147,2153,2161
 # idol-springs-block-glow: Foreman Bud's lights-out blocks (class 0x1E5) in
 # Idol Springs. The placement lands Spyro on the block at (109568, 50176),
 # which steps its keyframe byte (Moby+0x3C) yellow to unlit at VBL 1722 and

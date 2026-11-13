@@ -1,0 +1,6 @@
+# Synthetic movie (scripts/make_bk2.py --frames 2140 --load-delay 0
+# --feed-key vbl --hold 1900:2140:Up): Spyro placed on the raised ledge
+# inside Robotica Farms' boundary wall (collision surface type 2, case 5 of
+# func_8002AAFC) runs into it and bounces back four times; each contact
+# spawns the barrier ring, class 0x2CC.
+--skip-to-level robotica_farms --player-pose "113800,38500,12000,3805@1800"
