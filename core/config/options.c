@@ -82,6 +82,33 @@ static int parse_finite_clamped(const char* flag, const char* v, float lo, float
     return 0;
 }
 
+/** @brief Parse a --tick-scale value: a finite positive number, clamped to the tick scale's range.
+ *
+ * The whole value must parse (strtod with an end-pointer check). A value
+ * that is not a number, not finite, or not above 0 is refused; a positive
+ * value outside [OPENPETE_TICK_SCALE_MIN, OPENPETE_TICK_SCALE_MAX] is
+ * clamped with a message, as openpete_set_tick_scale clamps the live knob.
+ * @param flag The flag's spelling, for the messages.
+ * @param v The value text.
+ * @param out Receives the clamped factor; untouched on a refusal.
+ * @return 0 on success, -1 with a message on a refused value. */
+static int parse_tick_scale(const char* flag, const char* v, double* out) {
+    char* end = NULL;
+    double d = strtod(v, &end);
+    if (!v[0] || end == v || *end || !isfinite(d) || !(d > 0.0)) {
+        fprintf(stderr, "openpete: %s expects a positive number in [%g,%g] (e.g. 0.5), got: %s\n",
+                flag, OPENPETE_TICK_SCALE_MIN, OPENPETE_TICK_SCALE_MAX, v);
+        return -1;
+    }
+    if (d < OPENPETE_TICK_SCALE_MIN || d > OPENPETE_TICK_SCALE_MAX) {
+        fprintf(stderr, "openpete: %s clamped to [%g,%g]; got %g\n",
+                flag, OPENPETE_TICK_SCALE_MIN, OPENPETE_TICK_SCALE_MAX, d);
+        d = d < OPENPETE_TICK_SCALE_MIN ? OPENPETE_TICK_SCALE_MIN : OPENPETE_TICK_SCALE_MAX;
+    }
+    *out = d;
+    return 0;
+}
+
 /** @brief Parse a window-size value: WxH or maximized.
  *
  * @param name The flag or env var, for the message.
@@ -1216,11 +1243,8 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
         }
     } else if (strcmp(a, "--tick-scale") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-        opts->tick_scale = atof(v); i++;
-        if (!(opts->tick_scale > 0.0)) {
-            fprintf(stderr, "openpete: --tick-scale expects a positive number (e.g. 0.5), got: %s\n", v);
-            return OPENPETE_EXIT_SETUP_ERROR;
-        }
+        if (parse_tick_scale(a, v, &opts->tick_scale) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        i++;
     } else if (strcmp(a, "--window") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         if (parse_window_value(a, v, &opts->window_w, &opts->window_h,

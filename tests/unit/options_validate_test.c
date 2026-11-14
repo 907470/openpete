@@ -376,6 +376,45 @@ static void scrub_inherited_env(void) {
     for (int i = 0; i < n; i++) unsetenv_portable(names[i]);
 }
 
+/** @brief --tick-scale and the toml tick_scale key: a positive value outside [0.05, 8] is clamped into it, a value that is not a finite positive number is refused. */
+static void tick_scale_range(void) {
+    openpete_options_t o;
+    static const char* const huge[] = { "--no-config", "--tick-scale", "1e9" };
+    g_case = "typed tick-scale 1e9";
+    CHECK(parse(&o, 3, huge) == OPENPETE_EXIT_OK, "typed --tick-scale 1e9 failed the parse");
+    CHECK(o.tick_scale == OPENPETE_TICK_SCALE_MAX, "tick_scale = %g, want %g", o.tick_scale,
+          OPENPETE_TICK_SCALE_MAX);
+
+    static const char* const tiny[] = { "--no-config", "--tick-scale", "0.001" };
+    g_case = "typed tick-scale 0.001";
+    CHECK(parse(&o, 3, tiny) == OPENPETE_EXIT_OK, "typed --tick-scale 0.001 failed the parse");
+    CHECK(o.tick_scale == OPENPETE_TICK_SCALE_MIN, "tick_scale = %g, want %g", o.tick_scale,
+          OPENPETE_TICK_SCALE_MIN);
+
+    static const char* const half[] = { "--no-config", "--tick-scale", "0.5" };
+    g_case = "typed tick-scale 0.5";
+    CHECK(parse(&o, 3, half) == OPENPETE_EXIT_OK && o.tick_scale == 0.5, "tick_scale = %g, want 0.5",
+          o.tick_scale);
+
+    static const char* const refused[][3] = {
+        { "--no-config", "--tick-scale", "inf" },
+        { "--no-config", "--tick-scale", "nan" },
+        { "--no-config", "--tick-scale", "0" },
+        { "--no-config", "--tick-scale", "-2" },
+        { "--no-config", "--tick-scale", "0.5x" },
+    };
+    for (size_t k = 0; k < sizeof refused / sizeof refused[0]; k++) {
+        g_case = refused[k][2];
+        CHECK(parse(&o, 3, refused[k]) == OPENPETE_EXIT_SETUP_ERROR, "typed --tick-scale %s parsed",
+              refused[k][2]);
+    }
+
+    g_case = "config tick_scale 1e9";
+    CHECK(parse_cfg(&o, "tick_scale = 1e9\n", 0, NULL) == OPENPETE_EXIT_OK, "config tick_scale failed the parse");
+    CHECK(o.tick_scale == OPENPETE_TICK_SCALE_MAX, "tick_scale = %g, want %g", o.tick_scale,
+          OPENPETE_TICK_SCALE_MAX);
+}
+
 int main(void) {
     scrub_inherited_env();
     const char* tmp = getenv("TMPDIR");
@@ -388,6 +427,7 @@ int main(void) {
     window_values();
     resolved_env_fields();
     effective_resolves_sentinels();
+    tick_scale_range();
     remove(g_toml);
     if (g_fail) printf("options_validate_test: FAILED (%d)\n", g_fail);
     else        printf("options_validate_test: ok\n");

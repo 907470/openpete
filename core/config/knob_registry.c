@@ -565,7 +565,7 @@ static double tickscale_get(const knob_desc_t *k) { (void)k; return openpete_get
 /** @brief Set the pacer's tick-scale factor to `v`.
  *
  * Returns -1, changing nothing, when `v` is 0 or less. Otherwise the pacer
- * clamps it to [0.05, 8] and applies it at the host loop's next quiescent
+ * clamps it to [OPENPETE_TICK_SCALE_MIN, OPENPETE_TICK_SCALE_MAX] and applies it at the host loop's next quiescent
  * point; only wall-clock pacing changes, not the ticks executed. */
 static int tickscale_set(knob_desc_t *k, double v) {
     (void)k;
@@ -1478,7 +1478,7 @@ static const knob_desc_t g_builtin[] = {
       "Engine speed multiplier (slow-mo / speed-up; sim and presents "
       "together). Applies on the next host iteration; pacing only, the sim "
       "runs identical ticks on a stretched wall clock.",
-      KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0.05f, 8.0f,
+      KNOB_FLOAT, KNOB_LIVE, NULL, 0, (float)OPENPETE_TICK_SCALE_MIN, (float)OPENPETE_TICK_SCALE_MAX,
       tickscale_get, tickscale_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "1.0",
       .help_arg = "F", .help_order = 230,

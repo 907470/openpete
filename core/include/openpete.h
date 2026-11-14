@@ -1134,6 +1134,12 @@ void openpete_set_render_fps(int fps);
  * @return Presents per second, or 0 for the match-sim pacer. */
 int openpete_get_render_fps(void);
 
+/* The tick scale's range: --tick-scale, the toml tick_scale key, the live
+ * knob and openpete_set_tick_scale clamp a positive factor into it. The
+ * upper bound keeps the scaled VBL period above zero nanoseconds. */
+#define OPENPETE_TICK_SCALE_MIN 0.05
+#define OPENPETE_TICK_SCALE_MAX 8.0
+
 /** @brief Set the engine speed factor, slowing or speeding the sim and presents together.
  *
  * At the top of its next iteration the host loop divides the VBL period by
@@ -1141,7 +1147,7 @@ int openpete_get_render_fps(void);
  * re-anchors its deadlines. Pacing only: the sim executes identical ticks
  * on a stretched wall clock, and an unlocked or headless run ignores the
  * deadlines.
- * @param scale The factor, clamped to [0.05, 8]. */
+ * @param scale The factor, clamped to [OPENPETE_TICK_SCALE_MIN, OPENPETE_TICK_SCALE_MAX]. */
 void   openpete_set_tick_scale(double scale);
 /** @brief Return the tick scale last requested or applied; callable from any thread.
  *

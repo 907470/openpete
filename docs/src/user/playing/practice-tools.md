@@ -40,9 +40,13 @@ speed.
 
 `--tick-scale F` <!-- id: knob:tick_scale --> runs the whole game at F times
 normal speed: 0.5 is half-speed slow motion. Default 1.0
-<!-- id: knob:tick_scale -->; the dev overlay's **Tick scale** row takes 0.05
-to 8 <!-- id: knob:tick_scale --> and applies at once. The game computes the
-same ticks at any speed; only the time between them changes.
+<!-- id: knob:tick_scale -->. F ranges from 0.05 to 8
+<!-- id: knob:tick_scale -->: a larger or smaller positive value is clamped to
+that range. 0, a negative value or a value that is not a number is refused: on
+the command line it stops the launch, in `openpete.toml` it is ignored with a
+warning. The dev overlay's **Tick scale** row takes the same range
+and applies at once. The game computes the same ticks at any speed; only the
+time between them changes.
 
 ## Starting in a level
 

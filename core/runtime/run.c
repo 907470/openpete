@@ -1453,8 +1453,8 @@ void openpete_set_render_fps(int fps) {
  * only - the sim executes identical ticks, just on a stretched wall clock
  * (headless/unlock ignores the deadlines entirely). */
 void openpete_set_tick_scale(double scale) {
-    if (scale < 0.05) scale = 0.05;
-    if (scale > 8.0)  scale = 8.0;
+    if (scale < OPENPETE_TICK_SCALE_MIN) scale = OPENPETE_TICK_SCALE_MIN;
+    if (scale > OPENPETE_TICK_SCALE_MAX) scale = OPENPETE_TICK_SCALE_MAX;
     knob_lock();
     s_knob_cmds.scale = scale; s_knob_cmds.scale_set = 1;
     s_knob_shown.scale = scale;
