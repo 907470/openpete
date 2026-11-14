@@ -4950,9 +4950,9 @@ static uint8_t  s_wtri_mangle[MAX_NTRI]; /* any vertex near-fixed-up (unr) or
                                           * projection - never a key emitter */
 static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
 static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenance tag) */
-/* The triangle's class bits 0 to 6 (OPENPETE_CB_*): the record word
- * s_cur_rec_cbits, the face word s_emit_fbits and the vertex regime bits,
- * copied to the scene triangle's cbits at the emit. */
+/* The triangle's class bits 0 to 6 (OPENPETE_CB_*): the emit target's record
+ * word cb_rec, its face word cb_face and the vertex regime bits, copied to the
+ * scene triangle's cbits at the emit. */
 static uint8_t  s_wtri_cbits[MAX_NTRI];
 /* Which per-face special material produced this tri's colours, 0 = none: the
  * colour A/B prices those faces against the prims separately, because they are
@@ -4978,13 +4978,6 @@ static _Thread_local int16_t  s_cur_wbk = -1;
 static _Thread_local uint8_t  s_cur_single;     /* s_wtri_single of the record being walked */
 static _Thread_local uint32_t s_cur_moby_key;   /* moby for the record currently being walked */
 static _Thread_local uint16_t s_cur_moby_cls;   /* m_Class of that moby (set beside the key) */
-/* Record-scope class bits of the record being walked (set beside the class):
- * OPENPETE_CB_MOBY_GPF, _SIMPLE, _SCREEN. */
-static _Thread_local uint8_t  s_cur_rec_cbits;
-/* Face-scope class bits of the face being emitted (OPENPETE_CB_MOBY_ENV,
- * _NEARCUT): set at the face, cleared at its end; emit_wtri_store reads them
- * on every triangle of the face and never resets them. */
-static _Thread_local uint8_t  s_emit_fbits;
 static _Thread_local int8_t   s_cur_moby_dofs;  /* authored OT bias (set beside the key) */
 static _Thread_local float    s_cur_env_az;     /* current record's TR azimuth (env-UV bias) */
 static _Thread_local uint32_t s_emit_fkey;      /* packed index triple for the next emit_wtri */
@@ -5135,11 +5128,18 @@ typedef struct {
     int16_t*  wbk;
     uint8_t*  cbits;
     int n, cap;
+    /* Class bits of the record being walked into this target (OPENPETE_CB_MOBY_GPF,
+     * _SIMPLE, _SCREEN), set beside s_cur_moby_cls, and of the face being
+     * emitted (OPENPETE_CB_MOBY_ENV, _NEARCUT), set at the face and cleared at
+     * its end; emit_wtri_store ORs both into every triangle it stores and
+     * resets neither. They travel with the target, which emit_wtri_store
+     * already holds, so a store reads no thread-local beyond t_out. */
+    uint8_t   cb_rec, cb_face;
 } mn_out;
 static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
                          s_wtri_front, s_wtri_mangle, s_wtri_dofs, s_wtri_special,
                          s_wtri_otk, s_wtri_isxy, s_wtri_single, s_wtri_wbk, s_wtri_cbits,
-                         0, MAX_NTRI };
+                         0, MAX_NTRI, 0u, 0u };
 static _Thread_local mn_out* t_out = &s_gout;
 
 /* The water-plane split of the face being emitted (moby_wplane_face): set
@@ -5313,9 +5313,9 @@ static void mnear_store(const proj_xy* const p[3], const float uv[3][2], const u
  * triangle stores its per-triangle side data from the walk's thread-local
  * state (s_cur_ui, s_cur_front, s_cur_moby_key, s_cur_moby_dofs,
  * s_cur_moby_cls, s_emit_fkey, s_emit_special, s_emit_otk, s_emit_tmix), a
- * mangle flag when any vertex is unr or sat, its class bits (the record
- * word s_cur_rec_cbits, the face word s_emit_fbits, OPENPETE_CB_MOBY_UNR
- * and _SAT from the vertices) and the integer SXY of each vertex, then
+ * mangle flag when any vertex is unr or sat, its class bits (the target's
+ * record word cb_rec and face word cb_face, OPENPETE_CB_MOBY_UNR and _SAT
+ * from the vertices) and the integer SXY of each vertex, then
  * resets s_emit_otk to -1 and s_emit_tmix to 0; a dropped call leaves both
  * unchanged. The face word is not reset: every triangle of the face takes it.
  * @param p The three vertices, screen position final.
@@ -5334,7 +5334,7 @@ static void emit_wtri_store(const proj_xy* const p[3], const float uv[3][2],
     const int unr = p[0]->unr || p[1]->unr || p[2]->unr;
     const int sat = p[0]->sat || p[1]->sat || p[2]->sat;
     O->mangle[O->n] = (uint8_t)(unr | sat);
-    O->cbits[O->n] = (uint8_t)(s_cur_rec_cbits | s_emit_fbits
+    O->cbits[O->n] = (uint8_t)(O->cb_rec | O->cb_face
                                | (uint32_t)unr * OPENPETE_CB_MOBY_UNR | (uint32_t)sat * OPENPETE_CB_MOBY_SAT);
     O->fkey[O->n] = s_emit_fkey;
     O->special[O->n] = s_emit_special;
@@ -5601,8 +5601,11 @@ static void emit_wtri_near(const proj_xy* const p[3], const float uv[3][2],
     if (n < 3) { t_diag->nearbehind++; return; }
     const int32_t otk = s_emit_otk;
     const uint8_t tmix = s_emit_tmix;
-    const uint8_t fbits = s_emit_fbits;
-    s_emit_fbits = (uint8_t)(fbits | (uint32_t)(clipped != 0) * OPENPETE_CB_MOBY_NEARCUT);
+    /* A cut triangle's parts take the near-cut bit on top of the face word,
+     * restored after them: the face's other triangles may be uncut. */
+    uint8_t* const fw = clipped ? &t_out->cb_face : NULL;
+    const uint8_t fbits = fw ? *fw : 0u;
+    if (fw) *fw = (uint8_t)(fbits | OPENPETE_CB_MOBY_NEARCUT);
     for (int k = 2; k < n; k++) {
         const proj_xy* const T[3] = { &q[0], &q[k - 1], &q[k] };
         const float tuv[3][2] = { { quv[0][0], quv[0][1] }, { quv[k - 1][0], quv[k - 1][1] },
@@ -5611,7 +5614,7 @@ static void emit_wtri_near(const proj_xy* const p[3], const float uv[3][2],
         s_emit_otk = otk; s_emit_tmix = tmix;
         emit_wtri_store(T, tuv, tc, m);
     }
-    s_emit_fbits = fbits;
+    if (fw) *fw = fbits;
 }
 
 /** @brief Append one float triangle to the current emit target, through the water-plane split and the near clip.
@@ -5854,8 +5857,8 @@ static const ngte_view* moby_simple_view(double* ofx, double* ofy) {
 void moby_simple_record(CPUState* cpu, uint32_t moby) {
     s_cur_moby_key  = moby;
     s_cur_moby_cls  = moby ? (uint16_t)cpu->read_half(moby + game_layout.moby.class_off) : 0;
-    s_cur_rec_cbits = OPENPETE_CB_MOBY_SIMPLE;
-    s_emit_fbits    = 0u;
+    t_out->cb_rec   = OPENPETE_CB_MOBY_SIMPLE;
+    t_out->cb_face  = 0u;
     s_cur_moby_dofs = moby ? (int8_t)cpu->read_byte(moby + game_layout.moby.angle_off + 3u) : 0;
     s_cur_ui    = moby_hud_tag(moby);
     s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, moby);
@@ -5911,7 +5914,7 @@ void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)
                         x->otk, x->itr, ofx, ofy, NULL, 0.0 };
     openpete_gsab_inst* gsab = moby_proj_open(&P, out, OPENPETE_GSAB_F_SIMPLE
                                               | (s_cur_screen ? OPENPETE_GSAB_F_SCREEN : 0u), 1.0, n);
-    s_cur_rec_cbits = (uint8_t)(OPENPETE_CB_MOBY_SIMPLE | (uint32_t)(s_cur_screen != 0) * OPENPETE_CB_MOBY_SCREEN);
+    t_out->cb_rec = (uint8_t)(OPENPETE_CB_MOBY_SIMPLE | (uint32_t)(s_cur_screen != 0) * OPENPETE_CB_MOBY_SCREEN);
     for (int i = 0; i < n; i++) {
         moby_project_vertex(&P, i, vm[i], vm[i], vm[i][0], vm[i][1], vm[i][2], &out[i]);
         out[i].rec = -1;
@@ -7186,6 +7189,7 @@ static int moby_record_face_sign(CPUState* cpu, const rec_meta* R) {
  * @param r0 The first record index.
  * @param r1 One past the last record index. */
 static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
+    mn_out* const O = t_out;   /* the target, fixed for the walk */
     for (int r = r0; r < r1; r++) {
         rec_meta* R = &s_recs[r];
         uint32_t mob = R->moby;   /* set in all paths (==rec+0x34 for .s recs); host-built reveal/re-extract records have addr=0 so reading R->addr+0x34 would miss the dedup */
@@ -7200,7 +7204,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         s_cur_wbk = -1;
         s_cur_single = rec_single_bucket(R);
         s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + game_layout.moby.class_off) : 0; /* m_Class */
-        s_cur_rec_cbits = (uint8_t)((uint32_t)(moby_rec_gpf(R->w0) != 0) * OPENPETE_CB_MOBY_GPF);
+        O->cb_rec = (uint8_t)((uint32_t)(moby_rec_gpf(R->w0) != 0) * OPENPETE_CB_MOBY_GPF);
         s_cur_moby_dofs = mob ? (int8_t)cpu->read_byte(mob + game_layout.moby.angle_off + 3u) : 0; /* og OT bias */
         /* Run-once mobys emit nothing. The record stays in s_recs (the .s cull
          * queued it, and s_reg_moby membership is what the reveal builder and
@@ -7269,14 +7273,14 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         if      (FC->align == 0) t_diag->align_lo++;
         else if (FC->align == 1) t_diag->align_hi++;
         else                     t_diag->desync++;
-        const int rec_tri0 = t_out->n;   /* this record's first emitted triangle */
+        const int rec_tri0 = O->n;   /* this record's first emitted triangle */
         int ltop = -1;                   /* highest local bucket array entry the draw fills */
         moby_wplane_t wp;
         const moby_wplane_t* wpr = moby_record_wplane(cpu, R->mscol, R->moby, R->header, &wp);
         const int fsign = moby_record_face_sign(cpu, R);
         for (int fi = 0; fi < FC->nfaces; fi++) {
             const wface_t* F = &FC->f[fi];
-            s_emit_fbits = 0u;   /* the previous face's end */
+            O->cb_face = 0u;   /* the previous face's end */
             int fresh = F->fresh, textured = F->textured;
             if (!fresh)        t_diag->strip++;
             else if (textured) t_diag->fresh_t++;
@@ -7463,7 +7467,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
               if (R->metal) {
                 /* ENV REFLECTION -- view-dependent spherical UV (byte-exact <=1
                  * texel vs prims); tpage/clut from the static metal Tiledef. */
-                s_emit_fbits |= OPENPETE_CB_MOBY_ENV;
+                O->cb_face |= OPENPETE_CB_MOBY_ENV;
                 specular_env_uv(p0->ex,p0->ey,p0->ez, &u[0],&v[0]);
                 specular_env_uv(p1->ex,p1->ey,p1->ez, &u[1],&v[1]);
                 specular_env_uv(p2->ex,p2->ey,p2->ez, &u[2],&v[2]);
@@ -7569,7 +7573,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                     bpp = stex.bpp; abr = stex.abr;
                     special_tex = 1;
                     /* Generated environment-map coordinates mark the face. */
-                    s_emit_fbits |= (uint8_t)((uint32_t)stex.uv_set * OPENPETE_CB_MOBY_ENV);
+                    O->cb_face |= (uint8_t)((uint32_t)stex.uv_set * OPENPETE_CB_MOBY_ENV);
                     if (stex.uv_set)
                         for (int q = 0; q < 4; q++) { u[q] = stex.u[q]; v[q] = stex.v[q]; }
                 }
@@ -7638,9 +7642,9 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             }
         }
         t_emit_wp = NULL;
-        s_emit_fbits = 0u;   /* the last face's end */
+        O->cb_face = 0u;   /* the last face's end */
         moby_record_world_buckets(cpu, R, &s_proj[base].otk, ltop, rec_tri0);
-        moby_coincident_pull(t_out, rec_tri0);
+        moby_coincident_pull(O, rec_tri0);
     }
 }
 
@@ -14669,7 +14673,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
         s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* face identity (shaded tris carry no topology key) */
         s_cur_single = (uint8_t)moby_otk_row_single_bucket(moby_game.shaded_otkey_row);
         s_cur_moby_cls = R->moby ? (uint16_t)cpu->read_half(R->moby + game_layout.moby.class_off) : 0;
-        s_cur_rec_cbits = 0u; s_emit_fbits = 0u;
+        t_out->cb_rec = 0u; t_out->cb_face = 0u;
         moby_classdbg_line(cpu, R->moby, s_cur_moby_cls);
         s_cur_moby_dofs = R->moby ? (int8_t)cpu->read_byte(R->moby + game_layout.moby.angle_off + 3u) : 0; /* og OT bias (rot>>24) */
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
