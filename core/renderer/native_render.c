@@ -24384,8 +24384,8 @@ static void fbsnap_resolve_census(unsigned frame, int sx, int sy, int w, int h)
  * the compose, which is the one the -vk dump and the live present produce;
  * the kept game-render scene wins where fbsnap_use_game_scene says so.
  * The crop is taken over the widened frame (fbsnap_px), so at a widescreen
- * aspect it holds the scene's Hor+ sides. A NULL result leaves the caller's slot unresolved, so
- * its quads keep drawing the previous snapshot.
+ * aspect it holds the scene's Hor+ sides. On a NULL result the caller
+ * hands the slot back to the store (openpete_fb_snapshot_resolve_failed).
  * A window slot's compose samples the VRAM texels its copy overwrote
  * (s_vram_under), since the scene was drawn before the copy.
  * @param frame openpete_frame stamp of the scene the copy names.
@@ -24475,22 +24475,58 @@ static void fbsnap_band_census(const char *what, int idx, unsigned frame,
             what, idx, openpete_feed_key_now(), frame, pw, ph, top, right);
 }
 
+/** @brief Return whether the window resolve being attempted fails by injection, under OPENPETE_FBSNAP_RESOLVE_FAIL.
+ *
+ * OPENPETE_FBSNAP_RESOLVE_FAIL=N fails the Nth window resolve attempt of
+ * the run (1-based), as a refused compose does, and logs it; unset or 0
+ * injects nothing. The value is read once.
+ * @return 1 when this attempt is to fail. */
+static int fbsnap_resolve_fault(void)
+{
+    static long s_fail_at = -1;
+    static long s_attempt;
+    if (s_fail_at < 0) {
+        const char *e = getenv("OPENPETE_FBSNAP_RESOLVE_FAIL");
+        s_fail_at = (e && *e) ? strtol(e, NULL, 10) : 0;
+    }
+    if (++s_attempt != s_fail_at) return 0;
+    OPL_WARN_F("fbsnap", "window resolve %ld failed by injection", s_attempt);
+    return 1;
+}
+
 void openpete_native_render_snapshot_fb_window(void)
 {
     if (!s_nr.enabled) return;
     if (!openpete_fb_snapshot_pending()) return;
     int idx, sx, sy, w, h; unsigned frame = 0;
+    /* Indices whose compose failed: handed back after both drains, which
+     * would otherwise take them again. */
+    int failed[OPENPETE_FB_SNAPSHOT_AREA_BASE + OPENPETE_FB_SNAPSHOT_AREA_MAX];
+    int nfailed = 0;
     while (openpete_fb_snapshot_take_pending(&idx, &sx, &sy, &w, &h, &frame)) {
         int pw = 0, ph = 0;
         unsigned char *px = fbsnap_capture_crop(frame, idx, sx, sy, w, h, &pw, &ph);
+        if (fbsnap_resolve_fault()) { free(px); px = NULL; }
         fbsnap_band_census("win", idx, frame, px, pw, ph);
         if (px) { openpete_fb_snapshot_store(idx, px, pw, ph); fbsnap_queue_upload(idx); }
+        else failed[nfailed++] = idx;
     }
     while (openpete_fb_snapshot_take_pending_area(&idx, &sx, &sy, &w, &h, &frame)) {
         int pw = 0, ph = 0;
         unsigned char *px = fbsnap_capture_crop(frame, -1, sx, sy, w, h, &pw, &ph);
         fbsnap_band_census("area", idx, frame, px, pw, ph);
         if (px) { openpete_fb_snapshot_store_area(idx, px, pw, ph); fbsnap_queue_upload(OPENPETE_FB_SNAPSHOT_AREA_BASE + idx); }
+        else failed[nfailed++] = OPENPETE_FB_SNAPSHOT_AREA_BASE + idx;
+    }
+    static unsigned s_failures;
+    for (int i = 0; i < nfailed; i++) {
+        openpete_fb_snapshot_resolve_failed(failed[i]);
+        /* Logged at the 1st, 2nd, 4th, ... failure: a compose refused on
+         * every capture retries at the tick rate. */
+        s_failures++;
+        if ((s_failures & (s_failures - 1)) == 0)
+            OPL_INFO_F("fbsnap", "snapshot %d: compose failed, image dropped, resolve retried "
+                       "at the next capture (%u failure(s))", failed[i], s_failures);
     }
     { static int s_census = -1;
       if (s_census < 0) { const char *e = getenv("OPENPETE_FBSNAP_CENSUS"); s_census = (e && *e && *e != '0'); }

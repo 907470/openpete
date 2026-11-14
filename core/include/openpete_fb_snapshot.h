@@ -174,6 +174,16 @@ int openpete_fb_snapshot_take_pending_area(int *idx, int *src_x, int *src_y,
  * @param ph Image height in pixels. */
 void openpete_fb_snapshot_store(int idx, unsigned char *px, int pw, int ph);
 
+/** @brief Hand back a drained window slot or draw area whose compose failed, so the next resolve retries it.
+ *
+ * The entry is pending again with the scene stamp of its copy. Its stored
+ * image is dropped: it stands for an earlier copy or an earlier frame of
+ * the buffer, not for what the game's copy left at the rect, so a quad
+ * sampling the entry draws nothing until the retry stores the new image.
+ * No effect on an index out of range.
+ * @param idx Window slot index, or OPENPETE_FB_SNAPSHOT_AREA_BASE plus a draw area index. */
+void openpete_fb_snapshot_resolve_failed(int idx);
+
 /** @brief Store the content image of a drained draw area.
  *
  * `px` is the crop of the present composed into the area, covering the

@@ -3404,8 +3404,12 @@ void openpete_native_render_snapshot_settle(void);
  * from the scene of the tick its copy was taken on and cropped to the rect
  * the game's MoveImage copied, so the quad re-displaying that copy draws the
  * native image instead of an emulated framebuffer the native render never
- * writes. Runs on the host loop with the display in hand, after the
- * present. No-op when native render is off or nothing is pending. */
+ * writes. A window or area whose compose fails is handed back with
+ * openpete_fb_snapshot_resolve_failed: its image, which stands for an
+ * earlier copy, is dropped and the next call retries it.
+ * OPENPETE_FBSNAP_RESOLVE_FAIL=N fails the Nth window compose of the run
+ * (fault injection). Runs on the host loop with the display in hand, after
+ * the present. No-op when native render is off or nothing is pending. */
 void openpete_native_render_snapshot_fb_window(void);
 
 /** @brief Log the run's engagement summaries and tear down the device and window.

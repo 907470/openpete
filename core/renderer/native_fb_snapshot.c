@@ -494,6 +494,24 @@ int openpete_fb_snapshot_take_pending_area(int *idx, int *src_x, int *src_y,
     return 0;
 }
 
+void openpete_fb_snapshot_resolve_failed(int idx)
+{
+    unsigned char **px; int *pw, *ph, *pending;
+    if (idx >= 0 && idx < FB_SNAP_MAX) {
+        fb_snap_t *s = &s_slot[idx];
+        px = &s->px; pw = &s->pw; ph = &s->ph; pending = &s->pending;
+    } else if (idx >= FB_SNAP_MAX && idx - FB_SNAP_MAX < FB_AREA_MAX) {
+        fb_area_t *a = &s_area[idx - FB_SNAP_MAX];
+        px = &a->px; pw = &a->pw; ph = &a->ph; pending = &a->pending;
+    } else {
+        return;
+    }
+    SDL_LockMutex(px_mx());
+    free(*px); *px = NULL; *pw = *ph = 0;
+    SDL_UnlockMutex(s_px_mx);
+    *pending = 1;
+}
+
 void openpete_fb_snapshot_store_area(int idx, unsigned char *px, int pw, int ph)
 {
     if (idx < 0 || idx >= FB_AREA_MAX || !px || pw <= 0 || ph <= 0) { free(px); return; }

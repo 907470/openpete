@@ -593,6 +593,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Framebuffer window resolve failure: Spyro 3's pause Options window
+    # copied in Seashell Shore, then in Molten Crater with the second
+    # resolve's compose failed by OPENPETE_FBSNAP_RESOLVE_FAIL=2; the
+    # capture of the second Options page must equal the clean leg's byte
+    # for byte (no earlier copy's image in the window). VACUOUS (exit 3)
+    # without two copies, the injection, or a drawn window. Exit 64 = no
+    # Spyro 3 binary or disc.
+    add_test(NAME fbsnap_resolve
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_fbsnap_resolve.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(fbsnap_resolve PROPERTIES
+        LABELS "slow;fbsnap"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Level warp into every level of each game's table from gameplay in a
     # start level, Cross tapped 2 VBLs in 40 to dismiss arrival speeches;
     # each row must log the arrival and reach gameplay (state word 0) with
