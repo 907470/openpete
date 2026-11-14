@@ -80,6 +80,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -90,6 +91,10 @@ import zipfile
 import zlib
 from pathlib import Path
 
+# The rows run stub executables only; a launch any row grows stays silent
+# and input-locked.
+os.environ["OPENPETE_VIBRATION"] = "0"
+os.environ["OPENPETE_INPUT_LOCK"] = "1"
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tools" / "bugreport.py"
 _spec = importlib.util.spec_from_file_location("bugreport", TOOL)
@@ -879,6 +884,38 @@ class Replay(Base):
         r = subprocess.run([sys.executable, "-I", str(TOOL), "info", str(z)], capture_output=True, text=True,
                            timeout=60, env=dict(os.environ, OPENPETE_RELEASE_ARCHIVE_DIR=str(arch)))
         self.assertIn("replay route: primary", r.stdout)
+
+    def test_archive_version_escape(self):
+        """A build_version holding `../` names no directory outside the archive."""
+        self.archive()
+        out = self.d / "outside-x"
+        shutil.copytree(self.d / "archive" / "v0.5.0-test-abcdef123", out)
+        shutil.rmtree(self.d / "archive" / "v0.5.0-test-abcdef123")
+        (self.d / "archive" / "empty").mkdir()
+        mem = members()
+        man = manifest(mem, build_version="../outside", build_commit="x")
+        self.assertIsNone(br.find_archived(man, self.d / "archive"))
+        man = manifest(mem, build_version="v0.5.0-test", build_commit="../../x")
+        self.assertIsNone(br.find_archived(man, self.d / "archive"))
+
+
+class TermSafe(Base):
+    def test_info_escapes_control_characters(self):
+        mem = members()
+        mem["log.txt"] = "  0.1 [error] gpu: \x1b]0;title\x07lost\x08\x9b2J\n".encode()
+        mem["notes.txt"] = b"note \x1b[31mred\x1b[0m\n"
+        z = write_bundle(self.d / "b.zip", mem=mem,
+                         man=manifest(mem, build_version="v\x1b[2J", build_commit="abc"))
+        rc, out, err = run("info", z, "--archive", self.arch)
+        self.assertEqual(rc, 0, out + err)
+        for c in ("\x1b", "\x07", "\r", "\x9b"):
+            self.assertNotIn(c, out)
+        self.assertIn("gpu: \\x1b]0;title\\x07lost\\x08\\x9b2J", out)
+        self.assertIn("v\\x1b[2J", out)
+
+    def test_term_safe_keeps_text(self):
+        self.assertEqual(br.term_safe("a\tb\nc é"), "a\tb\nc é")
+        self.assertEqual(br.term_safe("x‮y"), "x\\u202ey")
 
 
 def file_sha(p):

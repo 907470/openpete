@@ -287,7 +287,10 @@ hashes; a change that did move them would show as DIVERGED.
 
 The reader treats a bundle as untrusted input: members are read by name
 with size bounds; absolute names, `..` components, drive letters, NUL
-bytes, duplicates and symlinks are refused. It uses the standard library
+bytes, duplicates and symlinks are refused. Everything it prints passes
+through a filter that writes control characters (other than tab and
+newline) and bidirectional overrides as `\xNN` or `\uNNNN`, so a log tail
+or manifest field cannot drive the terminal. It uses the standard library
 only and runs under `python3 -I`.
 
 ```
@@ -383,7 +386,9 @@ python3 -I tools/bugreport.py diff-hashes A B
 `bugreport.py replay` chooses the route.
 
 **Primary**: the release archive holds the artifact the tester ran. The
-reader looks in `<archive>/<build_version>-<build_commit>/` first, then
+reader looks in `<archive>/<build_version>-<build_commit>/` first (only
+when both fields are plain names: letters, digits, `.`, `_`, `+`, `-`,
+not starting with `.`), then
 every directory of the archive, for an `EXE-SHA256SUMS` line whose hash
 equals the manifest's `exe_sha256` (the executable inside the artifact,
 which is what the writer hashes); `info` names the artifact, its kind and

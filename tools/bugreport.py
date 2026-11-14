@@ -1026,6 +1026,12 @@ def artifact_kind(name):
     return None
 
 
+# A manifest field that names an archive directory part: letters, digits,
+# `.`, `_`, `+` and `-`, not starting with `.`, so it holds no separator and
+# no `..` and the joined path stays a child of the archive directory.
+ARCHIVE_PART_RE = re.compile(r"^[A-Za-z0-9_+-][A-Za-z0-9._+-]*$")
+
+
 def find_archived(man, arch):
     """Find the archived artifact holding the exe the manifest names.
 
@@ -1033,14 +1039,16 @@ def find_archived(man, arch):
     executable inside the package (inside an AppImage, the inner binary), so
     the lookup reads each archive directory's EXE-SHA256SUMS, which the
     archive writes from the packager's sidecar. Looks in
-    <arch>/<build_version>-<build_commit>/ first, then every directory of
-    the archive.
+    <arch>/<build_version>-<build_commit>/ first, when both fields are
+    plain names (ARCHIVE_PART_RE: no separator, no `..`), then every
+    directory of the archive.
     @return (artifact path, path inside it, kind) or None."""
     want = str(man.get("exe_sha256") or "").lower()
     if not want or not arch.is_dir():
         return None
-    first = arch / f"{man.get('build_version', '')}-{man.get('build_commit', '')}"
-    dirs = [first] if first.is_dir() else []
+    ver, com = str(man.get("build_version") or ""), str(man.get("build_commit") or "")
+    first = arch / f"{ver}-{com}" if ARCHIVE_PART_RE.match(ver) and ARCHIVE_PART_RE.match(com) else None
+    dirs = [first] if first and first.is_dir() else []
     dirs += sorted(d for d in arch.iterdir() if d.is_dir() and d != first)
     for d in dirs:
         s = d / "EXE-SHA256SUMS"
@@ -1824,6 +1832,31 @@ def cmd_diff(args):
     return rc
 
 
+# Characters a terminal acts on rather than prints: C0 controls other than
+# tab and newline, DEL, C1 controls, and the bidirectional overrides and
+# isolates that reorder the text displayed.
+TERM_UNSAFE_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+
+
+def term_safe(text):
+    """Text with every TERM_UNSAFE_RE character written as a `\\xNN` or `\\uNNNN` escape."""
+    return TERM_UNSAFE_RE.sub(lambda m: (f"\\x{ord(m.group()):02x}" if ord(m.group()) < 0x100
+                                         else f"\\u{ord(m.group()):04x}"), text)
+
+
+class TermSafeStream:
+    """A text stream wrapper whose write passes its text through term_safe; every other attribute is the stream's."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, text):
+        return self.stream.write(term_safe(text))
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="bugreport.py", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1871,11 +1904,17 @@ def main(argv=None):
     args = ap.parse_args(argv)
     fn = {"info": cmd_info, "extract": cmd_extract, "replay": cmd_replay, "subtick": cmd_subtick,
           "audio": cmd_audio, "perf": cmd_perf, "corpus": cmd_corpus, "diff-hashes": cmd_diff}[args.cmd]
+    # Bundle text (manifest fields, log tails, notes, the replay's log)
+    # reaches the terminal only through term_safe.
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = TermSafeStream(out), TermSafeStream(err)
     try:
         return fn(args)
     except BundleError as e:
         print(f"refused: {e}", file=sys.stderr)
         return EXIT_REFUSED
+    finally:
+        sys.stdout, sys.stderr = out, err
 
 
 if __name__ == "__main__":
