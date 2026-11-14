@@ -85,6 +85,13 @@ a-powerful-villain-emerges-throne|5653|10||5667|--skip-to-cutscene a_powerful_vi
 # destination's, so the destination-sky extension leaves the 16:9 left band
 # showing the flat backdrop. VBL 3304 is openpete_frame 2731 under this boot.
 no-hard-feelings-sheila-portal|3304|10||3304|--skip-to-cutscene no_hard_feelings
+# no-hard-feelings-sheila-portal@heldcut: the cutscene's second camera cut
+# lands on the tick at VBL 2513 (openpete_frame 1941), from a shot with the
+# portal in view to one of Spyro without it. The intermediate present at 2513
+# holds tick 2511's camera across the cut and lost the portal's previews,
+# which it took from tick 2513's capture. 2511 is the last canonical tick
+# before the cut. Blessed pre-fix.
+no-hard-feelings-sheila-portal@heldcut|2513|10||2511,2513|--skip-to-cutscene no_hard_feelings
 # the-end-shell-gateway: the end credits, scene 1 (Seashell Shore terrain);
 # the right inner edge of the pink shell gateway flickers at VBL 5912
 # (openpete_frame 5339 after the 573-VBL fast boot). Blessed pre-fix.
