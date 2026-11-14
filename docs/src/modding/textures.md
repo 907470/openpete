@@ -39,8 +39,8 @@ a thread the mod starts: the renderer draws either the previous image
 or the whole new one. Registering an ID again replaces the image for
 every face that selects it.
 
-A model face selects an own texture with tpage mode bits
-(`attr >> 7 & 3`) equal to 3 and the ID in the CLUT halfword; its UVs
+A model face selects an own texture with [tpage](glossary.md#tpage) mode bits
+(`attr >> 7 & 3`) equal to 3 and the ID in the [CLUT](glossary.md#clut) halfword; its UVs
 are texel coordinates into the image. Only the native renderer draws
 these faces. A face whose ID has no registration draws nothing, so
 register before installing a model whose faces select it.

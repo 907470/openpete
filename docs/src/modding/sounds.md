@@ -1,9 +1,9 @@
 # Sounds
 
 `assets/sfx/<name>.wav` replaces a sound effect. The substitution happens
-when the emulated SPU voice's PCM is handed to the mixer. The game's sound
+when the emulated [SPU](glossary.md#spu) voice's PCM is handed to the mixer. The game's sound
 tables, the sample bank in SPU RAM, the voice's start address and pitch,
-and the tick on which the game is told the sound has ended are untouched,
+and the [tick](glossary.md#tick) on which the game is told the sound has ended are untouched,
 so a sound mod never moves gameplay state.
 
 ## Glossary

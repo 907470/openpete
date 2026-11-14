@@ -41,8 +41,10 @@ a prebuilt `.spv` without it draws alone and never composes.
 A mod that ships `src/*.c` compiles on the player's machine against the
 engine's `sdk/games/<game>/` (the running game's symbols, wrappers, structs
 and `openpete_game.h`) and `sdk/` (the game-neutral headers), with the
-bundled toolchain on Windows and the system compiler on Linux, into
-`.build/<game>/<id>.so` or `.dll`. It needs no build on the author's side,
+compiler the [lookup order](getting-started.md#a-code-mod) resolves (the
+bundled one in the Windows archive and the AppImage, the system `cc` for
+a Linux `.tar.xz` packaged without one), into `.build/<game>/<id>.so` or
+`.dll`. It needs no build on the author's side,
 works on every platform the engine ships for, and recompiles when the
 engine's SDK changes.
 
@@ -95,7 +97,8 @@ cc -shared -fPIC -D_GNU_SOURCE -O2 -fno-strict-aliasing -Wall -Wundef \
 ```
 
 With the bundled Linux compiler (`recomp/tools/clang/bin/clang`, which the
-engine prefers to the system `cc` when the package carries it), or any
+AppImage always carries and the engine prefers to `OPENPETE_CC`, `CC` and
+`cc`), or any
 compiler whose directory's parent holds that `sysroot/`, the engine adds `-nostdlibinc -isystem
 <clang>/sysroot/include -nostdlib -nostartfiles` and appends
 `<clang>/sysroot/lib/libclang_rt.builtins.a` after the sources.
@@ -123,11 +126,12 @@ the same name under `<sdk>/games/spyro-1/` unless the line defines
 `OPENPETE_GAME_SPYRO3` to 1, which selects `games/spyro-2/` or
 `games/spyro-3/`. A line with `-I <sdk>` alone therefore builds a Spyro 1
 mod whose object records no game. A line with `-I <sdk>/games/<game>`
-first never opens a dispatcher. A packaged SDK carries one game's
-directory; a dispatcher that selects a game the package does not carry
-stops the compile with `#error` naming the game. A compiler ignores an
-`-I` directory that does not exist, so `-I <sdk>/games/spyro-2` against a
-Spyro 1 package falls through to the dispatchers and builds for Spyro 1;
+first never opens a dispatcher. A packaged SDK carries the directory of
+every game the package ships (Spyro 1, 2 and 3); a dispatcher that
+selects a game the package does not carry stops the compile with
+`#error` naming the game. A compiler ignores an `-I` directory that does
+not exist, so `-I <sdk>/games/<game>` against an SDK without that game's
+directory falls through to the dispatchers and builds for Spyro 1;
 `-Wmissing-include-dirs` reports the missing directory.
 
 A `"*"` object for every game (a source with no per-game header, see
@@ -142,8 +146,19 @@ cc -shared -fPIC -D_GNU_SOURCE -O2 -fno-strict-aliasing -Wall -Wundef \
 
 ## Package
 
-A `.zip` with `mod.toml` at its root, plus `src/`, `shaders/`, `assets/`,
-`README`, and `LICENSE`. Players drop it into `mods/` unchanged. Do not
-zip a wrapping folder, and leave out `.build/` (compile cache, except a
-prebuilt object a mod without `src/` ships) and `data/` (per-player
-state).
+A `.zip` with `mod.toml` at its root, or inside one top-level folder
+that wraps every entry (the layout zipping the mod's folder produces),
+plus `src/`, `shaders/`, `assets/`, `README`, and `LICENSE`. The engine
+strips the wrapping folder on extraction. Players drop the zip into
+`mods/` unchanged. Leave out `.build/` (compile cache, except a prebuilt
+object a mod without `src/` ships) and `data/` (per-player state).
+
+!!! warning "A new zip version deletes the player's data and settings"
+
+    The engine runs a zip mod from `mods/.unpacked/<id>/` and replaces
+    that whole tree when the zip changes, which deletes the mod's
+    `data/` directory and the `config.toml` the player edited in the Mods
+    tab ([Getting started](getting-started.md#directory-layout)). A mod
+    that keeps per-player files across updates ships as a folder, or
+    tells players to back up `mods/.unpacked/<id>/data/` and
+    `config.toml` before replacing the zip.

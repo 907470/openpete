@@ -33,7 +33,7 @@ version = "1.0.0"
 
 C under `src/` reaches the game's functions and state through
 `openpete_mod_api.h`. The engine compiles the sources at boot with the
-bundled toolchain and hooks game functions through a per-function
+bundled or system compiler and hooks game functions through a per-function
 override chain:
 
 ```c
@@ -62,8 +62,9 @@ mod engine-rendered settings and rebindable keys with no UI code.
   directory layout, a first mod of each tier, iteration.
 - [Manifest](manifest.md): every `mod.toml` key, `config.toml`,
   `enabled.txt`.
-- [Code mods](code.md): the override chain, tick and present contexts,
-  guest memory, services.
+- [Code mods](code.md): the override chain, [tick](glossary.md#tick) and
+  [present](glossary.md#present) contexts, threads, guest memory,
+  services.
 - Assets: [textures](textures.md), [music](music.md), [sounds](sounds.md),
   [custom levels](levels.md).
 - [Shaders](shaders.md): post-process passes and material selectors.
@@ -76,6 +77,7 @@ mod engine-rendered settings and rebindable keys with no UI code.
   [examples](reference/examples.md). Every symbol links to its definition
   in the decompilation at the commit the build used. Spyro 2 and Spyro 3
   have the same three pages ([functions](reference/spyro-2/functions.md),
-  [globals](reference/spyro-3/globals.md), ...) describing their
-  decompilations; neither game has a mod SDK yet, so those names are not
-  hookable by name and their structs carry no pins.
+  [globals](reference/spyro-3/globals.md), ...) from their own SDKs
+  under `sdk/games/spyro-2/` and `sdk/games/spyro-3/`: their names hook
+  by name and their structs carry the same layout pins. Per-game support
+  of each api entry is in [Code mods](code.md#per-game-support).

@@ -23,7 +23,7 @@ runahead = "pure"         # "pure" | "host-fx": permits runahead with this mod l
 `"spyro-3"`) or an array of them. `mods/` is shared across the
 openpete ports, so a mod that only makes sense under one of them names it
 here and the others never see it: a mod naming no game this exe runs is dropped
-during discovery, before it is compiled, listed in the Mods panel, or
+during discovery, before it is compiled, listed in the Mods tab, or
 counted by `enabled.txt`. Ids are matched exactly against the running
 game's id, so a misspelling matches nothing and the mod loads nowhere.
 Without the key, the `api` pin decides: at `api = 13` or later the mod
@@ -57,7 +57,7 @@ list is refused (see [Code mods](code.md#other-games-discs)).
 
 **`api`.** The lowest engine API version the mod needs (see
 [Publishing](publishing.md#pin-the-api-as-a-minimum)). The pin also
-selects the overlay-address behaviour and material composition, and the
+selects the [overlay](glossary.md#overlay)-address behaviour and material composition, and the
 boundary for both is api 13, the version that adds `override_ovl` and
 composition:
 
@@ -96,7 +96,7 @@ a line when a save is loaded under a different set; progress is never
 blocked, and `--adopt-saves` re-tags. Per-save data a mod keeps belongs
 in [save records](save-records.md), not in the save's spare bytes. A mod with no `src/` and no
 `[[level]]` is derived non-mutative. A mod with `src/` is assumed mutative
-unless it sets `sim_mutative = false`. Asset overlays, shaders, `draw_text`,
+unless it sets `sim_mutative = false`. Asset replacements, shaders, `draw_text`,
 `ui_status`, and `notify` never write guest RAM. The obsolete key
 `sim_neutral` has the opposite sense; it is still read when `sim_mutative`
 is absent, and the load logs a warning naming the `sim_mutative` line to
@@ -105,7 +105,7 @@ write instead.
 **`state`, `runahead`.** Both default to undeclared. An enabled code mod
 with `runahead` undeclared disables runahead; with `state` undeclared it
 refuses rewind and timeline jumps, with a one-shot warning. `runahead =
-"host-fx"` declares tick-hook side effects outside guest RAM (sounds,
+"host-fx"` declares [tick](glossary.md#tick)-hook side effects outside guest RAM (sounds,
 files), which the engine suppresses during speculative ticks. `state =
 "rebuildable"` declares that every host-side value derived from guest
 history can be re-derived from guest RAM after a jump.
@@ -126,7 +126,7 @@ notches and mouse motion are not bindable (the read is a level); a key
 that fails to parse is logged at load and reads 0. Conflicts across the
 enabled set are reported at load. Players rebind under `[keys.mod.<id>]`
 in `openpete.toml` with the same spellings, or `none`. The read is inert
-while the dev overlay owns the keyboard, like every host action.
+while the [dev overlay](glossary.md#dev-overlay) owns the keyboard, like every host action.
 
 ### `[[config]]`
 

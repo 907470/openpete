@@ -2,7 +2,7 @@
 
 !!! warning "Custom overlays are WIP"
 
-    Custom levels that ship their own code overlay are a work in progress. The engine
+    Custom levels that ship their own code [overlay](glossary.md#overlay) are a work in progress. The engine
     will load them into game memory, but they are not currently recompiled and executed.
 
 A `[[level]]` block plus two files under `assets/levels/` makes a
@@ -13,7 +13,7 @@ declares the WAD table-of-contents entry, and serves the files when the
 game streams the level.
 
 Disabling the mod gives back what the engine can give back. A level's
-target totals are reconciled every tick, so they return to their stock
+target totals are reconciled every [tick](glossary.md#tick), so they return to their stock
 values as soon as the level stops being live. The slot's data-length and
 name declarations are not: a level on the shared slot leaves those in
 place until another custom level claims the slot or the game restarts.
@@ -25,7 +25,7 @@ place until another custom level claims the slot or the game restarts.
 | donor | The stock level whose code the custom level was authored against, named by `lower_snake` name or by id 10 to 64. |
 | stem | The `files` value: the shared basename of `<stem>.WAD` and `<stem>.OVL` under `assets/levels/`. |
 | slot | The level id the game itself sees. Custom levels share slot 65, and with it per-level progress, unless `replace` takes the donor's slot. |
-| WAD | A level's data segment: its geometry, textures, mobys and skybox. |
+| WAD | A level's data segment: its geometry, textures, [mobys](glossary.md#moby) and skybox. |
 | code overlay | A level's `.OVL` half, the per-level code the game loads into a fixed buffer, which is why it must keep the donor's stock size. |
 
 ``` toml
@@ -74,7 +74,7 @@ eggs    = 1                # optional: replace-mode, first three worlds only
   header, so a level on the shared slot can never show an egg count.
 - The drop happens when the level is registered, which reads `replace`
   from this file. Switching a live level to replace-donor mode from the
-  Mods panel does NOT bring a dropped `eggs` back - the value is already
+  Mods tab does not bring a dropped `eggs` back - the value is already
   gone for that session. Set `replace = true` here and restart to make an
   egg count apply.
 - Without `music`, the level plays the donor's track. With it, the engine
@@ -90,7 +90,7 @@ eggs    = 1                # optional: replace-mode, first three worlds only
 
 ## In play
 
-The M overlay's Mods tab shows one row per level, with a Warp
+The [dev overlay](glossary.md#dev-overlay)'s Mods tab (hold ++m++) shows one row per level, with a Warp
 button, a switch between own-slot and replace-donor mode, and a tooltip
 naming the level's Custom World number and donor. Levels from all mods
 sort alphabetically, five per world.

@@ -12,7 +12,7 @@ state to feed uniforms; nothing flows back.
 | Kind | API | Effect |
 |---|---|---|
 | Post-process | `shader_register`, `postfx_register`, `postfx_enable`, `postfx_set_uniforms` | Fullscreen fragment passes over the composed frame: CRT simulation, grading, scanlines |
-| Material | `[[material]]` rows, or `material_register` | Replaces the fragment shading of a subset of the engine's own draws: a moby class, a terrain tier, the flame plume. The manifest form needs no C |
+| Material | `[[material]]` rows, or `material_register` | Replaces the fragment shading of a subset of the engine's own draws: a [moby](glossary.md#moby) class, a terrain tier, the flame plume. The manifest form needs no C |
 
 A mod shades what the engine draws; it cannot add draws of its own.
 
@@ -24,9 +24,9 @@ A mod shades what the engine draws; it cannot add draws of its own.
 | channel | The family of draws a selector names: `moby`, `terrain`, `player`, `flame`, `particle`, `sky`, `shadow`, `tracer`, `portal`, or `any`. |
 | ident | An identity within one channel, since a channel covers several kinds of draw: a flame's ribbon against its caps, a particle kind and class, a portal preview kind, Spyro against his reflection, a tracer ribbon against Zoe's zap. |
 | tier | Which terrain detail level a face belongs to, `hp` or `lp`. Omit the key to take both. |
-| pass | One fullscreen post-process draw a mod registers. Passes run every present. |
+| pass | One fullscreen post-process draw a mod registers. Passes run every [present](glossary.md#present). |
 | point | Where in the frame a pass runs: `OP_POSTFX_SCENE` before the HUD, `OP_POSTFX_COMPOSITE` after it. |
-| refine callback | A callback run during extraction, once per matched instance, returning that instance's uniform block or declining the match. |
+| refine callback | A callback run during [extraction](glossary.md#extraction), once per matched instance, returning that instance's uniform block or declining the match. |
 
 ## Registering a shader
 
@@ -87,9 +87,10 @@ logged.
 Inputs: `op_prev_pass` (set 0), `op_scene_depth` (set 1; the opaque
 terrain pre-pass depth, meaningful at the `SCENE` point, no mobys),
 `op_prev_frame` (set 2, for temporal effects). The engine block
-`op_engine` at set 3 binding 0 carries time, the tick, the interpolation
+`op_engine` at set 3 binding 0 carries time, the [tick](glossary.md#tick), the interpolation
 alpha (the value present hooks see), the resolutions, and the aspect
-ratio. The mod's own block is set 3 binding 1: declare it `std140` and
+ratio. The mod's own block is set 3 binding 1: declare it
+[`std140`](glossary.md#std140) and
 mirror the layout in the C struct by hand. `postfx_set_uniforms` copies
 the bytes verbatim, at most 1024.
 
@@ -189,7 +190,7 @@ are the moby's class or unset, its `level` is the current level or
 unset, its shader is not a decal shader, and it has no terrain key
 (`texture`, `tier`, `env_anim`, `textured = false`).
 
-A mod first enabled during a session (from the Mods panel) ranks above
+A mod first enabled during a session (from the Mods tab) ranks above
 every mod in the enabled list, and such mods rank among themselves by id;
 its function overrides take the chain tail in the order the mods were
 enabled. A restart applies `enabled.txt` order. A dependency ranks below
@@ -274,6 +275,8 @@ size is safe, and `moby_classes(self, NULL, 0)` returns the count.
 ### Write a material shader
 
 ```glsl
+#version 450
+#extension GL_GOOGLE_include_directive : require
 #include "openpete_psx_material.glsl"
 
 layout(set = 3, binding = 1, std140) uniform op_instance { vec4 tint; };
@@ -284,7 +287,7 @@ vec4 op_material(vec4 base)          // base = the engine's own result
 }
 ```
 
-`base` is the face as the engine would draw it: CLUT decode, perspective
+`base` is the face as the engine would draw it: [CLUT](glossary.md#clut) decode, perspective
 divide, PSX modulation, and any installed HD texture replacement applied.
 For untextured draws it is the interpolated vertex colour. Return
 `base.a` unchanged unless the material means to change transparency; the

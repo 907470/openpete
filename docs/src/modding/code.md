@@ -44,9 +44,11 @@ The register conventions an override relies on are in the
 
 ## Tick context and present context
 
-The game simulates at 29.913 ticks per second. The engine may present
-many frames per tick, extracting scenes ahead of their display instant,
-and the number of presents per tick depends on the player's machine.
+The game simulates at 29.913 [ticks](glossary.md#tick) per second. The
+engine may draw many [presents](glossary.md#present) per tick,
+[extracting](glossary.md#extraction) scenes ahead of their display
+instant, and the number of presents per tick depends on the player's
+machine. Which thread runs each kind of hook is in [Threads](#threads).
 
 **Tick context**: the entry point, overrides, toggle hooks, and refine
 callbacks. Guest reads and writes, `call`, `guest_alloc`, and every
@@ -115,8 +117,8 @@ resolve through `api->guest`.
 
 `api->guest_alloc(self, size, align, flags, &host_view)` bump-allocates
 guest-addressable bytes and returns a host view of the same block. The
-bytes are [timeline state](glossary.md): savestates, rewind, runahead, and process
-handoff carry and restore them like guest RAM. Mutable per-session state
+bytes are [timeline state](glossary.md#arena): savestates, rewind, runahead, and process
+[handoff](glossary.md#handoff) carry and restore them like guest RAM. Mutable per-session state
 (a cooldown, a spawned-set bitmap, a counter) belongs here. Host statics
 do not roll back; keep them for caches, file handles, and UI drafts.
 
@@ -144,8 +146,8 @@ argument picks the pool; the address is never chosen by the mod.
 
 | Pool | Guest addresses | Capacity | Largest block | Taken by |
 |---|---|---|---|---|
-| [DMA-reachable](glossary.md) | 0x80200000 to 0x80FFFFFF | 14 MiB | 9 MiB | every call without `OP_GALLOC_NO_DMA` |
-| [general](glossary.md) | 0x81000000 to 0x9EFFFFFF | 480 MiB | 480 MiB | calls with `OP_GALLOC_NO_DMA` (api 13) |
+| [DMA-reachable](glossary.md#dma-reachable-pool) | 0x80200000 to 0x80FFFFFF | 14 MiB | 9 MiB | every call without `OP_GALLOC_NO_DMA` |
+| [general](glossary.md#general-pool) | 0x81000000 to 0x9EFFFFFF | 480 MiB | 480 MiB | calls with `OP_GALLOC_NO_DMA` (api 13) |
 
 The PSX GPU follows packet and ordering-table links through 24-bit
 addresses, so a block the GPU or a libgpu call links into a chain must
@@ -191,7 +193,7 @@ blocks you do not link to `OP_GALLOC_NO_DMA`.
 - The log holds one line per mod per session, after its entry returns
   (or after its first block, when that comes later):
   `guest arena: my-mod holds 65536 B DMA-reachable (0 B IMMUTABLE), 0 B general (0 B IMMUTABLE)`.
-- The Mods tab of the dev overlay shows
+- The Mods tab of the [dev overlay](glossary.md#dev-overlay) shows
   **Mod memory: X of 14 MiB DMA-reachable, Y MiB general** for all mods,
   and **Runahead snapshot: Z ms per tick** once runahead has run.
 - Hovering a mod's row shows its own
@@ -232,7 +234,8 @@ object gets 0 and one log line.
 ### Spyro 3's checked code
 
 Spyro: Year of the Dragon hashes its own code while it runs: the EXE's
-code, 0x8001200C up to 0x80064F9C, and the code of the resident overlay.
+code, 0x8001200C up to 0x80064F9C, and the code of the resident
+[overlay](glossary.md#overlay).
 A hash over a changed byte fails, and the game then damages save and level
 state. A store a mod makes into those ranges is reverted and logged with
 the mod's id, unless the player runs with `--scan-guard 0`, under which it
@@ -252,7 +255,91 @@ after the mod is enabled or disabled from the Mods tab. The engine
 freezes a disabled mod's registrations but never rewinds guest state, so a
 mod that wrote guest bytes restores the stock bytes on `on = 0`.
 
-## Threads and shutdown
+## Threads
+
+| Code | Thread |
+|---|---|
+| The entry point, overrides, toggle hooks, refine callbacks, the shutdown hook | the [sim thread](glossary.md#sim-thread) |
+| Present hooks | the sim thread, at extraction, between ticks |
+| UI section bodies (`OPENPETE_MOD_UI_SECTION`, always sections included) | the [compose thread](glossary.md#compose-thread) |
+| A thread the mod starts | that thread |
+
+The sim thread runs one call at a time, so a tick hook and a present hook
+never overlap and share host statics without synchronization. The compose
+thread can run at the same time as the sim thread: a UI body can execute
+while an override is halfway through a tick.
+
+- Tick context (sim thread) reads and writes guest memory and the arena.
+- A present hook or a UI body touches host state only; guest access,
+  `call`, `base` and registration are refused there.
+- A thread the mod starts is outside both contexts. Nothing refuses its
+  calls, but guest memory and the arena belong to the sim thread: a read
+  from another thread sees a tick half-applied, and a write races the game
+  and diverges replays. Of the api, `texture_register` is documented as
+  legal from such a thread; hand anything else to a tick hook.
+
+A host static that a UI body and a sim-thread hook both access is a data
+race unless the accesses are atomic. Pass one value with an
+`_Atomic` variable; the side that applies it takes it with
+`atomic_exchange`, so each change applies once:
+
+``` c
+#include <stdatomic.h>
+
+static _Atomic int s_speed_req = -1;    /* -1: no request pending */
+
+static void ui_body(const openpete_mod_ui_t* ui) {     /* compose thread */
+    static int speed = 1;               /* touched by this thread only */
+    if (ui->slider_int("Speed", &speed, 0, 8))
+        atomic_store(&s_speed_req, speed);
+}
+OPENPETE_MOD_UI_SECTION(ui_body)
+
+static void on_tick(CPUState* cpu) {                    /* sim thread */
+    int v = atomic_exchange(&s_speed_req, -1);
+    if (v >= 0)
+        apply_speed(cpu, v);            /* guest write, tick context */
+    g_api->base(cpu);
+}
+```
+
+Several values that must be read together, such as a position a tick hook
+publishes for a UI body to display, go under a sequence counter: the
+writer makes the counter odd, stores the values, and makes it even again;
+the reader retries until it reads the same even count before and after:
+
+``` c
+static atomic_uint s_seq;
+static _Atomic int32_t s_x, s_y, s_z;
+
+static void publish(int32_t x, int32_t y, int32_t z) {   /* sim thread */
+    unsigned q = atomic_load_explicit(&s_seq, memory_order_relaxed);
+    atomic_store_explicit(&s_seq, q + 1, memory_order_relaxed);
+    atomic_thread_fence(memory_order_release);
+    atomic_store_explicit(&s_x, x, memory_order_relaxed);
+    atomic_store_explicit(&s_y, y, memory_order_relaxed);
+    atomic_store_explicit(&s_z, z, memory_order_relaxed);
+    atomic_store_explicit(&s_seq, q + 2, memory_order_release);
+}
+
+static void read_pos(int32_t* x, int32_t* y, int32_t* z) { /* compose thread */
+    unsigned a, b;
+    do {
+        a = atomic_load_explicit(&s_seq, memory_order_acquire);
+        *x = atomic_load_explicit(&s_x, memory_order_relaxed);
+        *y = atomic_load_explicit(&s_y, memory_order_relaxed);
+        *z = atomic_load_explicit(&s_z, memory_order_relaxed);
+        atomic_thread_fence(memory_order_acquire);
+        b = atomic_load_explicit(&s_seq, memory_order_relaxed);
+    } while ((a & 1u) || a != b);
+}
+```
+
+A change a UI body requests and a tick hook applies is host input, like a
+`[[binding]]`: a [bk2](glossary.md#bk2) does not record it, so a replay of
+a run that used it diverges.
+
+## Shutdown
 
 The engine never unloads a mod's library. A thread the mod starts runs
 until the mod stops it, and `register_shutdown_hook` (api 13) is where it
@@ -381,7 +468,7 @@ returns -1.
 |---|---|---|
 | `override_name`, `override_ovl`, `base`, `call` | yes | yes |
 | `override_addr` | yes | main-executable addresses; an address inside the overlay window is refused, use `override_ovl` |
-| `guest`, `guest_addr`, `guest_alloc`, `log`, `data_dir`, `register_toggle_hook`, `register_shutdown_hook`, `config_*`, `ui_status`, `register_present_hook`, `binding_down`, `notify`, `mouse_*`, `pad_*`, `disc_path`, `read_sector` | yes | yes |
+| `guest`, `guest_addr`, `guest_alloc`, `log`, `data_dir`, `register_toggle_hook`, `register_shutdown_hook`, `config_*`, `ui_status`, `register_present_hook`, `binding_down`, `notify`, `pad_*`, `disc_path`, `read_sector` | yes | yes |
 | `game_id`, `gameplay_live`, `player_pose`, `level_id` | yes | yes |
 | `game_disc_path`, `game_installed` | yes | yes |
 | `shader_register`, `postfx_*` | yes | yes |
@@ -390,6 +477,10 @@ returns -1.
 | `[[material]]` rows | every render channel | every render channel |
 | `material_register`, `material_register_refine`, `material_enable`, `material_set_params`, `material_set_selector` | yes | yes |
 | `moby_classes` | yes | yes |
+| `mouse_read`, `mouse_capture` | yes | yes |
+| `texture_register` | yes | yes; the native renderer draws the faces that select the texture |
+| `save_register` | yes | yes. On a game with no save descriptor (none today) it returns -1, not `OPENPETE_MOD_ERR_UNSUPPORTED` |
+| `antipiracy_scan` | returns `OPENPETE_MOD_ERR_UNSUPPORTED` | Spyro 2: returns `OPENPETE_MOD_ERR_UNSUPPORTED`; Spyro 3: yes |
 | `read_level_data` | yes | returns `OPENPETE_MOD_ERR_UNSUPPORTED` |
 | `[[level]]` rows | yes | refused with one log line |
 | `vstream_handle` | yes | no vertex-stream field: a per-game build is refused at compile time; a `"*"` object gets 0 and one log line |

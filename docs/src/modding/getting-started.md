@@ -23,9 +23,10 @@ mods, then the original game code.
 `--mods a,b` or `OPENPETE_MODS=a,b` replaces the list for one run.
 `--mods ""` runs without mods.
 
-The in-game settings overlay (opened with the M key, "the M overlay"
-below) has a Mods tab that toggles a loaded mod at the next tick
-boundary and edits its settings. It does not reorder mods.
+The [dev overlay](glossary.md#dev-overlay) (hold ++m++; ++esc++ opens
+the separate settings menu) has a Mods tab that toggles a loaded mod at
+the next [tick](glossary.md#tick) boundary and edits its settings. It
+does not reorder mods.
 
 A distribution packaged with the SDK carries working examples under
 `<exe>/sdk/examples/<id>/`; copy one into your `mods` directory to run
@@ -39,8 +40,8 @@ it. The [Examples](reference/examples.md) page lists them first.
 | `config.toml` | Optional player-editable settings, read through `api->config_*`. |
 | `src/*.c` | C sources, compiled on load against `<exe>/sdk/games/<game>/` and `<exe>/sdk/`. |
 | `shaders/*.vert`, `*.frag` | GLSL, compiled on load. See [Shaders](shaders.md). |
-| `assets/` | Overlay root: `textures/`, `music/`, `sfx/`, `wad/`, `levels/`. A mod for several games may ship `assets/<game>/` (for example `assets/spyro-2/`); the engine uses it in place of `assets/` on that game. See [Textures](textures.md), [Music](music.md), [Sounds](sounds.md), [Custom levels](levels.md). |
-| `data/` | Per-mod persistent directory, created on first `api->data_dir()` call. |
+| `assets/` | Replacement files: `textures/`, `music/`, `sfx/`, `wad/`, `levels/`. A mod for several games may ship `assets/<game>/` (for example `assets/spyro-2/`); the engine uses it in place of `assets/` on that game. See [Textures](textures.md), [Music](music.md), [Sounds](sounds.md), [Custom levels](levels.md). |
+| `data/` | Per-mod directory for files the mod writes, created on first `api->data_dir()` call. It persists across runs for a folder mod; for a zip mod see below. |
 | `.build/` | The engine's compile cache, one `.build/<game>/` per game. Not part of a release. |
 
 An `<id>.zip` with `mod.toml` at the archive root, or inside a single
@@ -48,6 +49,15 @@ top-level directory that wraps every entry (the layout "zip the folder"
 produces), loads the same way: the engine unpacks it under `mods/.unpacked/<id>/` and skips the unpack while
 the zip's hash is unchanged. A folder and a zip with the same ID resolve
 to the folder.
+
+!!! warning "A changed zip deletes the zip mod's data and settings"
+
+    A zip mod's directory is `mods/.unpacked/<id>/`, so its `data/`
+    (`api->data_dir()`) and the `config.toml` the Mods tab writes live
+    there. When the zip's hash changes (a new version dropped in), the
+    engine extracts it afresh and replaces the whole `.unpacked/<id>/`
+    tree: every file the mod wrote under `data/` and every setting the
+    player changed in the Mods tab is deleted. A folder mod keeps both.
 
 ## A declarative mod
 
@@ -65,19 +75,37 @@ rebindable key. See [Manifest](manifest.md).
 ## A code mod
 
 A code mod compiles on the player's machine. The Windows archive and the
-Linux AppImage bundle the compiler; the Linux `.tar.xz` uses `cc` on
-`PATH`, or the compiler named by `OPENPETE_CC`.
+Linux AppImage bundle the compiler; the Linux `.tar.xz` uses the system
+compiler unless it was packaged with one. The engine takes the first of:
+
+1. `OPENPETE_MOD_CC`, for mod compiles only;
+2. the bundled compiler, `recomp/tools/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe`
+   on Windows or `recomp/tools/clang/bin/clang` on Linux, next to the
+   executable;
+3. `OPENPETE_CC`;
+4. on Linux, `CC`, then `cc` on `PATH`.
+
+On Windows with none of the first three, no compiler resolves and a mod
+loads only from a prebuilt object ([Publishing](publishing.md#prebuilt-objects)).
 
 1. `mods/hello/mod.toml`:
 
     ``` toml
     [mod]
-    id      = "hello"
-    name    = "Hello"
-    version = "0.1.0"
-    api     = 1
+    id       = "hello"
+    name     = "Hello"
+    version  = "0.1.0"
+    game     = "spyro-1"   # the game the source is written for
+    api      = 1           # lowest engine API version the mod needs
+    state    = "none"      # keeps no state derived from game history: rewind allowed
+    runahead = "host-fx"   # has host-side effects (the log line): runahead allowed, suppressed while speculating
     sim_mutative = false   # never writes guest RAM
     ```
+
+    `CameraUpdate` is a Spyro 1 name; the shipped `hello-anchor` example
+    adds the Spyro 2 and 3 arms ([One mod for several games](code.md#one-mod-for-several-games)).
+    Without `state` the mod refuses rewind, and without `runahead` it
+    disables runahead ([Manifest](manifest.md)).
 
 2. `mods/hello/src/hello.c`:
 
@@ -124,7 +152,11 @@ with `if (api->api_version >= N)`.
 2. **Through a prototype.** Functions with a natural signature get typed
    wrappers in `openpete_sdk_wrappers.h`: `OP_OVERRIDE_IMPL_Foo`,
    `op_base_Foo(cpu, ...)`, `op_call_Foo(cpu, ...)`, with guest-to-host
-   pointer marshalling.
+   pointer marshalling. Prototypes exist for part of Spyro 1's and Spyro
+   3's functions and for none of Spyro 2's; the Signature column of each
+   game's Functions page ([Spyro 1](reference/spyro-1/functions.md),
+   [Spyro 2](reference/spyro-2/functions.md),
+   [Spyro 3](reference/spyro-3/functions.md)) lists them.
 3. **By address.** `api->override_addr(self, 0x8003xxxx, fn)`. Arguments
    are in `cpu->a0..a3`, the return value in `cpu->v0`; the register
    fields need `#include <psx_runtime.h>` (in `sdk/`), since the API

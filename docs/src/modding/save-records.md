@@ -46,15 +46,15 @@ a record written by a higher schema is never overwritten by a lower one.
 
 ## When the callbacks run
 
-- `write` runs once per non-empty save the game writes, on the sim thread
-  in tick context. The engine copies the bytes on return; any size is
+- `write` runs once per non-empty save the game writes, on the
+  [sim thread](glossary.md#sim-thread) in [tick](glossary.md#tick) context. The engine copies the bytes on return; any size is
   accepted. A mod that is turned off or not installed when the game saves
   gets no call, and its previous record is carried into the new save.
 - `read` runs at the start of the game's next update after the game loads
   a save or starts a new playthrough, and when a mod is turned on after
   either. It replaces all of the mod's save-derived state.
 - Neither runs on a savestate load, rewind, runahead rollback, process
-  handoff or hot reload: those restore the arena with the rest of the
+  [handoff](glossary.md#handoff) or hot reload: those restore the arena with the rest of the
   timeline. Keep save-derived state in the arena (`guest_alloc`); host
   statics are not restored.
 - A mod's state at entry is the fresh-playthrough state. No `read` arrives

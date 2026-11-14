@@ -48,8 +48,18 @@ install whose directory is not writable falls back to the per-user one
 and logs a warning naming the directory it could not write.
 `--config-report` prints the resolved directories.
 
-`--log-file PATH` redirects the mirror, `--no-log-file` disables it,
-`--log-level SPEC` filters by subsystem (`--log-level mod:debug,*:info`).
+`--log-file PATH` redirects the mirror, `--no-log-file` disables it.
+`--log-level SPEC` (or `OPENPETE_LOG`) sets levels as comma-separated
+`subsystem:level` rules, levels `trace`, `debug`, `info`, `warn` and
+`error`; `*` sets the default, which is `info`. A rule matches a subsystem
+name exactly, and a segment is split at its first colon, so no rule
+selects one mod's `mod:<id>` lines: `mod:debug` matches nothing and
+`mod:<id>:debug` is skipped as an unknown level. Show a mod's
+`OP_MOD_LOG_DEBUG` lines by raising the default:
+
+```
+openpete --mods your_mod --log-level '*:debug'
+```
 
 A distribution Windows build links as a GUI-subsystem application, so
 double-clicking it opens no console and its stderr has nowhere to go.
@@ -75,9 +85,10 @@ produces no output at all is diagnosed from these two files.
 | ------- | ------------------------------------------------------------------------------------------------------- |
 | ++tab++ | Hold to run unlocked (fast-forward).                                                                    |
 | ++f7++  | Pause and resume the simulation.                                                                        |
-| ++f8++  | Advance one tick while paused.                                                                          |
+| ++f8++  | Advance one [tick](glossary.md#tick) while paused.                                                                          |
 | ++f++   | Engage and disengage the debug free camera.                                                             |
-| ++m++   | Open the dev overlay. Its Mods panel toggles mods, edits `[[config]]` rows and shows `ui_status` lines. |
+| ++m++   | Hold to show the [dev overlay](glossary.md#dev-overlay); it closes on release. Its Mods tab toggles mods, edits `[[config]]` rows and shows `ui_status` lines. |
+| ++esc++ | Open and close the settings menu. |
 
 `--keys-report` prints the live map, including rebindings.
 
@@ -88,8 +99,8 @@ mod's test run is built from.
 
 The word "frame" in a flag name means VBL, the PSX vertical blank.
 There are exactly two VBLs per tick (59.826 Hz against 29.913), so
-`--frame-limit 1760` is 880 ticks. See the [glossary](glossary.md) for tick, VBL and
-present.
+`--frame-limit 1760` is 880 ticks. The glossary defines
+[VBL](glossary.md#vbl) and [present](glossary.md#present).
 
 | Flag                             | Effect                                                                                                                                                                                  |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -109,15 +120,15 @@ present.
 | `--screenshot-native-only`       | Write the native `-vk` image only.                                                                                                                                                      |
 | `--freecam-pose STR`             | Engage the free camera at a fixed pose once the level is live.                                                                                                                          |
 | `--player-pose STR`              | Place Spyro at `x,y,z[,yaw][@N]` once gameplay is live and under pad control (`@N`: at or after VBL N; repeat for later placements); every run prints its end state as `openpete-pose:` in this grammar. |
-| `--bk2 PATH`                     | Replay a recorded input movie.                                                                                                                                                          |
+| `--bk2 PATH`                     | Replay a recorded input movie ([bk2](glossary.md#bk2)).                                                                                                                                                          |
 | `--bk2-record [PATH]`            | Record live pad input to a movie.                                                                                                                                                       |
 | `--bk2-stop-on-end`              | Exit after the last recorded VBL instead of holding the last input.                                                                                                                     |
-| `--render-paths LIST`            | Draw only the named render paths. Presentation only: gameplay state is unaffected.                                                                                                      |
+| `--render-paths LIST`            | Draw only the named [render paths](glossary.md#render-path). Presentation only: gameplay state is unaffected.                                                                                                      |
 | `--log-file PATH`                | Mirror the log to PATH.                                                                                                                                                                 |
 | `--devui-open 1`                 | Open the dev overlay on its Mods tab, with every mod node expanded, as soon as it initializes, so an unattended windowed run reaches a mod's UI section body.                                             |
 
 A capture writes two files: `<out>-vk.png` is the native render,
-`<out>-og.png` the PsyCross reference. The recipes below pass
+`<out>-og.png` the [PsyCross](glossary.md#psycross) reference. The recipes below pass
 `--screenshot-native-only`, which skips the PsyCross rasterization and
 writes `-vk` alone. A headless run recomposes the canonical scene;
 a windowed native run reads back the present itself, including sub-tick
@@ -251,7 +262,7 @@ leading `@` is PowerShell syntax.
 ### Player placement
 
 Applies to a test at a spot in a level that needs Spyro there, not just the
-camera: a collision, a fall-through, a moby interaction.
+camera: a collision, a fall-through, a [moby](glossary.md#moby) interaction.
 
 Every run ends with its player pose on stdout, after the `openpete-exit:`
 line, in the grammar `--player-pose` takes:
