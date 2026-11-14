@@ -533,6 +533,10 @@ static int mod_skip(const mod_walk_t* w, const char* rel, const char* full, int 
 }
 
 /** @brief Walk one directory of a mod, hashing every file into mods.txt and copying it when the mod is enabled.
+ *
+ * A link inside the mod's tree (openpete_paths_is_link) is skipped, neither
+ * entered nor read, so a link to a directory or file outside the mod never
+ * puts that content into the bundle and a link cycle never recurses.
  * @param w The walk.
  * @param dir The directory.
  * @param rel Its path from the mod's directory ("" for the top). */
@@ -546,6 +550,7 @@ static void mod_walk(mod_walk_t* w, const char* dir, const char* rel)
         char full[2048], r[1024];
         snprintf(full, sizeof full, "%s/%s", dir, e->d_name);
         snprintf(r, sizeof r, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
+        if (openpete_paths_is_link(full)) continue;
         struct stat st;
         if (stat(full, &st) != 0) continue;
         const int is_dir = (st.st_mode & S_IFMT) == S_IFDIR;

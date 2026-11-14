@@ -36,8 +36,8 @@
 #             attribution, decomp promotion, prebuilt objects, the asset and
 #             wad overlays, and the [test]-block runner.
 #   timeline  Spyro 1 only: the arena canary, rewind keyframes, stream
-#             handles, save safety, zip mods, live toggle, process handoff
-#             and hot reload.
+#             handles, save safety, zip mods, the bug-report bundle's mod
+#             walk, live toggle, process handoff and hot reload.
 # No section reads a $WORK file another section writes. matrix and
 # timeline use Spyro 1's corpus (its fixtures, level names and golden),
 # so under another --game they run nothing.
@@ -1269,6 +1269,13 @@ zipkeep "version 2"
 run_game "$WORK/zipkeep" 100 > "$WORK/zipkeep2.log" 2>&1
 v2cfg="$(cat "$WORK/zipkeep/.unpacked/zip-keeper/config.toml" 2>/dev/null)"
 printf '# zip-keeper settings\nlevel = 7\n' > "$WORK/zipkeep/.unpacked/zip-keeper/config.toml"
+# Links planted in the v2 tree (top level and src/) to a sentinel directory
+# outside it: the replace removes the old tree, each link as an entry, and
+# the sentinel's file survives.
+mkdir -p "$WORK/zipkeepsentinel/inner"
+echo keep > "$WORK/zipkeepsentinel/inner/keep.txt"
+ln -sfn "$WORK/zipkeepsentinel" "$WORK/zipkeep/.unpacked/zip-keeper/planted"
+ln -sfn "$WORK/zipkeepsentinel" "$WORK/zipkeep/.unpacked/zip-keeper/src/planted"
 zipkeep "version 3"
 run_game "$WORK/zipkeep" 100 > "$WORK/zipkeep3.log" 2>&1
 d1="$(sed -n 's/.*zip-keeper: boot 1 level 1 data //p' "$WORK/zipkeep1.log" | head -1)"
@@ -1290,6 +1297,55 @@ if grep -q "zip-keeper: boot 3 level 7 data " "$WORK/zipkeep3.log" && [ "$d1" = 
     ok "player's data and edited config.toml kept across the replace, data_dir unchanged ($d3)"
 else
     bad "player's data or config lost across the zip replace: $(grep -o 'zip-keeper: boot.*' "$WORK/zipkeep3.log")"
+fi
+if [ -f "$WORK/zipkeepsentinel/inner/keep.txt" ] &&
+   [ ! -L "$WORK/zipkeep/.unpacked/zip-keeper/planted" ] &&
+   [ ! -L "$WORK/zipkeep/.unpacked/zip-keeper/src/planted" ]; then
+    ok "links in the replaced tree were removed without following them; the sentinel's file survives"
+else
+    bad "the zip replace followed a link out of the tree or kept it (sentinel: $(ls -R "$WORK/zipkeepsentinel" 2>&1 | tr '\n' ' '))"
+fi
+
+# ── 15c. a bug-report bundle does not follow a link in a mod's tree ──────
+# A directory mod holds planted -> a sentinel directory outside the mod
+# (sentinel/inner/keep.txt). A bundle recorded at feed key 200
+# (OPENPETE_BUGREPORT_AT) copies the enabled mod whole and lists its files
+# in mods.txt: mod.toml is there (control), nothing under planted/ is.
+say "bug-report bundle: a link in a mod's tree is not followed"
+mkdir -p "$WORK/linkwalk/link-walk/src" "$WORK/linkwalksentinel/inner"
+echo keep > "$WORK/linkwalksentinel/inner/keep.txt"
+printf '[mod]\nid = "link-walk"\nversion = "0.0.1"\napi = '"$API_VER"'\n' > "$WORK/linkwalk/link-walk/mod.toml"
+cat > "$WORK/linkwalk/link-walk/src/walk.c" <<'CEOF'
+#include <openpete_mod_api.h>
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    (void)api;
+    (void)self;
+    return 0;
+}
+CEOF
+ln -sfn "$WORK/linkwalksentinel" "$WORK/linkwalk/link-walk/planted"
+echo link-walk > "$WORK/linkwalk/enabled.txt"
+LW_ROOT="$(op_sandbox_run_root)"
+PG_CAPTURE_ENV=("OPENPETE_SANDBOX=$LW_ROOT" "OPENPETE_CARD_DIR=$LW_ROOT/cards" OPENPETE_BUGREPORT_AT=200
+                OPENPETE_BUGREPORT_NOTE=0)
+run_game "$WORK/linkwalk" 230 > "$WORK/linkwalk.log" 2>&1
+unset PG_CAPTURE_ENV
+lw_bundle="$(compgen -G "$LW_ROOT/data/openpete/bugreports/bug-*.zip" | head -n 1)"
+lw_check="$(python3 - "$lw_bundle" <<'PYEOF' 2>&1
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+names = z.namelist()
+listed = z.read("mods.txt").decode()
+assert "mods/link-walk/mod.toml" in names and " mod.toml\n" in listed, "the mod's own files are missing"
+assert not any(n.startswith("mods/link-walk/planted") for n in names), "a member under planted/"
+assert "planted" not in listed, "mods.txt lists a file under planted/"
+print("ok")
+PYEOF
+)"
+if [ -n "$lw_bundle" ] && [ "$lw_check" = ok ] && [ -f "$WORK/linkwalksentinel/inner/keep.txt" ]; then
+    ok "the bundle copies and lists the mod's files and nothing under its link"
+else
+    bad "bundle ${lw_bundle:-missing}: ${lw_check:-no check} (see $WORK/linkwalk.log)"
 fi
 
 # ── 16. live modset toggle: tick-boundary disable/enable ────────────────

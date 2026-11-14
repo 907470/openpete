@@ -40,7 +40,7 @@ these records existed; the reader still reads its pace ring.
 | `knobs.txt` | every knob registry row at the press with its boot value, default and flags, and each change of a live row after boot with its tick (layout under [Knob record](#knob-record)) |
 | `device.txt`, `devices.txt` | Vulkan device, displays, system; the input devices |
 | `log.txt`, `log-prev.txt`, `hang/`, `crash/` | the log tails of this run and the previous one, the hang dumps and minidump the previous run's log names |
-| `mods.txt`, `mods/<id>/` | every installed mod with per-file SHA-256; every enabled mod's files, its loaded object and its effective config rows |
+| `mods.txt`, `mods/<id>/` | every installed mod with per-file SHA-256; every enabled mod's files, its loaded object and its effective config rows; a link inside a mod's tree is skipped, never followed |
 | `module.txt`, `module/<file>` | the recomp module's linkage, stamps and march; the module itself when it is a file |
 | `notes.txt` | the tester's note, when one was saved |
 

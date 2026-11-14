@@ -5345,13 +5345,24 @@ static void mods_refuse_missing_games(topo_ctx_t* c) {
     }
 }
 
-/** @brief Remove a directory tree (or a file) at path, depth first.
+/** @brief Remove a directory tree (or a file) at path, depth first, removing each link itself without following it.
  *
- * Entries that cannot be removed (a DLL the process holds on Windows) are
- * left, and the removal of their parents then fails.
+ * A link (a symbolic link, or a junction on Windows; openpete_paths_is_link)
+ * is removed as an entry and never entered, so a link in the tree to a
+ * directory outside it leaves that directory's contents alone. Entries that
+ * cannot be removed (a DLL the process holds on Windows) are left, and the
+ * removal of their parents then fails.
  * @param path The tree's root.
  * @return 0 when nothing remains at path, -1 otherwise. */
 static int mod_rmtree(const char* path) {
+    if (openpete_paths_is_link(path)) {
+        if (remove(path) == 0) return 0;
+#ifdef _WIN32
+        return _rmdir(path) == 0 ? 0 : -1; /* a directory link or junction */
+#else
+        return -1;
+#endif
+    }
     struct stat st;
     if (stat(path, &st) != 0) return 0;
     if (!S_ISDIR(st.st_mode)) return remove(path) == 0 ? 0 : -1;
