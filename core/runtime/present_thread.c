@@ -47,6 +47,7 @@
 #include "openpete_native_render.h"
 #include "openpete_native_vram.h"
 #include "openpete_pace_log.h"
+#include "openpete_eager_ladder.h"  /* op_eager_cost_ema */
 #include "openpete_log.h"
 
 #include <SDL3/SDL.h>
@@ -583,7 +584,7 @@ static int present_thread_main(void *unused)
                 if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--; else s_pt.flip_pending = 1;
                 continue;
             }
-            s_pt.render_ema = s_pt.render_ema ? (s_pt.render_ema * 7 + c) / 8 : c;
+            s_pt.render_ema = op_eager_cost_ema(s_pt.render_ema, c);
             /* And the swapchain image, now: an image the display let go of
              * at the last vblank is not available until the driver has
              * processed the release, and a present on it blocks until
@@ -682,7 +683,7 @@ static int present_thread_main(void *unused)
         s_pt.busy = 0;
         if (did) {
             s_pt.presents++;
-            s_pt.present_ema = s_pt.present_ema ? (s_pt.present_ema * 7 + c) / 8 : c;
+            s_pt.present_ema = op_eager_cost_ema(s_pt.present_ema, c);
             if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--;
             else s_pt.flip_pending = 1;
         } else s_pt.refused++;

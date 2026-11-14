@@ -812,9 +812,9 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
  * as refused. The canonical scene, first of the span, also raises
  * g_openpete_canon_lag_leg for the re-extract. An intermediate scene first
  * spends the OPENPETE_PACE_INJECT_PRESENT_US fault injection (none unless
- * set) inside the measured span. The scene's production time updates the
- * cost mean and deviation that eager_tail_cost reads and is logged as its
- * PRESENT_SPAN.
+ * set) inside the measured span. The scene's production time, bounded by
+ * op_eager_cost_sample, updates the cost mean and deviation that
+ * eager_tail_cost reads; unbounded, it is logged as its PRESENT_SPAN.
  * @param t Display instant on the op_now() clock.
  * @param canonical Nonzero for the span's canonical scene. */
 static void eager_produce_one(op_time_t t, int canonical)
@@ -855,8 +855,10 @@ static void eager_produce_one(op_time_t t, int canonical)
                       canonical ? OP_PROF_CANONICAL : OP_PROF_INTERMEDIATE);
     const op_time_t span = op_now() - t0;
     openpete_pace_present_span((uint8_t)kind, t0, t0 + span, rex_ns);
+    /* One stall enters the mean and the deviation at a bounded multiple of the mean. */
+    const op_time_t sample = s_eager.cost_n ? op_eager_cost_sample(s_eager.cost_ema, span) : span;
     if (s_eager.cost_n) {
-        op_time_t d = span > s_eager.cost_ema ? span - s_eager.cost_ema : s_eager.cost_ema - span;
+        op_time_t d = sample > s_eager.cost_ema ? sample - s_eager.cost_ema : s_eager.cost_ema - sample;
         /* A sample past the bound is one stall, not the width of the cost
          * distribution. Left whole, 8 * cost_dev outgrows the span's budget and
          * decimates the rate until the slow window below forgets it, about two
@@ -869,7 +871,7 @@ static void eager_produce_one(op_time_t t, int canonical)
          * single costly scene moves the level and starts a limit cycle. */
         s_eager.cost_dev = (s_eager.cost_dev * 31 + d) / 32;
     }
-    s_eager.cost_ema = s_eager.cost_n ? (s_eager.cost_ema * 7 + span) / 8 : span;
+    s_eager.cost_ema = s_eager.cost_n ? (s_eager.cost_ema * 7 + sample) / 8 : span;
     if (s_eager.cost_n < EAGER_COST_WARMUP) s_eager.cost_n++;
 }
 

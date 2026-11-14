@@ -234,4 +234,35 @@ static inline void op_eager_count_step(op_eager_count_t *c, op_eager_cut_t cause
     if (c->deficit < 0) c->deficit = 0;
 }
 
+/* A cost sample above this multiple of the running mean enters the mean at
+ * the multiple. One stall (a debugger stop, a suspend, a blocked present)
+ * then moves the mean by at most (OP_EAGER_COST_SAMPLE_CAP - 1) / 8 of it,
+ * and a sustained rise still grows the mean by up to
+ * (7 + OP_EAGER_COST_SAMPLE_CAP) / 8 per sample until the cap no longer
+ * binds. */
+#define OP_EAGER_COST_SAMPLE_CAP 4
+
+/** @brief Return a cost sample bounded at OP_EAGER_COST_SAMPLE_CAP times the running mean; the sample whole while the mean is 0.
+ *
+ * @param ema The running mean in nanoseconds, 0 before the first sample.
+ * @param sample The measured cost in nanoseconds.
+ * @return The sample the mean and its deviation take. */
+static inline int64_t op_eager_cost_sample(int64_t ema, int64_t sample)
+{
+    if (ema <= 0) return sample;
+    const int64_t cap = ema * OP_EAGER_COST_SAMPLE_CAP;
+    return sample > cap ? cap : sample;
+}
+
+/** @brief Fold one cost sample into an 8-sample exponential mean: the first sample seeds it, each later one enters bounded by op_eager_cost_sample.
+ *
+ * @param ema The running mean in nanoseconds, 0 before the first sample.
+ * @param sample The measured cost in nanoseconds.
+ * @return The new mean. */
+static inline int64_t op_eager_cost_ema(int64_t ema, int64_t sample)
+{
+    if (ema <= 0) return sample;
+    return (ema * 7 + op_eager_cost_sample(ema, sample)) / 8;
+}
+
 #endif /* OPENPETE_EAGER_LADDER_H */

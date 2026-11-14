@@ -747,6 +747,89 @@ static void test_stall(void)
     check(never < 0, "control: a ladder that never falls does not settle");
 }
 
+/* Cost-mean rows: a 2 ms steady cost, one 2 s stall, and a sustained rise to
+ * 20 ms. Bounds in samples. */
+#define COST_STEADY_NS   2000000
+#define COST_STALL_NS    2000000000
+#define COST_RISE_NS     20000000
+#define COST_STALL_MAX   12   /* samples after the stall until the mean is within 10% of the steady cost */
+#define COST_RISE_MAX    20   /* samples after the rise until the mean is within 10% of the new cost */
+
+/** @brief The previous update rule: every sample enters the 8-sample mean whole. */
+static int64_t old_cost_ema(int64_t ema, int64_t sample)
+{
+    return ema ? (ema * 7 + sample) / 8 : sample;
+}
+
+/** @brief Feed a steady cost, then one stall, then the steady cost again; return the samples after the stall until the mean is within 10% of the steady cost.
+ * @param rule The update rule.
+ * @param peak Receives the mean right after the stall.
+ * @param print Print the mean after each sample.
+ * @return The sample count, or -1 when the mean does not return within 200 samples. */
+static int cost_stall_recovery(int64_t (*rule)(int64_t, int64_t), int64_t *peak, int print)
+{
+    int64_t ema = 0;
+    for (int i = 0; i < 32; i++) ema = rule(ema, COST_STEADY_NS);
+    ema = rule(ema, COST_STALL_NS);
+    *peak = ema;
+    if (print) printf("  stall: %.3f", (double)ema / 1e6);
+    for (int n = 1; n <= 200; n++) {
+        ema = rule(ema, COST_STEADY_NS);
+        if (print && n <= 40) printf(" %.3f", (double)ema / 1e6);
+        if (ema <= COST_STEADY_NS + COST_STEADY_NS / 10) {
+            if (print) printf("  (n=%d)\n", n);
+            return n;
+        }
+    }
+    if (print) printf("\n");
+    return -1;
+}
+
+/** @brief Feed a steady cost, then a sustained higher one; return the samples until the mean is within 10% of the new cost.
+ * @param rule The update rule.
+ * @param print Print the mean after each sample.
+ * @return The sample count, or -1 when the mean does not converge within 200 samples. */
+static int cost_rise_convergence(int64_t (*rule)(int64_t, int64_t), int print)
+{
+    int64_t ema = 0;
+    for (int i = 0; i < 32; i++) ema = rule(ema, COST_STEADY_NS);
+    if (print) printf("  rise:");
+    for (int n = 1; n <= 200; n++) {
+        ema = rule(ema, COST_RISE_NS);
+        if (print) printf(" %.3f", (double)ema / 1e6);
+        if (ema >= COST_RISE_NS - COST_RISE_NS / 10) {
+            if (print) printf("  (n=%d)\n", n);
+            return n;
+        }
+    }
+    if (print) printf("\n");
+    return -1;
+}
+
+/** @brief Check the bounded cost mean: one stall moves it by at most (cap - 1) / 8 and it returns within COST_STALL_MAX samples, a sustained rise converges within COST_RISE_MAX; the unbounded rule is the control.
+ * @param print Print the mean sequences. */
+static void test_cost_ema(int print)
+{
+    char what[160];
+    int64_t peak = 0, old_peak = 0;
+    const int rec = cost_stall_recovery(op_eager_cost_ema, &peak, print);
+    const int old_rec = cost_stall_recovery(old_cost_ema, &old_peak, print);
+    snprintf(what, sizeof what, "cost: one stall peaks the mean at %.3f ms, at most %.3f",
+             (double)peak / 1e6, (double)(COST_STEADY_NS * (7 + OP_EAGER_COST_SAMPLE_CAP) / 8) / 1e6);
+    check(peak <= (int64_t)COST_STEADY_NS * (7 + OP_EAGER_COST_SAMPLE_CAP) / 8, what);
+    snprintf(what, sizeof what, "cost: the mean returns %d sample(s) after the stall (bound %d)", rec, COST_STALL_MAX);
+    check(rec >= 0 && rec <= COST_STALL_MAX, what);
+    snprintf(what, sizeof what, "control: unbounded, the stall peaks at %.3f ms and returns after %d sample(s)",
+             (double)old_peak / 1e6, old_rec);
+    check(old_rec < 0 || old_rec > COST_STALL_MAX, what);
+    const int rise = cost_rise_convergence(op_eager_cost_ema, print);
+    const int old_rise = cost_rise_convergence(old_cost_ema, print);
+    snprintf(what, sizeof what, "cost: a sustained 10x rise converges in %d sample(s) (unbounded %d, bound %d)",
+             rise, old_rise, COST_RISE_MAX);
+    check(rise >= 0 && rise <= COST_RISE_MAX, what);
+    check(op_eager_cost_ema(0, COST_STALL_NS) == COST_STALL_NS, "cost: the first sample seeds the mean whole");
+}
+
 /** @brief Run the checks; `replay` also prints the recorded-row table.
  * @param argc Argument count.
  * @param argv Arguments.
@@ -764,6 +847,7 @@ int main(int argc, char **argv)
     test_count_bound();
     test_vsync();
     test_stall();
+    test_cost_ema(argc > 1 && !strcmp(argv[1], "replay"));
     printf("eager_ladder_test: %s\n", g_fail ? "FAIL" : "PASS");
     return g_fail;
 }
