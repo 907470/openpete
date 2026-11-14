@@ -886,6 +886,27 @@ endif()
 set_target_properties(exe_loader_cap_test PROPERTIES CXX_STANDARD 20)
 add_test(NAME exe_loader_cap_test COMMAND exe_loader_cap_test)
 
+# disc_ingest_resolve_test - the .bin a disc path resolves to, which the
+# library's ingest copies and reads the serial from: a cue's FILE line wins
+# over another game's .bin beside it or a subdirectory, the first of several
+# FILE lines is taken, and two unnamed .bin files resolve to nothing.
+add_executable(disc_ingest_resolve_test
+    disc_ingest_resolve_test.cpp
+    ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
+    ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c)
+target_include_directories(disc_ingest_resolve_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+target_link_libraries(disc_ingest_resolve_test PRIVATE SDL3::SDL3-static)
+if(WIN32)
+    target_link_libraries(disc_ingest_resolve_test PRIVATE winmm)
+endif()
+set_target_properties(disc_ingest_resolve_test PROPERTIES CXX_STANDARD 20)
+add_test(NAME disc_ingest_resolve_test COMMAND disc_ingest_resolve_test)
+
 # bugreport_redact_test - the bug-report redactor and redaction pass on a
 # made-up identity given by parameter: whole-word user and host names in
 # text, the member drops (redaction out of memory, a bk2 or state image that

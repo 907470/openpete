@@ -25,7 +25,7 @@
 #include "openpete_log.h"
 #include "openpete_mods.h"   /* openpete_mods_missing_games */
 #include "openpete_paths.h"    /* library root: portable vs per-user data dir */
-#include "openpete_psx.h"      /* openpete_psx_read_disc_serial */
+#include "openpete_psx.h"      /* openpete_psx_read_disc_serial, openpete_psx_resolve_disc_bin */
 #include "sha256.h"
 
 #include <algorithm>
@@ -63,25 +63,19 @@ fs::path library_root() {
     return fs::path("library");
 }
 
-/** @brief Locates the .bin for a disc image path given on the command line.
+/** @brief Locates the .bin for a disc image path given on the command line, by the resolution the boot path uses.
  *
- * A path with a .bin or .BIN extension is returned as is. Otherwise the
- * path with its extension replaced by .bin is returned when it exists, else
- * the first .bin or .BIN the directory iterator yields in the path's
- * directory.
- * @param given The image path, a .bin or a .cue.
+ * openpete_psx_resolve_disc_bin: a .bin, .img or .iso resolves to itself;
+ * a .cue to the file its first FILE line names, else its own basename with
+ * .bin, else the single .bin beside it. A cue whose tracks span several
+ * FILE lines resolves to the first; the library copies that one file.
+ * @param given The image path, a .bin, .img, .iso or .cue.
  * @return The .bin path, or an empty path when none is found. */
 fs::path locate_bin(const fs::path& given) {
-    if (given.extension() == ".bin" || given.extension() == ".BIN")
-        return given;
-    fs::path sib = given;
-    sib.replace_extension(".bin");
-    if (fs::exists(sib)) return sib;
-    std::error_code ec;
-    for (auto& e : fs::directory_iterator(given.parent_path(), ec))
-        if (e.path().extension() == ".bin" || e.path().extension() == ".BIN")
-            return e.path();
-    return {};
+    char bin[4096];
+    if (openpete_psx_resolve_disc_bin(given.string().c_str(), bin, sizeof bin, nullptr, 0) != 0)
+        return {};
+    return fs::path(bin);
 }
 
 /** @brief Copies a disc image while computing its SHA-256.
@@ -376,8 +370,8 @@ void refuse(const char* given, int err, bool before_copy, const std::string& why
  * The game must be linked and, while the launcher names no game, have a box
  * on the game page (its first-boot inputs staged); a launcher naming a game
  * takes only that game's disc. A refusal is recorded (refuse).
- * @param given The image path from --ingest or a drop.
- * @param bin The image's .bin.
+ * @param given The image path from --ingest or a drop, for the messages.
+ * @param bin The image's .bin (locate_bin): the file the serial is read from and the copy reads.
  * @return true when the copy may start. */
 bool identify(const char* given, const fs::path& bin) {
     const std::string file = fs::path(given).filename().string();
@@ -389,8 +383,7 @@ bool identify(const char* given, const fs::path& bin) {
         return false;
     }
     char serial[32] = {};
-    if (openpete_psx_read_disc_serial(given, serial, sizeof serial) != 0 &&
-        openpete_psx_read_disc_serial(bin.string().c_str(), serial, sizeof serial) != 0) {
+    if (openpete_psx_read_disc_serial(bin.string().c_str(), serial, sizeof serial) != 0) {
         refuse(given, OP_E_DISC_READ, true, "the image holds no PlayStation SYSTEM.CNF serial",
                file + " is not a PlayStation game disc: it holds no SYSTEM.CNF.");
         return false;
