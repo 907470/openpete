@@ -1,7 +1,8 @@
-# OpenPete - Spyro the Dragon PC port (@VERSION@, @PLATFORM@)
+# OpenPete - Spyro PC port (@VERSION@, @PLATFORM@)
 
-OpenPete plays Spyro the Dragon (PSX, 1998) natively on your PC. You supply
-the disc; OpenPete ships no game content.
+OpenPete plays the three PlayStation Spyro games natively on your PC: Spyro
+the Dragon (1998), Spyro 2: Ripto's Rage! (1999) and Spyro: Year of the
+Dragon (2000). You supply the discs; OpenPete ships no game content.
 
 ## Documentation
 
@@ -17,7 +18,9 @@ In the AppImage it sits inside the read-only image: run
 
 ## Quick start
 
-1. Dump your Spyro the Dragon (NTSC-U) disc to a `.bin`/`.cue` pair.
+1. Dump your disc to a `.bin`/`.cue` pair: Spyro the Dragon (NTSC-U,
+   SCUS-94228), Spyro 2: Ripto's Rage! (NTSC-U, SCUS-94425) or Spyro: Year
+   of the Dragon (NTSC-U, SCUS-94467).
 <!-- @windows -->
 2. Run `openpete.exe`. Windows shows a SmartScreen warning ("Windows
    protected your PC") for an unsigned download: click "More info", then
@@ -27,10 +30,14 @@ In the AppImage it sits inside the read-only image: run
 2. Run `chmod +x OpenPete-*.AppImage` then `./OpenPete-*.AppImage` for the
    AppImage, or `./openpete` from the extracted `.tar.xz`.
 <!-- @end -->
-3. Drag your `.bin` or `.cue` onto the window, or press Space (or A on a pad)
-   to browse for it. The first run copies the image into OpenPete's library
-   and compiles the game for your machine once; later runs start straight
-   into play.
+3. The game page shows one box per game. Drag your `.bin` or `.cue` onto
+   the window, or pick it in a file dialog: choose an empty box (Enter, or
+   the South face button, Xbox A), or press Space or the West face button
+   (Xbox X). Adding a disc copies the image into OpenPete's library and
+   compiles that game for your machine once, then returns to the game page.
+4. Choose a box with a disc (Enter, the South face button or a click) to
+   start its game. A later start opens the game page again, unless the
+   command line names a game or a disc.
 
 ## Mods
 
@@ -46,4 +53,5 @@ under the SIL Open Font License 1.1 (`licences/Fredoka-OFL.txt`). The
 third-party components and their licences are listed in `NOTICE.md`.
 
 OpenPete is not affiliated with Sony, Insomniac Games, or Activision. Spyro
-the Dragon is a trademark of its respective owners.
+the Dragon, Spyro 2: Ripto's Rage! and Spyro: Year of the Dragon are
+trademarks of their respective owners.
