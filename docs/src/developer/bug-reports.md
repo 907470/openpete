@@ -563,16 +563,23 @@ A bundle comes from another machine and is read as untrusted input.
   flags come after the replay's, and `--mods` beats `OPENPETE_MODS`)
   enables no mod; a mod that writes guest RAM then makes the replay
   DIVERGED, which is the expected verdict for a session the mods shaped.
-- `--mods ""` stops the bundle's mods only. Two other paths still carry
-  the bundle's content into the replay. When the manifest's `exe_sha256`
-  equals this executable's hash, the replay loads `module/<file>` as
-  `--recomp-module`; the hash comes from the bundle, so a bundle can
-  state the hash of any published build. Every `OPENPETE_*` line of
-  `env.txt` that the replay keeps is set, including a variable that
-  names the compiler a mod build runs (`OPENPETE_MOD_CC`) and variables
-  that name an output file. Read `env.txt` and check for a `module/`
-  member before replaying a bundle from outside the project, and replay
-  it on a machine or account that holds nothing the sender should reach.
+- Replaying a bundle runs its sender's code and settings with the
+  developer's privileges, and `--mods ""` does not prevent it. When the
+  manifest's `exe_sha256` equals this executable's hash, the replay
+  loads `module/<file>` as `--recomp-module`; the hash comes from the
+  bundle, so a bundle can state the hash of any published build. The
+  bundle's `config-files/` are applied as the config tiers without a
+  filter: an `[env]` table sets any environment variable, `OPENPETE_*`
+  or not, and an `[args]` table adds any flag, including ones that name
+  an output file. Every `OPENPETE_*` line of `env.txt` that the replay
+  keeps is set, including the compiler a mod build runs
+  (`OPENPETE_MOD_CC`). A mod shipped as a prebuilt object is loaded as
+  is.
+- Replay a bundle from outside the project only on a disposable machine
+  or user account that cannot read the developer's home directory, or
+  after `bugreport.py info --members` shows no `module/` member, no mod
+  object, and no `[env]` or `[args]` table in `config-files/`, and
+  `env.txt` has been read.
 - Bundles stay outside the repository: a bundle holds the tester's
   savestates, card images, log tails and configuration. Redaction covers
   the home directory, user name and host name in text members only.
