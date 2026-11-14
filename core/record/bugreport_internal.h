@@ -286,11 +286,12 @@ int br_read_file(const char* path, uint8_t** out, size_t* len);
 
 /** @brief Read the bundle's knobs.txt at the anchor load and apply the live values the session had there.
  *
- * Each `render` row that changed after boot is set through this build's
- * registry setter to its value at the anchor: the old value of its first
- * change after the anchor, else its value at the press; a row whose value
- * there equals its boot value is left, since the replay boots on the
- * tester's configuration. The changes after the anchor wait for
+ * Each row that changed after boot and that this build classifies `render`
+ * (openpete_bugknobs_class; the member's class text is not read) is set
+ * through this build's registry setter to its value at the anchor: the old
+ * value of its first change after the anchor, else its value at the press;
+ * a row whose value there equals its boot value is left, since the replay
+ * boots on the tester's configuration. The changes after the anchor wait for
  * br_knobs_replay_tick. Rows of the other classes that changed are printed
  * as not applied with the reason. A bundle without the member is printed
  * and changes nothing. OPENPETE_BUGREPORT_REPLAY_KNOBS=0 applies nothing

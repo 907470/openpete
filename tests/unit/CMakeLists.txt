@@ -345,6 +345,21 @@ target_include_directories(knob_registry_test PRIVATE
 set_target_properties(knob_registry_test PROPERTIES C_STANDARD 11)
 add_test(NAME knob_registry_test COMMAND knob_registry_test)
 
+# bugreport_replay_knobs_test - --bug-report-replay applies a recorded knob
+# value only to a row this build classifies render, whatever class the
+# bundle's knobs.txt line names. The registry and the member reader are
+# stubs; SDL is linked for the bug-report headers' atomics.
+add_executable(bugreport_replay_knobs_test
+    bugreport_replay_knobs_test.c
+    ${CMAKE_SOURCE_DIR}/core/record/bugreport_replay_knobs.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/bugknobs_class.c)
+target_include_directories(bugreport_replay_knobs_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+target_link_libraries(bugreport_replay_knobs_test PRIVATE SDL3::SDL3-static)
+set_target_properties(bugreport_replay_knobs_test PROPERTIES C_STANDARD 11)
+add_test(NAME bugreport_replay_knobs_test COMMAND bugreport_replay_knobs_test)
+
 # audio_volume_test - the --sfx / --music slider presets: stamping, the
 # re-stamp over the game's own reseeds (title screen, SpuInitialize, save
 # load), and the release when the player moves that slider in the options

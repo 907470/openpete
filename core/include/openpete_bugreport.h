@@ -115,6 +115,24 @@ void openpete_bugreport_main_poll(void);
  * @param opts The run options, for knob_registry_init. */
 void openpete_bugknobs_poll(const struct openpete_options* opts) OP_REQUIRES(sim);
 
+struct knob_desc;   /* openpete_knobs.h */
+
+/** @brief Report whether a registry row is an OPENPETE_* variable row: an env spelling, no flag, a string value.
+ * @param k The row.
+ * @return 1 for such a row, 0 otherwise. */
+int openpete_bugknobs_is_env(const struct knob_desc* k);
+
+/** @brief Name a registry row's replay class: action, latched, env, host, sim, follow or render.
+ *
+ * A fixed table names the live rows the replay leaves to its own options
+ * (host), to the sim's timeline (sim) or to game state (follow); every
+ * other live row writes renderer state and is render, the only class
+ * --bug-report-replay applies. knobs.txt records it for the reader; the
+ * replay classifies this build's own row rather than reading it back.
+ * @param k The row.
+ * @return The class word (static). */
+const char* openpete_bugknobs_class(const struct knob_desc* k);
+
 /** @brief Write knobs.txt from the last sample: one `knob` line per registry row (value, boot value, default, boot source, flags, class) and one `change` line per recorded change.
  *
  * Reads only the recorder's own copies, so a fatal exit off the sim

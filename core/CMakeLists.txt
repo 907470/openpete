@@ -100,6 +100,7 @@ add_library(openpete_core STATIC
     runtime/host_session.c
     runtime/host_bugreport.c
     runtime/host_bugknobs.c
+    runtime/bugknobs_class.c
     runtime/host_pacer.c
     runtime/host_input_tick.c
     runtime/host_trace.c

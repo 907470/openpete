@@ -28,7 +28,7 @@
 
 /* One registry row's recorded values. */
 typedef struct {
-    const char* cls;           /* bk_class, decided at the first sample */
+    const char* cls;           /* openpete_bugknobs_class, decided at the first sample */
     char   boot[KNOB_STR_MAX];
     char   cur[KNOB_STR_MAX];
     double boot_raw, cur_raw;
@@ -68,42 +68,6 @@ static struct {
     int         sched_n;
 } s_bk;
 
-/* Rows the replay does not apply, by id, with their class: `host` rows set
- * window, pacing, audio, input, logging or menu state that the replay's own
- * options decide (headless, --mute, flat-out pacing, no devices); `sim` rows
- * act on the sim's timeline (the free camera freezes the player update, the
- * camera lock writes the camera, pause stops the ticks); a `follow` row is a
- * selection that tracks game state (the level warp's target follows the
- * player's level), so it is not sampled after boot. Every other live row
- * writes renderer state (the registry's contract) and is `render`. */
-static const struct { const char* id; const char* cls; } k_bk_class[] = {
-    {"fullscreen", "host"}, {"vsync", "host"}, {"render_fps", "host"}, {"tick_scale", "host"},
-    {"runahead", "host"}, {"rewind", "host"}, {"mute", "host"}, {"sfx", "host"},
-    {"music", "host"}, {"vibration", "host"}, {"mouse", "host"}, {"pad_unfocused", "host"},
-    {"mouse_sensitivity", "host"}, {"log_level", "host"}, {"log_format", "host"},
-    {"save_mismatch_toast", "host"}, {"record_fps_overlay", "host"}, {"state_slot", "host"},
-    {"warp_level", "follow"}, {"freecam", "sim"}, {"camlock", "sim"}, {"pause", "sim"},
-};
-
-/** @brief Report whether a row is an OPENPETE_* variable row: an env spelling, no flag, a string value. */
-static int bk_is_env(const knob_desc_t* k)
-{
-    return k->env && !k->cli && k->type == KNOB_STRING;
-}
-
-/** @brief Name a row's replay class: action, latched, env, host, sim, follow or render.
- * @param k The row.
- * @return The class word (static). */
-static const char* bk_class(const knob_desc_t* k)
-{
-    if (k->type == KNOB_ACTION) return "action";
-    if (k->mut != KNOB_LIVE) return "latched";
-    if (bk_is_env(k)) return "env";
-    for (size_t i = 0; i < sizeof k_bk_class / sizeof k_bk_class[0]; i++)
-        if (!strcmp(k->id, k_bk_class[i].id)) return k_bk_class[i].cls;
-    return "render";
-}
-
 /** @brief Replace tabs and line breaks in a value with spaces, so one value is one field. */
 static void bk_flatten(char* s)
 {
@@ -121,7 +85,7 @@ static void bk_flatten(char* s)
  * @return The number (the stored value for a row with no getter), or NAN for a string row. */
 static double bk_read(const knob_desc_t* k, char* buf, size_t cap)
 {
-    const int env = bk_is_env(k);
+    const int env = openpete_bugknobs_is_env(k);
     if (env) rhi_env_read_guard(1);
     if (knob_config_value_str(k, buf, cap) != 0) knob_value_str(k, buf, cap);
     if (env) rhi_env_read_guard(0);
@@ -163,7 +127,7 @@ static void bk_init(const openpete_options_t* opts)
     s_bk.n = n;
     for (size_t i = 0; i < n; i++) {
         bk_row_t* r = &s_bk.rows[i];
-        r->cls = bk_class(&ks[i]);
+        r->cls = openpete_bugknobs_class(&ks[i]);
         if (ks[i].type == KNOB_ACTION) continue;
         r->boot_raw = r->cur_raw = bk_read(&ks[i], r->boot, sizeof r->boot);
         memcpy(r->cur, r->boot, sizeof r->cur);
@@ -230,7 +194,7 @@ static void bk_sample(void)
         const knob_desc_t* k = &ks[i];
         const char* cls = s_bk.rows[i].cls;
         if (k->mut != KNOB_LIVE || k->type == KNOB_ACTION || !strcmp(cls, "follow") ||
-            (bk_is_env(k) && !env_moved))
+            (openpete_bugknobs_is_env(k) && !env_moved))
             continue;
         double raw = 0.0;
         if (bk_moved(k, &s_bk.rows[i], &raw, buf, sizeof buf)) bk_record(i, raw, buf);

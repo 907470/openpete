@@ -4,6 +4,7 @@
  * core/runtime/host_bugknobs.c. */
 #include "bugreport_internal.h"
 
+#include "openpete_bugreport.h"
 #include "openpete_knobs.h"
 #include "openpete_log.h"
 
@@ -13,10 +14,10 @@
 
 #define RK_FIELDS 12
 
-/* A `knob` line's fields used here. */
+/* A `knob` line's fields used here. The line's class field is not read:
+ * the replay classifies this build's row of the id (rk_class). */
 typedef struct {
     const char* id;
-    const char* cls;
     const char* value;
     const char* boot;
     const char* flags;
@@ -69,7 +70,7 @@ static void rk_line(char* line)
         rk_row_t* g = (rk_row_t*)realloc(K.rows, (K.nrows + 1) * sizeof *g);
         if (!g) return;
         K.rows = g;
-        K.rows[K.nrows++] = (rk_row_t){f[1], f[2], f[3], f[4], f[7], f[8]};
+        K.rows[K.nrows++] = (rk_row_t){f[1], f[3], f[4], f[7], f[8]};
     } else if (!strcmp(f[0], "change") && n >= 10) {
         rk_change_t* g = (rk_change_t*)realloc(K.ch, (K.nch + 1) * sizeof *g);
         if (!g) return;
@@ -96,6 +97,13 @@ static knob_desc_t* rk_registry_row(const char* id)
     return NULL;
 }
 
+/** @brief This build's replay class of a row id (openpete_bugknobs_class), or NULL when this build has no row of that id. */
+static const char* rk_class(const char* id)
+{
+    const knob_desc_t* k = rk_registry_row(id);
+    return k ? openpete_bugknobs_class(k) : NULL;
+}
+
 /** @brief Set a row to a recorded value through this build's setter: the number for a numeric row, the text for a string row.
  * @param id The row id.
  * @param value The text.
@@ -110,9 +118,10 @@ static int rk_apply(const char* id, const char* value, const char* raw)
     return k->set_num(k, strtod(raw, NULL));
 }
 
-/** @brief Name why a class is not applied. */
+/** @brief Name why a class is not applied; NULL is a row this build lacks. */
 static const char* rk_why(const char* cls)
 {
+    if (!cls) return "this build has no row of that id";
     if (!strcmp(cls, "host")) return "host: window, pacing, audio, input or logging state the replay's own options decide";
     if (!strcmp(cls, "sim")) return "sim: acts on the sim's timeline; the movie and the hash compare cover the run";
     if (!strcmp(cls, "env")) return "env: env.txt holds its press value, set from the replay's start";
@@ -129,15 +138,16 @@ static const rk_change_t* rk_first_after(const char* id, unsigned anchor_frame)
     return NULL;
 }
 
-/** @brief Decide one row that changed after boot: apply its anchor value (render), or print why not.
+/** @brief Decide one row that changed after boot: apply its anchor value when this build classifies the row render, or print why not.
  * @param r The row.
  * @param anchor_frame The anchor's tick. */
 static void rk_row_at_anchor(const rk_row_t* r, unsigned anchor_frame)
 {
     K.changed++;
-    if (strcmp(r->cls, "render") != 0) {
+    const char* cls = rk_class(r->id);
+    if (!cls || strcmp(cls, "render") != 0) {
         K.not_applied++;
-        fprintf(stderr, "bug-report-replay: knob %s = %s not applied (%s)\n", r->id, r->value, rk_why(r->cls));
+        fprintf(stderr, "bug-report-replay: knob %s = %s not applied (%s)\n", r->id, r->value, rk_why(cls));
         return;
     }
     const rk_change_t* c = rk_first_after(r->id, anchor_frame);
@@ -217,7 +227,8 @@ void br_knobs_replay_tick(unsigned frame)
     for (; K.next < K.nch && K.ch[K.next].frame <= frame; K.next++) {
         const rk_change_t* c = &K.ch[K.next];
         const rk_row_t* r = rk_row(c->id);
-        if (!r || strcmp(r->cls, "render") != 0) continue;   /* reported at the anchor load */
+        const char* cls = r ? rk_class(c->id) : NULL;
+        if (!cls || strcmp(cls, "render") != 0) continue;   /* reported at the anchor load */
         if (K.off) {
             K.off_skipped++;
             fprintf(stderr, "bug-report-replay: knob %s = %s not applied at frame %u "
