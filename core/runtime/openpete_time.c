@@ -103,26 +103,21 @@ static int     s_timeperiod_set OP_SEALED(time) = 0; /* thread-roles: written be
  * a second thread arming the same handle re-arms the wait the first thread
  * is blocked in with INFINITE, which parked the sim thread for good once a
  * present thread started sleeping through this path too. Every thread that
- * sleeps gets its own; the table lets a shutdown wake all of them. The
- * slots and their count are atomic: any thread's first sleep claims a slot
- * while another thread may be waking them. Handles are never closed: a
+ * sleeps gets its own, held in a thread-local. Handles are never closed: a
  * thread may still sleep on its timer after shutdown (the portal-sky worker
  * is never joined), and the process exit releases them. */
 #  ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #    define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #  endif
-#define OP_TIMER_MAX_THREADS 8
-static _Atomic(HANDLE) s_thread_timers[OP_TIMER_MAX_THREADS];
-static atomic_int      s_thread_timer_n;
 static _Thread_local HANDLE t_timer = NULL;
+/** @brief Return the calling thread's high-resolution waitable timer, creating it at the thread's first sleep.
+ * @return The handle, or NULL when high-resolution timers are unsupported or creation failed (the caller takes the coarse Sleep path). */
 static HANDLE thread_timer(void) {
     if (t_timer) return t_timer;
     if (!s_hi_res_timer) return NULL;          /* no hi-res support: coarse Sleep path */
     HANDLE h = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                       TIMER_ALL_ACCESS);
     if (!h) return NULL;
-    const int i = atomic_fetch_add(&s_thread_timer_n, 1);
-    if (i < OP_TIMER_MAX_THREADS) atomic_store(&s_thread_timers[i], h);
     t_timer = h;
     return h;
 }
@@ -291,28 +286,6 @@ static void wake_record(op_time_t err) {
 static op_time_t thread_slack(void) {
     if (s_slack_fixed) return s_slack_ns;
     return t_wake.slack > 0 ? t_wake.slack : OP_SLACK_CAP_NS;
-}
-
-void op_time_wake_pending_sleeps(void) {
-#if defined(_WIN32)
-    if (!s_initialized) return;
-    {
-        /* SetWaitableTimer with a 0 due time fires immediately - a thread
-         * in WaitForSingleObject(timer, INFINITE) wakes and returns. The
-         * spin-tail then notices op_now() >= deadline (or its own caller's
-         * exit predicate is true) and unwinds. CancelWaitableTimer would NOT
-         * signal waiters, only the next SetWaitableTimer would - so we set
-         * with a 0 time instead, on every thread's timer. */
-        LARGE_INTEGER due;
-        due.QuadPart = 0;
-        int n = atomic_load(&s_thread_timer_n);
-        if (n > OP_TIMER_MAX_THREADS) n = OP_TIMER_MAX_THREADS;
-        for (int i = 0; i < n; i++) {
-            HANDLE h = atomic_load(&s_thread_timers[i]);
-            if (h) SetWaitableTimer(h, &due, 0, NULL, NULL, FALSE);
-        }
-    }
-#endif
 }
 
 /* Set by the first op_time_shutdown; later calls return at once. */

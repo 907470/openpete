@@ -281,6 +281,17 @@ void runahead_apply_live(void)
     SDL_SetAtomicInt(&s_runahead_live, s_ra.n);
 }
 
+/** @brief Format up to four bytes of a guest RAM image from @p off as hex, stopping at the end of guest RAM.
+ * @param out Receives the text; 9 bytes.
+ * @param ram The image, OPENPETE_PSX_RAM_SIZE bytes.
+ * @param off The first byte's offset, below OPENPETE_PSX_RAM_SIZE. */
+static void ra_hex4(char out[9], const uint8_t* ram, uint32_t off)
+{
+    const uint32_t n = OPENPETE_PSX_RAM_SIZE - off < 4u ? OPENPETE_PSX_RAM_SIZE - off : 4u;
+    out[0] = '\0';
+    for (uint32_t k = 0; k < n; k++) snprintf(out + 2 * k, 3, "%02X", ram[off + k]);
+}
+
 /** @brief Print the differing guest RAM ranges (as PSX addresses) and a scratchpad difference between a level-2 led copy and the committed state.
  * @param a The led copy: guest RAM followed by the scratchpad. */
 static void ra_pc_dump_diff(const uint8_t* a)
@@ -295,12 +306,11 @@ static void ra_pc_dump_diff(const uint8_t* a)
                (a[end] != b[end] || (end + 16 < OPENPETE_PSX_RAM_SIZE &&
                 memcmp(a + end, b + end, 16) != 0)))
             end++;
-        fprintf(stderr, "[ra-predict]   diff 0x%08X..0x%08X "
-                "led=%02X%02X%02X%02X comm=%02X%02X%02X%02X\n",
-                OPENPETE_PSX_KSEG0_BASE + off,
-                OPENPETE_PSX_KSEG0_BASE + end,
-                a[off], a[off+1], a[off+2], a[off+3],
-                b[off], b[off+1], b[off+2], b[off+3]);
+        char led[9], comm[9];
+        ra_hex4(led, a, off);
+        ra_hex4(comm, b, off);
+        fprintf(stderr, "[ra-predict]   diff 0x%08X..0x%08X led=%s comm=%s\n",
+                OPENPETE_PSX_KSEG0_BASE + off, OPENPETE_PSX_KSEG0_BASE + end, led, comm);
         ranges++;
         off = end + 1;
     }

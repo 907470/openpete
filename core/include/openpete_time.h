@@ -356,15 +356,6 @@ void op_time_reload_env(void);
  * on its own timer; process exit releases them. */
 void op_time_shutdown(void);
 
-/** @brief Wake every thread blocked in the OS-sleep stage of op_sleep_until on Win32.
- *
- * Sets each per-thread waitable timer with a zero due time, which signals
- * it; CancelWaitableTimer would not release a waiter. The woken thread
- * then spins the rest of its wait to the deadline. Lets a shutdown join a
- * sleeping thread without waiting out the sleep. No-op before op_time_init
- * and on POSIX, where the sleep is bounded by its deadline. */
-void op_time_wake_pending_sleeps(void);
-
 #ifdef __cplusplus
 }
 #endif
