@@ -130,23 +130,27 @@ typedef struct {
 
 enum { TR_SRC_NONE = 0, TR_SRC_RIBBON, TR_SRC_MESH };
 
-/* A clipped quad keeps at most five corners: the plane cuts one corner into
- * two. */
-#define TR_POLY_MAX 5
+/* A clipped mesh quad keeps at most eight corners: each triangle of the
+ * GPU's split keeps at most four. */
+#define TR_POLY_MAX 8
 
 /* One item's float build for one view: screen corners with their texture
- * coordinates and colours. An unclipped build (fan 0) holds the primitive's
- * corners in its own order and feeds in the GPU's quad split; a polygon the
- * near plane cut (fan 1) holds n corners in winding order and feeds as a fan
- * from corner 0; n below 3 feeds nothing. `near` marks a build with a corner
- * short of TR_NEAR_M3, which takes the near-plane path, and `clipped` one the
- * plane cut, whichever form it took. `vz` is the mean full-world view Z of the
- * shown points the corners sit about, under the build's view. */
+ * coordinates, colours and colour residuals (ngte_cvert.rgbq, nonzero only on
+ * a corner a cut placed). An unclipped build or a ribbon segment (fan 0)
+ * holds four or three corners in the primitive's own order and feeds in the
+ * GPU's quad split. A mesh primitive the near plane cut (fan 1) holds the
+ * clipped triangles of that split, corners [0, n0) the first and [n0, n) the
+ * second, each in winding order and fed as a fan from its first corner; a
+ * part below 3 corners is empty. n below 3 feeds nothing. `near` marks a
+ * build with a corner short of TR_NEAR_M3, which takes the near-plane path,
+ * and `clipped` one the plane cut, whichever form it took. `vz` is the mean
+ * full-world view Z of the shown points the corners sit about, under the
+ * build's view. */
 typedef struct {
-    int      n, fan, near, clipped;
+    int      n, n0, fan, near, clipped;
     double   vz;
     float    x[TR_POLY_MAX], y[TR_POLY_MAX], u[TR_POLY_MAX], v[TR_POLY_MAX];
-    uint32_t rgb[TR_POLY_MAX];
+    uint32_t rgb[TR_POLY_MAX], rgbq[TR_POLY_MAX];
 } tr_poly;
 
 typedef struct {
@@ -851,11 +855,37 @@ static float tr_item_depth(const tr_item* it, const tr_poly* q) {
     return openpete_native_scene_viewz(openpete_worldvz_full((float)((double)it->depth + q->vz - it->b.vz)));
 }
 
+/** @brief Feeds a fan of a clipped build's corners from its first corner to the native scene.
+ *
+ * @param q The build.
+ * @param b The fan's first corner.
+ * @param e One past its last corner; below b + 3 feeds nothing.
+ * @param depth The scene depth.
+ * @param tpp The texture page, or NULL for untextured.
+ * @param blend The native blend code.
+ * @return The number of triangles fed. */
+static int tr_feed_fan(const tr_poly* q, int b, int e, float depth, const ngte_tpage* tpp, int blend) {
+    int fed = 0;
+    for (int i = b + 1; i + 1 < e; i++) {
+        const int idx[4] = { b, i, i + 1, i + 1 };
+        float x[4], y[4], u[4], v[4];
+        uint32_t rgb[4], rgbq[4];
+        for (int k = 0; k < 4; k++) {
+            const int j = idx[k];
+            x[k] = q->x[j]; y[k] = q->y[j]; u[k] = q->u[j]; v[k] = q->v[j];
+            rgb[k] = q->rgb[j]; rgbq[k] = q->rgbq[j];
+        }
+        fed += ngte_feed_flat_quad_q(x, y, u, v, rgb, rgbq, depth, tpp, blend, 3);
+    }
+    return fed;
+}
+
 /** @brief Feeds one item to the native scene as world triangles.
  *
  * An unclipped build or an unbuilt item feeds as the primitive does: a quad
- * split into (0,1,2) and (1,3,2), a triangle (0,1,2) alone. A polygon the
- * near plane cut feeds as a fan from its corner 0. Every vertex takes the
+ * split into (0,1,2) and (1,3,2), a triangle (0,1,2) alone. A mesh build the
+ * near plane cut feeds each clipped triangle of that split as a fan
+ * (tr_feed_fan). Every vertex takes the
  * item's single depth (tr_item_depth). A built item's corners, texture coordinates and
  * colours are its float build, the sub-tick one while the rebase is active
  * and the capture's otherwise; an unbuilt item feeds the routine's corners.
@@ -868,19 +898,12 @@ static void tr_add_prim(const tr_item* it) {
     const int blend = ngte_prim_tpage_blend(p, &tp);
     const ngte_tpage* tpp = p->textured ? &tp : NULL;
     float x[4], y[4], u[4], v[4];
-    uint32_t rgb[4];
+    uint32_t rgb[4], rgbq[4];
     const tr_poly* q = it->built ? (s_reb_active ? &it->pp : &it->b) : NULL;
     const float depth = tr_item_depth(it, q);
     if (q && q->fan) {
-        for (int i = 1; i + 1 < q->n; i++) {
-            const int idx[3] = { 0, i, i + 1 };
-            for (int k = 0; k < 3; k++) {
-                const int j = idx[k];
-                x[k] = q->x[j]; y[k] = q->y[j]; u[k] = q->u[j]; v[k] = q->v[j]; rgb[k] = q->rgb[j];
-            }
-            x[3] = x[2]; y[3] = y[2]; u[3] = u[2]; v[3] = v[2]; rgb[3] = rgb[2];
-            s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, depth, tpp, blend, 3);
-        }
+        s_fed_tris += (uint32_t)(tr_feed_fan(q, 0, q->n0, depth, tpp, blend) +
+                                 tr_feed_fan(q, q->n0, q->n, depth, tpp, blend));
         return;
     }
     if (q && q->n < 3) return;
@@ -888,10 +911,10 @@ static void tr_add_prim(const tr_item* it) {
     const int idx[4] = { 0, 1, 2, last };
     for (int k = 0; k < 4; k++) {
         const int j = idx[k];
-        if (q) { x[k] = q->x[j]; y[k] = q->y[j]; u[k] = q->u[j]; v[k] = q->v[j]; rgb[k] = q->rgb[j]; }
-        else   { x[k] = p->x[j]; y[k] = p->y[j]; u[k] = (float)p->u[j]; v[k] = (float)p->v[j]; rgb[k] = p->rgb[j]; }
+        if (q) { x[k] = q->x[j]; y[k] = q->y[j]; u[k] = q->u[j]; v[k] = q->v[j]; rgb[k] = q->rgb[j]; rgbq[k] = q->rgbq[j]; }
+        else   { x[k] = p->x[j]; y[k] = p->y[j]; u[k] = (float)p->u[j]; v[k] = (float)p->v[j]; rgb[k] = p->rgb[j]; rgbq[k] = 0u; }
     }
-    s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, depth, tpp, blend, p->nv);
+    s_fed_tris += (uint32_t)ngte_feed_flat_quad_q(x, y, u, v, rgb, rgbq, depth, tpp, blend, p->nv);
 }
 
 /** @brief Feeds a set of items to the native scene under the tracer tag.
@@ -1292,14 +1315,10 @@ static void rib_corner_xy(double sx, double sy, double a, double age, int count,
     *y = (float)(w >= 0.0 ? sy + o : sy);
 }
 
-/* The plane a cut item is clipped at starts at the terrain's eye plane (16
- * world units) and doubles while a crossing projects farther than
- * TR_CLIP_PROJ_LIMIT pixels from the screen centre, at most 16 times: a
- * crossing at the eye projects tens of thousands of pixels out, and
- * rasterizers drop the resulting sliver. The band the raised plane removes
- * lies off screen. */
+/* The plane a cut item is clipped at, the terrain's eye plane (16 world
+ * units). The cut is made once; a crossing that projects far off screen is
+ * left to the rasterizer's clip. */
 #define TR_EYE_M3          16.0
-#define TR_CLIP_PROJ_LIMIT 2048.0
 
 /** @brief Projects a camera-space point to the screen in float, with no GTE divide cap or saturation.
  *
@@ -1317,17 +1336,6 @@ static void tr_screen_f(const ngte_view* v, double m1, double m2, double m3, dou
     *y = v->ofy + m2 * q;
 }
 
-/** @brief Reports whether a crossing at the plane projects farther than TR_CLIP_PROJ_LIMIT from the screen centre.
- *
- * @param v The view.
- * @param c The crossing, at the plane's depth.
- * @return 1 when it projects past the limit. */
-static int tr_clip_far(const ngte_view* v, const ngte_cvert* c) {
-    double x, y;
-    tr_screen_f(v, c->m1, c->m2, c->m3, &x, &y);
-    return fabs(x - v->ofx) > TR_CLIP_PROJ_LIMIT || fabs(y - v->ofy) > TR_CLIP_PROJ_LIMIT;
-}
-
 /** @brief The camera-space corner a clip interpolates, from a corner's shown point and the primitive's corner attributes.
  *
  * @param o The corner's shown projection (m1, m2, m3).
@@ -1343,45 +1351,61 @@ static ngte_cvert tr_cvert(const ngte_proj* o, const ngte_prim* p, int k) {
     return c;
 }
 
-/** @brief Clips a mesh polygon in camera space against the near plane and projects what remains in float.
+/** @brief Projects one camera-space corner in float into a build's slot with its texture coordinates and colour.
  *
- * Sutherland-Hodgman against m3 >= zc, zc raised as TR_EYE_M3 describes.
- * A polygon no edge crosses keeps the primitive's corner order (the
- * polygon order is self-inverse for a quad) and the quad split; a cut one
- * is a fan in winding order.
  * @param v The view.
- * @param in The corners in winding order: 0, 1, 3, 2 for a quad.
+ * @param c The corner, at or past TR_EYE_M3.
+ * @param o The build.
+ * @param j The slot. */
+static void tr_poly_put(const ngte_view* v, const ngte_cvert* c, tr_poly* o, int j) {
+    double x, y;
+    tr_screen_f(v, c->m1, c->m2, c->m3, &x, &y);
+    o->x[j] = (float)x; o->y[j] = (float)y;
+    o->u[j] = c->u; o->v[j] = c->v; o->rgb[j] = c->rgb; o->rgbq[j] = c->rgbq;
+}
+
+/** @brief Clips a mesh primitive in camera space against the near plane, triangle by triangle of the GPU's split, and projects what remains in float.
+ *
+ * Each triangle of the split the unclipped feed draws, (0,1,2) and for a
+ * quad (1,3,2), is cut once at TR_EYE_M3 (ngte_near_clip_tri); a crossing
+ * takes ngte_clip_lerp of its edge: camera-space position, texture
+ * coordinates, and the colour with its residual. When no corner is cut the
+ * build keeps the primitive's corner order and feeds in the quad split, or
+ * is empty when every corner lies behind the plane; otherwise each
+ * triangle's output is one fan part, and a triangle wholly behind the plane
+ * contributes none.
+ * @param v The view.
+ * @param in The corners in the primitive's order.
  * @param n The corner count, 3 or 4.
  * @param o Receives the build. */
-static void msh_clip(const ngte_view* v, const ngte_cvert* in, int n, tr_poly* o) {
-    static const int ord4[4] = { 0, 1, 3, 2 };
-    double zc = TR_EYE_M3;
-    for (int round = 0; ; round++) {
-        ngte_cvert out[TR_POLY_MAX];
-        int m = 0, cut = 0, far = 0;
-        for (int i = 0; i < n; i++) {
-            const ngte_cvert cur = in[i], nxt = in[(i + 1) % n];
-            const int ci = cur.m3 >= zc, ni = nxt.m3 >= zc;
-            if (ci) out[m++] = cur;
-            if (ci != ni && m < TR_POLY_MAX) {
-                out[m] = ngte_clip_lerp(cur, nxt, zc);
-                far |= tr_clip_far(v, &out[m]);
-                m++; cut = 1;
-            }
-        }
-        if (far && round < 16) { zc *= 2.0; continue; }
-        o->n = m < 3 ? 0 : m;
-        o->fan = cut;
-        o->near = 1;
-        o->clipped = cut;
-        for (int i = 0; i < o->n; i++) {
-            const int j = (!cut && n == 4) ? ord4[i] : i;
-            double x, y;
-            tr_screen_f(v, out[i].m1, out[i].m2, out[i].m3, &x, &y);
-            o->x[j] = (float)x; o->y[j] = (float)y;
-            o->u[j] = out[i].u; o->v[j] = out[i].v; o->rgb[j] = out[i].rgb;
-        }
+static void msh_clip(const ngte_view* v, const ngte_cvert in[4], int n, tr_poly* o) {
+    static const int split[2][3] = { { 0, 1, 2 }, { 1, 3, 2 } };
+    const int ntri = n == 4 ? 2 : 1;
+    ngte_clip_ref ref[2][4];
+    int cnt[2] = { 0, 0 }, cut = 0;
+    for (int s = 0; s < ntri; s++) {
+        const double z[3] = { in[split[s][0]].m3, in[split[s][1]].m3, in[split[s][2]].m3 };
+        int c = 0;
+        cnt[s] = ngte_near_clip_tri(z, TR_EYE_M3, ref[s], &c);
+        cut |= c;
+    }
+    o->near = 1;
+    o->clipped = cut;
+    o->fan = cut;
+    if (!cut) {
+        o->n = o->n0 = cnt[0] ? n : 0;
+        for (int k = 0; k < n; k++) tr_poly_put(v, &in[k], o, k);
         return;
+    }
+    o->n = 0;
+    for (int s = 0; s < ntri; s++) {
+        for (int k = 0; k < cnt[s]; k++) {
+            const ngte_clip_ref* r = &ref[s][k];
+            const ngte_cvert* a = &in[split[s][r->a]];
+            const ngte_cvert c = r->cross ? ngte_clip_lerp(*a, in[split[s][r->b]], TR_EYE_M3) : *a;
+            tr_poly_put(v, &c, o, o->n++);
+        }
+        if (s == 0) o->n0 = o->n;
     }
 }
 
@@ -1393,8 +1417,9 @@ static void tr_poly_attrs(const ngte_prim* p, tr_poly* o) {
     o->fan = 0;
     o->near = 0;
     o->clipped = 0;
+    o->n0 = o->n;
     for (int k = 0; k < o->n; k++) {
-        o->u[k] = (float)p->u[k]; o->v[k] = (float)p->v[k]; o->rgb[k] = p->rgb[k];
+        o->u[k] = (float)p->u[k]; o->v[k] = (float)p->v[k]; o->rgb[k] = p->rgb[k]; o->rgbq[k] = 0u;
     }
 }
 
@@ -1440,9 +1465,8 @@ static int msh_build(const tr_item* it, const ngte_view* v, double alpha, tr_pol
         tr_poly_attrs(p, o);
         return 1;
     }
-    static const int ord[2][4] = { { 0, 1, 2, 0 }, { 0, 1, 3, 2 } };
     ngte_cvert in[4];
-    for (int i = 0; i < n; i++) in[i] = tr_cvert(&s[ord[n == 4][i]], p, ord[n == 4][i]);
+    for (int k = 0; k < n; k++) in[k] = tr_cvert(&s[k], p, k);
     msh_clip(v, in, n, o);
     return 1;
 }
@@ -1467,10 +1491,10 @@ static void rib_cut_end(ngte_cvert e[2], const ngte_cvert f[2], double* age, dou
 /** @brief Clips a ribbon segment against the near plane in camera space and builds its quad.
  *
  * End A holds corners 0 and 2, end B corners 1 and 3. A segment whose ends
- * both stand behind the plane builds nothing; an end behind it moves onto it
- * (rib_cut_end), with zc raised as TR_EYE_M3 describes. Each corner is then
- * projected in float and offset by the width law at its end's ring place, and
- * the build stays a quad in corner order.
+ * both stand behind TR_EYE_M3 builds nothing; an end behind it moves onto it
+ * (rib_cut_end), cut once. Each corner is then projected in float and offset
+ * by the width law at its end's ring place, and the build stays a quad in
+ * corner order.
  * @param it The item.
  * @param v The view.
  * @param a The head's signed half-width.
@@ -1484,27 +1508,21 @@ static void rib_clip(const tr_item* it, const ngte_view* v, double a, const ngte
     const double ga0 = (double)it->c[0].age, gb0 = (double)it->c[1].age;
     o->fan = 0;
     o->near = 1;
-    ngte_cvert A[2], B[2];
-    double ga, gb, zc = TR_EYE_M3;
-    for (int round = 0; ; round++, zc *= 2.0) {
-        memcpy(A, A0, sizeof A); memcpy(B, B0, sizeof B);
-        ga = ga0; gb = gb0;
-        const int ain = A[0].m3 >= zc, bin = B[0].m3 >= zc;
-        o->clipped = !ain || !bin;
-        if (!ain && !bin) { o->n = 0; return; }
-        int far = 0;
-        if (!ain) { rib_cut_end(A, B0, &ga, gb0, zc); far |= tr_clip_far(v, &A[0]); }
-        if (!bin) { rib_cut_end(B, A0, &gb, ga0, zc); far |= tr_clip_far(v, &B[0]); }
-        if (!far || round >= 16) break;
-    }
+    ngte_cvert A[2] = { A0[0], A0[1] }, B[2] = { B0[0], B0[1] };
+    double ga = ga0, gb = gb0;
+    const int ain = A[0].m3 >= TR_EYE_M3, bin = B[0].m3 >= TR_EYE_M3;
+    o->clipped = !ain || !bin;
+    if (!ain && !bin) { o->n = o->n0 = 0; return; }
+    if (!ain) rib_cut_end(A, B0, &ga, gb0, TR_EYE_M3);
+    if (!bin) rib_cut_end(B, A0, &gb, ga0, TR_EYE_M3);
     const ngte_cvert* c[4] = { &A[0], &B[0], &A[1], &B[1] };
     const double g[4] = { ga, gb, ga, gb };
-    o->n = 4;
+    o->n = o->n0 = 4;
     for (int k = 0; k < 4; k++) {
         double x, y;
         tr_screen_f(v, c[k]->m1, c[k]->m2, c[k]->m3, &x, &y);
         rib_corner_xy(x, y, a, g[k], it->count, k, &o->x[k], &o->y[k]);
-        o->u[k] = c[k]->u; o->v[k] = c[k]->v; o->rgb[k] = c[k]->rgb;
+        o->u[k] = c[k]->u; o->v[k] = c[k]->v; o->rgb[k] = c[k]->rgb; o->rgbq[k] = c[k]->rgbq;
     }
 }
 

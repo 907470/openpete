@@ -482,6 +482,12 @@ int ngte_prim_tpage_blend(const ngte_prim* p, ngte_tpage* tp) {
 int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
                         const float v[4], const uint32_t rgb[4], float depth,
                         const ngte_tpage* tp, int blend, int nv) {
+    return ngte_feed_flat_quad_q(x, y, u, v, rgb, NULL, depth, tp, blend, nv);
+}
+
+int ngte_feed_flat_quad_q(const float x[4], const float y[4], const float u[4],
+                          const float v[4], const uint32_t rgb[4], const uint32_t rgbq[4],
+                          float depth, const ngte_tpage* tp, int blend, int nv) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
     const int ntri = (nv == 4) ? 2 : 1;
     int fed = 0;
@@ -493,6 +499,7 @@ int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
             st.v[k].pvz = depth;   /* fed at one depth: W constant across the prim */
             st.v[k].u = u[j]; st.v[k].v = v[j];
             st.v[k].rgba = (rgb[j] & 0xFFFFFFu) | 0xFF000000u;
+            st.v[k].rgbq = rgbq ? rgbq[j] : 0u;
         }
         st.textured = tp ? 1 : 0;
         if (tp) {

@@ -724,6 +724,23 @@ int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
                         const float v[4], const uint32_t rgb[4], float depth,
                         const ngte_tpage* tp, int blend, int nv);
 
+/** @brief Feeds a screen-space primitive as ngte_feed_flat_quad does, each corner's colour carrying its residual.
+ *
+ * @param x The corners' screen X, PSX pixels.
+ * @param y The corners' screen Y, PSX pixels.
+ * @param u The corners' texture U.
+ * @param v The corners' texture V.
+ * @param rgb The corners' colour words.
+ * @param rgbq The corners' colour residuals (ngte_cvert.rgbq), or NULL for whole bytes.
+ * @param depth The scene depth.
+ * @param tp The texture page and CLUT to sample, or NULL for untextured.
+ * @param blend The native blend code, 0 for opaque.
+ * @param nv The primitive's corner count, 4 for a quad, 3 for a triangle.
+ * @return The number of triangles fed. */
+int ngte_feed_flat_quad_q(const float x[4], const float y[4], const float u[4],
+                          const float v[4], const uint32_t rgb[4], const uint32_t rgbq[4],
+                          float depth, const ngte_tpage* tp, int blend, int nv);
+
 /** @brief Builds the quad that covers the pixels the PSX GPU draws for a line.
  *
  * The GPU steps k = max(|dx|, |dy|) times along the major axis and draws
