@@ -804,9 +804,12 @@ typedef struct { double m1, m2, m3; uint32_t rgb; float u, v;
  * Each channel's level is its byte plus its residual's signed byte / 256;
  * the mix of the two levels rounds half up to a byte clamped to [0, 255],
  * and the mix less that byte, in 1/256 of a level rounded half up and
- * clamped to [-128, 127], is the channel's residual. The byte and residual
- * together reproduce the unrounded mix to 1/512 of a level, so a node or a
- * cut placed anywhere on the edge keeps the colour the edge interpolates.
+ * clamped to [-128, 127], is the channel's residual. The mix less its byte
+ * lies in [-0.5, 0.5), so the byte and residual together reproduce the
+ * unrounded mix to 1/512 of a level, and to under 1/256 where the mix lies
+ * within 1/512 below a half level and the residual's 128 clamps to 127; a
+ * node or a cut placed anywhere on the edge keeps the colour the edge
+ * interpolates to that bound.
  * @param a The colour at weight 0.
  * @param aq Its residual (ngte_cvert.rgbq), 0 for whole bytes.
  * @param b The colour at weight 1.

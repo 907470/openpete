@@ -26,7 +26,7 @@ extern "C" {
 struct rhi_device;
 
 /* Slots per projection array: one per projected vertex (the record passes'
- * 32768, the shaded pass's 8192 and the second model kind's 16384 after
+ * 32768, the shaded pass's 8192 and the simple models' 16384 after
  * them). */
 #define OPENPETE_GSAB_PROJ_CAP 57344
 
@@ -41,8 +41,8 @@ enum {
     OPENPETE_GSAB_F_ENV    = 64u,   /* the record's metal byte is set (env-UV faces) */
     OPENPETE_GSAB_F_SHADED = 128u,  /* a shaded-pass record (unit 2, or 64 / draw-scale byte) */
     OPENPETE_GSAB_F_BILLBOARD = 256u, /* a shaded-pass billboard (screen-position offset) */
-    OPENPETE_GSAB_F_SIMPLE = 512u,  /* a second-kind record (half-world rotation and translation, unit 2) */
-    OPENPETE_GSAB_F_SCREEN = 1024u, /* a second-kind record placed in screen space (its own origin, canonical view) */
+    OPENPETE_GSAB_F_SIMPLE = 512u,  /* a simple-moby record (half-world rotation and translation, unit 2) */
+    OPENPETE_GSAB_F_SCREEN = 1024u, /* a simple-moby record placed in screen space (its own origin, canonical view) */
 };
 
 /* One record's per-record stage inputs, each rounded once to float. */

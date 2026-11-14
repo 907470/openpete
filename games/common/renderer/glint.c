@@ -310,8 +310,8 @@ static void glint_mac_int(const ngte_view* v, const double vo[3], int64_t mac[3]
 /* ---- owner ----------------------------------------------------------------
  *
  * The candidates are the mobys the canonical pass drew this tick: the
- * animated kind's cull records (moby_native_canon_drawn_mobys), the host
- * reveal's admissions (moby_native_revealed_mobys) and the second kind's
+ * animated models' cull records (moby_native_canon_drawn_mobys), the host
+ * reveal's admissions (moby_native_revealed_mobys) and the simple models'
  * queue (moby_native_simple_mobys), all three filled by the moby draw the
  * world draw runs before the glint routine (Spyro 2 drawutil/func_8004C534.s:17-21
  * from draw/func_800155A0.s:16, the glint routine at :32; Spyro 3
@@ -319,8 +319,8 @@ static void glint_mac_int(const ngte_view* v, const double vo[3], int64_t mac[3]
  * routine at :30). */
 
 #define GLINT_OWN_MAX   512    /* candidates kept per call */
-#define GLINT_RAD_CACHE 64     /* second-kind headers whose radius is kept */
-#define GLINT_RAD_VERTS 256    /* the most vertices one second-kind list holds */
+#define GLINT_RAD_CACHE 64     /* simple-model headers whose radius is kept */
+#define GLINT_RAD_VERTS 256    /* the most vertices one simple-model list holds */
 
 typedef struct {
     uint32_t moby;
@@ -332,7 +332,7 @@ static glint_owner s_own[GLINT_OWN_MAX];
 static int         s_own_n;
 static double      s_own_reach;   /* the farthest a record sits from its owner's origin */
 
-/* One second-kind header's radius, keyed by the header address and the words
+/* One simple-model header's radius, keyed by the header address and the words
  * a different model at the same address would change: the vertex counts, the
  * bounding bytes and the first and last vertex. */
 typedef struct {
@@ -369,7 +369,7 @@ static double glint_sparkle_reach(CPUState* cpu) {
     return sqrt(far2) + 2.0;
 }
 
-/** @brief The largest distance of a second-kind model's vertices from its origin, in world units.
+/** @brief The largest distance of a simple model's vertices from its origin, in world units.
  *
  * The draw reads the vertex words at header + 0x10, a high-poly count in
  * byte 1 of the header's first word and a low-poly count in byte 2 over the
@@ -406,9 +406,9 @@ static float glint_simple_radius(CPUState* cpu, uint32_t hdr) {
 
 /** @brief A moby's model radius, the largest distance from its origin of a vertex the native draw emits for it, in world units.
  *
- * The second kind takes glint_simple_radius of the geometry header at
+ * A simple model takes glint_simple_radius of the geometry header at
  * slot + 0x14, the slot being the model plus four times the animation byte
- * (Spyro 3 mobydraw.s:109-117, queued at :628). The animated kind takes the
+ * (Spyro 3 mobydraw.s:109-117, queued at :628). An animated model takes the
  * animation header's radius byte (byte 7) times 64: the cull's sphere
  * radius, the byte times 16 in quarter-world units.
  * @param cpu The guest CPU state, read only.

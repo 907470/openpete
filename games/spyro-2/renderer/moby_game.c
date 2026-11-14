@@ -1,7 +1,7 @@
 /* games/spyro-2/renderer/moby_game.c - the addresses and the one behavioural
  * switch Spyro 2's moby draw does not share with the other game that runs the
  * same three handwritten routines. The decoders, the cull-record reader, the
- * second model kind's pass and the moby_game provider itself are
+ * simple models' pass and the moby_game provider itself are
  * games/common/renderer/moby_game_spyro23.c; every other engine address they
  * read comes from game_layout.
  *

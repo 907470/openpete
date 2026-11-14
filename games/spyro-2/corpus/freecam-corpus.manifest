@@ -16,9 +16,9 @@
 # replaces the coverage row for its level only when it frames at least the
 # feeders the coverage row does; otherwise both rows stay.
 summer_forest | pos=(130413, 15471, 38359) yaw=1088 pitch=160
-# Sub-tick row: one moby of the second model kind (class 0x71) that moves 35
+# Sub-tick row: one simple moby (class 0x71) that moves 35
 # units and turns 11.25 degrees per tick, with no animated moby in view, so
-# the intermediate leg carries the second kind's own motion and nothing else.
+# the intermediate leg carries that moby's own motion and nothing else.
 summer_forest | pos=(52127, 49180, 45249) yaw=-946 pitch=303
 idol_springs | pos=(115428, 98127, 14292) yaw=-1135 pitch=160
 # The row that carries the moby special-material treatments: its mobys draw
@@ -48,7 +48,7 @@ riptos_arena | pos=(44103, 72307, 8612) yaw=-1040 pitch=160
 riptos_arena@arrow | pos=(44103, 72307, 8612) yaw=-1040 pitch=160 | 2523
 # retained terrain face at a bucket-boundary key loses the contest to itself (hardware only; the windowed cache-off/on harness separates the builds)
 glimmer | pos=(55630, 29629, 25462) yaw=974 pitch=243
-# --lod extended: animated-kind mobys (eggs, enemies) outside the cull's
+# --lod extended: animated mobys (eggs, enemies) outside the cull's
 # distance box are not revealed; the simple kind is (the lodext tiles carry
 # the defect)
 glimmer | pos=(83331, 23551, 43211) yaw=1636 pitch=448
@@ -186,7 +186,7 @@ summer_forest | pos=(80565, 87547, 69619) yaw=607 pitch=278
 # beside the high-poly towers, also under --lod extended (seen at --fov 95).
 summer_forest | pos=(79025, 84035, 72838) yaw=875 pitch=313
 # Reported defect: low frame rate at extended LOD facing a wall. The extended
-# reveal queues 115 second-kind (simple) mobys behind the wall that the
+# reveal queues 115 simple mobys behind the wall that the
 # occlusion cull never rejects; the picture is identical at both LODs, so the
 # tile carries the pose and the defect is measured by moby record counts.
 colossus | pos=(47666, 60635, 12089) yaw=78 pitch=41
@@ -248,11 +248,11 @@ autumn_plains@doorkey | pos=(101952, 143650, 32010) yaw=-1055 pitch=-275 | | --a
 # vertex keeps its true view Z as the perspective divisor, so the texture
 # bends across the face (playtest report). Blessed pre-fix.
 icy_speedway | pos=(62236, 86740, 17376) yaw=2548 pitch=111
-# The camera against the summer_forest life orb (class 0x71, a moby of the
-# second model kind): every vertex of the orb lies within the GTE's
+# The camera against the summer_forest life orb (class 0x71, a simple
+# moby): every vertex of the orb lies within the GTE's
 # divide-overflow regime at the draw's own GTE depth (half world units), so
 # each face is drawn as its near-clipped view-space shape and selected on its
-# true facing, as the animated kind's are.
+# true facing, as the animated models' are.
 summer_forest | pos=(52301, 47195, 44105) yaw=-946 pitch=303
 # The camera a few units above the Glimmer ground: large ground faces cross
 # the near plane and are drawn clipped at it, never cut farther out.

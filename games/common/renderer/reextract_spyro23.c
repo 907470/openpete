@@ -620,7 +620,7 @@ static void game_reextract_body(void* cpu_v) {
     portal_s23_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
     RX_CENSUS_STEP("portal");
     /* The two model kinds are queued and replayed apart: the animated queue is
-     * a staged view of the tick's draw scratch, the second kind's queue a host
+     * a staged view of the tick's draw scratch, the simple models' queue a host
      * copy. A state whose tick ran one draw and not the other replays the one
      * it ran, and the passes inside skip on their own producer's freshness. */
     const int moby_staged = stage_moby_records();

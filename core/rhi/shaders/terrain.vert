@@ -1597,14 +1597,19 @@ float tj_t(int k, float za, float zb) {
     return (s * zb) / ((1.0 - s) * za + s * zb);
 }
 
-/* Two colours on the 8-bit grid mixed at weight t and rounded half up, the
- * walk's ngte_rgb_mix. */
+/* Two colours on the 8-bit grid mixed at weight t and rounded half up. The
+ * walk's split node (terrain.c tj_member_cv, ngte_rgb_mix) adds each corner's
+ * residual to its byte before the mix and runs in double; these mix the
+ * corners' bytes alone in float, so the two agree where both corners are
+ * whole bytes. */
 vec3 tj_mix8(vec3 a, vec3 b, float t) {
     return floor(mix(round(a * 255.0), round(b * 255.0), t) + 0.5) / 255.0;
 }
 
 /* The residual of tj_mix8's byte from the unrounded mix of two colours on the
- * 8-bit grid, in 1/256 of a level (native_gte.c ngte_rgb_mix). */
+ * 8-bit grid, in 1/256 of a level, rounded half up and clamped to
+ * [-128, 127] as ngte_rgb_mix's is; the corners' own residuals are not
+ * inputs (tj_mix8). */
 ivec3 tj_rgbq(vec3 a, vec3 b, float t) {
     vec3 v = mix(round(a * 255.0), round(b * 255.0), t);
     return rgb8_residual(v, floor(v + 0.5));

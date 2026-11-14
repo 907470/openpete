@@ -1,5 +1,5 @@
 /* games/common/renderer/moby_game_spyro23.c's interface: the moby stream
- * decoders, the cull-record reader and the second model kind, shared by the
+ * decoders, the cull-record reader and the simple models, shared by the
  * two games whose moby draw is the same three handwritten routines at
  * different addresses.
  *
@@ -23,9 +23,9 @@
  *   vertex_adjust_table  the 32-bit table the one-byte vertex form indexes
  *   anim_blend_table     the table the cull maps Moby+0x40 through into the
  *                        record's keyframe blend byte
- *   simple_skip_lowpoly  the far-geometry suppression word the second kind's
+ *   simple_skip_lowpoly  the far-geometry suppression word the simple models'
  *                        colour band consults
- *   simple_flat_coltab   the second kind's base-colour table, four words per
+ *   simple_flat_coltab   the simple models' base-colour table, four words per
  *                        Moby+0x54 entry
  *   spec_light           the light vector the specular material projects the
  *                        rotated face normal onto

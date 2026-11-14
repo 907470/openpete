@@ -1,8 +1,8 @@
 /* games/common/renderer/moby_game_spyro23.c - the per-game half of the shared
  * moby feeder for both games whose moby draw is the same three handwritten
  * routines: the vertex-stream and face-stream decoders, the cull-record
- * reader, the model-kind test, the keyframe patch list and the second model
- * kind's own pass.
+ * reader, the model-kind test, the keyframe patch list and the simple models'
+ * own pass.
  *
  * The walk itself is games/common/renderer/moby.c; the contract is
  * renderer/moby_game.h. Every claim below carries the asm/mobydraw.s line it
@@ -25,7 +25,7 @@
 
 #include "renderer/moby_game.h"
 #include "renderer/moby_game_spyro23.h"   /* the per-game constants and the shared decoders */
-#include "renderer/moby.h"            /* the second kind's shared emit */
+#include "renderer/moby.h"            /* the simple models' shared emit */
 #include "renderer/native_gte.h"       /* ngte_read_matrix, ngte_mac, ngte_mat_mul3, ngte_dpcs_ch */
 #include "game_layout.h"
 #include "no_lod.h"                    /* openpete_no_lod - the extended-LOD clause */
@@ -615,7 +615,7 @@ static int s23_mode0_ir0_sum(void) {
  * at IR0 = bits 24-27 shifted into 0xF00, writes the result to the scratch
  * table at +0x1600 and draws every face from it (S2 mobydraw.s:2004-2035,
  * S3 mobydraw.s:2000-2031, reached from the material branch after every fade
- * band, S2 :1462-1464). The second model kind's draw has no material branch.
+ * band, S2 :1462-1464). The simple models' draw has no material branch.
  * OPENPETE_MOBY_TINT_OFF=1 skips the tint, the negative control of the colour
  * compare.
  * @param mat The record's material word.
@@ -730,7 +730,7 @@ static int s23_water_plane(CPUState* cpu, uint32_t mat, uint32_t moby, uint32_t 
 
 /** @brief Applies the special material's treatment to one triangle's vertex colours and texture.
  *
- * The special_face hook of the animated kind. A face whose flag field selects
+ * The special_face hook of the animated models. A face whose flag field selects
  * the other dispatcher (`hl` 2, bit 4) or a material whose mode (bits 28-30 of
  * `mat`, 0 for a zero word) exceeds 2 is left to the ordinary emit: mode 3
  * recolours the whole colour table before any face is drawn
@@ -920,11 +920,11 @@ static int s23_otkey_splice(CPUState* cpu, uint32_t rec, int* wbase, int* n) {
 
 /** @brief Whether a model-table entry is an animated model.
  *
- * A KSEG0 pointer is an animated model; a KUSEG one is the second kind, drawn
+ * A KSEG0 pointer is an animated model; a KUSEG one is a simple model, drawn
  * by its own pass (mobydraw.s:116).
  * @param cpu Unused.
  * @param model The model-table entry.
- * @return 1 for an animated model, 0 for the second kind. */
+ * @return 1 for an animated model, 0 for a simple model. */
 static int s23_model_is_animated(CPUState* cpu, uint32_t model) {
     (void)cpu;
     return (int32_t)model < 0;
@@ -974,7 +974,7 @@ static uint32_t s23_anim_blend_byte(CPUState* cpu, uint32_t state4) {
 }
 
 
-/* ---- the second model kind (the static draw, mobydraw.s:3862) ----------
+/* ---- the simple models (the static draw, mobydraw.s:3862) --------------
  *
  * The cull sorts each drawn moby by the sign of its model-table entry
  * (mobydraw.s:116) and writes the KUSEG half into a second, stride-0x10 queue
@@ -1093,7 +1093,7 @@ static int32_t s_sq_prev_cam[3];
  * (s23_simple_late_ghosts). */
 static int     s_sq_ghost_only;
 
-/** @brief Exchange the current second-kind queue copy for the previous epoch's. */
+/** @brief Exchange the current simple-model queue copy for the previous epoch's. */
 static void s23_simple_queue_swap(void) {
     s23_simple_queue* t = s_sq; s_sq = s_sq_prev; s_sq_prev = t;
 }
@@ -1123,7 +1123,7 @@ static void s23_simple_own_motion(uint32_t moby, double out[3]) {
     else moby_record_world_offset(moby, out);
 }
 
-/** @brief Which second-kind copy holds canonical epoch @p epoch when that epoch is the one before the last committed (cut_held_set_pick).
+/** @brief Which simple-model copy holds canonical epoch @p epoch when that epoch is the one before the last committed (cut_held_set_pick).
  *
  * @param epoch The canonical epoch the held present shows.
  * @param pick Receives the pick: the previous copy, the current copy (no
@@ -1135,7 +1135,7 @@ static int s23_simple_held_pick(uint32_t epoch, cut_held_pick_t* pick) {
     return 1;
 }
 
-/** @brief The mobys of the second-kind queue copy of canonical epoch @p epoch (moby_game.simple_prev_mobys).
+/** @brief The mobys of the simple-model queue copy of canonical epoch @p epoch (moby_game.simple_prev_mobys).
  *
  * @param epoch The canonical epoch.
  * @param out Receives up to @p max moby addresses.
@@ -1152,7 +1152,7 @@ static int s23_simple_prev_mobys(uint32_t epoch, uint32_t* out, int max) {
     return k;
 }
 
-/** @brief The mobys of the second-kind queue copy of the current canonical epoch (moby_game.simple_mobys).
+/** @brief The mobys of the simple-model queue copy of the current canonical epoch (moby_game.simple_mobys).
  *
  * @param out Receives up to @p max moby addresses.
  * @param max Capacity of @p out.
@@ -1182,7 +1182,7 @@ extern unsigned openpete_frame;
 
 #define S23_FLAT_SCRATCH 0x1F8003F0u
 
-/** @brief Whether a second-kind queue copy holds a record of moby @p moby.
+/** @brief Whether a simple-model queue copy holds a record of moby @p moby.
  *
  * @param q The copy.
  * @param moby The Moby address.
@@ -1206,7 +1206,7 @@ static int s23_simple_late_skip(uint32_t moby) {
     return s23_simple_queued(s_sq_prev, moby) || !moby_native_late_ghost_admit(moby);
 }
 
-/** @brief Copies the cull's second-kind queue into the host queue s_sq.
+/** @brief Copies the cull's simple-model queue into the host queue s_sq.
  *
  * Reads records from draw scratch + 0x1C00 (the base the cull left in GTE data
  * 2), stride 0x10, until a zero first word or S23_SIMPLE_RECS records, and
@@ -1354,7 +1354,7 @@ static int s23_simple_flat_face(const int R[3][3], uint32_t f1, int tri,
     return 1;
 }
 
-/** @brief One second-kind face's material, winding verdict and colours, the step between the vertex walk and the emit.
+/** @brief One simple-model face's material, winding verdict and colours, the step between the vertex walk and the emit.
  *
  * Word 1 bit 1 selects the flat-lit material (s23_simple_flat_face); bit 0
  * alone selects neither (mobydraw.s:4721,4666). A standard quad keeps each
@@ -1413,7 +1413,7 @@ typedef struct {
     double   ofx, ofy;  /* its projection origin, PSX px */
 } s23_place;
 
-/** @brief Places one queued second-kind record and reports whether it draws.
+/** @brief Places one queued simple-moby record and reports whether it draws.
  *
  * Fills the translation, matrix, geometry header and, for the screen-space
  * kind, the projection origin.
@@ -1514,7 +1514,7 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
     return 1;
 }
 
-/** @brief One second-kind face's bucket word in the record's paint order.
+/** @brief One simple-model face's bucket word in the record's paint order.
  *
  * moby_rank.h rows MOBY_OTK_S23_SIMPLE and MOBY_OTK_S23_SIMPLE_FLAT:
  * face word 1 bit 1 selects the flat-lit branch (mobydraw.s 4720-4722,
@@ -1716,13 +1716,13 @@ static int s23_abr_flush(CPUState* cpu, int nv, const double (*vmod)[3],
     return s_held_n;
 }
 
-/* Model radii of second-kind geometry headers, direct mapped. An entry holds
+/* Model radii of simple-model geometry headers, direct mapped. An entry holds
  * the header address with its first two words and first vertex word, so a
  * header rewritten in place (a level load) misses instead of reusing a radius. */
 #define S23_RADIUS_N 512
 static struct { uint32_t H, h0, h1, v0; double r; } s_s23_radius[S23_RADIUS_N];
 
-/** @brief The largest distance of a second-kind model's vertex words from its origin, model units.
+/** @brief The largest distance of a simple model's vertex words from its origin, model units.
  *
  * Covers the vertex counts of both lists (header word 0 bits 8-15 and 16-23,
  * the counts the decode reads its vertex words by), so the bound holds at
@@ -1776,10 +1776,10 @@ static double s23_matrix_stretch(const float R[3][3]) {
     return sqrt(worst);
 }
 
-/** @brief Print the submitted screen-space centroid, extent and placement of one second-kind record under OPENPETE_MOBY_POSTRACE_CLS.
+/** @brief Print the submitted screen-space centroid, extent and placement of one simple-moby record under OPENPETE_MOBY_POSTRACE_CLS.
  *
  * The variable names the class to trace (0xFFFF traces every class), read
- * the same way as the animated kind's trace in the shared feeder, so one
+ * the same way as the animated models' trace in the shared feeder, so one
  * setting follows a moby across the kind boundary. The centroid alone is
  * blind to the rotation, so the projected extent and the composed matrix's
  * first row are printed beside it.
@@ -1820,7 +1820,7 @@ static void s23_simple_postrace(CPUState* cpu, uint32_t moby, const float (*vscr
             dmob[0], dmob[1], dmob[2]);
 }
 
-/** @brief Whether a placed second-kind record is hidden behind nearer world depth, counted into the pass census when it is.
+/** @brief Whether a placed simple-moby record is hidden behind nearer world depth, counted into the pass census when it is.
  *
  * A world-placed record's vertices sit at (R v + TR) * 2 in full world
  * units, so the origin is 2 TR and no vertex lies farther from it than twice
@@ -1841,7 +1841,7 @@ static int s23_simple_hidden(CPUState* cpu, uint32_t moby, const s23_place* pl, 
     return 1;
 }
 
-/** @brief The present camera's position change since the tick, in the units and signs of a second-kind record's stored delta.
+/** @brief The present camera's position change since the tick, in the units and signs of a simple-moby record's stored delta.
  *
  * The camera position the cull subtracted is baked into every record's
  * delta (mobydraw.s:53 the camera position, :81,87,94 the three
@@ -1889,7 +1889,7 @@ typedef struct {
     int ncol, clut_bias, nv;
 } s23_rec_faces;
 
-/** @brief The ordering-table key the draw drops a second-kind record on (mobydraw.s:4193-4207).
+/** @brief The ordering-table key the draw drops a simple-moby record on (mobydraw.s:4193-4207).
  *
  * Its far end is where the record runs out of ordering table, a range limit
  * and not paint order, so extended LOD lifts it with the other one; the
@@ -1905,10 +1905,10 @@ static int s23_simple_record_key(int trz, uint32_t rot, int* key) {
     return openpete_no_lod || !(k >= 272 && (k << 3) + 256 >= 3840);
 }
 
-/** @brief The fade and LOD tier of a second-kind record: the moby's LOD byte against twice the depth (mobydraw.s:4193-4196).
+/** @brief The fade and LOD tier of a simple-moby record: the moby's LOD byte against twice the depth (mobydraw.s:4193-4196).
  *
  * Its sign picks the low-poly lists. Extended LOD removes the depth term, the
- * rule the animated kind's tier takes: every test then reads the value the
+ * rule the animated models' tier takes: every test then reads the value the
  * draw computes at depth 0, so the vertex count, the list pair, the fade and
  * the CLUT bias all take the draw's own near branch (tier >= 4096 at
  * mobydraw.s:4285-4289). A size term below that band keeps the depth term:
@@ -1925,7 +1925,7 @@ static int s23_simple_tier(CPUState* cpu, uint32_t moby, int trz) {
     return size_term - 2 * trz;
 }
 
-/** @brief Read a second-kind model's vertex words into model-space vertices.
+/** @brief Read a simple model's vertex words into model-space vertices.
  *
  * Each word packs X in bits 11-21, Y in bits 0-11 and Z in bits 21-31,
  * signed (mobydraw.s:4222-4229).
@@ -1942,7 +1942,7 @@ static void s23_simple_vertices(CPUState* cpu, uint32_t H, int nv, double (*vm)[
     }
 }
 
-/** @brief Build a second-kind record's colour table and find its face list (mobydraw.s:4285-4346).
+/** @brief Build a simple-moby record's colour table and find its face list (mobydraw.s:4285-4346).
  *
  * The vertex count switches on the tier's sign, the face and colour lists
  * one step earlier: tier 0 takes the high-poly count and the low-poly lists
@@ -2105,7 +2105,7 @@ static void s23_simple_faces(CPUState* cpu, const s23_rec_faces* F, uint32_t fac
     }
 }
 
-/** @brief Place, cull and LOD-select one queued second-kind record: everything the decode settles before reading a vertex.
+/** @brief Place, cull and LOD-select one queued simple-moby record: everything the decode settles before reading a vertex.
  *
  * Counts the record into the pass census and its cull into s_simple_culled.
  * @param cpu The guest CPU state, read only.
@@ -2145,7 +2145,7 @@ static int s23_simple_admit(CPUState* cpu, int r, const int Rcam[3][3], const do
     return nv > S23_SIMPLE_VERTS ? S23_SIMPLE_VERTS : nv;
 }
 
-/** @brief Decodes the host queue of second-kind records into triangles for the shared walk.
+/** @brief Decodes the host queue of simple-moby records into triangles for the shared walk.
  *
  * Per queued record: admits it (s23_simple_admit: placement, the ordering
  * table's far end, the LOD tier and vertex count), composes the moby's
@@ -2264,7 +2264,7 @@ static int s23_simple_late_ghosts(CPUState* cpu) {
     return n;
 }
 
-/** @brief A sub-tick present's replay of the second kind: the captured queue decoded again under the present's camera.
+/** @brief A sub-tick present's replay of the simple models: the captured queue decoded again under the present's camera.
  *
  * Makes no call into the game's draw. During a held cut's previous-queue
  * replay (moby_native_prev_queue_replay) it decodes that epoch's copy
@@ -2411,7 +2411,7 @@ static int64_t s23_second_sphere(CPUState* cpu, uint32_t moby, const int cam_m[3
     return (int64_t)(word & 0xFFu) << 3;
 }
 
-/** @brief The animated kind's admission as the cull runs it, with the lateral slope scaled by `widen` and the vertical by `vwiden`.
+/** @brief The animated models' admission as the cull runs it, with the lateral slope scaled by `widen` and the vertical by `vwiden`.
  *
  * mobydraw.s:62-187 and 355-450; Spyro 2 0x80043920-0x80043EE8, Spyro 3 the
  * same instructions, the second sphere at mobydraw.s:353-448. The cull
@@ -2673,7 +2673,7 @@ static uint32_t s23_reveal_other_form(CPUState* cpu, uint32_t moby, uint32_t col
     return colour;
 }
 
-/** @brief Builds the animated kind's cull record for one moby the box rejected and appends it to the host record list.
+/** @brief Builds an animated model's cull record for one moby the box rejected and appends it to the host record list.
  *
  * The record is composed the way the cull composes it and appended to the host copy of the cull's own
  * record list. The regular walk reads that copy, so an appended record decodes
@@ -2745,12 +2745,12 @@ static int s23_reveal_anim_record(CPUState* cpu, uint32_t moby, moby_reveal_reas
 
 /** @brief Builds one rejected moby's record for the queue of its model kind.
  *
- * An animated model goes to s23_reveal_anim_record. A second-kind model's queue
+ * An animated model goes to s23_reveal_anim_record. A simple model's queue
  * record is built the way the cull composes it (mobydraw.s:604-630): the Moby, the three quarter-world
  * camera deltas - (moby - cam) >> 2 on the first component and (cam - moby)
  * >> 2 on the other two (mobydraw.s:81,87,94) - and the model's animation slot
- * at Model + (Moby+0x3C byte 0) * 4. A model-table entry that is KSEG0 is the
- * animated kind and belongs to the other queue (mobydraw.s:116).
+ * at Model + (Moby+0x3C byte 0) * 4. A model-table entry that is KSEG0 is an
+ * animated model and belongs to the other queue (mobydraw.s:116).
  *
  * The deltas also go into the full-width fields, since a revealed moby sits
  * past what the packed halves can hold, and the far-cull distance is -1: a
@@ -2798,7 +2798,7 @@ static int s23_reveal_record(CPUState* cpu, uint32_t moby, moby_reveal_kind_t ki
     return 1;
 }
 
-/** @brief The second kind's pass on its draw hook: capture the cull's queue, run the game's draw, decode the queue natively.
+/** @brief The simple models' pass on its draw hook: capture the cull's queue, run the game's draw, decode the queue natively.
  *
  * The game's own draw writes the drawn verdict and the prims. Before it runs,
  * the pass appends the extended-LOD reveal records to the host queue and

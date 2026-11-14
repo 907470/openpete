@@ -9,7 +9,7 @@
  *
  * What it cannot share is the bit layout of the two streams the models are
  * encoded in and the shape of one cull record, so those three decoders are
- * function slots here, plus a pair for a second model kind a game may carry
+ * function slots here, plus a pair for the simple models a game draws apart
  * (a static geometry list drawn by its own pass, canonically and on a sub-tick
  * replay) and one for the object identity the sub-tick interp ring keys on. The remaining slots are per-game
  * data with no engine address behind it - the HUD/cutscene classifications and
@@ -263,33 +263,33 @@ typedef struct moby_game {
     uint32_t (*anim_blend_byte)(CPUState* cpu, uint32_t anim_state_byte4);
 
     /* Which of the two model kinds a model-table entry is. The walk decodes
-     * an animated model itself; a game that flags the second kind by the
+     * an animated model itself; a game that flags a simple model by the
      * entry's own sign, by a count field or any other rule answers here. */
     int  (*model_is_animated)(CPUState* cpu, uint32_t model);
 
-    /* ---- second geometry kind ---------------------------------------- */
-    /* A game whose moby set includes a second model kind drawn by its own
+    /* ---- simple models ---------------------------------------------- */
+    /* A game whose simple models are drawn by their own
      * pass (a static geometry list) feeds it here, on that pass's own draw
      * hook (game_layout.moby.hook_draw_simple). The pass owns the guest
      * dispatch and the decode, and hands the walk each record's transform and
      * model-space vertices and then its triangles through moby_simple_record,
      * moby_simple_project_record and moby_simple_tri; it returns the triangle
      * count. `simple_replay` re-runs the decode alone for a sub-tick present,
-     * from the queue the canonical call captured, so the second kind survives
+     * from the queue the canonical call captured, so the simple mobys survive
      * between ticks. NULL where the game has no such kind, and the walk feeds
      * the animated records alone. */
     int  (*simple_pass)(CPUState* cpu);
     int  (*simple_replay)(CPUState* cpu);
-    /* The mobys of the second kind's queue copy taken in canonical epoch
+    /* The mobys of the simple models' queue copy taken in canonical epoch
      * `epoch`, written to out (at most max); 0 when that epoch captured no
      * queue, -1 when `epoch` is not the one before the last committed. A held camera cut replays that copy (moby_native_prev_queue_replay)
      * and the cut guard checks each of these can show that tick. NULL where
      * the game keeps no previous copy. */
     int  (*simple_prev_mobys)(uint32_t epoch, uint32_t* out, int max);
-    /* The mobys of the second kind's queue copy taken in the current
+    /* The mobys of the simple models' queue copy taken in the current
      * canonical epoch, reveal records included, written to out (at most
-     * max); 0 when this epoch captured no queue. NULL where the game has no
-     * second kind. */
+     * max); 0 when this epoch captured no queue. NULL where the game draws no
+     * simple pass. */
     int  (*simple_mobys)(uint32_t* out, int max);
 
     /* ---- per-face special material -----------------------------------
@@ -443,7 +443,7 @@ typedef struct moby_game {
     /* ---- addresses outside the descriptor (0 = the path is skipped) --- */
     /* The render scratch block the draw passes build their transient data in,
      * and the windows inside it the feeder reads back: the per-vertex
-     * depth-cued colours the draw wrote, the second model kind's Moby* list
+     * depth-cued colours the draw wrote, the simple models' Moby* list
      * and its per-vertex lit colours. `spec_window_off`/`_len` is the
      * sub-range of the block a second material pass rebuilds, which the
      * sub-tick re-extract snapshots and replays. */
@@ -483,7 +483,7 @@ typedef struct moby_game {
      * (0 = 4096). */
     uint32_t cam_heading;
     uint16_t cam_heading_period;
-    /* The second model kind's base-colour tables, flat and metal. */
+    /* The simple models' base-colour tables, flat and metal. */
     uint32_t shade_coltab, metal_coltab;
 } moby_game_t;
 

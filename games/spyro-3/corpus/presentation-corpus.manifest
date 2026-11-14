@@ -69,7 +69,7 @@ icy-peak-reflective-mirror@1864|2437|600||2437,2443
 # reflected ice wall; native drew only the tail tip, the copy pushed
 # behind the reflected wall in depth. Blessed pre-fix.
 icy-peak-reflective-mirror@wall|2703|600||2703
-# an-evil-plot-unfolds-egg-edge: the opening cutscene under 16:9; animated-kind
+# an-evil-plot-unfolds-egg-edge: the opening cutscene under 16:9; animated-model
 # mobys inside the cull's distance box that fail its 4:3 lateral arm get no
 # widened-view re-admission, so two eggs are absent from the right band at 1779
 # and 1783. The left egg's disappearance between 1781 and 1782 is the game
@@ -102,7 +102,7 @@ the-end-icy-peak-pop|7901|2||7905,7907,7909,7910,7911,7913|--skip-to-cutscene th
 the-end-haunted-tomb-archway|20565|2||20567,20569,20570,20571|--skip-to-cutscene the_end
 
 # sunrise-spring-camera-swing holds R2 from VBL 2073 so the camera orbits the
-# player while two animated-kind mobys and the simple-kind gems, baskets and
+# player while two animated mobys and the simple-model gems, baskets and
 # chest stay in view. The pins hold sub-tick presents mid-swing, where an
 # animated record replayed in the tick camera's view space is displaced from
 # the interpolated camera by half a tick of rotation.

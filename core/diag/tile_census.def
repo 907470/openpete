@@ -116,9 +116,9 @@ TC_ROW(MOBY_ENV_TRIS, "moby.env.tris", "tris", "bit", "moby", 2, live,
        "metal reflection faces, Spyro 2 and 3's mode-1 special faces whose "
        "substitute page and generated coordinates apply.")
 TC_ROW(MOBY_SIMPLE_TRIS, "moby.simple.tris", "tris", "bit", "moby", 2, live,
-       "Moby triangles of a second-model-kind record.")
+       "Moby triangles of a simple-model record.")
 TC_ROW(MOBY_SCREEN_TRIS, "moby.screen.tris", "tris", "bit", "moby", 2, live,
-       "Moby triangles of a second-model-kind record projected at a named "
+       "Moby triangles of a simple-model record projected at a named "
        "screen origin (screen space).")
 TC_ROW(MOBY_UNR_TRIS, "moby.unr.tris", "tris", "bit", "moby", 2, live,
        "Moby triangles with a vertex in the GTE divide-overflow regime (the "

@@ -10,8 +10,8 @@
 #
 # The freecam corpus's first Sunny Villa row.
 sunny_villa | pos=(79168, 34297, 14796) yaw=867 pitch=197
-# The camera against a second-kind moby (class 0x233) of the row above:
-# second-kind vertices in the GTE divide-overflow regime.
+# The camera against a simple moby (class 0x233) of the row above:
+# simple-model vertices in the GTE divide-overflow regime.
 sunny_villa | pos=(76936, 50960, 12313) yaw=867 pitch=197
 #
 carve-out | gpf | Spyro 2 and 3 store the final translation (game_layout.moby.rec_tr_final), so moby_decode_project_body never runs the GPF rescale
@@ -20,4 +20,4 @@ carve-out | shell | the sphere-shell class (0xAA, the bubble about Sparx under w
 carve-out | shaded | Spyro 2 and 3 have no shaded pass (game_layout.moby.hook_draw_shaded is 0)
 carve-out | billboard | Spyro 2 and 3 have no shaded pass (game_layout.moby.hook_draw_shaded is 0)
 carve-out | drawscale | Spyro 2 and 3 have no shaded pass (game_layout.moby.hook_draw_shaded is 0)
-carve-out | simplescreen | no Spyro 3 row found draws a second-kind record placed in screen space (seven recordings of the presentation corpus searched); the class is engaged on Spyro 2 (summer-forest-collect-orb)
+carve-out | simplescreen | no Spyro 3 row found draws a simple-moby record placed in screen space (seven recordings of the presentation corpus searched); the class is engaged on Spyro 2 (summer-forest-collect-orb)

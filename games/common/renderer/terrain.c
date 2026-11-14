@@ -1375,8 +1375,9 @@ static void tn_hqfog_nodes(const tn_wctx* W, ngte_cvert v[3]) {
  * gives 1 triangle, 1 gives a quad (2 triangles, fanned from corner 0), 2
  * give 1 triangle, 3 drop the face and count dbg_behind. A crossing corner is
  * ngte_clip_lerp of its edge. A clipped push counts dbg_clipped. A crossing
- * far off screen is clipped to the view by the rasterizer, whose clip w is
- * the view-Z (op_scene_clip). Under emit_hqfog_on each vertex first takes
+ * far off screen is clipped to the view by the rasterizer (op_scene_clip:
+ * clip w is the view-Z on the perspective path, 1 on the screen-affine UV
+ * path, where the clip runs in screen space). Under emit_hqfog_on each vertex first takes
  * terrain_fog_blend of its near (rgb) and far (rgbf) colours at its own
  * depth, so a cut interpolates fogged colours as the retained cache's
  * vertex stage does.

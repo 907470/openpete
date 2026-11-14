@@ -963,7 +963,7 @@ typedef struct game_layout {
 
         /* Hook sites: the cull pass and one entry per draw pass. A zero
          * address registers no hook, so a game reaches only the passes it
-         * names. `draw_simple` is the second model kind's own pass. */
+         * names. `draw_simple` is the simple models' own pass. */
         uint32_t hook_cull;
         uint32_t hook_draw_regular;
         uint32_t hook_draw_specular;

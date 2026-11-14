@@ -166,7 +166,7 @@ uint32_t moby_canon_rec_bytes(void) { return game_layout.moby.rec_base_polybuf_o
  * overflow BREAKS the reveal walk mid-list (a silent tail-of-the-level drop) and
  * truncates the straddling record's mesh. */
 #define MAX_RECORDS   1024
-#define SHADED_BASE   (moby_game.shaded_list)  /* second model kind: flat Moby* array (stride 4) */
+#define SHADED_BASE   (moby_game.shaded_list)  /* Spyro 1's simple mobys: flat Moby* array (stride 4) */
 
 /* ---- cull-record snapshot -------------------------------------------
  * The record list lives in the tick's draw scratch, and the draw pass that
@@ -245,7 +245,7 @@ static struct {
 static int       s_rec_ref_prev;
 static op_time_t s_rec_ref_ns;
 /* That queue's cull camera, in the record re-base's form. The installed tick
- * camera stays the current tick's, which the second model kind's replay reads. */
+ * camera stays the current tick's, which the simple models' replay reads. */
 static int       s_rec_cam_M[3][3];
 static int32_t   s_rec_cam_pos[3];
 
@@ -571,7 +571,7 @@ static int moby_is_hud(uint32_t mob) {
     return s_pass_overlay || openpete_ui_moby_is_addr_static(mob) || openpete_ui_moby_is_addr_ui(mob);
 }
 
-/** @brief The HUD tag of a regular-walk or second-kind moby: 2 HUD3D, 1 flat HUD, 0 actor.
+/** @brief The HUD tag of a regular-walk or simple moby: 2 HUD3D, 1 flat HUD, 0 actor.
  *
  * Every moby of the overlay pass and a moby in the static HUD address range
  * are HUD3D; a moby in the UI HUD range is flat HUD.
@@ -1168,9 +1168,9 @@ static void moby_vert_homog(proj_xy* o, double sx, double sy, double vzz,
  * per-record data: the translation, the screen offset and view, the factor
  * from the projected view-Z to the perspective W (2^scale byte on a record
  * pass, times 32 / GPF byte on a GPF record; 2, or 64 / draw-scale byte, on
- * the shaded pass; 2 on the second kind, whose GTE runs in half world
- * units), the written depth's factor (1 on the shaded pass and the second
- * kind), the ordering-table key's terms (identity outside a GPF record), the
+ * the shaded pass; 2 on the simple pass, whose GTE runs in half world
+ * units), the written depth's factor (1 on the shaded and the simple
+ * passes), the ordering-table key's terms (identity outside a GPF record), the
  * tie-pull gate and the paint key's inputs. */
 typedef struct {
     const int (*M)[3];          /* model-to-view rotation, 4096 = 1.0: paint key, Mf bound check */
@@ -2435,7 +2435,7 @@ static int moby_project_record(CPUState* cpu, const moby_record_t* R, const floa
 
 /* The scene's projected-vertex store: the record passes fill [0, MAX_PROJ),
  * the shaded pass the MOBY_SHD_PROJ_CAP slots after it (s_proj_shd) and the
- * second model kind the MOBY_SIM_PROJ_CAP slots after those (s_proj_sim), so
+ * simple pass the MOBY_SIM_PROJ_CAP slots after those (s_proj_sim), so
  * every pass's vertices carry one index space (the stage readback's). */
 #define MAX_PROJ 32768
 #define MOBY_SHD_PROJ_CAP 8192
@@ -3417,7 +3417,7 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);            /* m_Class */
     uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);    /* g_Models[cls] */
     if (model < 0x80000000u) return 0;
-    if (!moby_game.model_is_animated(cpu, model)) return 0;  /* the second model kind */
+    if (!moby_game.model_is_animated(cpu, model)) return 0;  /* a simple model */
     uint8_t st[5];
     for (uint32_t k = 0; k < 5u; k++) st[k] = cpu->read_byte(moby + game_layout.moby.anim_state_off + k);
     moby_pose_t pose;
@@ -4300,8 +4300,8 @@ typedef struct {
  * extended LOD the native occlusion test decides such a moby instead: it is
  * offered to the game's record builder when moby_game.cull_view_admits at 4:3
  * rejects it on the sector byte and, with that test skipped, passes every
- * later test of the cull (MOBY_WIDE_CANONICAL for the animated kind; the
- * second kind's cull has no test after the sector byte, so OTHER_KIND), and
+ * later test of the cull (MOBY_WIDE_CANONICAL for an animated model; the
+ * simple models' cull has no test after the sector byte, so OTHER_KIND), and
  * the occlusion cull does not reject it. A moby the cull drops on its box,
  * range, near, lateral, vertical or second-sphere test stays dropped. The
  * revealed record takes the walk's own occlusion test as a queued one does.
@@ -5844,13 +5844,13 @@ static void emit_wtri_wplane(mn_emit* E, const mn_tag* g, const moby_wplane_t* w
     }
 }
 
-/* ---- second model kind: the shared half of moby_game.simple_pass ---------
- * The provider owns the second kind's record, header, vertex and face
+/* ---- simple models: the shared half of moby_game.simple_pass -------------
+ * The provider owns the simple models' record, header, vertex and face
  * encodings and its placement, because none of them is shared; the
  * projection and everything downstream of it are. The provider names the
  * record's moby once, hands its transform and model-space vertices to
  * moby_simple_project_record, which projects them through
- * moby_project_vertex into the store's second-kind region, then names each
+ * moby_project_vertex into the store's simple-model region, then names each
  * triangle by three of those vertices, so both kinds reach the scene in one
  * category, one depth space and one projection store. */
 static const float MOBY_IDENT_F[3][3] = { {1.0f,0.0f,0.0f}, {0.0f,1.0f,0.0f}, {0.0f,0.0f,1.0f} };
@@ -5863,7 +5863,7 @@ static const float MOBY_IDENT_F[3][3] = { {1.0f,0.0f,0.0f}, {0.0f,1.0f,0.0f}, {0
 static int    s_cur_screen;
 static double s_cur_screen_ofx, s_cur_screen_ofy;
 
-/* The pass's use of the store's second-kind region: its fill, the current
+/* The pass's use of the store's simple-model region: its fill, the current
  * record's vertices (in the region, or in s_sim_scratch once it is full) and
  * the records the stage readback commits at the scene push. */
 #define MOBY_SIM_RECS 2048
@@ -5875,7 +5875,7 @@ static int s_nsimrecs;
 
 static void moby_simple_occl_audit(uint32_t moby, const proj_xy* p, int n);
 
-/** @brief The view the current second-kind record projects through, with its projection origin.
+/** @brief The view the current simple-moby record projects through, with its projection origin.
  *
  * @param ofx Receives the origin X in PSX pixels: the record's own screen
  *        origin when it names one, else the view's.
@@ -5908,7 +5908,7 @@ void moby_simple_screen_origin(double ofx, double ofy) {
     s_esim.front = 0;
 }
 
-/** @brief Take the slots of the current second-kind record: the store's next free run, or the scratch array once the region cannot hold the record.
+/** @brief Take the slots of the current simple-moby record: the store's next free run, or the scratch array once the region cannot hold the record.
  *
  * A record that fits is listed for the stage readback's commit.
  * @param n The record's vertex count.
@@ -6857,7 +6857,7 @@ static void moby_clerp_census(const rec_meta* R) {
 static int build_walk_tris_inner(CPUState* cpu);
 /* Which records the next scene push owes the stage readback's commit
  * (moby_gsab_commit): a record pass's walk of s_recs, the shaded pass's
- * s_shrecs, or the second kind's s_simrecs. */
+ * s_shrecs, or the simple models' s_simrecs. */
 enum { MOBY_GSAB_NONE = 0, MOBY_GSAB_RECS = 1, MOBY_GSAB_SHADED = 2, MOBY_GSAB_SIMPLE = 3 };
 static int s_gsab_armed;
 /** @brief Mark the queued records as walked and owed to the stage readback's commit. */
@@ -7492,8 +7492,10 @@ static void walk_records(mn_emit* E, CPUState* cpu, int is_spec, int r0, int r1)
               p0 = &hlq[0]; p1 = &hlq[1]; p2 = &hlq[2];
               if (p3) { hlq[3] = *p3; hlq[3].vz *= 0.998f; p3 = &hlq[3]; }
               if (R->metal) {
-                /* ENV REFLECTION -- view-dependent spherical UV (byte-exact <=1
-                 * texel vs prims); tpage/clut from the static metal Tiledef. */
+                /* ENV REFLECTION -- view-dependent spherical UV: the .s terms
+                 * in unrounded float, so it departs from the prims' integer UV
+                 * (specular_env_calibrate prints the difference); tpage/clut
+                 * from the static metal Tiledef. */
                 E->cb_face |= OPENPETE_CB_MOBY_ENV;
                 specular_env_uv(E->env_az, p0->ex,p0->ey,p0->ez, &u[0],&v[0]);
                 specular_env_uv(E->env_az, p1->ex,p1->ey,p1->ez, &u[1],&v[1]);
@@ -11226,8 +11228,8 @@ static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
 
 /* The moby-against-moby tie order. The S2 and S3 moby draws splice each
  * record's local bucket chains at the tail of every world ordering-table
- * bucket they fill (S2 mobydraw.s 0x8004539C-0x80045488 and the second model
- * kind's 0x80047F00-0x80048014; S3 func_80031124 0x80032020-0x800320B4), in
+ * bucket they fill (S2 mobydraw.s 0x8004539C-0x80045488 and the simple
+ * models' 0x80047F00-0x80048014; S3 func_80031124 0x80032020-0x800320B4), in
  * the order of the cull's record queue, so within one world bucket a record
  * queued later paints over an earlier one. Two mobys whose faces coincide
  * carry per-pixel keys that differ only by projection rounding, and the
@@ -11524,7 +11526,7 @@ static void moby_face_order(CPUState* cpu, int i, int cat, uint32_t stbit,
  *
  * A record carries its moby's scene identity and, with its metal byte set,
  * the env-UV flag; the shaded pass's records commit through
- * moby_gsab_commit_shaded and the second kind's through
+ * moby_gsab_commit_shaded and the simple models' through
  * moby_gsab_commit_simple. Does nothing while the readback is off or when no
  * pass armed it since the last commit (moby_gsab_arm, moby_gsab_arm_shaded,
  * moby_simple_begin). */
@@ -12759,7 +12761,7 @@ int moby_native_prev_queue_mobys(uint32_t* out, int max, op_time_t* ref_ns) {
         const uint32_t m = s_rec_prev.snap[r * sw + moff];
         if (m >= 0x80000000u) out[k++] = m;
     }
-    /* The second kind's queue of the same cull, when its copy of that epoch
+    /* The simple models' queue of the same cull, when its copy of that epoch
      * is held: a held cut replays it too. */
     if (moby_game.simple_prev_mobys && k < max) {
         const int ks = moby_game.simple_prev_mobys(s_rec_prev.epoch, out + k, max - k);
@@ -13111,7 +13113,7 @@ int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e)
 
 /** @brief Whether a moby snapshot's colour word has bit 30 set, the cull's fine-angle rotation composition.
  *
- * The Spyro 2 and Spyro 3 animated-kind cull tests it by shifting the colour
+ * The Spyro 2 and Spyro 3 animated-model cull tests it by shifting the colour
  * word left one and branching on the sign (Spyro 2 mobydraw.s:229-230, Spyro 3
  * mobydraw.s:227-228). A layout without a colour word, or a snapshot too short
  * to hold it, reads 0.
@@ -14183,7 +14185,7 @@ static void moby_gsab_commit_shaded(unsigned epoch) {
                              moby_scene_identity(s_shrecs[r].moby), 0u);
 }
 
-/** @brief Commit the second kind's records of the pass into the stage readback's snapshot of a scene epoch.
+/** @brief Commit the simple models' records of the pass into the stage readback's snapshot of a scene epoch.
  * @param epoch The scene epoch. */
 static void moby_gsab_commit_simple(unsigned epoch) {
     for (int r = 0; r < s_nsimrecs; r++)
@@ -14919,7 +14921,7 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_shaded_bracket);
 }
 
-/* The second model kind's draw pass. The provider owns the guest dispatch: its
+/* The simple models' draw pass. The provider owns the guest dispatch: its
  * pass captures the cull's own record queue around the call, because that
  * queue lives in the tick's draw scratch that later passes reuse. This frame
  * supplies the pass view, the triangle buffer and the scene push, so the kind
@@ -14928,8 +14930,8 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
 /* The provider owns the guest dispatch; its triangle count decides the
  * mark-drawn below. */
 static int s_simple_ntri;
-/* The canonical epoch the second-kind queue was captured in. The queue is a
- * host copy the pass overwrites only when the game's second-kind draw runs;
+/* The canonical epoch the simple-model queue was captured in. The queue is a
+ * host copy the pass overwrites only when the game's simple-model draw runs;
  * on a tick where that draw does not run (a menu or map state owns the frame)
  * it still holds the last gameplay tick's records, which project to nothing
  * the canonical present drew. The sub-tick replay decodes that copy, so it
@@ -14941,7 +14943,7 @@ int moby_native_simple_fresh(void) {
     if (s_rec_ref_prev) return 1;   /* held: the replay picks tick N-1's copy */
     return s_canon_simple_valid && spyro_native_canon_epoch_fresh(s_canon_simple_epoch);
 }
-/** @brief Run the provider's second-kind draw pass and stamp the canonical epoch its queue belongs to.
+/** @brief Run the provider's simple-model draw pass and stamp the canonical epoch its queue belongs to.
  *
  * The queue's validity flag and epoch stamp are set only on a
  * non-speculative run. The pass's triangle count goes to s_simple_ntri.
@@ -14957,7 +14959,7 @@ static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
         s_canon_simple_epoch = spyro_native_canon_epoch_stamp();
     }
 }
-/** @brief Start a second-kind pass or replay: name the material, build the pass view, empty the walk output and the store's second-kind region, and arm the stage readback's commit.
+/** @brief Start a simple-model pass or replay: name the material, build the pass view, empty the walk output and the store's simple-model region, and arm the stage readback's commit.
  * @param cpu The guest CPU state, read only. */
 static void moby_simple_begin(CPUState* cpu) {
     s_cur_mat = "SIM";
@@ -14968,7 +14970,7 @@ static void moby_simple_begin(CPUState* cpu) {
     s_gsab_armed = MOBY_GSAB_SIMPLE;
 }
 
-/** @brief Bracket pre-hook of the second-kind pass: start it with moby_simple_begin.
+/** @brief Bracket pre-hook of the simple-model pass: start it with moby_simple_begin.
  *
  * @param feed Unused.
  * @param verify Unused. */
@@ -14985,7 +14987,7 @@ static const hook_bracket_desc k_simple_bracket = {
     .pre = moby_simple_pre, .st = &s_simple_hb,
 };
 
-/** @brief The second-kind hook: run the game's second model-kind draw and feed the scene.
+/** @brief The simple-model hook: run the game's simple-model draw and feed the scene.
  *
  * Brackets moby_run_draw_simple with k_simple_bracket. On the feed path, a
  * pass that emitted triangles into an empty polybuf interval still marks
@@ -14994,7 +14996,7 @@ static const hook_bracket_desc k_simple_bracket = {
  * against them.
  * @param cpu The guest CPU state.
  * @param addr The hooked address.
- * @return 0 when the game has no second-kind pass or the bracket declines,
+ * @return 0 when the game has no simple-model pass or the bracket declines,
  *         leaving the ordinary dispatch to run it; 1 after the pass ran. */
 static int on_draw_simple(CPUState* cpu, uint32_t addr) {
     OP_ROLE_ASSERT(sim);
@@ -15004,7 +15006,7 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
         return 0;
     const int ntri = s_simple_ntri;
     if (feed) {
-        /* A tick whose second-kind pass emitted nothing to the polybuf leaves
+        /* A tick whose simple-model pass emitted nothing to the polybuf leaves
          * an empty interval; the path must still read canon-drawn or the
          * sub-tick spine drops these triangles on every intermediate present. */
         if (ntri > 0 && end <= start) render_path_mark_drawn(RP_MOBY);
@@ -15614,7 +15616,7 @@ typedef struct {
     uint32_t epoch;
 } occl_hold_t;
 static occl_hold_t s_hold_hook, s_hold_rex;
-/* The second model kind's verdicts: its records are keyed by the same moby
+/* The simple models' verdicts: their records are keyed by the same moby
  * addresses the animated walks test through the cache, so the two kinds hold
  * their verdicts apart. */
 static occl_hold_t s_hold_hook_simple, s_hold_rex_simple;
@@ -15711,7 +15713,7 @@ static int occl_verdict(CPUState* cpu, uint32_t moby, const occl_box_t* b,
     return culled;
 }
 
-/** @brief The occlusion verdict for one animated-kind record from its cached bounds (occl_verdict).
+/** @brief The occlusion verdict for one animated-model record from its cached bounds (occl_verdict).
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @return 1 when culled, else 0. */
@@ -15759,7 +15761,7 @@ static int occl_confirm(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
     return 1;
 }
 
-/** @brief Whether the second-kind occlusion test runs: on unless OPENPETE_MOBY_SIMPLE_OCCL is 0, read once.
+/** @brief Whether the simple-model occlusion test runs: on unless OPENPETE_MOBY_SIMPLE_OCCL is 0, read once.
  * @return Nonzero when on. */
 static int moby_simple_occl_on(void) {
     static int on = -1;
@@ -15901,7 +15903,7 @@ static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
             openpete_native_occl_last_scan_max());
 }
 
-static long s_ver_simple_n, s_ver_simple_out;   /* second-kind records audited / not contained */
+static long s_ver_simple_n, s_ver_simple_out;   /* simple-moby records audited / not contained */
 
 int moby_simple_occluded(CPUState* cpu, uint32_t moby, const double org[3], double radius) {
     if (!moby_simple_occl_on()) return 0;
@@ -15913,7 +15915,7 @@ int moby_simple_occluded(CPUState* cpu, uint32_t moby, const double org[3], doub
     return culled;
 }
 
-/** @brief Audit the bounds of the last moby_simple_occluded call against a second-kind record's projected vertices (OPENPETE_MOBY_OCCL_VERIFY).
+/** @brief Audit the bounds of the last moby_simple_occluded call against a simple-moby record's projected vertices (OPENPETE_MOBY_OCCL_VERIFY).
  *
  * Counts and prints a vertex outside the bounds' rect or nearer than their
  * view-Z, and for a record the test culled, re-queries the vertices' own
@@ -17771,7 +17773,7 @@ void moby_reextract(CPUState* cpu) {
 /** @brief Replay each canonical moby pass still fresh under this present's cameras, then push the scene.
  *
  * Does nothing without the native scene or when the moby path was not
- * canon-drawn. The regular, specular, second-kind and shaded replays each run
+ * canon-drawn. The regular, specular, simple-model and shaded replays each run
  * only while their own producer ran in the last canonical present; the
  * specular replay swaps its captured scratch in through the sub-tick view and
  * restores the regular scratch after. Also sets the HUD and actor-front
@@ -17846,7 +17848,7 @@ static void moby_reextract_body(CPUState* cpu) {
         spec_walk = s_gout.n;
         openpete_subtick_view_poke(spec_base, saved_reg, SPEC_SCR_LEN);   /* restore REGULAR */
     }
-    /* The second model kind: the queue its canonical pass captured, decoded
+    /* The simple models: the queue its canonical pass captured, decoded
      * again under this present's camera. Its producer is its own draw hook,
      * which a menu or map state leaves unrun while the regular pass keeps
      * running, so the replay takes that pass's own epoch stamp rather than the
@@ -17962,7 +17964,7 @@ static feature_dispatch_entry_t moby_dispatch[8];
  *
  * Entries for a pass whose layout address is 0 are left out, so the table is
  * compacted. Without all four decoder slots (vstream_init, vstream_next,
- * decode_faces, read_record) only the second-kind pass registers, and only
+ * decode_faces, read_record) only the simple-model pass registers, and only
  * when moby_game.simple_pass is set; a note prints to stderr when
  * OPENPETE_MOBY_CENSUS is set. The table ends on an address of 0.
  * @param opts Unused. */
@@ -17982,7 +17984,7 @@ static void moby_apply_options(const openpete_options_t* opts) {
         { .addr = game_layout.moby.hook_draw_regular,  .fn = on_draw_regular  },
         { .addr = game_layout.moby.hook_draw_specular, .fn = on_draw_specular },
         { .addr = game_layout.moby.hook_draw_shaded,   .fn = on_draw_shaded   },
-        /* The second kind reads none of the animated stream decoders, so it
+        /* The simple pass reads none of the animated stream decoders, so it
          * registers on its own provider slot. */
         { .addr = moby_game.simple_pass ? game_layout.moby.hook_draw_simple : 0u, .fn = on_draw_simple },
         { .addr = qmiss_census_on() && !game_layout.moby.hook_cull ? game_layout.moby.census_cull : 0u,

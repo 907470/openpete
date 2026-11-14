@@ -32,5 +32,5 @@ bk2:gnasty_gnorc_attack@1808 | | 1808
 carve-out | mirrored | no freecam row draws a record whose rotation has a negative determinant; a mirror-twin row is owed
 carve-out | shell | Spyro 1 lists no sphere-shell class (game_layout.moby.sphere_shell_n is 0)
 carve-out | drawscale | no row draws a shaded moby with a nonzero m_ScaleOverride (every shaded record of the rows above has W factor 2); a row is owed
-carve-out | simple | Spyro 1 has no second model kind (moby_game.simple_pass is NULL)
-carve-out | simplescreen | Spyro 1 has no second model kind (moby_game.simple_pass is NULL)
+carve-out | simple | Spyro 1 draws its simple models through the shaded pass (moby_game.simple_pass is NULL)
+carve-out | simplescreen | Spyro 1 draws its simple models through the shaded pass (moby_game.simple_pass is NULL)

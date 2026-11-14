@@ -448,7 +448,7 @@ const game_layout_t spyro2_game_layout = {
     /* The moby (3D actor) draw. Three handwritten routines: the cull
      * func_80043858 carves the tick's draw scratch out of the primitive buffer
      * at D_POLYBUF_END - 0x3000, builds the animated record queue at +0x2000 of
-     * it and the second model kind's stride-0x10 queue at +0x1C00, and writes
+     * it and the simple models' stride-0x10 queue at +0x1C00, and writes
      * each moby's drawn verdict (mobydraw.s:26-46); the animated draw
      * func_80044504 and the static draw func_80046FD8 walk those two queues.
      * Every offset below is a literal read off the Spyro 2 disassembly, not

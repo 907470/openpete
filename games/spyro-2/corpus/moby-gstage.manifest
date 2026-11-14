@@ -16,11 +16,11 @@ skelos_badlands | pos=(116034, 2704, 95746) yaw=1112 pitch=541 | | extended
 icy_speedway | pos=(62236, 86740, 17376) yaw=2548 pitch=111
 # The freecam corpus's Fire Wizard row.
 skelos_badlands@wizardfx | pos=(95730, 55975, 28402) yaw=86 pitch=69
-# A second-kind moby (class 0x71, the freecam corpus's summer_forest
-# sub-tick row) with the camera against it: second-kind vertices in the GTE
+# A simple moby (class 0x71, the freecam corpus's summer_forest
+# sub-tick row) with the camera against it: simple-model vertices in the GTE
 # divide-overflow regime.
 summer_forest | pos=(52301, 47195, 44105) yaw=-946 pitch=303
-# A recording whose HUD draws second-kind records placed in screen space
+# A recording whose HUD draws simple-moby records placed in screen space
 # (the simplescreen class), at a pinned VBL of the presentation corpus.
 bk2:summer-forest-collect-orb | | 1455
 #

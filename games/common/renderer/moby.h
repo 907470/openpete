@@ -67,7 +67,7 @@ void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]);
  * the cull built against that camera is the set it can see. On: the previous
  * epoch's record copy, its base and its append set swap in for the current
  * ones, the record re-base composes against the camera that cull used (the
- * installed tick camera, which the second model kind's replay reads, is left
+ * installed tick camera, which the simple models' replay reads, is left
  * as it is), and the replay takes each object's state as of that cull as the
  * record's reference (rotation, own-motion offset and keyframe pair). Off:
  * everything swaps back. Refused when the previous copy is not from the epoch
@@ -146,7 +146,7 @@ int moby_native_canon_ref_ns(op_time_t* out);
 
 /** @brief The mobys of the previous canonical epoch's record queue, the set moby_native_replay_prev_queue would replay.
  *
- * Followed by the mobys of the second kind's queue copy of the same epoch,
+ * Followed by the mobys of the simple models' queue copy of the same epoch,
  * when the game holds one (moby_game.simple_prev_mobys).
  * @param out Receives up to @p max moby addresses.
  * @param max Capacity of @p out.
@@ -165,7 +165,7 @@ void moby_native_held_scratch(int on);
 
 /** @brief Whether a previous-queue replay (moby_native_replay_prev_queue) is in progress, with the epoch it replays and that cull's camera position.
  *
- * A second queue the same cull wrote (the second model kind's) replays its own
+ * A second queue the same cull wrote (the simple models') replays its own
  * copy of that epoch under the same camera.
  * @param epoch Receives the replayed canonical epoch, when non-NULL.
  * @param cam_pos Receives the camera position that cull composed against,
@@ -346,9 +346,9 @@ int moby_native_revealed_mobys(const uint32_t** out);
  * @return The entry count. */
 int moby_native_view_revealed_mobys(const uint32_t** out);
 
-/** @brief The mobys the second model kind's queue of the current canonical epoch holds, reveal records included.
+/** @brief The mobys the simple models' queue of the current canonical epoch holds, reveal records included.
  *
- * Empty on a game without a second kind, and before this epoch's queue is
+ * Empty on a game without a simple pass, and before this epoch's queue is
  * captured.
  * @param out Receives up to @p max moby addresses.
  * @param max Capacity of @p out.
@@ -366,8 +366,8 @@ int moby_native_cutscene_owns_draw(CPUState* cpu);
 /** @brief Sub-tick re-extract entry: rebuild this present's moby contribution from the captured cull records and the interpolated camera.
  *
  * Inert while the native scene is off or the canonical present did not draw
- * the moby render path. Each material pass (regular, specular, second model
- * kind, shaded) replays only when its own producer ran in the committed
+ * the moby render path. Each material pass (regular, specular, simple,
+ * shaded) replays only when its own producer ran in the committed
  * canonical epoch, so a state that ran a subset of the draws replays that
  * subset. The paint key is not computed while the rank carry applies the
  * tick's verdict.
@@ -389,7 +389,7 @@ void moby_reextract(struct CPUState* cpu);
  * first. Reads guest memory only. No effect on a game that names no overlay
  * word. */
 void moby_native_overlay_commit(void);
-/** @brief Whether the second model kind has a queue this present may replay.
+/** @brief Whether the simple models have a queue this present may replay.
  *
  * True when the game provides the kind's replay (moby_game.simple_replay),
  * the canonical present ran its draw, and that draw's epoch is the committed
@@ -402,7 +402,7 @@ void moby_native_overlay_commit(void);
  * @return 1 when the queue may replay, else 0. */
 int moby_native_simple_fresh(void);
 
-/* ---- second model kind ------------------------------------------------
+/* ---- simple models ----------------------------------------------------
  * A game whose moby set includes a model kind its own draw pass owns
  * (game_layout.moby.hook_draw_simple) decodes that kind inside
  * moby_game.simple_pass and hands the result back through these calls: one
@@ -410,11 +410,11 @@ int moby_native_simple_fresh(void);
  * record to project its model-space vertices, then one per triangle naming
  * three of those vertices. The projection (moby_project_vertex, the routine
  * every moby pass shares), the GTE near-plane mirror, the per-face identity
- * tagging and the scene push stay with the shared walk, so the second kind
- * lands in the same scene category, the same depth space and the same
+ * tagging and the scene push stay with the shared walk, so the simple mobys
+ * land in the same scene category, the same depth space and the same
  * projection store as the animated one. Valid only from inside simple_pass
  * or simple_replay. */
-/** @brief Name the moby the following second-kind triangles belong to.
+/** @brief Name the moby the following simple-model triangles belong to.
  *
  * Sets the current record's moby, class, HUD tag (static or UI address
  * range) and cutscene-actor front flag, and clears the screen-space origin
@@ -432,7 +432,7 @@ void moby_simple_record(struct CPUState* cpu, uint32_t moby);
  * @param ofx The origin X, PSX pixels.
  * @param ofy The origin Y, PSX pixels. */
 void moby_simple_screen_origin(double ofx, double ofy);
-/* One second-kind record's transform as the draw loads it: the rotation in
+/* One simple-moby record's transform as the draw loads it: the rotation in
  * Q12 for the paint key's integer RTPS, the same rotation at unit scale in
  * float and the translation at full precision for the projection, and the
  * integer translation the RTPS loads. TR and itr are in the draw's GTE
@@ -444,13 +444,13 @@ typedef struct {
     const int* itr;             /* the integer translation the draw's RTPS loads */
     const moby_otk_rec_t* otk;  /* the record's paint key (moby_simple_otk_record) */
 } moby_simple_xform_t;
-/** @brief Project the current second-kind record's model-space vertices into the shared projection store.
+/** @brief Project the current simple-moby record's model-space vertices into the shared projection store.
  *
  * Each vertex runs moby_project_vertex under the record's view, with the
  * record's rotation and translation in the draw's GTE units and W factor 2,
  * so the GTE divide-overflow test reads the GTE's own depth and the written
  * depth and perspective W are full world.
- * The vertices land in the store's second-kind region, where the following
+ * The vertices land in the store's simple-model region, where the following
  * moby_simple_tri calls name them and the stage readback captures them, or
  * in a scratch array, uncaptured, once the region is full. Runs the
  * occlusion audit of the record (OPENPETE_MOBY_OCCL_VERIFY).
@@ -464,11 +464,11 @@ void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)
                                 float (*scr)[2], moby_otk_vert_t* iv);
 /* The vertex count moby_simple_project_record takes per record. */
 #define MOBY_SIMPLE_MAX_VERTS 256
-/** @brief The occlusion verdict for one second-kind record from its view-space origin and bounding radius.
+/** @brief The occlusion verdict for one simple-moby record from its view-space origin and bounding radius.
  *
  * The record's bounds are the screen rect of the cube around the sphere of
  * that radius and the sphere's nearest view-Z, under the pass view at this
- * present's camera; the verdict is the grid query the animated kind's cached
+ * present's camera; the verdict is the grid query the animated models' cached
  * bounds take, decided by the canonical scene and held per epoch for every
  * replay of it in tables of this kind's own. A HUD or UI moby, a sphere
  * reaching within 64 view-Z or half the canonical H of the camera, and
@@ -482,7 +482,7 @@ void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)
  *        the origin, full world units.
  * @return 1 when the record is hidden behind nearer world depth, else 0. */
 int moby_simple_occluded(struct CPUState* cpu, uint32_t moby, const double org[3], double radius);
-/** @brief Emit one second-kind triangle over three vertices of the current record's projection.
+/** @brief Emit one simple-model triangle over three vertices of the current record's projection.
  *
  * The vertices are moby_simple_project_record's; the triangle goes through
  * the shared emit with the animated walk's tagging.
@@ -506,7 +506,7 @@ void moby_simple_tri(const int vi[3], const uint32_t rgb[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
                      uint32_t fkey, int32_t otk);
-/** @brief A second-kind face's two facing values over the current record's projection, by the animated walk's rule.
+/** @brief A simple-model face's two facing values over the current record's projection, by the animated walk's rule.
  *
  * NCLIP1 is (v0, v1, v2) and NCLIP2 is (v3, v1, v2), on the float screen
  * positions; a face with a vertex in the GTE divide-overflow regime takes
@@ -526,10 +526,10 @@ void moby_simple_face_nclips(const int idx[4], int tri, double* ncl1, double* nc
  * @param trz The GTE TRZ the draw loaded.
  * @param out Receives the paint key. */
 void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out);
-/** @brief The world ordering-table bucket every prim of the current second-kind record is linked into.
+/** @brief The world ordering-table bucket every prim of the current simple-moby record is linked into.
  *
  * Each following triangle of the record carries it as its contest key's
- * bucket (moby_record_world_buckets for the animated kind); moby_simple_record
+ * bucket (moby_record_world_buckets for an animated model); moby_simple_record
  * clears it.
  * @param w The bucket, or -1 for none. */
 void moby_simple_world_bucket(int w);
@@ -537,7 +537,7 @@ void moby_simple_world_bucket(int w);
 /** @brief Offer the mobys the canonical cull rejected to moby_game.reveal_record, which appends records in the game's own encoding.
  *
  * Walks the moby array, skipping the sentinel, dead states and run-once
- * instances, and applies two clauses. The widened-view clause (animated kind,
+ * instances, and applies two clauses. The widened-view clause (animated models,
  * moby_game.cull_view_admits supplied, view widening above 1) offers a moby
  * the cull left undrawn that the cull's admission admits with the lateral
  * slope scaled to the view. The extended-LOD clause (--no-lod) offers a moby

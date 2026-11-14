@@ -203,7 +203,7 @@ int moby_otk_top_entry(const moby_otk_rec_t* r, int32_t otk, int top);
 /** @brief The world ordering-table bucket of a record's depth key: the key, moved 0x20 buckets on at 0x110 and beyond.
  *
  * Both S2/S3 moby draws leave world buckets 0x110-0x12F unused that way: the
- * animated cull (mobydraw.s 0x80043FC4-0x80043FD0) and the second kind's
+ * animated cull (mobydraw.s 0x80043FC4-0x80043FD0) and the simple models'
  * draw (0x800474FC-0x80047508).
  * @param key The record's depth key, >= 0.
  * @return The world bucket. */

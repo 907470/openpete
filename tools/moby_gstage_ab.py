@@ -79,8 +79,8 @@ CLASSES = [
     ("shaded", "a shaded-pass record (static model, W factor 2 or 64 / draw-scale byte)"),
     ("billboard", "a shaded-pass billboard (screen-position offset, canonical view)"),
     ("drawscale", "a shaded-pass record with a draw-scale byte (W factor 64 / byte)"),
-    ("simple", "a second-kind record (half-world rotation and translation, W factor 2)"),
-    ("simplescreen", "a second-kind record placed in screen space (its own origin, canonical view)"),
+    ("simple", "a simple-moby record (half-world rotation and translation, W factor 2)"),
+    ("simplescreen", "a simple-moby record placed in screen space (its own origin, canonical view)"),
 ]
 
 

@@ -196,8 +196,8 @@ static int s1_read_record(CPUState* cpu, uint32_t rec, moby_record_t* R) {
 
 /** @brief Reports whether a model-table entry is an animated model.
  *
- * A negative animation count (the entry's word 0) marks the second model
- * kind (SimpleModel), which the shaded pass draws from its own Moby* list.
+ * A negative animation count (the entry's word 0) marks a simple model
+ * (SimpleModel), which the shaded pass draws from its own Moby* list.
  * @param cpu The guest CPU state.
  * @param model The model's guest address.
  * @return 1 for an animated model, 0 for a SimpleModel. */
@@ -456,7 +456,7 @@ const moby_game_t spyro1_moby_game = {
     .decode_faces      = s1_decode_faces,
     .read_record       = s1_read_record,
     .model_is_animated = s1_model_is_animated,
-    .simple_pass       = NULL,   /* the second model kind has its own draw hook */
+    .simple_pass       = NULL,   /* the shaded draw hook draws the simple models */
     /* The keyframe patch list lives inside the keyframe: its low halfword,
      * scaled by four, is the list's byte offset from the keyframe itself. */
     .frame_patch_list  = s1_frame_patch_list,

@@ -1485,7 +1485,7 @@ typedef struct {
  * reused; bits 0 to 6 are the ones the moby walk carries per walk triangle. */
 #define OPENPETE_CB_MOBY_GPF         (1u << 0)  /* the record's GPF translation rescale ran */
 #define OPENPETE_CB_MOBY_ENV         (1u << 1)  /* the face takes environment-map UVs */
-#define OPENPETE_CB_MOBY_SIMPLE      (1u << 2)  /* a second-model-kind record */
+#define OPENPETE_CB_MOBY_SIMPLE      (1u << 2)  /* a simple-model record */
 #define OPENPETE_CB_MOBY_SCREEN      (1u << 3)  /* ... in screen space (a named screen origin) */
 #define OPENPETE_CB_MOBY_UNR         (1u << 4)  /* a vertex in the GTE divide-overflow regime */
 #define OPENPETE_CB_MOBY_SAT         (1u << 5)  /* a vertex coordinate-saturated */

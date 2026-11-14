@@ -381,7 +381,7 @@ const game_layout_t spyro1_game_layout = {
         .hook_draw_regular  = F_MOBY_DRAW_REGULAR,
         .hook_draw_specular = F_MOBY_DRAW_SPECULAR,
         .hook_draw_shaded   = F_MOBY_DRAW_SHADED,
-        .hook_draw_simple   = 0u,    /* the shaded draw is the second kind's pass */
+        .hook_draw_simple   = 0u,    /* the shaded draw is the simple models' pass */
         .census_cull        = 0x8001F158u,   /* func_8001F158, the regular cull */
     },
     .player = {
