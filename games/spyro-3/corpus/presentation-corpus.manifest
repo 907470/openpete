@@ -232,6 +232,11 @@ title-demo-hold-player|7673|100||7703,7704
 # ticks at VBL 16569 (openpete_frame 15996 after the 573-VBL fast boot);
 # the intermediate leg carries the defect.
 title-demo-bubbles|16519|100||16569
+# title-demo-bubbles@tracernear: two tracer ribbon segments enter from the
+# bottom edge with one end behind the near plane; the cut end's position sets
+# the width taper along the whole visible segment (about 500-670 px at 13453
+# and 13455).
+title-demo-bubbles@tracernear|13453|2||13453,13455
 # title-demo-ninja-hold: a class-0x1A2 ninja parked hidden and placed in
 # view at VBL 5001 (openpete_frame ~4428 after the 573-VBL fast boot); the
 # intermediate presents at 5000/5001 draw it at its undrawn parking pose.

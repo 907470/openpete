@@ -42,6 +42,11 @@ attract-demo@meshwarp|15440|1000||15440,15460,15500,15560|OPENPETE_LEVELWARP_TES
 # was depth-tested at the tick's depth while the camera closed in, drawing it
 # in front of terrain (about 221 px at VBL 14581, alpha 0.5).
 attract-demo@tracerdepth|14580|2||14581
+# attract-demo@tracernear: two Metropolis tracer ribbon segments enter from
+# the bottom edge with one end behind the near plane; the cut end's position
+# sets the width taper along the whole visible segment (about 700 px at 14299
+# and 14301).
+attract-demo@tracernear|14299|2||14299,14301
 #
 # autumn-plains-skelos-badlands-portal-entry: a portal entry from the home
 # world, the in-gameplay level change. 1723 is the portal transition, 1823 and
