@@ -172,7 +172,9 @@ title-demo-early|633|20||663
 # 1815: a blurred centered rectangle around the options panel outside its
 # semi-transparent box, and the box corners darker than the box; PsyCross
 # shows the same, the PSX does not. Blessed pre-fix.
-open-options|1473|100|freeze|1773,1815,1873
+# 1650: the pause menu over Sunrise Spring with the HUD extended, Continue
+# highlighted (Start at VBL 1630, Down at 1655).
+open-options|1473|100|freeze|1650,1773,1815,1873
 # open-options@terrain: the same window under --render-paths terrain,ui; the
 # window composes the copied scene, whose textures and CLUTs lie in the page
 # the copy overwrites. Blessed pre-fix.
@@ -385,3 +387,23 @@ settings-menu|2073|100||2073|--skip-to-level sunrise_spring OPENPETE_MENU_DEMO=1
 # digits, which draw over it. 2400 and 3200 show the panel with the icon and
 # "100".
 fireworks-factory-agent-9|2400|10000||2400,3200
+
+# Level-entry rows: the level reached by --skip-to-level with no input, one pin
+# where the level is resident and running (currentLevel = the level, loadStage
+# resident). The story and speedway levels open on an NPC speech box over the
+# start (game.state 1), which waits for Cross; the Sparx levels open in
+# top-down play with the HUD out (game.state 0).
+mushroom-speedway-skip-entry|2073|2||2073|--skip-to-level mushroom_speedway
+country-speedway-skip-entry|2073|2||2073|--skip-to-level country_speedway
+honey-speedway-skip-entry|2073|2||2073|--skip-to-level honey_speedway
+crawdad-farm-skip-entry|2073|2||2073|--skip-to-level crawdad_farm
+spider-town-skip-entry|1773|2||1773|--skip-to-level spider_town
+starfish-reef-skip-entry|1773|2||1773|--skip-to-level starfish_reef
+bugbot-factory-skip-entry|1773|2||1773|--skip-to-level bugbot_factory
+frozen-altars-skip-entry|2073|2||2073|--skip-to-level frozen_altars
+charmed-ridge-skip-entry|2073|2||2073|--skip-to-level charmed_ridge
+buzzs-dungeon-skip-entry|2073|2||2073|--skip-to-level buzzs_dungeon
+scorchs-pit-skip-entry|2073|2||2073|--skip-to-level scorchs_pit
+sorceresss-lair-skip-entry|2073|2||2073|--skip-to-level sorceresss_lair
+sgt-byrds-base-skip-entry|2073|2||2073|--skip-to-level sgt_byrds_base
+bentleys-outpost-skip-entry|2073|2||2073|--skip-to-level bentleys_outpost

@@ -336,3 +336,24 @@ scorch-far-dune-admit|2471|2||2473|--skip-to-level scorch --aspect 4:3 OPENPETE_
 # with the life counter, 3000 and 3600 the game-over screen with the player
 # on the ledge.
 game-over|2400|10000||2400,3000,3600
+
+# Level-entry rows: the level reached by --skip-to-level with no input, one pin
+# where the level is resident and running (G_LEVELID = the level, G_GAMESTATE
+# -1).
+# ocean-speedway-skip-entry: the flight through the ring course, the hoop
+# counter and timer HUD, rings and towers over the sea.
+ocean-speedway-skip-entry|1773|2||1773|--skip-to-level ocean_speedway
+# aquaria-towers-skip-entry: the level start above water (the attract demo
+# shows the underwater stretch), Spyro, Sparx and the seahorse mobys.
+aquaria-towers-skip-entry|1773|2||1773|--skip-to-level aquaria_towers
+# crystal-glacier-skip-entry: the snow field at the start, falling snowflake
+# particles, a frozen-in-ice moby.
+crystal-glacier-skip-entry|1773|2||1773|--skip-to-level crystal_glacier
+# cloud-temples-skip-entry: the start courtyard with the temple walls and the
+# NPC mobys.
+cloud-temples-skip-entry|1773|2||1773|--skip-to-level cloud_temples
+# dragon-shores-skip-entry: the entrance plaza with the gate NPC.
+dragon-shores-skip-entry|1773|2||1773|--skip-to-level dragon_shores
+# gulps-overlook-fight: the Gulp fight running with no input: Gulp in the
+# arena, the boss health bar at the bottom left.
+gulps-overlook-fight|2073|2||2073|--skip-to-level gulps_overlook
