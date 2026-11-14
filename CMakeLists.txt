@@ -728,6 +728,19 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME bugreport_reader_selftest
              COMMAND python3 -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/test_bugreport.py)
 
+    # Bug-report replay's bundle unpack and scratch reset on synthetic
+    # bundles: the member, total and entry-count bounds, duplicate names,
+    # links in a directory bundle, a member under the replay's own
+    # sandbox/, and a link planted in the scratch directory. No disc and no
+    # game run: every case is refused while the command line is prepared.
+    # Exit 64 = no binary.
+    add_test(NAME bugreport_replay_unpack
+             COMMAND python3 -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/test_bugreport_replay_unpack.py
+                     --build-dir ${CMAKE_BINARY_DIR})
+    set_tests_properties(bugreport_replay_unpack PROPERTIES
+        SKIP_RETURN_CODE 64
+        TIMEOUT 120)
+
     # Bug-report replay on the engine: bundles recorded headless on Spyro 2
     # (one under --skip-to-level, one without) replay IDENTICAL; the launch
     # flags are dropped from a later anchor (negative control); an

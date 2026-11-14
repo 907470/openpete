@@ -416,7 +416,17 @@ path is not in the bundle, and a replay without it is refused with
 
 1. Every member is verified against `manifest.json` and copied to the
    scratch directory, `<bundle without .zip>.replay/`
-   (`OPENPETE_BUGREPORT_REPLAY_DIR` names another).
+   (`OPENPETE_BUGREPORT_REPLAY_DIR` names another). Before anything is
+   read, the sizes the zip directory (or the directory bundle's files)
+   declare are checked against the reader's bounds: 1 GiB per member,
+   8 GiB for the listed members together, 16 MiB for `manifest.json`,
+   100000 zip entries. A zip holding two entries of one name (compared
+   ignoring case), a name listed twice in the manifest, and a directory
+   bundle member that is a symbolic link or lies under one are refused,
+   as is a member under `sandbox/` or named as the scratch marker, the
+   paths the replay itself owns in the scratch directory.
+   Emptying a scratch directory from an earlier replay removes a link in
+   it without following it.
 2. The command line is rebuilt: the tester's argv without its output,
    route and path flags and without every flag that only modifies an
    output (`--screenshot-native-only`, `--screenshot-overlays`,

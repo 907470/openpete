@@ -436,22 +436,101 @@ static int rp_scratch_reset(const char* dir)
 
 /* ---- the bundle -------------------------------------------------------- */
 
+/* Bounds on what a bundle makes the replay read, checked against the sizes
+ * the zip's central directory (or the directory bundle's file) declares
+ * before anything is allocated. They are tools/bugreport.py's, so the
+ * reader and the replay accept the same bundles. The largest members a
+ * recording writes are the recomp module (~57 MiB for Spyro 3), a mod's
+ * files copied whole (a texture or audio asset), the states (~5 MiB) and
+ * the RAM image (2 MiB): one member is bounded at 1 GiB, the listed members
+ * at 8 GiB in all, manifest.json at 16 MiB and the archive at 100000
+ * entries. */
+#define RP_MEMBER_MAX   ((uint64_t)1 << 30)
+#define RP_TOTAL_MAX    ((uint64_t)8 << 30)
+#define RP_MANIFEST_MAX ((uint64_t)16 << 20)
+#define RP_ENTRIES_MAX  100000u
+
 typedef struct {
     int             is_zip;
     mz_zip_archive  z;
     const char*     path;
 } rp_src_t;
 
-/** @brief Read one member of the bundle into a heap buffer (NUL-terminated).
- * @return The bytes, or NULL when absent. */
-static uint8_t* rp_src_read(rp_src_t* s, const char* name, size_t* len)
+/** @brief Report whether a directory bundle's member path crosses a link: the member itself or any directory between the bundle and it.
+ * @param s The bundle.
+ * @param name The member name (relative, checked by rp_name_safe).
+ * @return 1 when a component is a link, else 0. */
+static int rp_dir_member_linked(const rp_src_t* s, const char* name)
+{
+    char rel[RP_PATH];
+    snprintf(rel, sizeof rel, "%s", name);
+    for (char* p = rel;; p++) {
+        if (*p != '/' && *p != '\\' && *p != '\0') continue;
+        const char c = *p;
+        *p = '\0';
+        char full[RP_PATH];
+        rp_join(full, sizeof full, s->path, rel);
+        const int link = openpete_paths_is_link(full);
+        *p = c;
+        if (link) return 1;
+        if (!c) return 0;
+    }
+}
+
+/** @brief Find one member of the bundle and read its declared size without reading it.
+ *
+ * A zip member's size is its central-directory entry's; a directory
+ * bundle's is the file's, and a member reached through a link is refused.
+ * @param s The bundle.
+ * @param name The member name.
+ * @param index Receives the zip entry index (zip bundles).
+ * @param size Receives the size.
+ * @return 0 when present, -1 when absent (or a directory), -2 when a directory bundle reaches it through a link. */
+static int rp_src_stat(rp_src_t* s, const char* name, mz_uint32* index, uint64_t* size)
 {
     if (s->is_zip) {
+        mz_uint32 i = 0;
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_locate_file_v2(&s->z, name, NULL, 0, &i) || !mz_zip_reader_file_stat(&s->z, i, &st) ||
+            st.m_is_directory)
+            return -1;
+        *index = i;
+        *size = st.m_uncomp_size;
+        return 0;
+    }
+    if (rp_dir_member_linked(s, name)) return -2;
+    char p[RP_PATH];
+    rp_join(p, sizeof p, s->path, name);
+    SDL_PathInfo info;
+    if (!SDL_GetPathInfo(p, &info) || info.type != SDL_PATHTYPE_FILE) return -1;
+    *size = info.size;
+    return 0;
+}
+
+/** @brief Read one member of the bundle into a heap buffer (NUL-terminated), refusing one over a bound before allocating.
+ * @param s The bundle.
+ * @param name The member name.
+ * @param bound The largest size accepted.
+ * @param len Receives the length.
+ * @return The bytes, or NULL (refused with the reason). */
+static uint8_t* rp_src_read(rp_src_t* s, const char* name, uint64_t bound, size_t* len)
+{
+    mz_uint32 index = 0;
+    uint64_t size = 0;
+    const int st = rp_src_stat(s, name, &index, &size);
+    if (st == -2) { rp_refuse("member %s is reached through a symbolic link in the bundle directory", name); return NULL; }
+    if (st != 0) { rp_refuse("%s: %s is missing", R.bundle, name); return NULL; }
+    if (size > bound) {
+        rp_refuse("member %s declares %llu bytes, over the member bound %llu", name, (unsigned long long)size,
+                  (unsigned long long)bound);
+        return NULL;
+    }
+    if (s->is_zip) {
         size_t n = 0;
-        void* d = mz_zip_reader_extract_file_to_heap(&s->z, name, &n, 0);
-        if (!d) return NULL;
+        void* d = mz_zip_reader_extract_to_heap(&s->z, index, &n, 0);
+        if (!d) { rp_refuse("member %s does not extract", name); return NULL; }
         uint8_t* out = (uint8_t*)realloc(d, n + 1);
-        if (!out) { mz_free(d); return NULL; }
+        if (!out) { mz_free(d); rp_refuse("member %s: out of memory", name); return NULL; }
         out[n] = '\0';
         *len = n;
         return out;
@@ -459,16 +538,118 @@ static uint8_t* rp_src_read(rp_src_t* s, const char* name, size_t* len)
     char p[RP_PATH];
     rp_join(p, sizeof p, s->path, name);
     uint8_t* d = NULL;
-    return br_read_file(p, &d, len) == 0 ? d : NULL;
+    if (br_read_file(p, &d, len) != 0) { rp_refuse("member %s cannot be read", name); return NULL; }
+    if (*len > bound) { free(d); rp_refuse("member %s grew past the member bound while read", name); return NULL; }
+    return d;
 }
 
-/** @brief Report whether a member name is safe to write under the scratch directory (relative, no `..`). */
+/** @brief Report whether a member name is safe to write under the scratch directory: relative, no `..`, and outside the paths the replay itself owns there.
+ *
+ * The replay owns `<scratch>/sandbox` (the process's sandbox root,
+ * rp_env_outputs) and the marker file; a member under either, compared
+ * ignoring ASCII case, would plant a config, card or state file the
+ * session then reads as its own. */
 static int rp_name_safe(const char* n)
 {
     if (!n[0] || n[0] == '/' || n[0] == '\\' || strchr(n, ':')) return 0;
     for (const char* p = n; *p; p++)
         if (p[0] == '.' && p[1] == '.' && (p == n || p[-1] == '/' || p[-1] == '\\')) return 0;
+    static const char* const k_owned[] = {"sandbox", RP_MARKER};
+    for (size_t i = 0; i < sizeof k_owned / sizeof k_owned[0]; i++) {
+        const size_t len = strlen(k_owned[i]);
+        if (!SDL_strncasecmp(n, k_owned[i], len) && (n[len] == '\0' || n[len] == '/' || n[len] == '\\')) return 0;
+    }
     return 1;
+}
+
+/** @brief qsort order of two member names, ignoring ASCII case (as miniz's lookup does) and reading a backslash as '/' (both name one file on Windows). */
+static int rp_name_cmp(const void* a, const void* b)
+{
+    const char* x = *(const char* const*)a;
+    const char* y = *(const char* const*)b;
+    for (;; x++, y++) {
+        int cx = (unsigned char)*x, cy = (unsigned char)*y;
+        cx = cx == '\\' ? '/' : (cx >= 'A' && cx <= 'Z' ? cx + 32 : cx);
+        cy = cy == '\\' ? '/' : (cy >= 'A' && cy <= 'Z' ? cy + 32 : cy);
+        if (cx != cy || !cx) return cx - cy;
+    }
+}
+
+/** @brief Find a name that occurs twice in a list, under rp_name_cmp.
+ * @param names The names; sorted in place.
+ * @param n Their count.
+ * @return The repeated name, or NULL. */
+static const char* rp_dup_name(const char** names, size_t n)
+{
+    qsort(names, n, sizeof *names, rp_name_cmp);
+    for (size_t i = 1; i < n; i++)
+        if (!rp_name_cmp(&names[i - 1], &names[i])) return names[i];
+    return NULL;
+}
+
+/** @brief Refuse a zip whose entry count is over RP_ENTRIES_MAX or that holds two entries of one name.
+ * @return 0, or -1 (refused). */
+static int rp_zip_admit(rp_src_t* s)
+{
+    const mz_uint n = mz_zip_reader_get_num_files(&s->z);
+    if (n > RP_ENTRIES_MAX) {
+        rp_refuse("%s holds %u entries, over the bound %u", R.bundle, (unsigned)n, RP_ENTRIES_MAX);
+        return -1;
+    }
+    if (n == 0) return 0;
+    char** names = (char**)calloc(n, sizeof *names);
+    int rc = names ? 0 : -1;
+    for (mz_uint i = 0; !rc && i < n; i++) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&s->z, i, &st) || !(names[i] = SDL_strdup(st.m_filename))) rc = -1;
+    }
+    if (rc) rp_refuse("%s: the zip directory cannot be read", R.bundle);
+    const char* dup = rc ? NULL : rp_dup_name((const char**)names, n);
+    if (dup) { rp_refuse("%s holds the entry %s more than once (duplicate names)", R.bundle, dup); rc = -1; }
+    for (mz_uint i = 0; names && i < n; i++) SDL_free(names[i]);
+    free(names);
+    return rc;
+}
+
+/** @brief Check every member manifest.json lists before any is read: a safe name, listed once, present, within the member bound, and all of them within the total bound.
+ * @return 0, or -1 (refused). */
+static int rp_members_admit(rp_src_t* s, const jv_t* mem)
+{
+    if (!mem || mem->t != J_ARR || mem->n == 0) return 0;
+    if ((unsigned)mem->n > RP_ENTRIES_MAX) {
+        rp_refuse("manifest.json lists %d members, over the bound %u", mem->n, RP_ENTRIES_MAX);
+        return -1;
+    }
+    const char** names = (const char**)calloc((size_t)mem->n, sizeof *names);
+    if (!names) { rp_refuse("cannot check the members: out of memory"); return -1; }
+    uint64_t total = 0;
+    int rc = 0;
+    for (int i = 0; !rc && i < mem->n; i++) {
+        const char* name = names[i] = j_s(&mem->kid[i], "name");
+        if (!rp_name_safe(name)) {
+            rp_refuse("member name %s is absolute, climbs with .., or lies under the replay's own sandbox/ or marker",
+                      name);
+            rc = -1;
+            break;
+        }
+        mz_uint32 index = 0;
+        uint64_t size = 0;
+        const int st = rp_src_stat(s, name, &index, &size);
+        if (st == -2) rp_refuse("member %s is reached through a symbolic link in the bundle directory", name);
+        else if (st != 0) rp_refuse("member %s named by manifest.json is missing", name);
+        else if (size > RP_MEMBER_MAX)
+            rp_refuse("member %s declares %llu bytes, over the member bound %llu", name, (unsigned long long)size,
+                      (unsigned long long)RP_MEMBER_MAX);
+        else if ((total += size) > RP_TOTAL_MAX)
+            rp_refuse("the members declare more than %llu bytes, over the total bound",
+                      (unsigned long long)RP_TOTAL_MAX);
+        else continue;
+        rc = -1;
+    }
+    const char* dup = rc ? NULL : rp_dup_name(names, (size_t)mem->n);
+    if (dup) { rp_refuse("member %s is listed twice in manifest.json", dup); rc = -1; }
+    free(names);
+    return rc;
 }
 
 /** @brief Verify one member's SHA-256 against the manifest and copy it into the scratch directory.
@@ -476,10 +657,13 @@ static int rp_name_safe(const char* n)
 static int rp_copy_member(rp_src_t* s, const jv_t* m)
 {
     const char* name = j_s(m, "name");
-    if (!rp_name_safe(name)) { rp_refuse("member name %s is not a relative path", name); return -1; }
+    if (!rp_name_safe(name)) {
+        rp_refuse("member name %s is absolute, climbs with .., or lies under the replay's own sandbox/ or marker", name);
+        return -1;
+    }
     size_t n = 0;
-    uint8_t* d = rp_src_read(s, name, &n);
-    if (!d) { rp_refuse("member %s named by manifest.json is missing", name); return -1; }
+    uint8_t* d = rp_src_read(s, name, RP_MEMBER_MAX, &n);
+    if (!d) return -1;
     uint8_t dig[32];
     char hex[65];
     openpete_sha256_ctx c;
@@ -500,7 +684,7 @@ static int rp_copy_member(rp_src_t* s, const jv_t* m)
     return rc;
 }
 
-/** @brief Open the bundle, parse manifest.json and copy every verified member into the scratch directory.
+/** @brief Open the bundle, parse manifest.json, admit the archive and its members against the bounds, and copy every verified member into the scratch directory.
  * @return 0, or -1 (refused). */
 static int rp_unpack(void)
 {
@@ -513,11 +697,11 @@ static int rp_unpack(void)
         }
         s.is_zip = 1;
     }
+    int rc = s.is_zip ? rp_zip_admit(&s) : 0;
     size_t n = 0;
-    uint8_t* mj = rp_src_read(&s, "manifest.json", &n);
-    int rc = 0;
+    uint8_t* mj = rc ? NULL : rp_src_read(&s, "manifest.json", RP_MANIFEST_MAX, &n);
     jparse_t P = {(const char*)mj, (const char*)mj + n, 0};
-    if (!mj || j_value(&P, &R.man) != 0 || R.man.t != J_OBJ) {
+    if (!rc && (!mj || j_value(&P, &R.man) != 0 || R.man.t != J_OBJ)) {
         rp_refuse("%s: manifest.json is missing or does not parse", R.bundle);
         rc = -1;
     }
@@ -526,11 +710,12 @@ static int rp_unpack(void)
                   OPENPETE_BUGREPORT_SCHEMA);
         rc = -1;
     }
+    const jv_t* mem = j_get(&R.man, "members");
+    if (!rc) rc = rp_members_admit(&s, mem);
     char mp[RP_PATH];
     rp_join(mp, sizeof mp, R.scratch, "manifest.json");
     if (!rc && rp_write(mp, mj, n) != 0) { rp_refuse("cannot write %s", mp); rc = -1; }
     free(mj);
-    const jv_t* mem = j_get(&R.man, "members");
     for (int i = 0; !rc && mem && mem->t == J_ARR && i < mem->n; i++) rc = rp_copy_member(&s, &mem->kid[i]);
     if (s.is_zip) mz_zip_reader_end(&s.z);
     return rc;
