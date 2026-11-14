@@ -43,6 +43,8 @@ Subcommands:
   expect --query FILE [--sha SHA] [--append FILE]
   fix FILE...                   append each file's hash to fixed.tsv beside it
   nearest --game G COUNTER [--top N]
+  settles (--game G|--all)      the frozen-backdrop settle count and tally pass
+                                time of the counts source's run (census-settle.tsv)
   score --run DIR [--window]    score a full run's query files (DIR/queries);
                                 --window compares them with hand lists: a
                                 pred line selecting 2 rows or fewer, or with
@@ -55,9 +57,14 @@ Every reading subcommand takes --store DIR (default <local fleet_root>/census).
 
 A predicate (PRED) is a conjunction joined by `and`: `counter OP integer`
 (OP one of > >= < <= == !=), the leg terms canon, inter, ident, lodext,
-orig, the scope term own, and `launch:<substring>` matched against the
-row's manifest launch field. A counter term matches the tile's own value or
-its `backdrop.` value unless the predicate says own. A counter added after
+orig, the scope terms own and stable, and `launch:<substring>` matched
+against the row's manifest launch field. A counter term matches the tile's
+own value or its `backdrop.` value unless the predicate says own. Under
+stable an identity tile reads every leg-variable counter (TC_LEGVAR in the
+registry: the moby and terrain counters and the pools that hold them,
+which the sub-tick re-extract the identity leg composes can fill with
+records the canonical scene lacks or drops, none of them drawn) from its
+canon twin's sidecar. A counter added after
 a sidecar was written (the sidecar's generation below the counter's `since`)
 is unknown there, counts as engaged and prints `?`.
 
@@ -82,6 +89,7 @@ DIGESTS_NAME = "tile-digests.tsv"
 MOVED_NAME = "moved.txt"
 ENTRY_NAME = "entry.json"
 FIXED_NAME = "fixed.tsv"
+SETTLE_NAME = "census-settle.tsv"
 DIGEST_HEX = 16
 LEG_RE = re.compile(r"__(?:lodext__)?(canon|inter|ident)__(\d+)-vk\.png$")
 # run-args.json keys that make a run filtered: such a run is never a counts source.
@@ -156,8 +164,9 @@ class Registry:
         self.paths = re.findall(r'TC_PATH\(\s*"([^"]+)"\s*\)', body)
         self.families = re.findall(r'TC_FAMILY\(\s*"([^"]+)"\s*\)', body)
         self.bits = {int(b): n for b, n in re.findall(r'TC_BIT\(\s*(\d+)\s*,\s*"([^"]+)"\s*\)', body)}
+        self.legvar = [self.pattern(n) for n in re.findall(r'TC_LEGVAR\(\s*"([^"]+)"\s*\)', body)]
         self.rows = []
-        for m in re.finditer(r"TC_ROW\((.*?)\)\s*(?=TC_ROW|TC_BIT|\Z)", body, flags=re.S):
+        for m in re.finditer(r"TC_ROW\((.*?)\)\s*(?=TC_ROW|TC_BIT|TC_LEGVAR|\Z)", body, flags=re.S):
             args = m.group(1)
             head = re.match(r'\s*(\w+)\s*,\s*"([^"]*)"\s*,\s*"(\w+)"\s*,\s*"(\w+)"\s*,'
                             r'\s*"([^"]*)"\s*,\s*(\d+)\s*,\s*(\w+)\s*,(.*)$', args, flags=re.S)
@@ -177,6 +186,19 @@ class Registry:
             out += {"path": alt(self.paths), "family": alt(self.families), "n": r"[0-9]+"}[m.group(1)]
             pos = m.end()
         return re.compile("^" + out + re.escape(name[pos:]) + "$")
+
+    def leg_variable(self, name):
+        """Whether a counter can differ between an identity tile and its canon twin of one image (TC_LEGVAR); backdrop counters cannot."""
+        return not name.startswith("backdrop.") and any(r.match(name) for r in self.legvar)
+
+    def live(self, name):
+        """The live row a predicate or nearest may name; raises Refused for an unregistered or retired counter."""
+        r = self.resolve(name)
+        if r is None:
+            raise Refused("%s is no registered counter (%s)" % (name, REGISTRY))
+        if r["state"] == "retired":
+            raise Refused("%s is retired: no sidecar writes it (%s)" % (name, REGISTRY))
+        return r
 
     def resolve(self, name):
         """The row a counter name belongs to, or None. `backdrop.` prefixes a tally, bit or cache row."""
@@ -431,6 +453,7 @@ LEGS = ("canon", "inter", "ident", "lodext", "orig")
 OPS = {">": lambda x, y: x > y, ">=": lambda x, y: x >= y, "<": lambda x, y: x < y,
        "<=": lambda x, y: x <= y, "==": lambda x, y: x == y, "!=": lambda x, y: x != y}
 UPPER = ("<", "<=", "==")
+SCOPES = ("own", "stable")
 
 
 def parse_pred(text, registry=None):
@@ -440,16 +463,19 @@ def parse_pred(text, registry=None):
         s = raw.strip()
         if not s:
             continue
-        if s in LEGS or s == "own":
-            terms.append(("leg" if s != "own" else "own", s, None, None))
+        if s in LEGS or s in SCOPES:
+            terms.append(("leg" if s in LEGS else s, s, None, None))
         elif s.startswith("launch:"):
             terms.append(("launch", s[len("launch:"):], None, None))
         else:
             m = TERM_RE.match(s.replace(" ", ""))
             if not m:
                 raise Refused("predicate term %r is not `counter OP integer`, a leg term, own or launch:" % s)
-            if registry is not None and registry.resolve(m.group(1)) is None:
-                raise Refused("predicate term %r: %s is no registered counter (%s)" % (s, m.group(1), REGISTRY))
+            if registry is not None:
+                try:
+                    registry.live(m.group(1))
+                except Refused as e:
+                    raise Refused("predicate term %r: %s" % (s, e))
             terms.append(("ctr", m.group(1), m.group(2), int(m.group(3))))
     if not terms:
         raise Refused("empty predicate")
@@ -465,9 +491,21 @@ def leg_holds(term, tile):
     return leg_of(tile) == term
 
 
-def eval_tile(terms, tile, gen, vals, launch, registry):
-    """(holds, value, unknown) of a predicate on one tile; value is the first counter term's."""
+def twin_of(tile):
+    """The canon tile of an identity tile's capture (same row, LOD and VBL), or None for any other leg."""
+    return tile.replace("__ident__", "__canon__") if leg_of(tile) == "ident" else None
+
+
+def eval_tile(terms, tile, gen, vals, launch, registry, twin=None):
+    """(holds, value, unknown) of a predicate on one tile; value is the first counter term's.
+
+    Under `stable` an identity tile reads each leg-variable counter
+    (Registry.leg_variable) from @p twin, its canon twin's (gen, vals),
+    so the predicate holds on it exactly when it holds on the canonical
+    scene of the same image; with no twin in the entry it reads its own.
+    """
     own = any(k == "own" for k, *_ in terms)
+    stable = twin is not None and any(k == "stable" for k, *_ in terms)
     value, unknown, first = 0, False, True
     for kind, a, op, b in terms:
         if kind == "leg" and not leg_holds(a, tile):
@@ -476,11 +514,12 @@ def eval_tile(terms, tile, gen, vals, launch, registry):
             return False, 0, False
         if kind != "ctr":
             continue
+        g, vv = twin if stable and registry.leg_variable(a) else (gen, vals)
         row = registry.resolve(a)
-        if row and gen < row["since"]:
+        if row and g < row["since"]:
             unknown = True
             continue
-        v, vb = vals.get(a, 0), vals.get("backdrop." + a, 0)
+        v, vb = vv.get(a, 0), vv.get("backdrop." + a, 0)
         if first:
             value, first = max(v, 0 if own else vb), False
         if not (OPS[op](v, b) or (not own and OPS[op](vb, b))):
@@ -493,7 +532,9 @@ def select(sources, terms, registry):
     hits, unk = [], []
     for g, src in sorted(sources.items()):
         for tile, (gen, vals) in src.tiles.items():
-            ok, v, u = eval_tile(terms, tile, gen, vals, src.launch, registry)
+            tw = twin_of(tile)
+            ok, v, u = eval_tile(terms, tile, gen, vals, src.launch, registry,
+                                 src.tiles.get(tw) if tw else None)
             if ok:
                 hits.append((g, tile, v, u))
         unk += [(g, r) for r in src.unknown]
@@ -691,9 +732,7 @@ def expect_query(a):
 
 def cmd_nearest(a):
     """Print the rows with the highest values of a counter; with none, the rows of its path family."""
-    registry = load_registry()
-    if registry.resolve(a.counter) is None:
-        raise Refused("%s is no registered counter (%s)" % (a.counter, REGISTRY))
+    load_registry().live(a.counter)
     sources = open_sources(a.store, [a.game])
     if not sources:
         return 1
@@ -716,6 +755,51 @@ def cmd_nearest(a):
             near[tile_row(tile)] = max(near.get(tile_row(tile), 0), s)
     for r, v in sorted(near.items(), key=lambda kv: (-kv[1], kv[0]))[:a.top]:
         print("%s\t%s\t%s.* max=%d" % (a.game, r, fam, v))
+    return 0
+
+
+# ---- settles -----------------------------------------------------------------
+
+def settle_summary(path):
+    """{legs, settles, pass_us, max_us} summed over a census-settle.tsv, or None when it is absent.
+
+    A line is one capture leg: kind, row key, lod-leg, then the process's
+    frozen-backdrop settles, their tally pass time in microseconds and the
+    longest pass (scripts/presentation-game.sh pg_census_settle).
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    out = {"legs": 0, "settles": 0, "pass_us": 0.0, "max_us": 0.0}
+    for ln in lines:
+        f = ln.split("\t")
+        if len(f) != 6:
+            continue
+        out["legs"] += 1
+        out["settles"] += int(f[3])
+        out["pass_us"] += float(f[4])
+        out["max_us"] = max(out["max_us"], float(f[5]))
+    return out
+
+
+def settle_line(summary):
+    """One line of a settle summary: legs, settles, total and per-settle pass time, longest pass."""
+    n = summary["settles"]
+    return ("%d leg(s), %d backdrop settle(s), tally pass %.1f ms total, %.1f us per settle, %.1f us longest"
+            % (summary["legs"], n, summary["pass_us"] / 1e3, summary["pass_us"] / n if n else 0.0,
+               summary["max_us"]))
+
+
+def cmd_settles(a):
+    """Print each game's frozen-backdrop settle count and tally pass time from its counts source."""
+    sources = open_sources(a.store, games_of(a))
+    if not sources:
+        return 1
+    for g, src in sorted(sources.items()):
+        s = settle_summary(os.path.join(src.dir, SETTLE_NAME))
+        print("%s\t%s" % (g, settle_line(s) if s else "no %s in the entry" % SETTLE_NAME))
     return 0
 
 
@@ -1102,6 +1186,10 @@ def main(argv=None):
     p.add_argument("--game", choices=GAMES, required=True)
     p.add_argument("counter")
     p.add_argument("--top", type=int, default=10)
+    p = sub.add_parser("settles")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--game", choices=GAMES)
+    g.add_argument("--all", action="store_true")
     p = sub.add_parser("score")
     p.add_argument("--run", required=True, metavar="DIR", help="the full run's local run directory")
     p.add_argument("--window", action="store_true",
@@ -1109,13 +1197,14 @@ def main(argv=None):
     p = sub.add_parser("sidecar-diff")
     p.add_argument("dir")
     p.add_argument("other", nargs="?")
-    for name in ("query", "expect", "nearest", "score"):
+    for name in ("query", "expect", "nearest", "settles", "score"):
         sub.choices[name].add_argument("--store", metavar="DIR", help="the census store (default <local fleet_root>/census)")
     a = ap.parse_args(argv)
     if getattr(a, "store", "unset") is None:
         a.store = default_store()
     fn = {"digests": cmd_digests, "query": cmd_query, "expect": cmd_expect, "fix": cmd_fix,
-          "nearest": cmd_nearest, "score": cmd_score, "sidecar-diff": cmd_sidecar_diff}[a.cmd]
+          "nearest": cmd_nearest, "settles": cmd_settles, "score": cmd_score,
+          "sidecar-diff": cmd_sidecar_diff}[a.cmd]
     try:
         return fn(a)
     except Refused as e:

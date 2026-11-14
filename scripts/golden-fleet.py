@@ -167,7 +167,9 @@ coordinator:
      record, capture-device.txt, credits-verdict.txt, the divergent and
      extra tiles (an extra tile is a new row's, with no blessed digest)
      and both members of each identity pair over baseline (identity/), and
-     on the presentation tier tile-digests.tsv, row-cost.tsv and, by a
+     on the presentation tier tile-digests.tsv, row-cost.tsv,
+     census-settle.tsv (each leg's frozen-backdrop settle count and tally
+     pass time, printed per unit) and, by a
      second rsync with an include pattern under either --pull mode, every
      tile's `*-vk.census` sidecar (scripts/golden-census.py; a captured
      tile without one refuses the unit), into
@@ -191,8 +193,8 @@ coordinator:
      host, slots, speed, run id; the newest kept); an accepted
      presentation unit of a run whose run-args.json records no filter,
      freecam_filter, rows or repeat, not stopped, whose every sidecar names
-     the capture record's source tree, is hard-linked (sidecars and
-     tile-digests.tsv) into the census store's
+     the capture record's source tree, is hard-linked (sidecars,
+     tile-digests.tsv and census-settle.tsv) into the census store's
      <local fleet_root>/census/<game>-<tier>/<run-id>.part/, which drive()
      finalizes after the done marker (moved.txt from stream.log, copies of
      run-args.json and done, entry.json last, renamed to <run-id>/) and
@@ -484,6 +486,7 @@ MOVED_VERBS = ("DIVERGE", "EXTRA", "EXCEED")
 SIDECAR_GLOB = "*-vk.census"      # tile-census sidecars (scripts/golden-census.py)
 DIGESTS_NAME = "tile-digests.tsv"  # every captured tile's digest, written by the verdict step
 ROW_COST_NAME = "row-cost.tsv"     # per-leg capture seconds, written by the corpus scripts
+SETTLE_NAME = "census-settle.tsv"  # per-leg backdrop settle tally cost (scripts/golden-census.py settles)
 ROW_COST_CACHE = os.path.expanduser("~/.cache/openpete-fleet/row-cost.tsv")
 CENSUS_STORE = "census"           # <local fleet_root>/census/<unit>/<run-id>/ (scripts/golden-census.py)
 CENSUS_FILTER_KEYS = ("filter", "freecam_filter", "rows", "repeat")   # run-args keys of a filtered run
@@ -2144,6 +2147,18 @@ def load_pb(tree):
     # Registered by name: digest_files pickles its worker function for a
     # process pool, and pickle resolves functions through sys.modules.
     sys.modules["presentation_blessed"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def load_census(tree):
+    """Import the tree's scripts/golden-census.py as a module."""
+    if "golden_census" in sys.modules:
+        return sys.modules["golden_census"]
+    path = os.path.join(tree, "scripts", "golden-census.py")
+    spec = importlib.util.spec_from_file_location("golden_census", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["golden_census"] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -3971,7 +3986,7 @@ class Coordinator:
         first = ["verdict-report.txt", "capture-record.txt", "capture-device.txt",
                  "verdict-ident.log", "verdict-diff.log"]
         if job.tier == "presentation":
-            first += [CREDITS_NAME, DIGESTS_NAME, ROW_COST_NAME]
+            first += [CREDITS_NAME, DIGESTS_NAME, ROW_COST_NAME, SETTLE_NAME]
         if self.a.pull == "all":
             rsync_pull(hs.host, rdir, local)
         else:
@@ -3979,8 +3994,11 @@ class Coordinator:
         report = parse_report(os.path.join(local, "verdict-report.txt"))
         self.note_census(job, report)
         tiles, pairs = report["divergent"] + report["extra"], report["identity"]
-        # row-cost.tsv is absent when every row was imported from an earlier attempt.
-        want = [f for f in first if f != ROW_COST_NAME] + self.pull_tiles(hs, rdir, local, report)
+        # row-cost.tsv and census-settle.tsv are absent when every row was
+        # imported from an earlier attempt, census-settle.tsv also when no leg
+        # wrote a sidecar line.
+        want = [f for f in first if f not in (ROW_COST_NAME, SETTLE_NAME)] \
+            + self.pull_tiles(hs, rdir, local, report)
         if job.tier == "presentation":
             # Every tile's sidecar (the tile census), in a call of its own: the
             # include pattern's --exclude=* would filter the named-file list.
@@ -3992,6 +4010,7 @@ class Coordinator:
                 if self.repeat():
                     errs_pull += repeat_sidecar_refusals(self.pb, local)
                 merge_row_cost(local, job, hs, self.run_id)
+                self.note_settles(job, local)
         else:
             errs_pull = []
         errs = [f"pulled file absent: {f}" for f in want
@@ -4031,7 +4050,8 @@ class Coordinator:
         part = os.path.join(census_root(self.local_run_dir), job.name, self.run_id + ".part")
         shutil.rmtree(part, ignore_errors=True)
         os.makedirs(part)
-        names = [n for n in os.listdir(local) if fnmatch.fnmatch(n, SIDECAR_GLOB) or n == DIGESTS_NAME]
+        names = [n for n in os.listdir(local)
+                 if fnmatch.fnmatch(n, SIDECAR_GLOB) or n in (DIGESTS_NAME, SETTLE_NAME)]
         for n in names:
             link_or_copy(os.path.join(local, n), os.path.join(part, n))
         rec = parse_kv(open(os.path.join(local, RECORD_NAME), encoding="utf-8").read())
@@ -4039,7 +4059,7 @@ class Coordinator:
         accept = {"run_id": self.run_id, "unit": job.name, "attempt": job.result.get("attempt"),
                   "head": rec.get("head"), "source_tree": rec.get("source-tree"),
                   "rc": job.result.get("rc"), "compared": f.get("compared"),
-                  "sidecars": sum(1 for n in names if n != DIGESTS_NAME)}
+                  "sidecars": sum(1 for n in names if fnmatch.fnmatch(n, SIDECAR_GLOB))}
         with open(os.path.join(part, "accept.json"), "w", encoding="utf-8") as fh:
             json.dump(accept, fh)
         print(f"[fleet] {job.name}: census store: {accept['sidecars']} sidecar(s) into {part}")
@@ -4098,6 +4118,14 @@ class Coordinator:
             f.writelines(keep)
             f.writelines(f"{k}={v}\n" for k, v in zip(FLEET_RECORD_KEYS, vals))
         os.replace(path + ".tmp", path)
+
+    def note_settles(self, job, local):
+        """Print a pulled unit's frozen-backdrop settle count and tally pass time (census-settle.tsv)."""
+        gc = load_census(self.tree)
+        summary = gc.settle_summary(os.path.join(local, SETTLE_NAME))
+        line = gc.settle_line(summary) if summary else f"no {SETTLE_NAME} pulled"
+        job.result["settles"] = line
+        print(f"[fleet] {job.name}: backdrop settles: {line}")
 
     def note_census(self, job, report):
         """Print a verdict report's census (captured, imported and compared tiles) and keep it in the result."""

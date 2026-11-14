@@ -160,6 +160,7 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch row-li
   op_own_run "${cmd[@]}" >"$log" 2>&1
   local rc=$? miss=0
   pg_row_cost "$OUTDIR" freecam "$slug" "$lod-$leg" "$t_start"
+  pg_census_settle "$OUTDIR" freecam "$slug" "$lod-$leg" "$log"
   pg_note_device "$log" "$OUTDIR"
   if [[ ! -f "$OUTDIR/${slug}__${tag}${leg}__${target}-vk.png" ]]; then
     echo "  MISSING ${slug}__${tag}${leg}__${target}-vk.png (rc=$rc)"; miss=1

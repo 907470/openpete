@@ -26,6 +26,7 @@
 #define TC_FAMILY(name)
 #define TC_ROW(id, name, unit, source, family, since, state, meaning)
 #define TC_BIT(bit, name)
+#define TC_LEGVAR(pattern)
 #include "tile_census.def"
 #undef TC_GEN
 #undef TC_BIT
@@ -40,6 +41,7 @@ static const char *const k_cbit_names[TC_CBITS] = {
 #undef TC_FAMILY
 #undef TC_ROW
 #undef TC_BIT
+#undef TC_LEGVAR
 
 #define TC_NAMES_MAX 2048   /* counters one sidecar holds */
 #define TC_NAME_LEN  64
@@ -76,6 +78,7 @@ void tc_tally_tri(tc_tally_t *t, const tc_tri_t *tri)
         t->flag[k] += (tri->flags >> k) & 1u;
     for (uint32_t b = tri->cbits; b; b &= b - 1u)
         t->cbit[__builtin_ctz(b)]++;
+    if ((tri->cbits & OPENPETE_CB_TERRAIN_NEARCLIP) && tri->inview) t->ncut_view++;
     for (int k = 0; k < TC_PRIMS; k++) {
         const int on = (int)((tri->prims >> k) & 1u);
         if (on && !(t->prim_open[k] && tri->prim && t->prim_last[k] == tri->prim))
@@ -83,7 +86,33 @@ void tc_tally_tri(tc_tally_t *t, const tc_tri_t *tri)
         t->prim_open[k] = (uint8_t)on;
         t->prim_last[k] = tri->prim;
     }
+    if (tri->prim) t->ui++;
     if (f == 1u) tally_moby_class(t, tri->tag & 0xFFFFu);
+}
+
+int tc_tri_in_view(const float x[3], const float y[3])
+{
+    float x0 = x[0], x1 = x[0], y0 = y[0], y1 = y[0];
+    for (int k = 1; k < 3; k++) {
+        x0 = x[k] < x0 ? x[k] : x0; x1 = x[k] > x1 ? x[k] : x1;
+        y0 = y[k] < y0 ? y[k] : y0; y1 = y[k] > y1 ? y[k] : y1;
+    }
+    if (!(x1 >= -1.0f && x0 <= 1.0f && y1 >= -1.0f && y0 <= 1.0f)) return 0;
+    const double area = ((double)x[1] - x[0]) * ((double)y[2] - y[0])
+                      - ((double)x[2] - x[0]) * ((double)y[1] - y[0]);
+    if (area == 0.0) return 0;
+    static const float cx[4] = { -1.0f, 1.0f, 1.0f, -1.0f }, cy[4] = { -1.0f, -1.0f, 1.0f, 1.0f };
+    for (int e = 0; e < 3; e++) {
+        const int a = e, b = (e + 1) % 3;
+        const double ex = (double)x[b] - x[a], ey = (double)y[b] - y[a];
+        int outside = 0;
+        for (int c = 0; c < 4; c++) {
+            const double side = ex * ((double)cy[c] - y[a]) - ey * ((double)cx[c] - x[a]);
+            outside += side * area < 0.0;   /* on the side away from the third corner */
+        }
+        if (outside == 4) return 0;
+    }
+    return 1;
 }
 
 /* The render-path mapping of tag families, registered by the game layer. */
@@ -214,6 +243,11 @@ void tc_sidecar_add_tally(const tc_tally_t *t, const char *prefix)
         if (t->cbit[b] && !k_cbit_names[b]) tc_sidecar_fail("a class bit with no registered counter");
         if (k_cbit_names[b]) sc_addf(t->cbit[b], "%s%s", prefix, k_cbit_names[b]);
     }
+    /* The retained cache's cut fan triangles count with the walked ones the
+     * class bit counts, so the near-clip counters mean the same on both paths. */
+    sc_addf(t->ncut_cache, "%sterrain.nearclip.tris", prefix);
+    sc_addf(t->ncut_view + t->ncut_cache_view, "%sterrain.nearclip.inview.tris", prefix);
+    sc_addf(t->ui, "%sui.tris", prefix);
 }
 
 /** @brief qsort order of sidecar entries: by name, byte order.

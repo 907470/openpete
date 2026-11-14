@@ -16926,6 +16926,7 @@ static struct {
     int        bd_known;         /* ... and its tally is kept (bd holds it) */
     int        armed;            /* a record is open: draws are counted */
     int        draws;            /* scene draws counted since the record */
+    int        nearcut;          /* the record armed the cache's near-cut census */
     uint32_t   sub_cat[TC_CATS]; /* triangles those draws composed, per category */
     char       fail[160];        /* a binding mismatch not yet reported in a sidecar */
 } s_cen;
@@ -16941,14 +16942,40 @@ static struct {
     uint32_t   stamp;            /* the counted scene's stamp */
     int        valid;
     unsigned   settles;          /* tallies taken */
+    int        nearcut;          /* the settle armed the cache's near-cut census, not yet read into t */
     op_time_t  pass_ns, pass_max_ns;   /* their wall time, total and longest */
 } s_bdt;
 
+/** @brief Test whether a scene triangle overlaps the captured view.
+ *
+ * Maps its corners through scene_to_clip as a full-extent capture at widen
+ * @p wf composes them, so the result is the compose's own placement; the
+ * view is clip x and y in [-1, 1] (tc_tri_in_view).
+ * @param q The triangle.
+ * @param wf The capture's widen (s_render_freeze_wf of its compose).
+ * @return 1 when it overlaps, else 0. */
+static int census_tri_in_view(const scene_tri_t *q, float wf)
+{
+    const int prev_fe = s_render_full_extent;
+    const float prev_wf = s_render_freeze_wf;
+    s_render_full_extent = 1;
+    s_render_freeze_wf = wf;
+    float x[3], y[3];
+    for (int k = 0; k < 3; k++) scene_to_clip(q->v[k].sx, q->v[k].sy, &x[k], &y[k]);
+    s_render_full_extent = prev_fe;
+    s_render_freeze_wf = prev_wf;
+    return tc_tri_in_view(x, y);
+}
+
 /** @brief Tally a scene's triangles and the retained sectors of the selected terrain state.
+ *
+ * A near-clipped terrain triangle (OPENPETE_CB_TERRAIN_NEARCLIP) is also
+ * tested against the view the capture composes (census_tri_in_view).
  * @param t Receives the tally.
  * @param sc Scene triangles.
- * @param n Triangle count. */
-static void census_tally_scene(tc_tally_t *t, const scene_tri_t *sc, int n)
+ * @param n Triangle count.
+ * @param wf The widen the scene is composed at. */
+static void census_tally_scene(tc_tally_t *t, const scene_tri_t *sc, int n, float wf)
 {
     tc_tally_clear(t);
     for (int i = 0; i < n; i++) {
@@ -16960,23 +16987,60 @@ static void census_tally_scene(tc_tally_t *t, const scene_tri_t *sc, int n)
                    | (q->host_added ? 1u << TC_FLAG_HOST_ADDED : 0u) | (q->fog_delta ? 1u << TC_FLAG_FOG_DELTA : 0u),
             .prims = (q->over_fade ? 1u << TC_PRIM_OVER_FADE : 0u)
                    | (q->under_player ? 1u << TC_PRIM_UNDER_PLAYER : 0u) | (q->carry ? 1u << TC_PRIM_CARRY : 0u),
-            .cbits = q->cbits };
+            .cbits = q->cbits,
+            .inview = (q->cbits & OPENPETE_CB_TERRAIN_NEARCLIP) ? census_tri_in_view(q, wf) : 0 };
         tc_tally_tri(t, &tri);
     }
     int gens[8];
     openpete_tercache_frame_stats(&t->sec[0], &t->sec[1], &t->sec[2], &t->sec[3], gens);
 }
 
+/** @brief Record the retained cache's near-cut census when the selected state draws near-variant sectors.
+ *
+ * Inside a frame, outside any render pass, under the full-extent mapping at
+ * the compose's widen (tercache_clip_params); openpete_tercache_nearcut_read
+ * counts it once the frame is submitted. The near-variant sectors are the
+ * only retained ones the near plane can cut (OPTC_SF_NEARVAR).
+ * @return 1 when a recording is armed, else 0. */
+static int census_nearcut_record(void)
+{
+    int drawn = 0, hp = 0, lp = 0, nearvar = 0, gens[8];
+    if (!openpete_tercache_frame_open()) return 0;
+    openpete_tercache_frame_stats(&drawn, &hp, &lp, &nearvar, gens);
+    if (nearvar <= 0) return 0;
+    const int prev_fe = s_render_full_extent;
+    s_render_full_extent = 1;
+    openpete_tercache_clip c;
+    tercache_clip_params(&c);
+    s_render_full_extent = prev_fe;
+    return openpete_tercache_nearcut_record(&c, s_nr.vram_tex);
+}
+
+/** @brief Add the retained cache's near-cut census, recorded earlier, to a tally.
+ * @param t The tally.
+ * @param armed Nonzero when census_nearcut_record armed a recording for it. */
+static void census_nearcut_take(tc_tally_t *t, int armed)
+{
+    if (!armed) return;
+    (void)openpete_tercache_nearcut_read(&t->ncut_cache, &t->ncut_cache_view);
+}
+
 /** @brief Tally the kept freeze source freeze_src_settle just rendered into shot_frozen.
  *
  * Reads the scene the settle selected (s_ps_slot on the kept slot) and the
- * kept scene's retained terrain state, and times the pass. */
-static void census_backdrop_settle(void)
+ * kept scene's retained terrain state, and times the pass. A near-cut
+ * census the render recorded is read into the tally at the next capture
+ * record (census_shot_record), which waits on the device anyway, so the
+ * settle itself never waits for the readback.
+ * @param nearcut Nonzero when the settle's render armed a near-cut recording.
+ * @param wf The widen the settle rendered the backdrop at. */
+static void census_backdrop_settle(int nearcut, float wf)
 {
     const op_time_t t0 = op_now();   /* clock-guard: wall */ /* the pass's own cost */
     int n; uint32_t bg, fade;
     const scene_tri_t *sc = scene_present_buf(&n, &bg, &fade, NULL, NULL, NULL);
-    census_tally_scene(&s_bdt.t, sc, n);
+    census_tally_scene(&s_bdt.t, sc, n, wf);
+    s_bdt.nearcut = nearcut;
     s_bdt.stamp = scene_present_stamp();
     s_bdt.valid = s_nr.shot_frozen.valid ? 1 : 0;
     const op_time_t dt = op_now() - t0;   /* clock-guard: wall */ /* the pass's own cost */
@@ -17006,15 +17070,20 @@ static void census_submit_note(const scene_tri_t *sc, int n)
  * Inside each compose attempt, before the draw; the last attempt's record
  * stands. Tallies the selected scene, notes whether the compose falls back
  * to the VRAM framebuffer (the draw's own content test) and whether it
- * draws a frozen backdrop, copies the backdrop's kept tally when there is
- * one, and arms the submission count. Does nothing unless the variable is
+ * draws a frozen backdrop, reads a near-cut census the last settle armed
+ * into the backdrop's kept tally and copies that tally when there is one,
+ * records the cache's near-cut census of this scene (census_nearcut_record),
+ * and arms the submission count. Does nothing unless the variable is
  * set. */
 static void census_shot_record(void)
 {
     if (!tile_census_on()) return;
     int n; uint32_t sbg, fade, freeze;
     const scene_tri_t *sc = scene_present_buf(&n, &sbg, &fade, &freeze, NULL, NULL);
-    census_tally_scene(&s_cen.own, sc, n);
+    census_tally_scene(&s_cen.own, sc, n, s_render_freeze_wf);
+    census_nearcut_take(&s_bdt.t, s_bdt.nearcut);   /* before the record re-arms the census */
+    s_bdt.nearcut = 0;
+    s_cen.nearcut = census_nearcut_record();
     int retained_only = 0;
     const uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : sbg;
     s_cen.own.vram = scene_content_test(sc, n, freeze, bg, &retained_only) ? 0 : 1;
@@ -17074,6 +17143,8 @@ static void census_shot_write(const char *base, int dump)
     if (!tile_census_on()) return;
     s_cen.armed = 0;
     census_binding_check();
+    census_nearcut_take(&s_cen.own, s_cen.nearcut);
+    s_cen.nearcut = 0;
     if (!dump) return;
     tc_sidecar_begin();
     if (s_cen.fail[0]) tc_sidecar_fail(s_cen.fail);
@@ -23189,24 +23260,18 @@ static bool freeze_src_verdict(void) {
     return src;
 }
 
-/** @brief Render the composed scene into a freeze-backdrop target at the capture's widen.
+/** @brief Size a freeze-backdrop target to the capture extent, (re)creating its texture.
  *
- * The target is (re)created at the capture extent: the reference width
- * times @p cap_wf by the reference height, the reference shape derived from
- * game state when no reference exists. The scene is the one
- * scene_present_buf returns, so the caller points s_ps_slot at a kept slot
- * to render that slot. The texture is replaced, and the record marked
- * invalid, when its extent differs; once rendered the record is valid and
- * holds @p cap_wf as its widen.
+ * The extent is the reference width times @p cap_wf by the reference
+ * height, the reference shape derived from game state when no reference
+ * exists (headless has no live frame to source it from, the screenshot
+ * compose fallback's rule). The texture is replaced, and the record marked
+ * invalid, when its extent differs.
  * @param t The target record.
  * @param cap_wf The capture widen, at least 1.
- * @param sync Nonzero to drain guest VRAM writes into the device texture first. */
-static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync)
+ * @return 1 when the target holds a texture of the extent, else 0. */
+static int freeze_target_fit(freeze_target_t *t, float cap_wf)
 {
-    int scene_n; uint32_t sbg, sfade;
-    (void)scene_present_buf(&scene_n, &sbg, &sfade, NULL, NULL, NULL);
-    /* Derive the reference display shape from gamestate (headless has no live
-     * frame to source it from), same as the screenshot compose fallback. */
     if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) {
         int dh = s_nr.disp_h > 0 ? s_nr.disp_h : 240;
         int ch = s_nr.clip_h > 0 ? s_nr.clip_h : 224;
@@ -23214,7 +23279,7 @@ static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync)
         int rw = (int)((double)rh * (4.0 / 3.0) * (double)dh / (double)ch + 0.5);
         if (rw > 0 && rh > 0) { s_nr.ref_w = rw; s_nr.ref_h = rh; }
     }
-    if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return;
+    if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return 0;
     const int Wc = (int)((double)s_nr.ref_w * (double)cap_wf + 0.5);
     if (!(t->tex && t->w == Wc && t->h == s_nr.ref_h)) {
         rhi_wait_idle(s_nr.dev);
@@ -23222,7 +23287,26 @@ static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync)
         t->tex = rhi_create_render_target(s_nr.dev, (uint32_t)Wc, (uint32_t)s_nr.ref_h);
         t->w = Wc; t->h = s_nr.ref_h; t->valid = false;
     }
-    if (!t->tex) return;
+    return t->tex != NULL;
+}
+
+/** @brief Render the composed scene into a freeze-backdrop target at the capture's widen.
+ *
+ * The target is sized first (freeze_target_fit). The scene is the one
+ * scene_present_buf returns, so the caller points s_ps_slot at a kept slot
+ * to render that slot. Once rendered the record is valid and holds
+ * @p cap_wf as its widen.
+ * @param t The target record.
+ * @param cap_wf The capture widen, at least 1.
+ * @param sync Nonzero to drain guest VRAM writes into the device texture first.
+ * @param nearcut When not NULL, the frame also records the retained cache's
+ *        near-cut census (census_nearcut_record) and this receives whether
+ *        it armed one. */
+static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync, int *nearcut)
+{
+    int scene_n; uint32_t sbg, sfade;
+    (void)scene_present_buf(&scene_n, &sbg, &sfade, NULL, NULL, NULL);
+    if (!freeze_target_fit(t, cap_wf)) return;
 
     if (sync) sync_vram_texture();
     ensure_native_rtt(true);
@@ -23239,6 +23323,7 @@ static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync)
         hd_flush_pending();
         openpete_native_hdfold_flush();
         native_depth_prepass();
+        if (nearcut) *nearcut = census_nearcut_record();
         { int kw, kh; rhi_texture_extent(t->tex, &kw, &kh);
           native_terrain_key_pass(1, kw, kh); }
         rhi_begin_render_target(s_nr.dev, t->tex, br, bgc, bb, 1.0f);
@@ -23285,8 +23370,9 @@ static void freeze_src_settle(void) {
     ps_apply_geometry();
     openpete_tercache_frame_select(scene_present_stamp());   /* the kept scene's terrain */
     const int tc_content = openpete_tercache_frame_content();
-    freeze_render_into(&s_nr.shot_frozen, s_frz.wf, 0);
-    census_backdrop_settle();
+    int nearcut = 0;
+    freeze_render_into(&s_nr.shot_frozen, s_frz.wf, 0, &nearcut);
+    census_backdrop_settle(nearcut, s_frz.wf);
     openpete_mods_material_view_set(NULL);
     s_ps_slot = NULL;
     if (freeze_src_verify() && s_frz.vt.tex && s_nr.shot_frozen.tex) {
@@ -23883,11 +23969,11 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
         return;
     }
     if (s_nr.headless && freeze_src_retain(cap_wf)) {
-        if (freeze_src_verify()) freeze_render_into(&s_frz.vt, cap_wf, 1);
+        if (freeze_src_verify()) freeze_render_into(&s_frz.vt, cap_wf, 1, NULL);
         return;
     }
     s_bdt.valid = 0;   /* shot_frozen now holds a render no settle tallied */
-    freeze_render_into(&s_nr.shot_frozen, cap_wf, 1);
+    freeze_render_into(&s_nr.shot_frozen, cap_wf, 1, NULL);
 }
 
 void openpete_native_occl_service_headless(void)

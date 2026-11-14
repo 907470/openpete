@@ -7,6 +7,7 @@
 #include "openpete_native_render.h"   /* scene ring: is a build stamp still referenced */
 #include "openpete_config.h"          /* OPENPETE_TERRAIN_SECDELTA, a device-creation knob */
 #include "openpete_time.h"            /* op_now: the growth event timings */
+#include "openpete_tile_census.h"     /* tc_tri_in_view: the near-cut census's view test */
 
 #include <math.h>
 #include <stdatomic.h>
@@ -4016,21 +4017,31 @@ static const char *const k_tc_vert_rb[2][OPENPETE_MATERIAL_TER_VARIANTS] = {
 #define TC_RB_W      4096u      /* target width; terrain.vert RB_W */
 #define TC_RB_HMAX   16384u     /* tallest target */
 #define TC_RB_MAXENT (OPTC_ARENA_COUNT * TC_BUF_SLOTS)
+#define TC_RB_KIND_CUT 3u       /* terrain.vert RB_CUT: a readback key's kind, a clip cut */
 
 /* One drawn arena buffer of a recorded readback. */
 typedef struct { uint32_t arena, buf, base, count, per; } tc_rb_entry;
 
-static struct {
-    int            on;          /* -1 unread, else the latched switch */
+/* One readback recording: its target and the arena buffers laid out in it. */
+typedef struct {
     rhi_texture   *rt;
     uint32_t       h;           /* the target's height */
-    rhi_pipeline  *pipe[OPENPETE_MATERIAL_TER_VARIANTS];
-    int            armed;       /* a readback is recorded and not yet written */
-    int            row;         /* k_tc_vert_rb row of the recording */
+    int            armed;       /* recorded and not yet read */
     uint32_t       elems;       /* elements laid out */
     int            n;
     tc_rb_entry    ent[TC_RB_MAXENT];
+} tc_rb_rec;
+
+static struct {
+    int            on;          /* -1 unread, else the latched switch */
+    rhi_pipeline  *pipe[OPENPETE_MATERIAL_TER_VARIANTS];
+    int            row;         /* k_tc_vert_rb row of the recording */
+    tc_rb_rec      rec;         /* the OPENPETE_TERRAIN_READBACK recording */
 } s_tc_rb = { .on = -1 };
+
+/* The near-plane cut census's recording (openpete_tercache_nearcut_record):
+ * the near-family arenas only. */
+static tc_rb_rec s_tc_nc;
 
 /** @brief Return the arena family (a TC_V_* value) of an arena.
  * @param arena Arena index.
@@ -4068,17 +4079,22 @@ static rhi_pipeline *tc_rb_pipe(int fam, int row)
     return s_tc_rb.pipe[fam];
 }
 
-/** @brief Lay out every drawn arena buffer of the selected state in the readback target.
+/** @brief Lay out the drawn arena buffers of the selected state in a recording's target.
  *
  * A buffer's elements are its high-water mark (records times cell vertices
  * per record on a cell arena), the range tc_draw_buf can draw from; each
- * buffer takes the next free element base. Fills s_tc_rb.ent, n and elems.
+ * buffer takes the next free element base. Fills the recording's ent, n and
+ * elems.
+ * @param r The recording.
+ * @param near_only Nonzero to lay out the near-variant families alone (TC_V_NEAR, TC_V_CELLS_NEAR).
  * @return The pixels the layout needs (two per element). */
-static uint64_t tc_rb_layout(void)
+static uint64_t tc_rb_layout(tc_rb_rec *r, int near_only)
 {
-    s_tc_rb.n = 0;
+    r->n = 0;
     uint32_t base = 0;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        const int fam = tc_arena_family(a);
+        if (near_only && fam != TC_V_NEAR && fam != TC_V_CELLS_NEAR) continue;
         const int cells = OPTC_ARENA_IS_CELL(a);
         const uint32_t per = !cells ? 0u : OPTC_ARENA_IS_CELL_ANIM(a) ? RHI_TERRAIN_CELL_VERTS_ANIM
                                                                       : RHI_TERRAIN_CELL_VERTS_NEAR;
@@ -4087,28 +4103,28 @@ static uint64_t tc_rb_layout(void)
             const uint32_t high = s_tc.sel.mark_high[a][b];
             if (high == 0) continue;
             const uint32_t count = cells ? high * per : high;
-            s_tc_rb.ent[s_tc_rb.n++] = (tc_rb_entry){ (uint32_t)a, (uint32_t)b, base, count, per };
+            r->ent[r->n++] = (tc_rb_entry){ (uint32_t)a, (uint32_t)b, base, count, per };
             base += count;
         }
     }
-    s_tc_rb.elems = base;
+    r->elems = base;
     return 2ull * base;
 }
 
-/** @brief Make the readback target at least @p need pixels, TC_RB_W wide.
+/** @brief Make a recording's target at least @p need pixels, TC_RB_W wide.
+ * @param r The recording.
  * @param need Pixels the layout needs.
  * @return 1 when the target holds them, else 0. */
-static int tc_rb_target(uint64_t need)
+static int tc_rb_target(tc_rb_rec *r, uint64_t need)
 {
     const uint64_t rows = (need + TC_RB_W - 1) / TC_RB_W;
     if (rows == 0 || rows > TC_RB_HMAX) return 0;
-    if (s_tc_rb.rt && s_tc_rb.h >= rows) return 1;
-    if (s_tc_rb.rt) rhi_destroy_texture_deferred(s_tc.dev, s_tc_rb.rt);
-    s_tc_rb.h = (uint32_t)((rows + 255u) & ~255ull);
-    if (s_tc_rb.h > TC_RB_HMAX) s_tc_rb.h = TC_RB_HMAX;
-    s_tc_rb.rt = rhi_create_render_target_format(s_tc.dev, TC_RB_W, s_tc_rb.h,
-                                                 RHI_COLOR_FORMAT_RGBA32_UINT);
-    return s_tc_rb.rt != NULL;
+    if (r->rt && r->h >= rows) return 1;
+    if (r->rt) rhi_destroy_texture_deferred(s_tc.dev, r->rt);
+    r->h = (uint32_t)((rows + 255u) & ~255ull);
+    if (r->h > TC_RB_HMAX) r->h = TC_RB_HMAX;
+    r->rt = rhi_create_render_target_format(s_tc.dev, TC_RB_W, r->h, RHI_COLOR_FORMAT_RGBA32_UINT);
+    return r->rt != NULL;
 }
 
 /** @brief Return whether the readback runs: OPENPETE_TERRAIN_READBACK set and not "0".
@@ -4124,47 +4140,62 @@ static int tc_rb_row(void)
 
 /** @brief Draw one laid-out buffer twice, position pass then key pass.
  * @param e The buffer's layout entry.
- * @param clip The screen-to-clip mapping. */
-static void tc_rb_draw_entry(const tc_rb_entry *e, const openpete_tercache_clip *clip)
+ * @param clip The screen-to-clip mapping.
+ * @param h The target's height. */
+static void tc_rb_draw_entry(const tc_rb_entry *e, const openpete_tercache_clip *clip, uint32_t h)
 {
     tc_pc pc;
     tc_pc_fill(&pc, 0, clip);
     pc.pad_[1] = (int32_t)e->base;
-    pc.pad_[2] = (int32_t)(e->per | (s_tc_rb.h << 8));
+    pc.pad_[2] = (int32_t)(e->per | (h << 8));
     for (int mode = 0; mode < 2; mode++) {
         pc.pad_[0] = mode;
         tc_draw_buf((int)e->arena, (int)e->buf, &s_tc.arena[e->arena].buf[e->buf], &pc);
     }
 }
 
-/** @brief Destroy the readback target and pipelines (cache shutdown).
+/** @brief Destroy a recording's target.
+ * @param dev Device.
+ * @param r The recording. */
+static void tc_rb_rec_free(rhi_device *dev, tc_rb_rec *r)
+{
+    if (r->rt) rhi_destroy_texture(dev, r->rt);
+    memset(r, 0, sizeof *r);
+}
+
+/** @brief Destroy the readback targets and pipelines (cache shutdown).
  * @param dev Device. */
 static void tc_rb_free(rhi_device *dev)
 {
-    if (s_tc_rb.rt) rhi_destroy_texture(dev, s_tc_rb.rt);
+    tc_rb_rec_free(dev, &s_tc_rb.rec);
+    tc_rb_rec_free(dev, &s_tc_nc);
     for (int i = 0; i < OPENPETE_MATERIAL_TER_VARIANTS; i++)
         if (s_tc_rb.pipe[i]) rhi_destroy_pipeline(dev, s_tc_rb.pipe[i]);
     memset(&s_tc_rb, 0, sizeof s_tc_rb);
     s_tc_rb.on = -1;
 }
 
-int openpete_tercache_readback_record(const openpete_tercache_clip *clip, rhi_texture *vram)
+/** @brief Lay out and draw a recording of the selected retained state into its target, and arm it.
+ *
+ * Inside a frame, outside any render pass.
+ * @param r The recording.
+ * @param near_only Nonzero for the near-variant families alone.
+ * @param row The k_tc_vert_rb row.
+ * @param clip The screen-to-clip mapping the positions are computed under.
+ * @param vram VRAM texture, or NULL to leave the binding.
+ * @return 1 when recorded, 0 when the layout exceeds the tallest target. */
+static int tc_rb_record(tc_rb_rec *r, int near_only, int row, const openpete_tercache_clip *clip,
+                        rhi_texture *vram)
 {
-    const int row = tc_rb_row();
-    if (row < 0 || !s_tc.ready || !s_tc.draw_open || !s_tc.ubo || !clip) return 0;
-    if (!tc_rb_target(tc_rb_layout())) {
-        fprintf(stderr, "[tc-readback] %u elements exceed the %ux%u target\n",
-                s_tc_rb.elems, TC_RB_W, TC_RB_HMAX);
-        return 0;
-    }
+    if (!tc_rb_target(r, tc_rb_layout(r, near_only))) return 0;
     tc_ubo_flush_frame();
-    rhi_begin_render_target(s_tc.dev, s_tc_rb.rt, 0.0f, 0.0f, 0.0f, 0.0f);
+    rhi_begin_render_target(s_tc.dev, r->rt, 0.0f, 0.0f, 0.0f, 0.0f);
     s_tc_rb_drawing = 1;
     const int mat_was = s_tc_mat_pass;
     s_tc_mat_pass = -1;
     int bound = -1;
-    for (int i = 0; i < s_tc_rb.n; i++) {
-        const tc_rb_entry *e = &s_tc_rb.ent[i];
+    for (int i = 0; i < r->n; i++) {
+        const tc_rb_entry *e = &r->ent[i];
         const int fam = tc_arena_family((int)e->arena);
         rhi_pipeline *p = tc_rb_pipe(fam, row);
         if (!p) continue;
@@ -4173,42 +4204,106 @@ int openpete_tercache_readback_record(const openpete_tercache_clip *clip, rhi_te
             if (tc_bind_draw_inputs(vram, NULL) != 0) continue;
             bound = fam;
         }
-        tc_rb_draw_entry(e, clip);
+        tc_rb_draw_entry(e, clip, r->h);
     }
     s_tc_mat_pass = mat_was;
     s_tc_rb_drawing = 0;
-    rhi_end_render_target(s_tc.dev, s_tc_rb.rt);
-    s_tc_rb.armed = 1;
+    rhi_end_render_target(s_tc.dev, r->rt);
+    r->armed = 1;
+    return 1;
+}
+
+/** @brief Read a recording's target back into a malloc'd buffer and disarm it.
+ * @param r The recording.
+ * @return The texels (four words each, row-major, TC_RB_W wide), owned by the caller, or NULL. */
+static uint32_t *tc_rb_read(tc_rb_rec *r)
+{
+    if (!r->armed || !r->rt) return NULL;
+    r->armed = 0;
+    const size_t bytes = (size_t)TC_RB_W * r->h * 16u;
+    uint32_t *tex = malloc(bytes);
+    int w = 0, h = 0;
+    if (!tex || !rhi_read_render_target_texels(s_tc.dev, r->rt, tex, bytes, &w, &h)) {
+        free(tex);
+        return NULL;
+    }
+    return tex;
+}
+
+int openpete_tercache_readback_record(const openpete_tercache_clip *clip, rhi_texture *vram)
+{
+    const int row = tc_rb_row();
+    if (row < 0 || !s_tc.ready || !s_tc.draw_open || !s_tc.ubo || !clip) return 0;
+    if (!tc_rb_record(&s_tc_rb.rec, 0, row, clip, vram)) {
+        fprintf(stderr, "[tc-readback] %u elements exceed the %ux%u target\n",
+                s_tc_rb.rec.elems, TC_RB_W, TC_RB_HMAX);
+        return 0;
+    }
     s_tc_rb.row = row + 1;
     fprintf(stderr, "[tc-readback] recorded buffers=%d elements=%u target=%ux%u row=%d\n",
-            s_tc_rb.n, s_tc_rb.elems, TC_RB_W, s_tc_rb.h, s_tc_rb.row);
+            s_tc_rb.rec.n, s_tc_rb.rec.elems, TC_RB_W, s_tc_rb.rec.h, s_tc_rb.row);
     return 1;
 }
 
 int openpete_tercache_readback_write(const char *path)
 {
-    if (!s_tc_rb.armed || !s_tc_rb.rt || !path) return 1;
-    s_tc_rb.armed = 0;
-    const size_t bytes = (size_t)TC_RB_W * s_tc_rb.h * 16u;
-    uint32_t *tex = malloc(bytes);
-    int w = 0, h = 0;
-    if (!tex || !rhi_read_render_target_texels(s_tc.dev, s_tc_rb.rt, tex, bytes, &w, &h)) {
-        free(tex);
+    tc_rb_rec *r = &s_tc_rb.rec;
+    if (!r->armed || !r->rt || !path) return 1;
+    uint32_t *tex = tc_rb_read(r);
+    if (!tex) {
         fprintf(stderr, "[tc-readback] read of the target failed\n");
         return -1;
     }
     FILE *f = fopen(path, "wb");
-    const uint32_t hdr[6] = { 0x42524354u /* "TCRB" */, 1u, (uint32_t)w, (uint32_t)h,
-                              (uint32_t)s_tc_rb.n, (uint32_t)s_tc_rb.row };
-    const size_t words = (size_t)s_tc_rb.elems * 2u * 4u;
+    const uint32_t hdr[6] = { 0x42524354u /* "TCRB" */, 1u, TC_RB_W, r->h,
+                              (uint32_t)r->n, (uint32_t)s_tc_rb.row };
+    const size_t words = (size_t)r->elems * 2u * 4u;
     int ok = f && fwrite(hdr, sizeof hdr, 1, f) == 1 &&
-             fwrite(s_tc_rb.ent, sizeof(tc_rb_entry), (size_t)s_tc_rb.n, f) == (size_t)s_tc_rb.n &&
+             fwrite(r->ent, sizeof(tc_rb_entry), (size_t)r->n, f) == (size_t)r->n &&
              fwrite(tex, sizeof(uint32_t), words, f) == words;
     if (f && fclose(f) != 0) ok = 0;
     free(tex);
     fprintf(stderr, "[tc-readback] %s %s elements=%u\n", ok ? "wrote" : "FAILED writing",
-            path, s_tc_rb.elems);
+            path, r->elems);
     return ok ? 0 : -1;
+}
+
+int openpete_tercache_nearcut_record(const openpete_tercache_clip *clip, rhi_texture *vram)
+{
+    s_tc_nc.armed = 0;
+    if (!s_tc.ready || !s_tc.draw_open || !s_tc.ubo || !clip) return 0;
+    return tc_rb_record(&s_tc_nc, 1, tc_stage_row(), clip, vram);
+}
+
+int openpete_tercache_nearcut_read(uint32_t *cut, uint32_t *cut_view)
+{
+    *cut = *cut_view = 0;
+    uint32_t *tex = tc_rb_read(&s_tc_nc);
+    if (!tex) return -1;
+    for (int i = 0; i < s_tc_nc.n; i++) {
+        const tc_rb_entry *e = &s_tc_nc.ent[i];
+        for (uint32_t t = 0; t + 3u <= e->count; t += 3u) {
+            int live = 0, cutk = 0;
+            float x[3], y[3];
+            for (int k = 0; k < 3; k++) {
+                const uint32_t *pos = tex + 8u * (size_t)(e->base + t + (uint32_t)k);
+                const uint32_t *key = pos + 4;
+                float v[4];
+                memcpy(v, pos, sizeof v);
+                if (pos[3] == 0u) continue;            /* killed: the stage wrote nothing */
+                live++;
+                x[k] = v[0] / v[3];
+                y[k] = v[1] / v[3];
+                cutk |= (key[3] & 0xFFu) == TC_RB_KIND_CUT;
+            }
+            if (live == 3 && cutk) {
+                (*cut)++;
+                *cut_view += (uint32_t)tc_tri_in_view(x, y);
+            }
+        }
+    }
+    free(tex);
+    return 0;
 }
 
 void openpete_tercache_get_stats(openpete_tercache_stats_t *out)

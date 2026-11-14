@@ -147,6 +147,7 @@ class Registry(unittest.TestCase):
         names += ["flag.%s.prims" % f for f in ("over_fade", "under_player", "carry")]
         names += ["moby.type.0", "moby.type.65535", "tag.unmapped.tris"]
         names += ["terrain.sec.retained" + s for s in ("", "_hp", "_lp", "_near")]
+        names += ["terrain.nearclip.inview.tris", "ui.tris"]
         names += list(self.reg.bits.values())
         for n in names:
             self.assertIsNotNone(self.reg.resolve(n), n)
@@ -164,6 +165,26 @@ class Registry(unittest.TestCase):
             self.assertLessEqual(r["since"], self.reg.gen)
         with open(os.path.join(ROOT, "core/include/openpete_native_render.h")) as f:
             self.assertIn("#define OPENPETE_CB_COUNT            9u", f.read())
+
+
+    def test_retired_and_specific_rows(self):
+        """transition.tris resolves to its retired row and is refused; ui.tris resolves to its own live row."""
+        self.assertEqual(self.reg.resolve("transition.tris")["state"], "retired")
+        with self.assertRaises(gc.Refused):
+            self.reg.live("transition.tris")
+        with self.assertRaises(gc.Refused):
+            gc.parse_pred("transition.tris>0", self.reg)
+        self.assertEqual(self.reg.live("ui.tris")["id"], "UI_TRIS")
+        self.assertEqual(self.reg.live("cyclorama.tris")["id"], "PATH_TRIS")
+
+    def test_leg_variable(self):
+        """Moby, terrain, pool and carry counters are leg-variable; other paths, the other 2D flags and backdrop counters are not."""
+        for n in ("moby.tris", "moby.type.254", "moby.env.tris", "terrain.tris.k0", "cat.1.tris",
+                  "blend.0.tris", "flag.host_added.tris", "terrain.nearclip.inview.tris", "flag.carry.prims"):
+            self.assertTrue(self.reg.leg_variable(n), n)
+        for n in ("cyclorama.tris", "spyro.tris", "ui.tris", "flag.over_fade.prims", "terrain.sec.retained",
+                  "backdrop.moby.tris", "compose.vram"):
+            self.assertFalse(self.reg.leg_variable(n), n)
 
 
 class Store(Base):
@@ -348,6 +369,38 @@ class Predicates(Base):
         """A term naming no registered counter is refused."""
         with self.assertRaises(gc.Refused):
             gc.parse_pred("moby.bogus>0", self.reg)
+
+    def test_stable_reads_canon_twin(self):
+        """Under stable an identity tile reads a leg-variable counter from its canon twin."""
+        g, vals = self.src.tiles[IDENT]
+        twin = (g, {"moby.tris": 10})
+        terms = gc.parse_pred("moby.env.tris>0", self.reg)
+        self.assertTrue(gc.eval_tile(terms, IDENT, g, vals, ROWS, self.reg, twin)[0])
+        terms = gc.parse_pred("moby.env.tris>0 and stable", self.reg)
+        self.assertFalse(gc.eval_tile(terms, IDENT, g, vals, ROWS, self.reg, twin)[0])
+        self.assertTrue(gc.eval_tile(terms, IDENT, g, vals, ROWS, self.reg, None)[0])
+        terms = gc.parse_pred("moby.env.tris>0 and stable", self.reg)
+        self.assertTrue(gc.eval_tile(terms, CANON, *self.src.tiles[CANON], ROWS, self.reg)[0])
+        self.assertEqual(gc.twin_of(IDENT), CANON)
+        self.assertIsNone(gc.twin_of(INTER))
+
+
+class Settles(Base):
+    """census-settle.tsv in a store entry: settles sums it."""
+
+    def test_settles(self):
+        """Two legs' lines sum; an entry without the file says so."""
+        self.finalized("20261101-000000-aaaa", HEAD)
+        d = os.path.join(self.store, UNIT, "20261101-000000-aaaa")
+        with quiet() as out:
+            self.assertEqual(gc.main(["settles", "--game", "spyro-1", "--store", self.store]), 0)
+        self.assertIn("no census-settle.tsv", out.getvalue())
+        write(os.path.join(d, gc.SETTLE_NAME), "bk2\trow1\toriginal-canon\t2\t76.5\t46.0\n"
+                                              "freecam\trow2\toriginal-canon\t1\t20.0\t20.0\n")
+        with quiet() as out:
+            self.assertEqual(gc.main(["settles", "--game", "spyro-1", "--store", self.store]), 0)
+        self.assertIn("2 leg(s), 3 backdrop settle(s), tally pass 0.1 ms total, 32.2 us per settle, "
+                      "46.0 us longest", out.getvalue())
 
 
 class QueryFiles(Base):

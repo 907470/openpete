@@ -59,7 +59,8 @@
 # On the presentation tier every leg runs with OPENPETE_TILE_CENSUS and must
 # leave each tile's <tile base>.census sidecar (scripts/presentation-game.sh,
 # tile census); a PNG without one is a missing capture. Each leg's capture
-# seconds are appended to <outdir>/row-cost.tsv.
+# seconds are appended to <outdir>/row-cost.tsv, and its frozen-backdrop
+# settle tally cost to <outdir>/census-settle.tsv (pg_census_settle).
 #
 # Exit: 0 = all captures produced, 1 = a capture is missing (hard failure) or
 #           the corpus manifest is missing (the message names the path),
@@ -278,6 +279,7 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   pg_note_device "$log" "$OUTDIR"
   local miss=0
   pg_row_cost "$OUTDIR" bk2 "$name" "$lod-$leg" "$t_start"
+  pg_census_settle "$OUTDIR" bk2 "$name" "$lod-$leg" "$log"
   # A row's mod must have loaded: without it the leg captures the unmodded
   # scene, which is a different picture, not this row. Its tiles are deleted
   # and the leg fails and is kept.

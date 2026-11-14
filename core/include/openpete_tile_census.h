@@ -48,6 +48,9 @@ typedef struct {
     unsigned flags;     /* bit TC_FLAG_* */
     unsigned prims;     /* bit TC_PRIM_* */
     uint32_t cbits;     /* class bits (OPENPETE_CB_*) */
+    int      inview;    /* the triangle overlaps the captured view; set by the
+                         * caller for a triangle carrying
+                         * OPENPETE_CB_TERRAIN_NEARCLIP, read for no other */
 } tc_tri_t;
 
 /* The counts of one scene. Plain data: copied by assignment. */
@@ -60,6 +63,10 @@ typedef struct {
     uint32_t cbit[TC_CBITS];       /* triangles carrying each class bit */
     uint32_t prim_last[TC_PRIMS];  /* run state: primitive of the previous triangle */
     uint8_t  prim_open[TC_PRIMS];  /* run state: the previous triangle carried the flag */
+    uint32_t ui;                   /* triangles decoded from a 2D primitive (prim nonzero) */
+    uint32_t ncut_view;            /* OPENPETE_CB_TERRAIN_NEARCLIP triangles overlapping the view */
+    uint32_t ncut_cache;           /* retained-cache fan triangles with a cut corner */
+    uint32_t ncut_cache_view;      /* ... of which overlap the view */
     uint16_t mcls[TC_MOBY_TYPES];  /* moby class + 1 per hash slot, 0 empty */
     uint32_t mcnt[TC_MOBY_TYPES];
     int      sec[4];               /* retained sectors: drawn, hp, lp, near-variant */
@@ -74,12 +81,24 @@ void tc_tally_clear(tc_tally_t *t);
  *
  * Counts it under its tag family and kind, category, blend, flags and each
  * class bit it carries; a moby-family triangle also under its class (tag
- * bits 15:0). A 2D flag adds
- * a primitive when the previous triangle did not carry the flag or names
- * another primitive address; a flagged triangle with address 0 counts alone.
+ * bits 15:0); a triangle with a primitive address under the 2D layer; a
+ * near-clipped terrain triangle the caller found in view under the in-view
+ * cut count. A 2D flag adds a primitive when the previous triangle did not
+ * carry the flag or names another primitive address; a flagged triangle
+ * with address 0 counts alone.
  * @param t The tally.
  * @param tri The triangle. */
 void tc_tally_tri(tc_tally_t *t, const tc_tri_t *tri);
+
+/** @brief Test whether a screen-space triangle overlaps the view rectangle [-1, 1] x [-1, 1].
+ *
+ * The corners are clip-space positions after the perspective divide. A
+ * triangle of zero area covers nothing and does not overlap. Separating-axis
+ * test: the rectangle's two axes, then each edge's normal.
+ * @param x The corners' x.
+ * @param y The corners' y.
+ * @return 1 when the triangle and the rectangle share a point, else 0. */
+int tc_tri_in_view(const float x[3], const float y[3]);
 
 /** @brief Register the render-path mapping of tag families, which the game layer owns.
  *

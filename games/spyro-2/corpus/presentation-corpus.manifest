@@ -72,6 +72,13 @@ autumn-plains-skelos-badlands-portal-entry@tcache|1723|200||1723,2273|OPENPETE_T
 # walked set differ between runs.
 autumn-plains-skelos-badlands-portal-entry@tcbudget0|1361|200||1361,1375,2265|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=0
 autumn-plains-skelos-badlands-portal-entry@tcsqueeze|1723|200||1723,2273|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768 OPENPETE_TC_BAKE_BUDGET_US=off
+# @vram: the two presents of the destination load (VBLs 1349 and 1350) whose
+# scene holds no triangle of the game's, no retained terrain, no retained
+# backdrop and no held clear, so the compose shows the PSX VRAM framebuffer
+# (compose.vram in the tile census). The presents around them compose: 1347,
+# 1348 and 1351 to 1356 an empty scene over a kept backdrop or held clear,
+# 1357 on the destination's world.
+autumn-plains-skelos-badlands-portal-entry@vram|1349|1000||1349,1350
 #
 # colossus-ice-skating: the player on the Colossus rink with the mirrored copy
 # under the ice. 1494, 1694 and 1734 are intermediate legs whose tick pair spans a

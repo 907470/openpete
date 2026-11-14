@@ -61,7 +61,9 @@ The sidecar holds:
 - the tally of the scene the capture composes (no prefix);
 - `compose.vram` = 1 when the compose found no content and shows the PSX
   VRAM framebuffer (a load screen); the scene counters then describe
-  triangles the compose did not draw;
+  triangles the compose did not draw. The Spyro 2 row
+  `autumn-plains-skelos-badlands-portal-entry@vram` pins the two presents of
+  a destination load (VBLs 1349, 1350) that compose this way;
 - the tally of the frozen backdrop the tile draws, every tally, bit and
   cache counter under the prefix `backdrop.`, taken when the backdrop was
   rendered by the headless settle; or `backdrop.unknown` = 1 when the tile
@@ -94,7 +96,9 @@ to 9); `<n>` is a decimal integer.
 
 | Name | Unit | Counts |
 |---|---|---|
-| `<path>.tris` | tris | triangles whose provenance tag maps to the path (`tag_kind_path`). The tag is sticky: the level-transition dome and the native GTE feed set none, so their triangles count under the family set last. Untagged 2D, HUD and text triangles count under no path. Retained cache sectors add no triangle. |
+| `<path>.tris` | tris | triangles whose provenance tag maps to the path (`tag_kind_path`); `ui` and `transition` have rows of their own. The tag is sticky: the native GTE feed sets none, so its triangles count under the family set last. Untagged 2D, HUD and text triangles count under no tag path. Retained cache sectors add no triangle. |
+| `ui.tris` | tris | triangles decoded from a 2D primitive (`scene_tri_t.prim` nonzero): every primitive linked through the game's 2D ordering-table insert and the glyph chains (`RP_UI`); the 3D HUD models are moby triangles |
+| `transition.tris` | tris | retired, never written: no tag family maps to the level-transition backdrop path, its dome triangles carry no provenance tag and nothing else in the scene marks them; they count under `cat.0.tris` and `blend.0.tris`. A query naming it is refused. |
 | `<family>.tris.k<n>` | tris | triangles of the family and tag kind `n`: the particle family's feeder kind (k2 glow rings, k3 sparkle flares, k4 sparkle lines, k5 the dragon-rescue star), the shadow family's caster kind (k0 moby, k1 player), k0 for every other family; kinds past 7 fold into k7 |
 | `tag.unmapped.tris` | tris | triangles whose tag family (10 to 15) maps to no render path |
 | `cat.<n>.tris` | tris | triangles of scene category `n` (`OPENPETE_SCENE_*`, 0 WORLD to 14 TERRAIN_KEY; 15 holds any other value) |
@@ -111,6 +115,7 @@ to 9); `<n>` is a decimal integer.
 | `moby.type.<n>` | tris | moby-family triangles of moby class `n` (tag bits 15:0) |
 | `terrain.sec.retained` | sectors | retained terrain-cache sectors the scene's state draws (`OPTC_SF_DRAWN`); zero unless the cache runs, which on a software device needs `OPENPETE_TERRAIN_CACHE_FORCE=1` |
 | `terrain.sec.retained_hp`, `_lp`, `_near` | sectors | retained sectors drawn at the high-poly tier, the low-poly tier, through the near variant |
+| `terrain.nearclip.inview.tris` | tris | the `terrain.nearclip.tris` triangles that overlap the captured view (below) |
 | `compose.vram`, `backdrop.unknown` | flag | above |
 
 ### Class bits
@@ -130,12 +135,58 @@ carry each bit. A bit is never reused; a retired bit keeps its row.
 | 5 | `OPENPETE_CB_MOBY_SAT` | `moby.sat.tris` | moby triangles with a coordinate-saturated vertex |
 | 6 | `OPENPETE_CB_MOBY_NEARCUT` | `moby.nearcut.tris` | the parts of a walk triangle the moby near clip cut; a triangle wholly behind the plane is dropped and counts nowhere |
 | 7 | `OPENPETE_CB_MOBY_TIEPULL` | `moby.tiepull.tris` | opaque keyed actor triangles whose cross-moby tie pull is nonzero (a face coinciding with an earlier record's face of its world bucket); not the within-record coincident pull |
-| 8 | `OPENPETE_CB_TERRAIN_NEARCLIP` | `terrain.nearclip.tris` | the parts of a walked terrain triangle the near plane cut; retained cache sectors clip on the GPU and count nowhere |
+| 8 | `OPENPETE_CB_TERRAIN_NEARCLIP` | `terrain.nearclip.tris` | the parts of a walked terrain triangle the near plane cut; the counter adds the retained cache's cut clip-fan triangles (below) |
 
 Bit 2 is set by `moby_simple_record` and `moby_simple_project_record`,
 which the Spyro 2 and 3 second-kind pass calls. Spyro 1 draws its simple
 models through the shaded pass, which clears the record word, so on Spyro 1
 `moby.simple.tris` and `moby.screen.tris` stay zero.
+
+### Near-plane cuts
+
+The near plane cuts a terrain triangle under nearly every camera: the
+ground beneath and behind the camera crosses it on 85 to 91% of tiles, off
+screen. A cut changes pixels only through the part of the triangle the
+capture shows, so `terrain.nearclip.inview.tris` counts the cut triangles
+whose clip-space corners share a point with the view rectangle
+(`tc_tri_in_view`). A walked triangle is mapped through `scene_to_clip`
+as the capture composes it (full extent at the capture's widen), at the
+census record. A retained near-variant sector (`OPTC_SF_NEARVAR`) is
+clipped by the cache's vertex stage (`terrain.vert`, the near-plane clip
+fan), so the census reads that stage back: `census_shot_record` draws the
+near-variant arenas with the `TERRAIN_READBACK` stage of their family into
+a target of its own (`openpete_tercache_nearcut_record`), and after the
+compose `openpete_tercache_nearcut_read` counts each fan triangle whose
+three vertices were drawn and one of which is a cut (readback key kind
+`RB_CUT`), and whether its positions over w overlap the view. Both counts
+are added to `terrain.nearclip.tris` and `terrain.nearclip.inview.tris`,
+so the two counters mean the same on walked and retained sectors. The
+frozen backdrop's settle records the same readback inside its own render
+(`freeze_render_into`), in every headless build, when its scene draws a
+near-variant sector; the counts are read into the backdrop tally at the next
+capture record, so the settle never waits on the device for them. A sector of the cache is recorded only when the
+selected state draws one, so a run without the cache does no readback.
+
+A query for a change to the terrain near clip is `terrain.nearclip.inview.tris > 0`.
+
+### Canonical and identity legs
+
+The identity leg (`__ident__`) composes the sub-tick re-extract at alpha 1
+on the canonical capture's VBL; the canonical leg composes the game's own
+render. With equal images the two scenes can still differ in triangles
+that draw no pixel: the re-extract's moby pass culls occluded records
+(`occl_record_culled`), appends host-built records (the widened-view
+reveal, trailing-edge records) and drops held records the previous tick did
+not show (`rex_hold_unshown_drop`), its terrain walk can hold sectors the
+canonical walk did not, and it re-applies the 2D overlay. `TC_LEGVAR` in the registry lists every counter
+that can differ for that reason: the moby and terrain counters, their class
+bits, `flag.shell`, `flag.key_order`, `flag.kfold`, `flag.portal_rim`,
+`flag.host_added`, `flag.fog_delta`, `flag.carry.prims` (the re-extract
+re-applies the 2D overlay with the carry marker on every primitive it
+re-applies, the HUD panel included, which the canonical scene draws
+unmarked), and the pools `cat.<n>.tris` and
+`blend.<n>.tris`. Every other counter, and every `backdrop.` counter, is
+equal on the two legs of one image.
 
 ### Generations
 
@@ -148,7 +199,14 @@ every name in an old sidecar resolves. `TC_GEN` rises by one in every change
 that adds a row or changes what a row counts, and that row's `since` is the
 new generation. A sidecar written at a lower generation than a row's
 `since` holds no value for it: the value is unknown, not zero, and
-`golden-census.py` prints it with `?` and treats it as engaged.
+`golden-census.py` prints it with `?` and treats it as engaged. A predicate
+or `nearest` naming a retired row is refused. A name resolves to the first
+row whose pattern matches it, so a row for one name (`ui.tris`) stands
+before the pattern row that also matches it (`<path>.tris`).
+
+Generation 3 added `ui.tris` and `terrain.nearclip.inview.tris`, retired
+`transition.tris`, and added the retained cache's cut triangles to
+`terrain.nearclip.tris`.
 
 Adding a class bit: define `OPENPETE_CB_<NAME>` at the next free bit, raise
 `OPENPETE_CB_COUNT`, add `TC_BIT(<bit>, "<counter>")` and its `TC_ROW` with
@@ -173,6 +231,7 @@ the capture record's `source-tree` (else `census store entry refused:
   <run-id>/               a finalized entry:
     *-vk.census           every captured tile's sidecar
     tile-digests.tsv      `tile<TAB>digest16` per captured tile
+    census-settle.tsv     per capture leg, the frozen-backdrop settles and their tally pass time
     moved.txt             the accepted attempt's DIVERGE, EXTRA and EXCEED tiles from stream.log
     run-args.json, done   copies of the run's files
     accept.json           the coordinator's record at the pull
@@ -212,6 +271,11 @@ A predicate is a conjunction of terms joined by `and`:
 - the leg terms `canon`, `inter`, `ident`, `lodext` (the tile is the
   extended-LOD leg), `orig` (it is not);
 - `own`;
+- `stable`: an identity tile reads every leg-variable counter (`TC_LEGVAR`)
+  from its canon twin's sidecar, the canon tile of its row, LOD and VBL in
+  the same entry, so the predicate holds on it exactly when it holds on the
+  canonical scene of the same image; a twin missing from the entry leaves
+  the tile's own values;
 - `launch:<substring>`, matched against the row's manifest launch field.
 
 Tile names follow the presentation golden:
@@ -333,6 +397,22 @@ scripts/golden-fleet.py run --all --commits main~6..main --queries queries --exp
 scripts/golden-census.py score --run ~/.cache/openpete-fleet/runs/<run-id> --window
 ```
 
+### `settles`
+
+`settles (--game G | --all)` prints, per game, the counts source's
+frozen-backdrop settles: the legs that wrote a sidecar, the settles their
+processes ran, the tally pass time in total and per settle, and the
+longest pass, from the entry's `census-settle.tsv`. The corpus scripts
+append one line per leg (`pg_census_settle`: kind, row key, LOD and leg,
+then the totals of the leg's last `tile-census:` log line); the fleet pulls
+the file with the unit, prints the same summary per unit
+(`[fleet] <unit>: backdrop settles: ...`) and keeps the file in the store
+entry. An entry from a run before the file existed says so.
+
+```sh
+scripts/golden-census.py settles --all
+```
+
 ### `sidecar-diff`
 
 `sidecar-diff DIR [DIR2]` compares `*-vk.census` files byte for byte: two
@@ -357,9 +437,11 @@ verdict.
 
 - `tests/unit/tile_census_test.c` (target `tile_census_test`): one counter
   per class bit under the own and `backdrop.` prefixes, a name for every
-  defined bit, and a triangle carrying an unregistered bit refusing the
-  sidecar.
+  defined bit, a triangle carrying an unregistered bit refusing the
+  sidecar, primitive runs of a 2D flag, `ui.tris`, the in-view near-cut count with the cache's share, and
+  `tc_tri_in_view` on six placements.
 - `scripts/fences/tests/test_golden_census.py` (ctest
   `tile_census_selftest`, labels `presentation;fence`): the store's
-  finalize, prune, ancestry and refusals, query-file fixing and scoring, and
-  the accessor fence's controls, on scratch copies.
+  finalize, prune, ancestry and refusals, query-file fixing and scoring,
+  the retired-row refusal, the leg-variable list and the `stable` term,
+  `settles`, and the accessor fence's controls, on scratch copies.

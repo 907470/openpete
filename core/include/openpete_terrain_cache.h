@@ -1134,6 +1134,30 @@ int  openpete_tercache_readback_record(const openpete_tercache_clip *clip,
  *         write failure. */
 int  openpete_tercache_readback_write(const char *path);
 
+/** @brief Record the near-plane cut census of the selected retained terrain state.
+ *
+ * Draws the near-variant arenas' drawn spans with the TERRAIN_READBACK stage
+ * of their family (the shipped position chain, terrain.vert rb_emit) into a
+ * target of its own, as openpete_tercache_readback_record does for every
+ * arena; openpete_tercache_nearcut_read counts the result. Must be called
+ * inside a frame, outside any render pass. A call re-arms the recording.
+ * @param clip The screen-to-clip mapping the positions are computed under.
+ * @param vram VRAM texture, or NULL to leave the binding.
+ * @return 1 when recorded, else 0 (no cache state selected, or a layout past the tallest target). */
+int  openpete_tercache_nearcut_record(const openpete_tercache_clip *clip,
+                                      struct rhi_texture *vram);
+/** @brief Count the clip-fan triangles of the last near-cut recording that carry a cut corner, and those overlapping the view.
+ *
+ * Waits the device idle and reads the recording back. A fan triangle counts
+ * when its three vertices were drawn and one of them is a cut of the clip
+ * (its readback key's kind RB_CUT); it overlaps the view when its corners'
+ * clip positions, divided by w, share a point with [-1, 1] x [-1, 1]
+ * (tc_tri_in_view). Disarms the recording.
+ * @param cut Receives the cut triangles.
+ * @param cut_view Receives those overlapping the view.
+ * @return 0 when counted, -1 when no recording is armed or the read failed (both counts 0). */
+int  openpete_tercache_nearcut_read(uint32_t *cut, uint32_t *cut_view);
+
 /* Census (builder increments rebuild counts; the module tracks the rest). */
 typedef struct {
     uint32_t chunks, verts_used, verts_cap;   /* summed over arenas */

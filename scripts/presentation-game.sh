@@ -454,6 +454,21 @@ pg_census_check() {
   return $miss
 }
 
+# Append a leg's frozen-backdrop settle tally cost to <outdir>/census-settle.tsv
+# (`kind<TAB>row key<TAB>lod-leg<TAB>settles<TAB>pass us total<TAB>pass us
+# longest`), from the last `tile-census:` line of its log, which carries the
+# process's running totals (census_shot_write); a leg that wrote no sidecar
+# appends nothing. scripts/golden-fleet.py keeps the file in the census store
+# entry and `golden-census.py settles` sums it. args: outdir kind key lod-leg log
+pg_census_settle() {
+  (( ${PG_CENSUS_ON:-0} )) || return 0
+  grep -a 'tile-census: .*backdrop settles' "$5" 2>/dev/null | tail -1 | sed -n \
+    's/.*backdrop settles \([0-9]*\), tally pass \([0-9.]*\) us total, \([0-9.]*\) us longest.*/\1\t\2\t\3/p' |
+    awk -v k="$2" -v r="$3" -v l="$4" -F'\t' '{ printf "%s\t%s\t%s\t%s\t%s\t%s\n", k, r, l, $1, $2, $3 }' \
+    >>"$1/census-settle.tsv"
+  return 0
+}
+
 # Append a finished leg's capture seconds to <outdir>/row-cost.tsv
 # (`kind<TAB>row key<TAB>lod-leg<TAB>seconds`), which the golden fleet merges
 # into its per-row cost cache. args: outdir kind key lod-leg start-epoch
