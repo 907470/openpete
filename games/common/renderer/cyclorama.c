@@ -816,10 +816,12 @@ static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
 
     cyc_capture_visibility(cpu);
 
-    cyc_extract(cpu, a0, a1, a2, 0, 0);     /* native scene from gamestate */
-    if (feed)
-        push_scene(cpu);                    /* always sets the scene bg colour;
+    { OP_PROF_ACCUM_SCOPE("cyclorama.extract");
+      cyc_extract(cpu, a0, a1, a2, 0, 0);   /* native scene from gamestate */
+      if (feed)
+          push_scene(cpu);                  /* always sets the scene bg colour;
                                              * dome tris gated inside on RP_CYCLORAMA */
+    }
 
     if (verify) {
         static int s_dumped OP_GUARDED_BY(sim) = 0;    /* thread-roles: the hook runs on sim */
@@ -845,6 +847,7 @@ void cyclorama_reextract(CPUState* cpu, double alpha, int interp_on) OP_REQUIRES
      * selected. */
     if (!hook_reextract_ready(RP_CYCLORAMA)) return;
     if (s_cyc_a1 == 0 || s_cyc_a2 == 0 || !s_cyc_curr_valid) return;   /* no real frame captured yet */
+    OP_PROF_ACCUM_SCOPE("cyclorama.rex");
     if (s_cyc_curr_cam) {
         cyc_extract(cpu, s_cyc_a0, s_cyc_a1, s_cyc_a2, 0, 0);
     } else {

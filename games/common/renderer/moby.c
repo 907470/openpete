@@ -17832,10 +17832,10 @@ static void moby_reextract_body(CPUState* cpu) {
     int sim_walk = 0;
     if (sim_fresh) {
         moby_simple_begin(cpu);
-        moby_game.simple_replay(cpu);
+        { OP_PROF_ACCUM_SCOPE("msim.replay"); moby_game.simple_replay(cpu); }
         s_esim.wbk = -1;
         sim_walk = s_gout.n;
-        push_scene_moby(cpu);
+        { OP_PROF_ACCUM_SCOPE("msim.push"); push_scene_moby(cpu); }
     }
     if (reg_fresh) moby_ovl_reextract(cpu);
     spyro_native_prod_camera_leave();

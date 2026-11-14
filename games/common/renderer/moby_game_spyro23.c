@@ -37,6 +37,7 @@
 #include "renderer/orchestrator.h"     /* the canonical-render epoch */
 #include "renderer/cut_guard.h"        /* cut_census_on */
 #include "renderer/credits_key.h"      /* game_credits_letter_key */
+#include "openpete_profile.h"          /* OP_PROF_ACCUM_SCOPE: the simple pass's cost split */
 
 #include <math.h>
 #include <stddef.h>
@@ -2206,7 +2207,8 @@ static int s23_simple_decode(CPUState* cpu) {
         moby_simple_otk_record(MOBY_OTK_S23_SIMPLE_FLAT, itr[2], &ork[1]);
         s23_simple_vertices(cpu, H, nv, vmod);
         const moby_simple_xform_t xf = { (const int (*)[3])R, (const float (*)[3])Rf, pl.TR, itr, &ork[0] };
-        moby_simple_project_record(&xf, (const double (*)[3])vmod, nv, vscr, iv);
+        { OP_PROF_ACCUM_SCOPE("msim.project");
+          moby_simple_project_record(&xf, (const double (*)[3])vmod, nv, vscr, iv); }
         s_simple_verts += nv;
 
         s23_simple_postrace(cpu, moby, (const float (*)[2])vscr, nv, (const int (*)[3])R, rot, dmob);
@@ -2220,8 +2222,9 @@ static int s23_simple_decode(CPUState* cpu) {
         F.ncol = s23_simple_colours(cpu, H, cpu->read_word(H), tier, ctab, &F.clut_bias, &faces);
         const uint32_t mcol = s23_simple_flat_reload(cpu, moby, flat_w);
         s23_abr_begin();
-        s23_simple_faces(cpu, &F, faces);
-        emitted += s23_abr_flush(cpu, nv, (const double (*)[3])vmod, itr, R, key, mcol != 0u);
+        { OP_PROF_ACCUM_SCOPE("msim.faces"); s23_simple_faces(cpu, &F, faces); }
+        { OP_PROF_ACCUM_SCOPE("msim.abr_flush");
+          emitted += s23_abr_flush(cpu, nv, (const double (*)[3])vmod, itr, R, key, mcol != 0u); }
     }
     return emitted;
 }
