@@ -3129,6 +3129,7 @@ const moby_game_t moby_game_spyro23 = {
     .decode_faces      = s23_decode_faces,
     .read_record       = s23_read_record,
     .frame_patch_list  = s23_frame_patch_list,
+    .frame_patch_body_first = 1,   /* mobydraw.s 0x80044648 (S2), 0x80031268 (S3) */
     .anim_blend_byte   = s23_anim_blend_byte,
     .model_is_animated = s23_model_is_animated,
     .simple_pass       = s23_simple_pass,

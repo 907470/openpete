@@ -68,6 +68,15 @@ endif()
 set_target_properties(moby_snap_rule_test PROPERTIES C_STANDARD 99)
 add_test(NAME moby_snap_rule_test COMMAND moby_snap_rule_test)
 
+# moby_patch_list_test - header-only. The keyframe patch-list walk under
+# each game's copy loop: a count-0 entry copies one word where the loop runs
+# its body first (Spyro 2/3) and none where it tests first (Spyro 1).
+add_executable(moby_patch_list_test moby_patch_list_test.c)
+target_include_directories(moby_patch_list_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/games/common/renderer)
+set_target_properties(moby_patch_list_test PROPERTIES C_STANDARD 99)
+add_test(NAME moby_patch_list_test COMMAND moby_patch_list_test)
+
 # view_rect_test - header-only. The native view scissor equals the pixel set
 # the view's quads cover over a window-size grid; the separately rounded
 # origin-and-size arithmetic is the negative control.

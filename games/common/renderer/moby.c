@@ -50,6 +50,7 @@
 #include "openpete_log.h"           /* OPL_ERROR_F - ABR/blend FIXME runtime alarms */
 #include "openpete_interp.h"        /* op_now() - sub-tick clock for rotation interp */
 #include "renderer/moby_rank.h"              /* same-moby paint rank (native key) */
+#include "renderer/moby_patch_list.h"        /* the keyframe patch-list walk */
 #include "renderer/moby_rank_cal.h"          /* its calibration instrument */
 #include "openpete_interp_objs.h"   /* per-object prev/curr snapshots (rotation interp) */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
@@ -6502,17 +6503,34 @@ static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  * asset, so a keyframe's patched decode replays for every present that still
  * renders that keyframe (incl. the sub-tick re-extract path). */
 #define FPATCH_MAX 384
-typedef struct { uint32_t addr, val; } fpsave_t;
+typedef moby_patch_save_t fpsave_t;
 static long s_fp_hit, s_fp_miss;   /* tier-census counters */
+
+/** @brief Read one guest word for the patch-list walk.
+ * @param ctx The CPUState.
+ * @param addr The address.
+ * @return The word. */
+static uint32_t fpatch_read(void* ctx, uint32_t addr) {
+    CPUState* cpu = (CPUState*)ctx;
+    return cpu->read_word(addr);
+}
+/** @brief Write one guest word for the patch-list walk.
+ * @param ctx The CPUState.
+ * @param addr The address.
+ * @param val The word. */
+static void fpatch_write(void* ctx, uint32_t addr, uint32_t val) {
+    CPUState* cpu = (CPUState*)ctx;
+    cpu->write_word(addr, val);
+}
 
 /** @brief Stage in the sub-tick view the span a patched faceblock decode touches.
  *
  * The span covers the faceblock the decode reads (its count word and
  * bytecount bytes) and every word the list patches, which the .s writes at an
- * offset into the HP faceblock. The list is walked read-only first, since the
- * span must exist before the first write; the walk stops where
- * moby_frame_patch_apply stops: on the terminating entry, or where the words or
- * the entries exceed FPATCH_MAX. A span above 0x20000 bytes is refused.
+ * offset into the HP faceblock. The list is walked read-only first
+ * (moby_patch_list_span), since the span must exist before the first write;
+ * the walk stops where moby_frame_patch_apply stops. A span above 0x20000
+ * bytes is refused.
  * @param cpu The guest CPU state, read only.
  * @param fb The faceblock the decode reads.
  * @param bytecount The faceblock's byte count.
@@ -6524,44 +6542,21 @@ static int moby_frame_patch_stage(CPUState* cpu, uint32_t fb, uint32_t bytecount
     uint32_t lo = fb, hi = fb + 4u + bytecount;
     uint32_t fbHP = cpu->read_word(header + ANIM_FACES_HP);
     if (fbHP >= 0x80000000u && list >= 0x80000000u) {
-        uint32_t at = list;
-        int n = 0, entries = 0;
-        for (;;) {
-            uint32_t a0 = cpu->read_word(at); at += 4;
-            uint32_t dst = fbHP + (a0 & 0xFFFFu);
-            int cnt = (int)((a0 >> 24) & 0x7Fu);
-            if (n + cnt > FPATCH_MAX || ++entries > FPATCH_MAX) break;   /* the apply rolls this back */
-            n += cnt; at += 4u * (uint32_t)cnt;
-            uint32_t end = dst + 4u * (uint32_t)cnt;
-            if (dst < lo) lo = dst;
-            if (end > hi) hi = end;
-            if ((int32_t)a0 <= 0) break;
-        }
+        const moby_patch_mem_t m = { cpu, fpatch_read, fpatch_write };
+        moby_patch_list_span(&m, fbHP, list, moby_game.frame_patch_body_first,
+                             FPATCH_MAX, FPATCH_MAX, &lo, &hi);
     }
     if (hi <= lo || hi - lo > 0x20000u) return 0;
     return openpete_subtick_view_stage(lo, hi - lo) != NULL;
 }
 
-/** @brief Write back the words a partly applied patch list replaced, in forward order.
- *
- * @param cpu The guest CPU state; the saved words are written.
- * @param sv The (address, original) pairs the apply saved.
- * @param n The count of pairs in sv.
- * @return -1, moby_frame_patch_apply's result for a list it does not apply. */
-static int moby_frame_patch_rollback(CPUState* cpu, const fpsave_t* sv, int n) {
-    for (int k = 0; k < n; k++) cpu->write_word(sv[k].addr, sv[k].val);
-    return -1;
-}
-
 /** @brief Apply a keyframe's faceblock patch list to PSX RAM, saving each original word.
  *
- * Each entry is a header word, (cnt << 24) | the byte offset into the HP
- * faceblock with cnt in bits 24-30, followed by cnt replacement words; the
- * entry whose header word is <= 0 ends the list, the only end the .s copy
- * loops test (S1 r_moby.s:542-566, S2 mobydraw.s:947-964, S3
- * mobydraw.s:943-960). Every entry applies; a list whose words or entries
- * exceed FPATCH_MAX applies none. The caller restores the saved words after
- * the decode.
+ * The list's form and each game's copy loop are moby_patch_list.h's (S1
+ * r_moby.s:542-566, S2 mobydraw.s:947-964, S3 mobydraw.s:943-960); an entry
+ * copies moby_patch_entry_words words under moby_game.frame_patch_body_first.
+ * Every entry applies; a list whose words or entries exceed FPATCH_MAX
+ * applies none. The caller restores the saved words after the decode.
  * @param cpu The guest CPU state; the patched words are written.
  * @param header The AnimationHeader whose ANIM_FACES_HP names the faceblock.
  * @param list The patch list.
@@ -6572,22 +6567,9 @@ static int moby_frame_patch_apply(CPUState* cpu, uint32_t header, uint32_t list,
     if (list < 0x80000000u) return 0;
     uint32_t fbHP = cpu->read_word(header + ANIM_FACES_HP);
     if (fbHP < 0x80000000u) return 0;
-    uint32_t at = list;
-    int n = 0, entries = 0;
-    for (;;) {
-        uint32_t a0 = cpu->read_word(at); at += 4;
-        uint32_t dst = fbHP + (a0 & 0xFFFFu);
-        int cnt = (int)((a0 >> 24) & 0x7Fu);
-        if (n + cnt > FPATCH_MAX || ++entries > FPATCH_MAX)   /* oversized: roll back */
-            return moby_frame_patch_rollback(cpu, sv, n);
-        for (int q = 0; q < cnt; q++) {
-            sv[n].addr = dst; sv[n].val = cpu->read_word(dst);
-            cpu->write_word(dst, cpu->read_word(at));
-            at += 4; dst += 4; n++;
-        }
-        if ((int32_t)a0 <= 0) break;
-    }
-    return n;
+    const moby_patch_mem_t m = { cpu, fpatch_read, fpatch_write };
+    return moby_patch_list_apply(&m, fbHP, list, moby_game.frame_patch_body_first,
+                                 sv, FPATCH_MAX, FPATCH_MAX);
 }
 
 #define FP_SLOTS 32

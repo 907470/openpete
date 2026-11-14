@@ -253,6 +253,10 @@ typedef struct moby_game {
      * list ignores it. */
     uint32_t (*frame_patch_list)(CPUState* cpu, uint32_t rec, uint32_t model,
                                  uint32_t frame_a);
+    /* Nonzero where the game's patch copy loop runs its body before testing
+     * the entry's count, so an entry with count 0 copies one word and
+     * consumes one list word (moby_patch_list.h); 0 where it tests first. */
+    int frame_patch_body_first;
 
     /* The record's keyframe-blend byte (record word 0 bits 8-15, the numerator
      * the draw scales by 16) for a given value of the moby's animation-state
