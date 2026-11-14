@@ -719,13 +719,27 @@ static uint32_t pend_load(const uint8_t* p, uint32_t size) {
     return head;
 }
 
+/** @brief 1 when a block's key, card slot, save index, pending flag and legacy lengths lie in the ranges this module writes.
+ *
+ * The legacy lengths index the fixed legacy arrays and reach a mod as a
+ * read size, and the slot and index select sidecar tables, so a block
+ * read from a savestate is refused rather than clamped when any is out
+ * of range.
+ * @param in The block header as read from the section.
+ * @return 1 when every field is in range, 0 otherwise. */
+static int block_fields_ok(const ms_block_t* in) {
+    return in->key <= KEY_SET && in->key_slot < MS_SLOTS && in->key_idx < MS_MAX_IDX && in->pload <= 1u &&
+           in->legacy_len <= OPENPETE_MODSAVE_LEGACY_MAX && in->pload_legacy_len <= OPENPETE_MODSAVE_LEGACY_MAX;
+}
+
 /** @brief Locate the key's block at the tail of a section stripped of its pending trailer.
  * @param p The section.
  * @param size Its length without the pending trailer.
  * @param own Receives the game's own payload length: @p size without a block
  *        trailer, the bytes before the trailer otherwise.
- * @return The block (header then rows), or NULL when no trailer is present or
- *         its version or row count does not match its length. */
+ * @return The block (header then rows), or NULL when no trailer is present,
+ *         its version or row count does not match its length, or a field
+ *         lies outside the range this module writes (block_fields_ok). */
 static const uint8_t* block_split(const uint8_t* p, uint32_t size, uint32_t* own) {
     uint32_t len = 0, magic = 0;
     *own = size;
@@ -738,6 +752,7 @@ static const uint8_t* block_split(const uint8_t* p, uint32_t size, uint32_t* own
     ms_block_t in;
     memcpy(&in, b, sizeof in);
     if (in.version != MS_BLOCK_VER || len != sizeof in + in.n_rows * sizeof(ms_row_t)) return NULL;
+    if (!block_fields_ok(&in)) return NULL;
     return b;
 }
 

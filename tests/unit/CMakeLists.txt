@@ -592,6 +592,23 @@ set_target_properties(mod_arena_test PROPERTIES C_STANDARD 11)
 add_test(NAME mod_arena_test COMMAND mod_arena_test)
 set_tests_properties(mod_arena_test PROPERTIES LABELS "mods")
 
+# mod_save_block_test - the mod-save key's block a savestate carries
+# (core/mods/mod_save.c): a block with a legacy length, key, key slot or
+# save index out of range is refused at parse, and a well-formed block
+# restores and saves back unchanged. Includes the module whole; host
+# services are stubs.
+add_executable(mod_save_block_test
+    mod_save_block_test.c
+    ${CMAKE_SOURCE_DIR}/core/host/sha256.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+target_include_directories(mod_save_block_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt
+    ${CMAKE_SOURCE_DIR}/core/mods)
+set_target_properties(mod_save_block_test PROPERTIES C_STANDARD 11)
+add_test(NAME mod_save_block_test COMMAND mod_save_block_test)
+set_tests_properties(mod_save_block_test PROPERTIES LABELS "mods")
+
 # text_moby_id_test - the HUD text-glyph provenance table
 # (games/spyro-1/renderer/text_moby_id.c): keys are the emitter call, not
 # the pool address; a generation survives its own draw's drain and is
