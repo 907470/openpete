@@ -11322,20 +11322,24 @@ static int moby_tie_face_on(const moby_tie_face_t* f, const moby_tie_face_t* g) 
 /** @brief Keep walk triangle i for the coincidence test and report whether it coincides with a kept face of another moby in world bucket b.
  *
  * The kept faces of bucket b all precede i in the scene's emit order, so a
- * match belongs to a record spliced into b before i's. The store runs per
- * scene (openpete_native_scene_epoch); a face past MOBY_TIE_FACES is not
- * kept and reports no match.
+ * match belongs to a record spliced into b before i's. A face of ordinal 0
+ * is of the first moby to reach b in the scene, so every kept face of b is
+ * its own moby's and the walk would reject each: it is kept without the walk
+ * and reports no match. The store
+ * runs per scene (openpete_native_scene_epoch); a face past MOBY_TIE_FACES
+ * is not kept and reports no match.
  * @param i Walk triangle index.
  * @param b Its world bucket, whose s_tie_bk entry moby_tie_ordinal stamped for this scene.
+ * @param ord Its splice ordinal (moby_tie_ordinal).
  * @return 1 when i coincides with an earlier record's face of b, else 0. */
-static int moby_tie_coincident(int i, int b) {
+static int moby_tie_coincident(int i, int b, int ord) {
     const unsigned stamp = openpete_native_scene_epoch() + 1u;
     if (s_tie_face_stamp != stamp) { s_tie_face_stamp = stamp; s_tie_face_n = 0; }
     if (s_tie_face_n >= MOBY_TIE_FACES) return 0;
     moby_tie_face_t* f = &s_tie_face[s_tie_face_n];
     moby_tie_face_fill(i, f);
     int hit = 0;
-    for (int j = s_tie_bk[b].head; j >= 0 && !hit; j = s_tie_face[j].next)
+    for (int j = ord > 0 ? s_tie_bk[b].head : -1; j >= 0 && !hit; j = s_tie_face[j].next)
         hit = s_tie_face[j].moby != f->moby && moby_tie_face_on(f, &s_tie_face[j]);
     f->next = s_tie_bk[b].head;
     s_tie_bk[b].head = (int16_t)s_tie_face_n++;
@@ -11352,7 +11356,7 @@ static int moby_tie_pull(int i) {
     const int ord = moby_tie_ordinal(i);
     const int b = s_wtri_wbk[i];
     if (b < 0 || b >= MOBY_TIE_BUCKETS || moby_walk_tri_host_added(s_wtri_moby[i])) return 0;
-    const int hit = moby_tie_coincident(i, b);
+    const int hit = moby_tie_coincident(i, b, ord);
     return hit ? ord : 0;
 }
 
