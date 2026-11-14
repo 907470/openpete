@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 97748334584889b8fbb79b3c156f3c73a3e91b81
+# head: b2003f9d17576b793f969efb3dbeb59223d6ddd0
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -100,7 +100,6 @@ games/common/renderer/moby.c	build_shaded_walk_tris	94	0
 games/common/renderer/moby.c	capture_gte	49	0	
 games/common/renderer/moby.c	compare_and_report	90	0	
 games/common/renderer/moby.c	compare_walk_vs_prims	251	0	
-games/common/renderer/moby.c	env_uv_ab	28	0	
 games/common/renderer/moby.c	hex_dump	35	0	
 games/common/renderer/moby.c	moby_build_validate	51	0	
 games/common/renderer/moby.c	moby_native_pass	49	0	

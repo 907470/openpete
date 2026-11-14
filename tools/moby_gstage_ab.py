@@ -255,7 +255,7 @@ def cmd_compare(path, rows, tag):
           f"unr_screen_census_px={fmt(s['screen'][s['unr']].max() if s['unr'].any() else 0.0)} "
           f"ident_bad={int((~s['ident_ok']).sum())} mismatches={nmis} "
           f"ctl_mismatches={int(c['mis'].sum())} "
-          f"pending_V313_paint_key_vertices={nvert} pending_V314_env_uv_vertices={env_v} "
+          f"paint_key_vertices={nvert} pending_V314_env_uv_vertices={env_v} "
           f"verdict={verdict}")
     for name, _desc in CLASSES:
         m = masks[name]

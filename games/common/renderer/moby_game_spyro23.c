@@ -555,9 +555,6 @@ static void s23_env_uv_f(const s23_env_present* P, const float mv[3], float* pu,
 
 /** @brief One face's four corner coordinate pairs: the drawn float map, or inside the verify probe's reference walk the game's integer routine.
  *
- * OPENPETE_MOBY_ENVUV_DUMP=1 adds, in the reference walk, one line per corner
- * with the routine's inputs and pair and the drawn map's inputs and pair, the
- * input of the float-against-integer calibration.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby the record draws.
  * @param rec The cull record.
@@ -565,14 +562,12 @@ static void s23_env_uv_f(const s23_env_present* P, const float mv[3], float* pu,
  * @param tex Receives the coordinates. */
 static void s23_env_face_uv(CPUState* cpu, uint32_t moby, const moby_face_rec_t* rec,
                             const float mv[4][3], moby_face_tex_t* tex) {
-    s23_env_present P;
-    s23_env_present_read(cpu, moby, rec, &P);
     if (!moby_env_reference()) {
+        s23_env_present P;
+        s23_env_present_read(cpu, moby, rec, &P);
         for (int k = 0; k < 4; k++) s23_env_uv_f(&P, mv[k], &tex->u[k], &tex->v[k]);
         return;
     }
-    static int s_dump = -1;
-    if (s_dump < 0) { const char* d = getenv("OPENPETE_MOBY_ENVUV_DUMP"); s_dump = (d && *d && *d != '0'); }
     s23_env_setup E;
     s23_env_setup_read(cpu, moby, rec, &E);
     for (int k = 0; k < 4; k++) {
@@ -580,16 +575,6 @@ static void s23_env_face_uv(CPUState* cpu, uint32_t moby, const moby_face_rec_t*
         s23_env_uv(cpu, &E, mv[k], &iu, &iv);
         tex->u[k] = (float)iu;
         tex->v[k] = (float)iv;
-        if (!s_dump) continue;
-        float fu, fv;
-        s23_env_uv_f(&P, mv[k], &fu, &fv);
-        fprintf(stderr, "[s23env-cal vbl=%u] m=%08X mv=%.4f,%.4f,%.4f R=%d,%d,%d,%d,%d,%d,%d,%d,%d "
-                "bias=%d borrow=%d uv=%u,%u Rf=%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f fbias=%.5f fuv=%.4f,%.4f\n",
-                openpete_frame, moby, mv[k][0], mv[k][1], mv[k][2],
-                E.R[0][0], E.R[0][1], E.R[0][2], E.R[1][0], E.R[1][1], E.R[1][2], E.R[2][0], E.R[2][1], E.R[2][2],
-                (int)E.bias, E.borrow, iu, iv,
-                P.R[0][0], P.R[0][1], P.R[0][2], P.R[1][0], P.R[1][1], P.R[1][2], P.R[2][0], P.R[2][1], P.R[2][2],
-                P.bias, fu, fv);
     }
 }
 

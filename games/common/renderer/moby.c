@@ -8423,13 +8423,9 @@ static int ptri_nearest_corner(const ptri* P, double x, double y, double r) {
  * other; each walk corner pairs with the nearest prim corner within 2.5 px.
  * The error of a pair is the larger of |du| and |dv| in texels. The line
  * reports the treated faces, those left unpaired, the paired corners, the
- * exact ones and the mean and largest error. OPENPETE_MOBY_ENVUV_DUMP=1 adds
- * one line per paired corner with the Moby, its class, both pairs and the
- * triangle match cost.
+ * exact ones and the mean and largest error.
  * @param assign compare_walk_vs_prims's assignment over the same walk. */
 static void env_uv_ab(const int* assign) {
-    static int s_dump = -1;
-    if (s_dump < 0) { const char* e = getenv("OPENPETE_MOBY_ENVUV_DUMP"); s_dump = (e && *e && *e != '0'); }
     long n = 0, exact = 0, sum = 0, mx = 0; int faces = 0, unmatched = 0;
     for (int wi = 0; wi < s_gout.n; wi++) {
         if (s_wtri_special[wi] != 2u) continue;
@@ -8446,11 +8442,6 @@ static void env_uv_ab(const int* assign) {
             const int du = abs(wu - s_ptri[bp].u[pk]), dv = abs(wv - s_ptri[bp].v[pk]);
             const long e = du > dv ? du : dv;
             n++; exact += (e == 0); sum += e; if (e > mx) mx = e;
-            if (s_dump)
-                fprintf(stderr, "[env-uv-pair %s vbl=%u] m=%08X cls=%03X w=%d,%d p=%d,%d cost=%.2f\n",
-                        s_cur_mat ? s_cur_mat : "?", openpete_frame, s_wtri_moby[wi],
-                        (unsigned)s_wtri_cls[wi], wu, wv, s_ptri[bp].u[pk], s_ptri[bp].v[pk],
-                        tri_match_cost(w, &s_ptri[bp]));
         }
     }
     fprintf(stderr, "[env-uv-ab %s vbl=%u] faces=%d unmatched=%d corners=%ld exact=%ld mean=%.3f max=%ld\n",
@@ -11017,19 +11008,6 @@ static double moby_tri_true_key(int i, int bias) {
     return key < 1.0 ? 1.0 : key;
 }
 
-/* Vertices of the current walk's blended faces tested at a cover depth
- * other than their written depth (moby_cover_depth). */
-static long s_cover_verts;
-
-/** @brief Whether OPENPETE_MOBY_COVER_NEGCTL is set and not "0", read once: the cover depth's negative control tests every blended face at its written depth.
- * @return 1 when set. */
-static int moby_cover_negctl(void) {
-    static int s_negctl = -1;
-    if (s_negctl < 0) { const char* e = getenv("OPENPETE_MOBY_COVER_NEGCTL");
-                        s_negctl = (e && *e && *e != '0') ? 1 : 0; }
-    return s_negctl;
-}
-
 /** @brief The depth a walk triangle's vertex is depth-tested at: its written depth, or a blended face's ordering-table cover depth.
  *
  * A blended face writes no depth, so its depth decides only what it covers.
@@ -11046,20 +11024,8 @@ static int moby_cover_negctl(void) {
  * @return The view-Z. */
 static float moby_cover_depth(int i, int k) {
     const ntri_vert* v = &s_wtri[i].v[k];
-    if (s_wtri[i].blend == 0 || v->okz == v->kvz || moby_cover_negctl()) return v->vz;
-    s_cover_verts++;
+    if (s_wtri[i].blend == 0 || v->okz == v->kvz) return v->vz;
     return v->vz + (v->okz - v->kvz);
-}
-
-/** @brief OPENPETE_MOBY_COVER_CENSUS: print the walk's count of blended-face vertices tested at a cover depth other than their written depth, an instrument.
- *
- * One line per walk with a nonzero count; the count restarts every walk. */
-static void moby_cover_census(void) {
-    static int s_on = -1;
-    if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_COVER_CENSUS"); s_on = (e && *e && *e != '0'); }
-    if (s_on && s_cover_verts > 0)
-        fprintf(stderr, "[moby-cover vbl=%u] verts=%ld\n", openpete_frame, s_cover_verts);
-    s_cover_verts = 0;
 }
 
 /** @brief The ordering-table key a walk triangle contests the terrain with, in world units.
@@ -11660,7 +11626,6 @@ static void push_scene_moby_tris(CPUState* cpu) {
         openpete_native_scene_add_tri(&t, cat, 0);
     }
     mst_add(MST_EMIT, t_em);
-    moby_cover_census();
     moby_td_census(-1, 0, stbit);
     openpete_native_scene_set_hq_fog(0u, 0u);
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
