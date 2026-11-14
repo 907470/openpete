@@ -138,8 +138,10 @@ static void emit_feed(const PsyX_SPUFeed_Stats* st, openpete_audio_feed_line_fn 
           "behind_used=%.1f behind_dropped=%.1f",
           st->drift, (1.0 / st->drift - 1.0) * 1e6, st->speed, st->drift_fits, st->drift_refits,
           st->slips_used, st->slips_dropped);
-    emitf(line, ud, "feed: stretch: hops=%llu engages=%llu on=%d corr_p01=%.2f corr_p50=%.2f",
-          st->st_hops, st->st_engages, st->st_on, st->st_corr_p01, st->st_corr_p50);
+    emitf(line, ud, "feed: stretch: hops=%llu engages=%llu on=%d corr_p01=%.2f corr_p50=%.2f lags=%llu "
+          "tempo_lo=%.5f tempo_hi=%.5f",
+          st->st_hops, st->st_engages, st->st_on, st->st_corr_p01, st->st_corr_p50, st->lags,
+          st->tempo_lo, st->tempo_hi);
     emitf(line, ud, "feed: out_hash=%016llx data_out=%llu tap_frames=%llu", st->out_hash, st->data_out,
           st->tap_frames);
     for (int i = 0; i < PSYX_SPUFEED_PHASES; i++) {

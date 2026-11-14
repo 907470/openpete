@@ -687,6 +687,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Audio feed stretch on host stalls: Spyro 1 headless on the feed's
+    # synthetic device, stalls injected through OPENPETE_PACE_INJECT_US per
+    # producer-model seed (1-3); one stall the host catches up (55, 70,
+    # 80 ms) engages no stretch, causes no underrun and keeps the content
+    # rate within 0.5%; a 100 ms slip, two stalls 100 ms apart and 2 s at
+    # 0.8x and 0.96x engage it; the single-lag rule (A/B) engages on every
+    # leg. Exit 64 = no binary or disc.
+    add_test(NAME audio_feed_hitch
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_audio_feed_hitch.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(audio_feed_hitch PROPERTIES
+        LABELS "slow;audio"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1200
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # CD drive head: the CdlGetlocP head model replayed against every
     # reference answer of the Spyro 2/3 20k goldens (|diff| <= 2 LBA), and
     # the XA decoder head's rate on a Spyro 2 boot run (37609/15000 LBA per
