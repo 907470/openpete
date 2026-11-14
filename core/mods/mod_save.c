@@ -672,6 +672,9 @@ static void table_merge(ms_table_t* t, ms_table_t* d) {
 /* The longest wait for the sidecar lock, in milliseconds: another process
  * holds it for one read, merge and file write. */
 #define MS_LOCK_WAIT_MS 1000
+/* The retry interval while another process holds the sidecar lock, in
+ * milliseconds. */
+#define MS_LOCK_POLL_MS 5u
 
 /** @brief Write the slot's sidecar under the lock "<sidecar>.lock": re-read the file, merge it into the table (table_merge), replace the file atomically.
  *
@@ -691,7 +694,7 @@ static void sidecar_write(int slot) {
     intptr_t lk = 0;
     char lp[sizeof t->path + 8];
     snprintf(lp, sizeof lp, "%s.lock", t->path);
-    if (openpete_paths_lock_wait(lp, &lk, MS_LOCK_WAIT_MS) != 0) {
+    if (openpete_paths_lock_wait(lp, &lk, MS_LOCK_WAIT_MS, MS_LOCK_POLL_MS, NULL, NULL, NULL) < 0) {
         OPL_ERROR_F("modsave", "card %d: %s.lock could not be taken; the save records stay in memory "
                     "and are written at the next save", slot, t->path);
         return;

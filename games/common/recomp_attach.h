@@ -67,13 +67,17 @@ void openpete_recomp_announce_build(const char* why);
  *
  * The first-boot pipeline (games/common/recomp_build.cpp), reached through
  * the running game's build record; the shared attach calls it only for a
- * game whose record names it.
+ * game whose record names it. One process builds into a module directory
+ * at a time: the build holds `build.lock` there (openpete_paths_lock_wait)
+ * and a second builder waits; one that waited and finds the module file
+ * replaced returns 0 without rebuilding.
  * @param disc_path The disc image (a .cue or .bin).
  * @param out_module_path Where the linked module is written.
  * @return 0 on success, -2 when the launcher job running it was asked to
- *         stop (openpete_launcher_job_cancelled; each compiler command is
- *         killed on it, the build directory is removed and no partial
- *         module is written), -1 on any other failure (reported on stderr). */
+ *         stop (openpete_launcher_job_cancelled; while waiting for the lock,
+ *         or with each compiler command killed, the build directory
+ *         removed and no partial module written), -1 on any other failure
+ *         (reported on stderr). */
 int openpete_recomp_first_boot_build(const char* disc_path,
                                      const char* out_module_path);
 

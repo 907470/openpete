@@ -143,14 +143,22 @@ int openpete_paths_lock(const char* path, intptr_t* handle) {
     return 0;
 }
 
-int openpete_paths_lock_wait(const char* path, intptr_t* handle, int wait_ms) {
-    for (int waited = 0;; waited += 5) {
+int openpete_paths_lock_wait(const char* path, intptr_t* handle, int wait_ms, unsigned poll_ms,
+                             int (*cancelled)(void* user), void (*waiting)(void* user), void* user) {
+    const unsigned step = poll_ms ? poll_ms : 1u;
+    int waited = 0;
+    for (long long elapsed = 0;; elapsed += step) {
         const int rc = openpete_paths_lock(path, handle);
-        if (rc != -1 || waited >= wait_ms) return rc;
+        if (rc == 0) return waited;
+        if (rc != -1) return -2;
+        if (wait_ms >= 0 && elapsed >= wait_ms) return -1;
+        if (!waited && waiting) waiting(user);
+        waited = 1;
+        if (cancelled && cancelled(user)) return -1;
 #ifdef _WIN32
-        Sleep(5);
+        Sleep(step);
 #else
-        struct timespec ts = { 0, 5000000L };
+        struct timespec ts = { (time_t)(step / 1000u), (long)(step % 1000u) * 1000000L };
         while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
 #endif
     }

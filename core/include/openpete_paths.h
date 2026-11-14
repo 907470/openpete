@@ -114,15 +114,24 @@ int openpete_paths_is_link(const char* path);
  * @return 0 when taken, -1 when another process holds it, -2 when the file cannot be opened or locked. */
 int openpete_paths_lock(const char* path, intptr_t* handle);
 
-/** @brief Take an exclusive lock on a file as openpete_paths_lock does, retrying every 5 ms while another process holds it, for at most @p wait_ms.
+/** @brief Take an exclusive lock on a file as openpete_paths_lock does, retrying every poll_ms milliseconds while another process holds it, for at most wait_ms.
  *
- * @param path The file.
+ * When the lock is found held and a retry follows, waiting is called once;
+ * before each retry, cancelled is asked whether to stop. The lock is the
+ * one openpete_paths_lock takes (flock, LockFileEx), so a holder that exits
+ * releases it and no lock file is ever stale.
+ * @param path The file, created when absent.
  * @param handle Receives the lock's handle.
- * @param wait_ms The longest wait in milliseconds; 0 tries once.
- * @return 0 when taken, -1 when another process held it for the whole wait, -2 when the file cannot be opened or locked. */
-int openpete_paths_lock_wait(const char* path, intptr_t* handle, int wait_ms);
+ * @param wait_ms The longest wait in milliseconds; 0 tries once, a negative value waits until the lock is free or cancelled stops it.
+ * @param poll_ms The retry interval in milliseconds (0 is read as 1).
+ * @param cancelled Returns nonzero to stop waiting; may be NULL.
+ * @param waiting Called once when the lock is found held and a retry follows; may be NULL.
+ * @param user Passed to both callbacks.
+ * @return 0 taken at once, 1 taken after waiting, -1 another process held it for the whole wait or cancelled stopped it, -2 when the file cannot be opened or locked (logged). */
+int openpete_paths_lock_wait(const char* path, intptr_t* handle, int wait_ms, unsigned poll_ms,
+                             int (*cancelled)(void* user), void (*waiting)(void* user), void* user);
 
-/** @brief Release a lock openpete_paths_lock took.
+/** @brief Release a lock openpete_paths_lock or openpete_paths_lock_wait took.
  *
  * @param handle The lock's handle. */
 void openpete_paths_unlock(intptr_t handle);

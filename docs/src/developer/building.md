@@ -460,7 +460,11 @@ beside it.
 `scripts/emit-recomp-manifest.sh`). Such an exe ships with a recompiler
 plus a compiler and builds its module from the user's disc on first run,
 keying the cache on a hash of the PSXRecomp binary, its emission metadata
-and the compiler. Discs live in a content-addressed library under the user
+and the compiler. One process builds into a module directory at a time:
+the build holds `build.lock` there, a second process (two first runs, or
+the launcher and a headless run) waits for it, and one that waited and
+finds the module replaced loads that module instead of rebuilding it.
+Discs live in a content-addressed library under the user
 data dir, or beside the exe for a portable install
 (`core/launcher/library.cpp`, `library_root`). With it OFF, a shared exe
 loads the module its build tree produced and refuses to start when it is

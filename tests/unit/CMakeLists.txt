@@ -345,6 +345,24 @@ target_include_directories(knob_registry_test PRIVATE
 set_target_properties(knob_registry_test PROPERTIES C_STANDARD 11)
 add_test(NAME knob_registry_test COMMAND knob_registry_test)
 
+# paths_lock_wait_test - openpete_paths_lock_wait, the lock a first-boot
+# module build takes on its module directory and a mod save sidecar write
+# takes on its lock file: a waiter takes the lock only after the holding
+# process (a forked child) exits, a cancelled waiter returns without it, a
+# bounded waiter returns without it once the bound passes. POSIX only
+# (fork).
+if(NOT WIN32)
+    add_executable(paths_lock_wait_test
+        paths_lock_wait_test.c
+        ${CMAKE_SOURCE_DIR}/core/config/paths.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+    target_include_directories(paths_lock_wait_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+    set_target_properties(paths_lock_wait_test PROPERTIES C_STANDARD 11)
+    add_test(NAME paths_lock_wait_test COMMAND paths_lock_wait_test)
+endif()
+
 # bugreport_replay_knobs_test - --bug-report-replay applies a recorded knob
 # value only to a row this build classifies render, whatever class the
 # bundle's knobs.txt line names. The registry and the member reader are

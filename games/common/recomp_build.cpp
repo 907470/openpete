@@ -30,6 +30,7 @@
 // (recomp/tools/llvm-mingw) and links against the staged exe-export
 // implib (recomp/tools/libopenpete-exe-exports.a).
 #include "openpete_launcher.h"
+#include "openpete_paths.h"
 #include "openpete_atomic_file.h"
 #include "host_spawn.h"
 #include "openpete_error_ids.h"
@@ -1115,15 +1116,90 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
 
 }  // namespace
 
+namespace {
+
+/** @brief A module file's identity for telling whether another process replaced it: existence, size and modification time. */
+struct ModuleSig {
+    bool exists = false;
+    uintmax_t size = 0;
+    fs::file_time_type mtime{};
+    bool operator==(const ModuleSig& o) const { return exists == o.exists && size == o.size && mtime == o.mtime; }
+};
+
+/** @brief Read a module file's identity.
+ *
+ * @param p The module path.
+ * @return Its existence, size and modification time (all zero when absent). */
+ModuleSig module_sig(const fs::path& p) {
+    ModuleSig s;
+    std::error_code ec;
+    if (!fs::is_regular_file(p, ec)) return s;
+    s.size = fs::file_size(p, ec);
+    s.mtime = fs::last_write_time(p, ec);
+    s.exists = !ec;
+    return s;
+}
+
+/** @brief Ask whether the launcher job running the build was asked to stop (an openpete_paths_lock_wait callback).
+ *
+ * @param user Unused.
+ * @return Nonzero when stopped. */
+int lock_cancelled(void* user) {
+    (void)user;
+    return openpete_launcher_job_cancelled();
+}
+
+/** @brief Tell the player the build waits for another process building the same module (an openpete_paths_lock_wait callback).
+ *
+ * @param user The lock file path. */
+void lock_waiting(void* user) {
+    std::fprintf(stderr, "openpete: another openpete process is building this game's module; waiting for it "
+                         "(lock %s)\n", static_cast<const char*>(user));
+    progress("WAITING FOR ANOTHER OPENPETE TO BUILD THE GAME CODE", 0, 0);
+}
+
+}  // namespace
+
 extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
                                                 const char* out_module_path) {
-    const int rc = first_boot_build(disc_path, out_module_path);
-    if (rc == 0 || !openpete_launcher_job_cancelled()) return rc;
-    /* A stopped build leaves nothing behind: its work directory (the
-     * killed commands' partial objects and generated C) is removed, and the
-     * module path never held a partial file (the link's rename). */
+    /* One process at a time builds into a module directory: the work tree
+     * beside the module is wiped at the start and on a stop, so a second
+     * builder (two first boots, the launcher and a headless run) waits on
+     * `build.lock` there. A builder that waited and finds the module file
+     * changed takes the other process's module instead of rebuilding it. */
+    const fs::path dir = fs::path(out_module_path).parent_path();
+    const std::string lock_path = (dir / "build.lock").string();
+    const ModuleSig before = module_sig(out_module_path);
     std::error_code ec;
-    fs::remove_all(fs::path(out_module_path).parent_path() / "build", ec);
-    OPL_INFO_F("recomp-build", "module build stopped, its compiler commands killed: %s", out_module_path);
-    return -2;
+    fs::create_directories(dir, ec);
+    intptr_t lock = 0;
+    const int lr = openpete_paths_lock_wait(lock_path.c_str(), &lock, -1, 250, lock_cancelled, lock_waiting,
+                                            const_cast<char*>(lock_path.c_str()));
+    if (lr == -1) {
+        OPL_INFO_F("recomp-build", "module build stopped while waiting for %s", lock_path.c_str());
+        return -2;
+    }
+    if (lr < 0) {
+        std::fprintf(stderr, "openpete: cannot lock the module build directory (%s) %s\n", lock_path.c_str(),
+                     openpete_error_ref(OP_E_MODULE_DIR));
+        return -1;
+    }
+    const ModuleSig now = module_sig(out_module_path);
+    if (lr == 1 && now.exists && !(now == before)) {
+        openpete_paths_unlock(lock);
+        OPL_INFO_F("recomp-build", "module built by another process while this one waited: %s", out_module_path);
+        return 0;
+    }
+    int rc = first_boot_build(disc_path, out_module_path);
+    if (rc != 0 && openpete_launcher_job_cancelled()) {
+        /* A stopped build leaves nothing behind: its work directory (the
+         * killed commands' partial objects and generated C) is removed
+         * while the lock is held, and the module path never held a
+         * partial file (the link's rename). */
+        fs::remove_all(dir / "build", ec);
+        OPL_INFO_F("recomp-build", "module build stopped, its compiler commands killed: %s", out_module_path);
+        rc = -2;
+    }
+    openpete_paths_unlock(lock);
+    return rc;
 }
