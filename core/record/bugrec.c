@@ -314,10 +314,14 @@ void openpete_bugrec_step(const CPUState* cpu, int rewound) OP_REQUIRES(sim) {
 }
 
 /** @brief Grow the hash ring to hold one more row.
+ *
+ * A change of the region count changes the row stride: the ring empties
+ * and its capacity drops to zero, since the allocation was sized in rows
+ * of the old stride, so the next row reallocates at the new one.
  * @return The new row's storage, or NULL when allocation failed. */
 static uint64_t* rows_append(void) {
     const size_t stride = 4u + openpete_state_region_count;
-    if (stride != s_br.stride) { s_br.rows_n = 0; s_br.stride = stride; }
+    if (stride != s_br.stride) { s_br.rows_n = 0; s_br.rows_cap = 0; s_br.stride = stride; }
     if (s_br.rows_n == s_br.rows_cap) {
         const size_t cap = s_br.rows_cap ? s_br.rows_cap * 2u : 2048u;
         uint64_t* g = (uint64_t*)realloc(s_br.rows, cap * stride * sizeof *g);
