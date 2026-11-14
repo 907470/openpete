@@ -82,6 +82,13 @@ extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
 #include "texture_pack.h"           /* texture-replacement registry */
 #include "openpete_thread_roles.h"
 #include "openpete_tile_census.h"  /* capture tallies and the sidecar beside a tile */
+/* A profiler span (--profile-out) around a region: one predictable branch
+ * while the profiler is off. The name is interned once per site. */
+#define NR_PROF_BEGIN(lit) do { static OP_ONCE_INT op_id_ = -1; \
+        if (op_prof_on()) { int op_v_ = op_once_int_get(&op_id_); \
+                            if (op_v_ < 0) op_v_ = op_once_int_fill(&op_id_, op_prof_intern(lit)); \
+                            op_prof_begin(op_v_); } } while (0)
+#define NR_PROF_END() do { if (op_prof_on()) op_prof_end(); } while (0)
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
 static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* defined below */
 extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h);
@@ -9462,6 +9469,10 @@ static mod_fvec s_cz_ktex, s_cz_txscene, s_cz_txout, s_cz_utdef,
 static mod_fvec s_cz_bwdef;                                        /* uint8_t */
 static mod_fvec s_cz_txof;                                         /* uint16_t */
 static mod_fvec s_cz_hud;                                          /* hud_paint_t */
+static mod_fvec s_cz_slotv;   /* int: compose slot index lists, three entries per triangle */
+static mod_fvec s_cz_codev;   /* uint32_t: one entry per triangle, the compose's slot code */
+#define s_cz_slot ((int *)s_cz_slotv.data)
+#define s_cz_code ((uint32_t *)s_cz_codev.data)
 static int s_cz_tris;    /* entries every index run holds */
 static int s_cz_verts;   /* vertices every vertex run and scene GPU buffer holds */
 static int compose_reserve(int scene_n);
@@ -10339,7 +10350,9 @@ static int pack_keyrun_batch(const scene_tri_t* scene, int scene_n, int full_ext
         m += 3;
     }
     *out_untex = m;
+    NR_PROF_BEGIN("key.sort");
     tex_mat_sort(scene, s_ktex_idx, tex_n);
+    NR_PROF_END();
     for (int i = 0; i < tex_n && m + 3 <= s_cz_verts; i++) {
         const scene_tri_t* T = &scene[s_ktex_idx[i]];
         keytex_span_t* sp = keytex_span_for(T, m, spans, nspans);
@@ -10527,51 +10540,167 @@ static void pack_rank_vert(const scene_tri_t* T, int tex, rhi_vertex* out)
     }
 }
 
-/** @brief Admit a face into the rank batch when it is opaque (blend 0) and not ranked below 0.5.
+
+
+
+/* The key-pass batches, in their terrain_key_vb order: terrain, prop and
+ * actor keys (key_batch_admits classes 0 to 2), the rank batch, the
+ * per-pixel actor keys (class 3). */
+enum { KB_TERRAIN, KB_PROP, KB_ACTOR, KB_RANK, KB_ACTOR_PX, KB_N };
+/* A PLAYER face with a player key, admitted to the actor batch when its
+ * screen box meets an aura box (key_batch_admits class 2). */
+#define KB_AURA_PENDING (1u << 7)
+
+/* One packed key-layout batch: vertices, untextured prefix and the
+ * textured material spans. */
+typedef struct {
+    rhi_vertex* buf;
+    int m, untex, nspans;
+    keytex_span_t* spans;
+} key_batch_t;
+
+/** @brief Return the key batches a face is admitted to, as bits KB_*, the aura test of a PLAYER face left pending.
  * @param t Scene face.
- * @param ctx Unused.
- * @return 1 when the face is admitted, else 0. */
-static int rank_run_admit(const scene_tri_t* t, const void* ctx)
+ * @param rank_on Nonzero when the rank batch is drawn.
+ * @return The batch bits, with KB_AURA_PENDING for a PLAYER face with a player key. */
+static unsigned key_batches_of(const scene_tri_t* t, int rank_on)
 {
-    (void)ctx;
-    return t->blend == 0 && !(t->rank < 0.5f);
+    if (t->blend != 0) return 0;
+    const int keyed = t->koff > 0.25f;
+    unsigned m = 0;
+    if (t->category == OPENPETE_SCENE_WORLD && keyed) m |= 1u << KB_TERRAIN;
+    if (t->prop && keyed) m |= 1u << KB_PROP;
+    if (t->category == OPENPETE_SCENE_ACTOR && keyed) m |= 1u << KB_ACTOR | 1u << KB_ACTOR_PX;
+    if (t->category == OPENPETE_SCENE_PLAYER && t->pkey > 0.25f) m |= KB_AURA_PENDING;
+    if (rank_on && !(t->rank < 0.5f)) m |= 1u << KB_RANK;
+    return m;
 }
 
-/** @brief Write a rank-batch face's vertices, with UVs only on a material span.
+/** @brief Add a keyed additive glow fan's screen box to the aura table (scene_aura_boxes' rule).
  *
- * The overflow sentinel (bpp < 0) draws through the flat pipe, which reads
- * no UV, so its vertices carry none.
+ * Once KEY_AURA_BOX_MAX boxes are held, each further box widens the last
+ * one to the union.
+ * @param aura The table.
+ * @param n In: boxes held. Out: updated.
+ * @param t The face. */
+static void key_aura_add(key_box_t* aura, int* n, const scene_tri_t* t)
+{
+    if (t->blend != 2 || t->koff <= 0.25f || t->rank > OPENPETE_SCENE_RANK_AURA + 0.5f) return;
+    const key_box_t b = tri_box(t);
+    if (*n < KEY_AURA_BOX_MAX) { aura[(*n)++] = b; return; }
+    key_box_t* l = &aura[KEY_AURA_BOX_MAX - 1];
+    if (b.x0 < l->x0) l->x0 = b.x0;
+    if (b.y0 < l->y0) l->y0 = b.y0;
+    if (b.x1 > l->x1) l->x1 = b.x1;
+    if (b.y1 > l->y1) l->y1 = b.y1;
+}
+
+/** @brief Write one key batch face's vertices: pack_rank_vert for the rank batch, pack_key_vert at the batch's class otherwise.
+ * @param b The batch (KB_*).
  * @param t Scene face.
- * @param sp The face's span, NULL in the untextured prefix.
- * @param ctx Unused.
+ * @param sp Its material span, NULL in the untextured prefix.
  * @param out Receives three vertices. */
-static void rank_run_write(const scene_tri_t* t, const keytex_span_t* sp,
-                           const void* ctx, rhi_vertex* out)
+static void key_batch_write(int b, const scene_tri_t* t, const keytex_span_t* sp, rhi_vertex* out)
 {
-    (void)ctx;
-    pack_rank_vert(t, sp != NULL && sp->mat.bpp >= 0, out);
+    static const int k_class[KB_N] = { 0, 1, 2, -1, 3 };
+    if (b == KB_RANK) pack_rank_vert(t, sp != NULL && sp->mat.bpp >= 0, out);
+    else pack_key_vert(t, k_class[b], sp != NULL, out);
 }
 
-/** @brief Pack the rank batch: ranked opaque moby faces, untextured prefix first, then textured material runs.
+/** @brief Classify every scene face into its key batches: collect the aura boxes, list the admitted faces in scene order and count each batch's textured faces.
  *
- * A face is packed when it is opaque (blend 0) and ranked (rank at least
- * 0.5); vertices come from pack_rank_vert. The layout, the material runs,
- * the trailing sentinel span (bpp -1) on span table overflow and the
- * limits are pack_keyrun_batch's.
+ * A face's batch bits go to s_cz_code, the admitted faces to s_cz_slot. A
+ * pending PLAYER face counts toward the actor batch's textured faces.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param rank_on Nonzero when the rank batch is drawn.
+ * @param aura Receives the aura boxes, capacity KEY_AURA_BOX_MAX.
+ * @param naura Receives the aura box count.
+ * @param ntex Receives each batch's textured face count.
+ * @return The number of admitted faces. */
+static int key_batches_classify(const scene_tri_t* scene, int scene_n, int rank_on,
+                                key_box_t* aura, int* naura, int ntex[KB_N])
+{
+    int nm = 0;
+    *naura = 0;
+    for (int b = 0; b < KB_N; b++) ntex[b] = 0;
+    for (int t = 0; t < scene_n; t++) {
+        key_aura_add(aura, naura, &scene[t]);
+        const unsigned m = key_batches_of(&scene[t], rank_on);
+        if (!m) continue;
+        s_cz_code[t] = m;
+        s_cz_slot[nm++] = t;
+        if (!scene[t].textured) continue;
+        for (int b = 0; b < KB_N; b++)
+            ntex[b] += (m >> b & 1u) || (b == KB_ACTOR && (m & KB_AURA_PENDING));
+    }
+    return nm;
+}
+
+/** @brief Append one key batch's textured faces in material order, span by span.
+ *
+ * The list is ordered by tex_mat_sort, the intern and sort the scene draw
+ * batches with, and each face appends to its span (keytex_span_for).
+ * @param scene Scene triangles.
+ * @param b The batch (KB_*).
+ * @param kb The batch; its untextured prefix is written.
+ * @param idx The batch's textured scene indices, in scene order; reordered.
+ * @param n Their count. */
+static void key_batch_textured(const scene_tri_t* scene, int b, key_batch_t* kb, int* idx, int n)
+{
+    NR_PROF_BEGIN("key.sort");
+    tex_mat_sort(scene, idx, n);
+    NR_PROF_END();
+    for (int i = 0; i < n && kb->m + 3 <= s_cz_verts; i++) {
+        const scene_tri_t* T = &scene[idx[i]];
+        keytex_span_t* sp = keytex_span_for(T, kb->m, kb->spans, &kb->nspans);
+        key_batch_write(b, T, sp, &kb->buf[kb->m]);
+        kb->m += 3;
+        sp->count += 3;
+    }
+}
+
+/** @brief Pack every key batch from one classifying pass over the scene and one pass over the admitted faces.
+ *
+ * The classifying pass (key_batches_classify) collects the aura boxes and
+ * each face's batches. The second pass settles the PLAYER faces' aura
+ * test, writes each batch's untextured faces in scene order and lists its
+ * textured faces, which key_batch_textured then appends: the layout
+ * pack_keyrun_batch gives one batch.
  * @param scene Scene triangles.
  * @param scene_n Triangle count.
  * @param full_extent Non-zero to map in the full-extent PSX space.
- * @param out Output vertices.
- * @param out_untex Receives the untextured prefix length in vertices.
- * @param spans Receives the textured runs, capacity KEYTEX_MAX_SPANS.
- * @param nspans Receives the run count.
- * @return Vertices written. */
-static int pack_moby_rank_batch(const scene_tri_t* scene, int scene_n,
-                                int full_extent, rhi_vertex* out,
-                                int* out_untex, keytex_span_t* spans, int* nspans)
+ * @param rank_on Nonzero to pack the rank batch.
+ * @param kb The batches; buf and spans set by the caller. */
+static void pack_key_batches(const scene_tri_t* scene, int scene_n, int full_extent, int rank_on,
+                             key_batch_t kb[KB_N])
 {
-    return pack_keyrun_batch(scene, scene_n, full_extent, rank_run_admit,
-                             rank_run_write, NULL, out, out_untex, spans, nspans);
+    const int prev_fe = s_render_full_extent;
+    s_render_full_extent = full_extent ? 1 : 0;
+    key_box_t aura[KEY_AURA_BOX_MAX];
+    int naura, ntex[KB_N], at[KB_N], tn[KB_N];
+    const int nm = key_batches_classify(scene, scene_n, rank_on, aura, &naura, ntex);
+    for (int b = 0, off = 0; b < KB_N; off += ntex[b], b++) {
+        at[b] = off; tn[b] = 0; kb[b].m = 0; kb[b].nspans = 0;
+    }
+    for (int i = 0; i < nm; i++) {
+        const int t = s_cz_slot[i];
+        const scene_tri_t* T = &scene[t];
+        unsigned m = s_cz_code[t];
+        if ((m & KB_AURA_PENDING) && box_hits_any(tri_box(T), aura, naura)) m |= 1u << KB_ACTOR;
+        for (int b = 0; b < KB_N; b++) {
+            if (!(m >> b & 1u)) continue;
+            if (T->textured) { s_ktex_idx[at[b] + tn[b]++] = t; continue; }
+            if (kb[b].m + 3 > s_cz_verts) continue;
+            key_batch_write(b, T, NULL, &kb[b].buf[kb[b].m]);
+            kb[b].m += 3;
+        }
+    }
+    for (int b = 0; b < KB_N; b++) {
+        kb[b].untex = kb[b].m;
+        key_batch_textured(scene, b, &kb[b], &s_ktex_idx[at[b]], tn[b]);
+    }
+    s_render_full_extent = prev_fe;
 }
 
 /* The last key-pass packs (terrain + prop + actor), recorded for the identity
@@ -11459,6 +11588,7 @@ static void native_moby_shell_pass(const scene_tri_t* scene, int scene_n, int fu
  * @param vh Viewport height in the key images. */
 static void native_terrain_key_pass(int full_extent, int vw, int vh)
 {
+    OP_PROF_SCOPE("cmp.key");
     s_shell_live = 0;
     if (!openpete_native_key_resolve_on()) return;
     /* The images were sized by ensure_terrain_key_targets before the frame
@@ -11471,8 +11601,11 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
     scene_n = compose_reserve(scene_n);
+    NR_PROF_BEGIN("key.drain");
     drain_records_build(scene, scene_n);
     glow_order_census(scene, scene_n);
+    NR_PROF_END();
+    NR_PROF_BEGIN("key.pack");
     rhi_vertex *kbuf  = (rhi_vertex *)s_cz_key[0].data;
     rhi_vertex *mkbuf = (rhi_vertex *)s_cz_key[1].data;
     rhi_vertex *akbuf = (rhi_vertex *)s_cz_key[2].data;
@@ -11481,20 +11614,22 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     static keytex_span_t kspans[KEYTEX_MAX_SPANS], mspans[KEYTEX_MAX_SPANS],
                          aspans[KEYTEX_MAX_SPANS], rspans[KEYTEX_MAX_SPANS],
                          pspans[KEYTEX_MAX_SPANS];
-    int k_untex = 0, m_untex = 0, a_untex = 0, r_untex = 0, p_untex = 0,
-        k_nspans = 0, m_nspans = 0, a_nspans = 0, r_nspans = 0, p_nspans = 0;
-    int m  = pack_terrain_key_batch(scene, scene_n, full_extent, 0, kbuf,
-                                    &k_untex, kspans, &k_nspans);
-    int mm = pack_terrain_key_batch(scene, scene_n, full_extent, 1, mkbuf,
-                                    &m_untex, mspans, &m_nspans);
-    int am = pack_terrain_key_batch(scene, scene_n, full_extent, 2, akbuf,
-                                    &a_untex, aspans, &a_nspans);
-    int pm = pack_terrain_key_batch(scene, scene_n, full_extent, 3, pkbuf,
-                                    &p_untex, pspans, &p_nspans);
-    int rr = (s_nr.moby_rank_rt && s_nr.moby_rank_pipe)
-           ? pack_moby_rank_batch(scene, scene_n, full_extent, rbuf,
-                                  &r_untex, rspans, &r_nspans)
-           : 0;
+    key_batch_t kb[KB_N] = {
+        { kbuf, 0, 0, 0, kspans }, { mkbuf, 0, 0, 0, mspans }, { akbuf, 0, 0, 0, aspans },
+        { rbuf, 0, 0, 0, rspans }, { pkbuf, 0, 0, 0, pspans } };
+    const int rank_on = s_nr.moby_rank_rt && s_nr.moby_rank_pipe;
+    torder_census(scene, scene_n);
+    pack_key_batches(scene, scene_n, full_extent, rank_on, kb);
+    int m = kb[KB_TERRAIN].m, mm = kb[KB_PROP].m, am = kb[KB_ACTOR].m, rr = kb[KB_RANK].m,
+        pm = kb[KB_ACTOR_PX].m;
+    const int k_untex = kb[KB_TERRAIN].untex, m_untex = kb[KB_PROP].untex,
+              a_untex = kb[KB_ACTOR].untex, r_untex = kb[KB_RANK].untex,
+              p_untex = kb[KB_ACTOR_PX].untex;
+    const int k_nspans = kb[KB_TERRAIN].nspans, m_nspans = kb[KB_PROP].nspans,
+              a_nspans = kb[KB_ACTOR].nspans, r_nspans = kb[KB_RANK].nspans,
+              p_nspans = kb[KB_ACTOR_PX].nspans;
+    NR_PROF_END();   /* key.pack */
+    NR_PROF_BEGIN("key.rec");
     { static int s_rd = -1;
       if (s_rd < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_DBG"); s_rd = (e && *e && *e != '0'); }
       if (s_rd && rr > 0) {
@@ -11634,7 +11769,10 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         rhi_end_render_target(s_nr.dev, s_nr.moby_rank_rt);
     }
     s_tk_base += m + mm + am + rr + pm;
+    NR_PROF_END();   /* key.rec */
+    NR_PROF_BEGIN("key.shell");
     native_moby_shell_pass(scene, scene_n, full_extent, vw, vh);
+    NR_PROF_END();
 }
 
 /** @brief Bind set 1 of the bound shadow-decal pipeline and return whether binding 1 holds the terrain keys.
@@ -12500,7 +12638,7 @@ static void cover_rect(int full_extent, float *l, float *r, float *t, float *b)
  * material span. A deferred triangle draws from that span at its group's slot,
  * so the emission-ordered blended-world block leaves it out. */
 #define s_bw_deferred ((uint8_t *)s_cz_bwdef.data)
-/* Flat-HUD within-layer painter order (see the bucket-6 build in render_scene):
+/* Flat-HUD within-layer painter order (cz_emit_hud):
  * back-to-front by centroid z, ties broken by submission index so equal-z runs
  * (all the 2D-UI content at z=0) keep submission order - a STABLE descending
  * sort built on qsort. */
@@ -12519,11 +12657,30 @@ static float hud_paint_depth(const scene_tri_t* T)
         d += T->v[k].z / (T->v[k].z + OPENPETE_DEPTH_VIEWZ_SCALE);
     return d * (1.0f / 3.0f);
 }
-typedef struct { mod_fvec *v; size_t elem; int verts; const char *name; } cz_run_t;
+/* A compose scratch run: its vector, element size, whether it holds
+ * vertices, its name, and for an index run its entries per triangle. */
+typedef struct { mod_fvec *v; size_t elem; int verts; const char *name; int per_tri; } cz_run_t;
+/** @brief Initialize a compose scratch run on first use and grow it for a scene.
+ * @param r The run.
+ * @param scene_n Scene triangle count.
+ * @param want_v Vertices a vertex run must hold.
+ * @return The vertices a vertex run holds, or the triangles an index run holds. */
+static int cz_run_reserve(const cz_run_t *r, int scene_n, int want_v)
+{
+    if (!r->v->elem_size)
+        mod_fvec_init(r->v, r->elem, r->verts ? SCENE_RUN_INIT * 3 : SCENE_RUN_INIT,
+                      r->name, r->verts ? SCENE_VB_WAS : SCENE_TRIS_WAS);
+    if (r->verts) {
+        (void)mod_fvec_reserve_noted(r->v, (size_t)want_v);
+        return (int)r->v->cap;
+    }
+    (void)mod_fvec_reserve_noted(r->v, (size_t)scene_n * (size_t)r->per_tri);
+    return (int)(r->v->cap / (size_t)r->per_tri);
+}
 /** @brief Grow every compose scratch run and the scene and pre-pass GPU buffers to hold a scene.
  *
- * Vertex runs are sized 3 per triangle plus SCENE_VB_EXTRA and index runs one
- * per triangle; a run is initialized on its first call. A growth moves a
+ * Vertex runs are sized 3 per triangle plus SCENE_VB_EXTRA and index runs
+ * their entries per triangle; a run is initialized on its first call. A growth moves a
  * run, so no pointer into one survives the call. The result is bounded by
  * the smallest capacity any run or GPU buffer slot reached, and records the
  * smallest vertex and triangle capacities in s_cz_verts and s_cz_tris.
@@ -12534,33 +12691,31 @@ typedef struct { mod_fvec *v; size_t elem; int verts; const char *name; } cz_run
 static int compose_reserve(int scene_n)
 {
     const cz_run_t runs[] = {
-        { &s_cz_vb,       sizeof(rhi_vertex), 1, "compose.scene_vb" },
-        { &s_cz_prepass,  sizeof(rhi_vertex), 1, "compose.prepass_vb" },
-        { &s_cz_key[0],   sizeof(rhi_vertex), 1, "compose.key_terrain" },
-        { &s_cz_key[1],   sizeof(rhi_vertex), 1, "compose.key_prop" },
-        { &s_cz_key[2],   sizeof(rhi_vertex), 1, "compose.key_actor" },
-        { &s_cz_key[3],   sizeof(rhi_vertex), 1, "compose.key_rank" },
-        { &s_cz_key[4],   sizeof(rhi_vertex), 1, "compose.key_actor_px" },
-        { &s_cz_ktex,     sizeof(int),        0, "compose.key_tex_idx" },
-        { &s_cz_txscene,  sizeof(int),        0, "compose.tex_scene_idx" },
-        { &s_cz_txout,    sizeof(int),        0, "compose.tex_sort_out" },
-        { &s_cz_txof,     sizeof(uint16_t),   0, "compose.tex_sort_slot" },
-        { &s_cz_utdef,    sizeof(int),        0, "compose.ut_deferred_idx" },
-        { &s_cz_bwdef,    sizeof(uint8_t),    0, "compose.bw_deferred" },
-        { &s_cz_bwsort,   sizeof(int),        0, "compose.bw_sort_tmp" },
-        { &s_cz_hud,      sizeof(hud_paint_t), 0, "compose.hud_paint" },
+        { &s_cz_vb,       sizeof(rhi_vertex), 1, "compose.scene_vb", 1 },
+        { &s_cz_prepass,  sizeof(rhi_vertex), 1, "compose.prepass_vb", 1 },
+        { &s_cz_key[0],   sizeof(rhi_vertex), 1, "compose.key_terrain", 1 },
+        { &s_cz_key[1],   sizeof(rhi_vertex), 1, "compose.key_prop", 1 },
+        { &s_cz_key[2],   sizeof(rhi_vertex), 1, "compose.key_actor", 1 },
+        { &s_cz_key[3],   sizeof(rhi_vertex), 1, "compose.key_rank", 1 },
+        { &s_cz_key[4],   sizeof(rhi_vertex), 1, "compose.key_actor_px", 1 },
+        { &s_cz_ktex,     sizeof(int),        0, "compose.key_tex_idx", 4 },
+        { &s_cz_txscene,  sizeof(int),        0, "compose.tex_scene_idx", 1 },
+        { &s_cz_txout,    sizeof(int),        0, "compose.tex_sort_out", 1 },
+        { &s_cz_txof,     sizeof(uint16_t),   0, "compose.tex_sort_slot", 1 },
+        { &s_cz_utdef,    sizeof(int),        0, "compose.ut_deferred_idx", 1 },
+        { &s_cz_bwdef,    sizeof(uint8_t),    0, "compose.bw_deferred", 1 },
+        { &s_cz_bwsort,   sizeof(int),        0, "compose.bw_sort_tmp", 1 },
+        { &s_cz_hud,      sizeof(hud_paint_t), 0, "compose.hud_paint", 1 },
+        { &s_cz_slotv,    sizeof(int),        1, "compose.slot_idx", 1 },
+        { &s_cz_codev,    sizeof(uint32_t),   0, "compose.slot_code", 1 },
     };
     if (scene_n < 0) scene_n = 0;
     const int want_v = scene_n * 3 + SCENE_VB_EXTRA;
     int held_v = want_v, held_t = scene_n;
     for (size_t i = 0; i < sizeof runs / sizeof runs[0]; i++) {
-        const cz_run_t *r = &runs[i];
-        if (!r->v->elem_size)
-            mod_fvec_init(r->v, r->elem, r->verts ? SCENE_RUN_INIT * 3 : SCENE_RUN_INIT,
-                          r->name, r->verts ? SCENE_VB_WAS : SCENE_TRIS_WAS);
-        (void)mod_fvec_reserve_noted(r->v, (size_t)(r->verts ? want_v : scene_n));
-        int *held = r->verts ? &held_v : &held_t;
-        if ((int)r->v->cap < *held) *held = (int)r->v->cap;
+        int *held = runs[i].verts ? &held_v : &held_t;
+        const int fits = cz_run_reserve(&runs[i], scene_n, want_v);
+        if (fits < *held) *held = fits;
     }
     rhi_buffer *const gpu[] = { s_nr.scene_vb, s_nr.prepass_vb };
     for (size_t i = 0; i < sizeof gpu / sizeof gpu[0]; i++) {
@@ -15109,7 +15264,7 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
     }
     if (s_nr.gouraud_hud_pipes[0] && ut_count[hb] > 0) {                 /* untextured HUD text/glyphs */
         /* The slot-6 VB range is depth-sorted back-to-front at build time (see
-         * the bucket-6 build in render_scene) so rotating near-OT mobys - the
+         * cz_emit_hud) so rotating near-OT mobys - the
          * inventory letters/icons - self-occlude correctly despite the
          * depth-off pipe. (The textured HUD range above stays submission-order:
          * its content is constant-z 2D sprites; extend the sort there if a
@@ -15989,11 +16144,6 @@ static void bw_fam_census(const scene_tri_t* sc, int n) {
     bw_fam_census_pass(sc, n, 1, "rank");
 }
 
-#define NR_PROF_BEGIN(lit) do { static OP_ONCE_INT op_id_ = -1; \
-        if (op_prof_on()) { int op_v_ = op_once_int_get(&op_id_); \
-                            if (op_v_ < 0) op_v_ = op_once_int_fill(&op_id_, op_prof_intern(lit)); \
-                            op_prof_begin(op_v_); } } while (0)
-#define NR_PROF_END() do { if (op_prof_on()) op_prof_end(); } while (0)
 
 /** @brief Print a blended-world block as the ordered pass draws it, on stderr, for OPENPETE_BWDRAWORDER.
  *
@@ -16240,60 +16390,6 @@ static void depth_transport_census_shot(const char* path)
                 path, s_dtc_tris, s_dtc_tex, s_pvz_missing);
 }
 
-/** @brief Return whether scene triangle t belongs to textured bucket b.
- *
- * Bucket 11 is the emission-ordered blended-world block and the one bucket
- * that also carries untextured triangles, so its runs keep the order the
- * guest linked the two texturing modes in; an untextured triangle deferred
- * to material spans (s_bw_deferred) is left out. Buckets 4, 5, 8 and 10 are
- * empty; their content is in bucket 11. Bucket 13 holds the opaque WORLD
- * faces carrying the portal inner-rim mark, which the WORLD group leaves
- * out. Bucket 6 is HUD, 7 PORTAL_GUARD, 9
- * the opaque ACTOR_FRONT faces of the rescue actors, and 12 the opaque
- * textured faces of the 3D HUD icon models. The layered groups (0 to 3)
- * take textured triangles outside those categories whose blend class
- * equals @p gblend; an opaque group with @p gcat set takes only that
- * category, and blend class 3 takes only SHADOW. A blend class outside 0
- * to 4 counts as 0.
- * @param b Bucket index.
- * @param scene Scene triangles.
- * @param t Triangle index.
- * @param gblend The layered group's blend class.
- * @param gcat The layered group's category, or negative for any.
- * @return 1 when the triangle belongs, else 0. */
-static int tx_bucket_belongs(int b, const scene_tri_t* scene, int t, int gblend, int gcat) {
-    const scene_tri_t* st = &scene[t];
-    if (b == 11) return blended_world_tri(st) && !(!st->textured && s_bw_deferred[t]);
-    if (!st->textured) return 0;
-    const int cat = st->category;
-    const int bl = (st->blend < 0 || st->blend > 4) ? 0 : st->blend;
-    switch (b) {
-    case 4: case 5: case 10: return 0;
-    /* The textured HUD triangles linked after the fade quad (s_cz_lift). */
-    case TX_BUCKET_OVER_HUD: return s_cz_lift && st->over_fade && cat == OPENPETE_SCENE_HUD;
-    /* The textured HUD triangles the game draws before the player. */
-    case TX_BUCKET_UNDER_HUD:
-        return cat == OPENPETE_SCENE_HUD && tri_in_fade_pass(st, FLAT_PASS_UNDER_PLAYER);
-    /* PORTAL_RIM (opaque): WORLD faces carrying the portal inner-rim mark,
-     * drawn beside the WORLD group through its inner-rim twins. */
-    case 13: return cat == OPENPETE_SCENE_WORLD && bl == 0 && st->portal_rim;
-    case 6:  return cat == OPENPETE_SCENE_HUD && tri_in_fade_pass(st, FLAT_PASS_OVER_PLAYER);
-    case 7:  return cat == OPENPETE_SCENE_PORTAL_GUARD;
-    /* ACTOR_FRONT (opaque): the rescue actors' textured faces, the ACTOR
-     * textured group's class split out for the front pass. */
-    case 9:  return cat == OPENPETE_SCENE_ACTOR_FRONT && bl == 0;
-    /* HUD3D (opaque): the textured faces of the 3D HUD icon models, drawn by
-     * the HUD3D layer beside its untextured faces. */
-    case 12: return cat == OPENPETE_SCENE_HUD3D && bl == 0;
-    default: break;
-    }
-    return cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
-           cat != OPENPETE_SCENE_PORTAL_GUARD &&
-           bl == gblend &&
-           !(gblend == 0 && gcat >= 0 && cat != gcat) &&
-           !(gblend == 0 && st->portal_rim) &&
-           !(gblend == 3 && cat != OPENPETE_SCENE_SHADOW);
-}
 
 /** @brief Print the textured HUD3D census line of one present under OPENPETE_LOAD_CENSUS.
  *
@@ -16354,23 +16450,9 @@ static int draw_hud3d_layer(const scene_tri_t* scene, int tx_start,
     return tx_count / 3;
 }
 
-/** @brief Whether an opaque layered group leaves out an untextured triangle of its blend class.
- *
- * An opaque group (blend class 0) with a category takes only that
- * category, and no opaque group takes a face carrying the portal inner-rim
- * mark, which packs into UTC_WORLD_RIM or UTC_FILL_RIM instead.
- * @param gb The group's blend class.
- * @param gc The group's category, or negative for any.
- * @param st The triangle.
- * @return 1 when the group skips it, else 0. */
-static int ut_opaque_group_skips(int gb, int gc, const scene_tri_t* st) {
-    if (gb != 0) return 0;
-    return st->portal_rim || (gc >= 0 && st->category != gc);
-}
-
 /* A run of consecutive inner-rim triangles of one accepting plane in an
  * untextured rim bucket (UTC_WORLD_RIM, UTC_FILL_RIM): first vertex, vertex
- * count and the plane as scene_tri_t.portal_rim carries it. utc_scatter
+ * count and the plane as scene_tri_t.portal_rim carries it. cz_emit_utc
  * records them in packing order; the rim draws bind each run's plane. */
 typedef struct { int first, count, plane; } rim_run_t;
 static rim_run_t* s_rim_runs[2];
@@ -16559,53 +16641,8 @@ static int utc_class(const scene_tri_t *st)
     }
 }
 
-/** @brief Count the scene's triangles per single-category untextured bucket in one pass. */
-static void utc_count(const scene_tri_t *scene, int scene_n, int cnt[UTC_N])
-{
-    for (int c = 0; c < UTC_N; c++) cnt[c] = 0;
-    for (int t = 0; t < scene_n; t++) {
-        const int c = utc_class(&scene[t]);
-        if (c >= 0) cnt[c]++;
-    }
-}
 
-/** @brief Give buckets lo..hi-1 consecutive vertex ranges from n, each truncated to what fits below cap.
- *
- * Sets each bucket's ut_first and ut_count and its scatter cursor and end.
- * @return The vertex count after the ranges. */
-static int utc_reserve(int lo, int hi, const int cnt[UTC_N], int n, int cap,
-                       int cur[UTC_N], int end[UTC_N], int *ut_first, int *ut_count)
-{
-    for (int c = lo; c < hi; c++) {
-        const int room = cap > n ? (cap - n) / 3 : 0;
-        const int take = cnt[c] < room ? cnt[c] : room;
-        ut_first[k_utc_bucket[c]] = n;
-        ut_count[k_utc_bucket[c]] = take * 3;
-        cur[c] = n;
-        n += take * 3;
-        end[c] = n;
-    }
-    return n;
-}
 
-/** @brief Pack the triangles of buckets lo..hi-1 into their reserved ranges in one pass, in submission order.
- *
- * The inner-rim buckets in the range also record their plane runs
- * (rim_run_add), reset first. */
-static void utc_scatter(int lo, int hi, const scene_tri_t *scene, int scene_n, rhi_vertex *buf,
-                        int cur[UTC_N], const int end[UTC_N])
-{
-    for (int c = UTC_WORLD_RIM; c <= UTC_FILL_RIM; c++)
-        if (c >= lo && c < hi) s_rim_run_n[c - UTC_WORLD_RIM] = 0;
-    for (int t = 0; t < scene_n; t++) {
-        const int c = utc_class(&scene[t]);
-        if (c < lo || c >= hi || cur[c] >= end[c]) continue;
-        pack_scene_tri(&buf[cur[c]], &scene[t]);
-        if (c == UTC_WORLD_RIM || c == UTC_FILL_RIM)
-            rim_run_add(c - UTC_WORLD_RIM, cur[c], scene[t].portal_rim);
-        cur[c] += 3;
-    }
-}
 
 /** @brief Print the screen bounding box of the composed scene's framebuffer-snapshot triangles under OPENPETE_FBSNAP_CENSUS.
  *
@@ -16805,57 +16842,7 @@ static void draw_hud3d_pass(const scene_tri_t* scene, int scene_n, int tx_start,
                                       txg_first[12], txg_count[12]));
 }
 
-/** @brief Pack the untextured HUD triangles of the over-fade or the under-player pass, in scene order, from vertex n.
- *
- * They are 2D at one depth, so the back-to-front sort of bucket 6 would keep
- * that order. The over-fade pass packs nothing unless s_cz_lift is set;
- * packing stops where the vertex buffer is full.
- * @param scene Scene triangles.
- * @param scene_n Triangle count.
- * @param buf The compose vertex buffer.
- * @param n The first free vertex.
- * @param pass FLAT_PASS_OVER_FADE or FLAT_PASS_UNDER_PLAYER.
- * @return The first free vertex after the packed triangles. */
-static int pack_flat_pass_hud(const scene_tri_t* scene, int scene_n, rhi_vertex* buf, int n, int pass)
-{
-    if (pass == FLAT_PASS_OVER_FADE && !s_cz_lift) return n;
-    for (int t = 0; t < scene_n && n + 3 <= s_cz_verts; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD) continue;
-        if (!tri_in_fade_pass(&scene[t], pass)) continue;
-        pack_scene_tri(&buf[n], &scene[t]);
-        n += 3;
-    }
-    return n;
-}
 
-/** @brief Pack the HUD particle triangles (hud_tri_under_2d) back to front from vertex n and record each one's scene index in s_hud_under_idx.
- *
- * The order is bucket 6's stable painter key (hud_paint_cmp): the game
- * links these triangles into its world ordering table by depth bucket, each
- * bucket in submission order. Uses the s_cz_hud scratch before bucket 6
- * does. Stops at HUD_UNDER_MAX triangles or where the vertex buffer is full.
- * @param scene Scene triangles.
- * @param scene_n Triangle count.
- * @param buf The compose vertex buffer.
- * @param n The first free vertex.
- * @return The first free vertex after the packed triangles. */
-static int pack_hud_under_2d(const scene_tri_t* scene, int scene_n, rhi_vertex* buf, int n)
-{
-    hud_paint_t *ho = (hud_paint_t *)s_cz_hud.data;
-    int hn = 0;
-    for (int t = 0; t < scene_n; t++) {
-        if (!hud_tri_under_2d(&scene[t])) continue;
-        ho[hn].z = hud_paint_depth(&scene[t]);
-        ho[hn].t = t; hn++;
-    }
-    qsort(ho, (size_t)hn, sizeof ho[0], hud_paint_cmp);
-    for (int i = 0; i < hn && i < HUD_UNDER_MAX && n + 3 <= s_cz_verts; i++) {
-        pack_scene_tri(&buf[n], &scene[ho[i].t]);
-        s_hud_under_idx[i] = ho[i].t;
-        n += 3;
-    }
-    return n;
-}
 
 /** @brief Draw an untextured OVERLAY bucket (the letterbox bars and other 2D flat quads) through the opaque untextured HUD pipe, depth-test off.
  *
@@ -17102,6 +17089,1224 @@ static void census_shot_write(const char *base, int dump)
                    path, s_bdt.settles, (double)s_bdt.pass_ns / 1e3, (double)s_bdt.pass_max_ns / 1e3);
 }
 
+/* ---- compose plan -------------------------------------------------------
+ * draw_native_scene packs the scene's triangles into scene_vb in one fixed
+ * layout of buckets and then runs a fixed list of draw steps over it. The
+ * pack reads the scene array twice: compose_classify gives each triangle
+ * its bucket slots and counts the slots, compose_scatter writes each
+ * slot's scene indices, in scene order, into one partitioned index array.
+ * compose_emit then walks the layout in vertex-buffer order and packs each
+ * slot under its own order: scene order, the HUD painter sort, the
+ * material spans' tag sort, the material sort of the opaque textured
+ * buckets, the blended block's emission rank, or the portal runs.
+ *
+ * The scene draws in 7 layered groups, in this order, so a ground-decal
+ * shadow lands over the terrain it falls on but under the actors standing
+ * on it (the PSX terrain -> shadow -> Spyro draw order):
+ *   0 WORLD-opaque  (blend 0, cat WORLD)   terrain / sky / props
+ *   1 SUBTRACT      (blend 3, cat SHADOW)  shadows (depth_write_off)
+ *   2 ACTOR-opaque  (blend 0, cat ACTOR)   mobys - cover the shadows
+ *   3 PLAYER-opaque (blend 0, cat PLAYER)  Spyro - covers the near-OT HUD text
+ *   4 ALPHA         (blend 1)              ABR0 semi-transparent
+ *   5 ADDITIVE      (blend 2)              ABR1 flame / glows
+ *   6 QUARTER-ADD   (blend 4)              ABR3 glass (last)
+ * Groups 4 to 6 keep no plain bucket content: their triangles draw from the
+ * emission-ordered blended-world block at gi 4, except those deferred into
+ * a mod material span. The untextured HUD (depth-test off) sits between
+ * the ACTOR and PLAYER groups, the PSX OT order of the near-slot UI. */
+
+/* The layered groups' blend class, category (negative for any), and the
+ * untextured and textured bucket each packs into. The bucket is the group
+ * index for the six original groups; the quarter-add group takes free slots
+ * above the HUD and overlay buckets. */
+static const struct { int blend, gcat, utb, txb; } k_cz_group[7] = {
+    { 0, OPENPETE_SCENE_WORLD,  0,  0 },
+    { 3, -1,                    1,  1 },
+    { 0, OPENPETE_SCENE_ACTOR,  2,  2 },
+    { 0, OPENPETE_SCENE_PLAYER, 3,  3 },
+    { 1, -1,                    4,  4 },
+    { 2, -1,                    5,  5 },
+    { 4, -1,                   15, 10 },
+};
+
+/* One layered group as one compose draws it: k_cz_group's row with its
+ * untextured and textured pipelines. */
+typedef struct { int blend, gcat, utb, txb; rhi_pipeline *utex, *tex; } cz_group_t;
+
+/* Bucket slots of a compose. A scene triangle belongs to at most three: an
+ * untextured primary slot, a material-span candidate slot of a blended
+ * group (CS_D0 + 4 or 5), and a textured-block slot (CS_TX0 + bucket; the
+ * blended-world block, bucket 11, also takes untextured triangles). A
+ * candidate slot (CS_D0 + gi, CS_DSKY) holds the triangles whose tag
+ * resolves to a mod material; whether the bucket defers them is decided
+ * when it is emitted, by the span table's room then. */
+enum {
+    CS_G0 = 0,                       /* plain group spans, CS_G0 + gi       */
+    CS_D0 = CS_G0 + 7,               /* group span candidates, CS_D0 + gi    */
+    CS_HUD_UNDER = CS_D0 + 7,        /* UT_BUCKET_HUD_UNDER                  */
+    CS_HUD6,                         /* untextured bucket 6                  */
+    CS_OVER_HUD,                     /* UT_BUCKET_OVER_HUD                   */
+    CS_UNDER_HUD,                    /* UT_BUCKET_UNDER_HUD                  */
+    CS_UTC0,                         /* single-category buckets, + UTC_*     */
+    CS_SKY = CS_UTC0 + UTC_N,        /* UT_BUCKET_SKY, plain                 */
+    CS_DSKY,                         /* UT_BUCKET_SKY span candidates        */
+    CS_PMASK,                        /* portal aperture masks                */
+    CS_PSKY,                         /* portal sky colours                   */
+    CS_TX0,                          /* textured block, + bucket             */
+    CS_N = CS_TX0 + TX_BUCKETS
+};
+#define CS_NONE 0xFFu
+
+/* A run of one portal's triangles (a maximal streak of one group id) in
+ * the portal mask or sky range, and a material segment inside a sky run. */
+typedef struct { int group; int first, count; float depth; } cz_portal_run_t;
+typedef struct { int run; int first, count; uint32_t tag; } cz_portal_seg_t;
+enum { CZ_PORTAL_RUNS = 32, CZ_PORTAL_SEGS = 96 };
+
+/* One compose: the scene, its slot index lists, the packed layout the draw
+ * steps read, and the per-present state they branch on. */
+typedef struct {
+    const scene_tri_t* scene;
+    int scene_n;
+    int full_extent;
+    int split;                         /* tag_split_on() at the pack    */
+    rhi_vertex* buf;
+    int n;                             /* vertices packed               */
+    int slot_cnt[CS_N], slot_at[CS_N]; /* members of each slot, offset  */
+    int ut_first[UT_BUCKETS], ut_count[UT_BUCKETS];
+    int tx_start, txtri;
+    int txg_first[TX_BUCKETS], txg_count[TX_BUCKETS];
+    cz_portal_run_t pmask[CZ_PORTAL_RUNS], psky[CZ_PORTAL_RUNS];
+    int pmask_n, psky_n;
+    cz_portal_seg_t pseg[CZ_PORTAL_SEGS];
+    int pseg_n;
+    uint32_t bg, fade;
+    int fade_first, fade_mode, freeze_first;
+    rhi_pipeline* freeze_pipe;
+    int hud_under, actor_front, holefill_on, backdrop_defer, hud3d_lift;
+    cz_group_t groups[7];
+} compose_t;
+
+/** @brief Return the layered group an untextured triangle of a blend class packs into, or -1.
+ *
+ * The HUD, HUD3D and HUD_PANEL categories draw in the HUD passes. Blend
+ * classes 1, 2 and 4 take groups 4, 5 and 6 whatever the category; class 3
+ * takes group 1 for a SHADOW triangle only. An opaque triangle takes group
+ * 0, 2 or 3 by its WORLD, ACTOR or PLAYER category unless it carries the
+ * portal inner-rim mark, which packs into a rim bucket.
+ * @param st The triangle.
+ * @param b Its blend class, 0 to 4.
+ * @return The group index, or -1. */
+static int cz_group_of(const scene_tri_t* st, int b)
+{
+    const int c = st->category;
+    if (c == OPENPETE_SCENE_HUD || c == OPENPETE_SCENE_HUD3D || c == OPENPETE_SCENE_HUD_PANEL)
+        return -1;
+    switch (b) {
+    case 1: return 4;
+    case 2: return 5;
+    case 4: return 6;
+    case 3: return c == OPENPETE_SCENE_SHADOW ? 1 : -1;
+    default: break;
+    }
+    if (st->portal_rim) return -1;
+    return c == OPENPETE_SCENE_WORLD ? 0 : c == OPENPETE_SCENE_ACTOR ? 2
+         : c == OPENPETE_SCENE_PLAYER ? 3 : -1;
+}
+
+/** @brief Return whether an untextured bucket would defer a triangle to a mod material span.
+ *
+ * The bucket defers (ut_mat_spans_ok) and the triangle's tag resolves to a
+ * material (ut_tag_resolves). The room left in the span table is checked
+ * when the bucket is emitted.
+ * @param st The triangle.
+ * @param bucket Group index or UT_BUCKET_SKY.
+ * @param gb The bucket's blend class.
+ * @param gc The bucket's category.
+ * @return 1 when deferred, else 0. */
+static int cz_defers(const scene_tri_t* st, int bucket, int gb, int gc)
+{
+    return ut_mat_spans_ok(bucket, gb, gc) && st->tag && ut_tag_resolves(st->tag);
+}
+
+/** @brief Print a PLAYER-group triangle in the upper screen band under OPENPETE_PLY_VBDBG, at most 40 lines.
+ * @param st The triangle.
+ * @param t Its scene index. */
+static void cz_player_vb_dbg(const scene_tri_t* st, int t)
+{
+    static int s_pd = -1;
+    if (s_pd < 0) { const char* e = getenv("OPENPETE_PLY_VBDBG"); s_pd = (e && *e && *e != '0'); }
+    if (!s_pd || st->v[0].sy >= 205.0f) return;
+    static int s_pc = 0;
+    if (s_pc++ < 40)
+        fprintf(stderr, "[ply-vb] t=%d sxy=(%.0f,%.0f) z=(%.4f,%.4f,%.4f)\n",
+                t, st->v[0].sx, st->v[0].sy, st->v[0].z, st->v[1].z, st->v[2].z);
+}
+
+/** @brief Return the untextured slot of a triangle outside the layered groups, or CS_NONE.
+ *
+ * An untextured HUD triangle takes the HUD particle bucket, bucket 6, or the
+ * over-fade or under-player HUD bucket by its flat-layer pass; the
+ * single-category buckets take what utc_class names; a SKY triangle takes
+ * the sky bucket or, when the sky defers it, its span candidates; the
+ * portal masks and sky colours take the portal slots.
+ * @param st The untextured triangle.
+ * @param split tag_split_on().
+ * @return The slot, or CS_NONE. */
+static unsigned cz_ut_slot(const scene_tri_t* st, int split)
+{
+    const int c = st->category;
+    if (c == OPENPETE_SCENE_HUD) {
+        if (hud_tri_under_2d(st)) return CS_HUD_UNDER;
+        if (tri_in_fade_pass(st, FLAT_PASS_OVER_PLAYER)) return CS_HUD6;
+        return tri_in_fade_pass(st, FLAT_PASS_OVER_FADE) ? CS_OVER_HUD : CS_UNDER_HUD;
+    }
+    const int u = utc_class(st);
+    if (u >= 0) return (unsigned)(CS_UTC0 + u);
+    if (c == OPENPETE_SCENE_SKY)
+        return split && cz_defers(st, UT_BUCKET_SKY, 0, OPENPETE_SCENE_SKY) ? CS_DSKY : CS_SKY;
+    if (c == OPENPETE_SCENE_PORTAL_MASK) return CS_PMASK;
+    if (c == OPENPETE_SCENE_PORTAL_CYCLORAMA) return CS_PSKY;
+    return CS_NONE;
+}
+
+/** @brief Return the textured-block bucket of a textured triangle outside the blended-world block, or -1.
+ *
+ * Bucket 6 takes the HUD triangles of flat pass 0, TX_BUCKET_OVER_HUD those
+ * of the over-fade pass and TX_BUCKET_UNDER_HUD those of the under-player
+ * pass; 7 PORTAL_GUARD of any blend class; 13 the opaque WORLD faces with
+ * the portal inner-rim mark; 0, 2 and 3 the other opaque WORLD, ACTOR and
+ * PLAYER faces; 9 the opaque ACTOR_FRONT faces; 12 the opaque HUD3D faces;
+ * 1 the subtractive SHADOW faces. A blend class outside 0 to 4 counts as 0.
+ * Every other textured triangle is dropped from the block.
+ * @param st The textured triangle, not in the blended-world block.
+ * @return The bucket, or -1. */
+static int cz_tx_bucket(const scene_tri_t* st)
+{
+    const int cat = st->category;
+    const int bl = (st->blend < 0 || st->blend > 4) ? 0 : st->blend;
+    if (cat == OPENPETE_SCENE_HUD) {
+        if (tri_in_fade_pass(st, FLAT_PASS_OVER_PLAYER)) return 6;
+        return tri_in_fade_pass(st, FLAT_PASS_OVER_FADE) ? TX_BUCKET_OVER_HUD : TX_BUCKET_UNDER_HUD;
+    }
+    if (cat == OPENPETE_SCENE_PORTAL_GUARD) return 7;
+    if (bl == 3) return cat == OPENPETE_SCENE_SHADOW ? 1 : -1;
+    if (bl != 0) return -1;
+    switch (cat) {
+    case OPENPETE_SCENE_WORLD:       return st->portal_rim ? 13 : 0;
+    case OPENPETE_SCENE_ACTOR:       return st->portal_rim ? -1 : 2;
+    case OPENPETE_SCENE_PLAYER:      return st->portal_rim ? -1 : 3;
+    case OPENPETE_SCENE_ACTOR_FRONT: return 9;
+    case OPENPETE_SCENE_HUD3D:       return 12;
+    default:                         return -1;
+    }
+}
+
+/** @brief Compute a triangle's bucket slots: primary in bits 0-7, span candidate in 8-15, textured block in 16-23, CS_NONE where absent.
+ * @param st The triangle.
+ * @param t Its scene index.
+ * @param split tag_split_on().
+ * @return The packed slots. */
+static uint32_t cz_classify_tri(const scene_tri_t* st, int t, int split)
+{
+    unsigned pri = CS_NONE, sec = CS_NONE, tx = CS_NONE;
+    if (blended_world_tri(st)) tx = CS_TX0 + 11;
+    else if (st->textured) {
+        const int b = cz_tx_bucket(st);
+        if (b >= 0) tx = (unsigned)(CS_TX0 + b);
+    }
+    if (!st->textured) {
+        int b = st->blend;
+        if (b < 0 || b > 4) b = 0;
+        const int gi = cz_group_of(st, b);
+        if (gi == 3) cz_player_vb_dbg(st, t);
+        const int def = gi >= 0 && split &&
+                        cz_defers(st, gi, k_cz_group[gi].blend, k_cz_group[gi].gcat);
+        if (gi >= 0 && gi <= 3) pri = (unsigned)((def ? CS_D0 : CS_G0) + gi);
+        else {
+            if (def) sec = (unsigned)(CS_D0 + gi);
+            pri = cz_ut_slot(st, split);
+        }
+    }
+    return pri | sec << 8 | tx << 16;
+}
+
+/** @brief Classify every scene triangle into its slots (s_cz_code) and count each slot's members. */
+static void compose_classify(compose_t* c)
+{
+    memset(c->slot_cnt, 0, sizeof c->slot_cnt);
+    for (int t = 0; t < c->scene_n; t++) {
+        const uint32_t code = cz_classify_tri(&c->scene[t], t, c->split);
+        s_cz_code[t] = code;
+        for (int k = 0; k < 24; k += 8) {
+            const unsigned s = (code >> k) & 0xFFu;
+            if (s != CS_NONE) c->slot_cnt[s]++;
+        }
+    }
+}
+
+/** @brief Write each slot's member scene indices, in scene order, into its range of s_cz_slot. */
+static void compose_scatter(compose_t* c)
+{
+    int cur[CS_N];
+    for (int s = 0, at = 0; s < CS_N; at += c->slot_cnt[s], s++) c->slot_at[s] = cur[s] = at;
+    for (int t = 0; t < c->scene_n; t++) {
+        const uint32_t code = s_cz_code[t];
+        for (int k = 0; k < 24; k += 8) {
+            const unsigned s = (code >> k) & 0xFFu;
+            if (s != CS_NONE) s_cz_slot[cur[s]++] = t;
+        }
+    }
+}
+
+/** @brief Return the first member of a slot's index list. */
+static const int* cz_members(const compose_t* c, int slot) { return &s_cz_slot[c->slot_at[slot]]; }
+
+/** @brief Pack a list of scene triangles from the first free vertex, in list order, while they fit.
+ *
+ * The SUBTRACT group carries each vertex's PSX screen position in its UV
+ * for the shadow decal's screen-position varying.
+ * @param c The compose.
+ * @param idx Scene indices.
+ * @param cnt Their count.
+ * @param shadow_uv Nonzero for the SUBTRACT group's layout. */
+static void cz_pack_list(compose_t* c, const int* idx, int cnt, int shadow_uv)
+{
+    for (int i = 0; i < cnt && c->n + 3 <= s_cz_verts; i++) {
+        const scene_tri_t* st = &c->scene[idx[i]];
+        for (int k = 0; k < 3; k++)
+            pack_scene_vert(&c->buf[c->n + k], st, k, shadow_uv ? st->v[k].sx : 0.0f,
+                            shadow_uv ? st->v[k].sy : 0.0f);
+        c->n += 3;
+    }
+}
+
+/** @brief Pack one slot as an untextured bucket in scene order and record its range.
+ * @param c The compose.
+ * @param slot The slot.
+ * @param bucket The untextured bucket. */
+static void cz_emit_bucket(compose_t* c, int slot, int bucket)
+{
+    c->ut_first[bucket] = c->n;
+    cz_pack_list(c, cz_members(c, slot), c->slot_cnt[slot], 0);
+    c->ut_count[bucket] = c->n - c->ut_first[bucket];
+}
+
+/** @brief Pack a bucket with material-span candidates: the plain span, then the deferred spans when the bucket defers.
+ *
+ * The bucket defers while tag splitting is armed, ut_mat_spans_ok holds and
+ * the span table has room. Then the plain slot is the plain span and the
+ * candidates are emitted as tag-grouped spans (ut_emit_deferred); a group
+ * marks each deferred triangle in s_bw_deferred. Otherwise an opaque
+ * group's or the sky's candidates join the plain span in scene order, and a
+ * blended group's draw from the blended-world block.
+ * @param c The compose.
+ * @param plain The plain slot, or -1 for a blended group.
+ * @param cand The candidate slot.
+ * @param bucket Untextured bucket (ut_first index).
+ * @param span_gi Bucket index the spans are recorded under.
+ * @param defer_ok ut_mat_spans_ok for the bucket.
+ * @param mark_bw Nonzero to mark deferred triangles in s_bw_deferred.
+ * @param shadow_uv Nonzero for the SUBTRACT group's vertex layout. */
+static void cz_emit_deferring(compose_t* c, int plain, int cand, int bucket, int span_gi,
+                              int defer_ok, int mark_bw, int shadow_uv)
+{
+    const int defer = c->split && defer_ok && s_utmat_n < UT_MAT_SPANS;
+    const int* pi = plain >= 0 ? cz_members(c, plain) : NULL;
+    const int pn = plain >= 0 ? c->slot_cnt[plain] : 0;
+    const int* ci = cz_members(c, cand);
+    const int cn = c->slot_cnt[cand];
+    c->ut_first[bucket] = c->n;
+    if (defer || plain < 0) {
+        cz_pack_list(c, pi, pn, shadow_uv);
+    } else {
+        /* Not deferring: the candidates are plain triangles again, merged
+         * back into scene order. */
+        int i = 0, j = 0;
+        while (i < pn || j < cn) {
+            const int take_c = j < cn && (i >= pn || ci[j] < pi[i]);
+            cz_pack_list(c, take_c ? &ci[j++] : &pi[i++], 1, shadow_uv);
+        }
+    }
+    c->ut_count[bucket] = c->n - c->ut_first[bucket];
+    if (!defer || cn <= 0) return;
+    memcpy(s_utdef_idx, ci, (size_t)cn * sizeof *ci);
+    if (mark_bw)
+        for (int j = 0; j < cn; j++) s_bw_deferred[ci[j]] = 1;
+    c->n = ut_emit_deferred(span_gi, c->scene, c->buf, c->n, cn);
+}
+
+/** @brief Pack a HUD bucket in the flat layer's painter order (hud_paint_cmp: back to front, ties in scene order).
+ * @param c The compose.
+ * @param slot The slot.
+ * @param sorted Nonzero to sort; zero keeps scene order.
+ * @param cap Most triangles packed.
+ * @param idx_out Receives the packed triangles' scene indices, or NULL.
+ * @return The number of entries in the sorted list (s_cz_hud). */
+static int cz_emit_hud_sorted(compose_t* c, int slot, int sorted, int cap, int* idx_out)
+{
+    hud_paint_t *ho = (hud_paint_t *)s_cz_hud.data;
+    const int* m = cz_members(c, slot);
+    const int hn = c->slot_cnt[slot];
+    for (int i = 0; i < hn; i++) { ho[i].z = hud_paint_depth(&c->scene[m[i]]); ho[i].t = m[i]; }
+    if (sorted) qsort(ho, (size_t)hn, sizeof ho[0], hud_paint_cmp);
+    for (int i = 0; i < hn && i < cap && c->n + 3 <= s_cz_verts; i++) {
+        pack_scene_tri(&c->buf[c->n], &c->scene[ho[i].t]);
+        if (idx_out) idx_out[i] = ho[i].t;
+        c->n += 3;
+    }
+    return hn;
+}
+
+/** @brief Print the drawn order of bucket 6's triangles in a probe box under OPENPETE_HUD6_DBG=<VBL>, for two presents from that VBL.
+ * @param c The compose.
+ * @param hn Entries of the sorted list in s_cz_hud. */
+static void cz_hud6_dbg(const compose_t* c, int hn)
+{
+    static int s_h6 = -2;
+    if (s_h6 == -2) { const char* e = getenv("OPENPETE_HUD6_DBG"); s_h6 = (e && *e) ? atoi(e) : -1; }
+    if (!(s_h6 >= 0 && (int)s_scene_frame >= s_h6 && (int)s_scene_frame < s_h6 + 2)) return;
+    const hud_paint_t *ho = (const hud_paint_t *)s_cz_hud.data;
+    for (int i = 0; i < hn; i++) {
+        const scene_tri_t* T = &c->scene[ho[i].t];
+        const key_box_t b = tri_box(T);
+        if (!(i >= hn - 12 || (b.x1 >= 308.0f && b.x0 <= 336.0f && b.y1 >= 183.0f && b.y0 <= 214.0f)))
+            continue;
+        float cl[3][2];
+        for (int k = 0; k < 3; k++) scene_to_clip(T->v[k].sx, T->v[k].sy, &cl[k][0], &cl[k][1]);
+        fprintf(stderr, "[hud6] f=%u i=%d/%d t=%d z=%.4f rgba=%08X "
+                "v0=%.1f,%.1f v1=%.1f,%.1f v2=%.1f,%.1f clip=(%.4f,%.4f)(%.4f,%.4f)(%.4f,%.4f)\n",
+                s_scene_frame, i, hn, ho[i].t, (double)ho[i].z, T->v[0].rgba,
+                (double)T->v[0].sx, (double)T->v[0].sy, (double)T->v[1].sx, (double)T->v[1].sy,
+                (double)T->v[2].sx, (double)T->v[2].sy, (double)cl[0][0], (double)cl[0][1],
+                (double)cl[1][0], (double)cl[1][1], (double)cl[2][0], (double)cl[2][1]);
+    }
+}
+
+/** @brief Pack the layered groups' untextured buckets and their material spans, groups 0 to 6.
+ *
+ * Groups 1 to 3 have no blended members; groups 4 to 6 pack only their
+ * deferred spans (their other triangles draw from the blended-world block),
+ * and groups 1 and 6 never defer. */
+static void cz_emit_groups(compose_t* c)
+{
+    for (int gi = 0; gi < 7; gi++) {
+        const int gb = k_cz_group[gi].blend;
+        const int ok = ut_mat_spans_ok(gi, gb, k_cz_group[gi].gcat);
+        cz_emit_deferring(c, gb == 0 || gb == 3 ? CS_G0 + gi : -1, CS_D0 + gi,
+                          k_cz_group[gi].utb, gi, ok, 1, gi == 1);
+    }
+}
+
+/** @brief Pack the untextured HUD buckets: the particle bucket and bucket 6 in painter order, then the over-fade and under-player buckets in scene order.
+ *
+ * The particle bucket keeps at most HUD_UNDER_MAX triangles and names each
+ * one in s_hud_under_idx. OPENPETE_HUD6_NOSORT=1 keeps bucket 6 in scene
+ * order. */
+static void cz_emit_hud(compose_t* c)
+{
+    c->ut_first[UT_BUCKET_HUD_UNDER] = c->n;
+    cz_emit_hud_sorted(c, CS_HUD_UNDER, 1, HUD_UNDER_MAX, s_hud_under_idx);
+    c->ut_count[UT_BUCKET_HUD_UNDER] = c->n - c->ut_first[UT_BUCKET_HUD_UNDER];
+    static int s_h6sort = -1;
+    if (s_h6sort < 0) { const char* e = getenv("OPENPETE_HUD6_NOSORT"); s_h6sort = !(e && *e && *e != '0'); }
+    c->ut_first[6] = c->n;
+    cz_hud6_dbg(c, cz_emit_hud_sorted(c, CS_HUD6, s_h6sort, c->slot_cnt[CS_HUD6], NULL));
+    c->ut_count[6] = c->n - c->ut_first[6];
+    cz_emit_bucket(c, CS_OVER_HUD, UT_BUCKET_OVER_HUD);
+    cz_emit_bucket(c, CS_UNDER_HUD, UT_BUCKET_UNDER_HUD);
+}
+
+/** @brief Pack the single-category untextured buckets lo..hi-1 (UTC_*) in scene order, recording the inner-rim buckets' plane runs.
+ * @param c The compose.
+ * @param lo First bucket.
+ * @param hi One past the last bucket. */
+static void cz_emit_utc(compose_t* c, int lo, int hi)
+{
+    for (int u = lo; u < hi; u++) {
+        const int rim = u == UTC_WORLD_RIM || u == UTC_FILL_RIM ? u - UTC_WORLD_RIM : -1;
+        const int* m = cz_members(c, CS_UTC0 + u);
+        const int cnt = c->slot_cnt[CS_UTC0 + u];
+        c->ut_first[k_utc_bucket[u]] = c->n;
+        if (rim >= 0) s_rim_run_n[rim] = 0;
+        for (int i = 0; i < cnt && c->n + 3 <= s_cz_verts; i++) {
+            pack_scene_tri(&c->buf[c->n], &c->scene[m[i]]);
+            if (rim >= 0) rim_run_add(rim, c->n, c->scene[m[i]].portal_rim);
+            c->n += 3;
+        }
+        c->ut_count[k_utc_bucket[u]] = c->n - c->ut_first[k_utc_bucket[u]];
+    }
+}
+
+/** @brief Pack one portal range (masks or sky colours) as per-portal runs, a run per maximal streak of one group id.
+ *
+ * At most CZ_PORTAL_RUNS runs; a triangle that would open a run past the
+ * cap is dropped. In the sky range a material segment opens wherever the
+ * resolve-relevant tag changes while tag splitting is armed, so one
+ * portal's flat base and dome can take different materials.
+ * @param c The compose.
+ * @param sky 0 for the masks, 1 for the sky colours. */
+static void cz_emit_portal(compose_t* c, int sky)
+{
+    cz_portal_run_t *runs = sky ? c->psky : c->pmask;
+    int *rn = sky ? &c->psky_n : &c->pmask_n;
+    const int* m = cz_members(c, sky ? CS_PSKY : CS_PMASK);
+    const int cnt = c->slot_cnt[sky ? CS_PSKY : CS_PMASK];
+    int cur = -1;
+    for (int i = 0; i < cnt; i++) {
+        const scene_tri_t* st = &c->scene[m[i]];
+        if (c->n + 3 > s_cz_verts) continue;
+        if (cur < 0 || runs[cur].group != st->group) {
+            if (*rn >= CZ_PORTAL_RUNS) continue;
+            cur = (*rn)++;
+            runs[cur] = (cz_portal_run_t){ st->group, c->n, 0, st->v[0].z };
+        }
+        if (sky && c->split) {
+            const uint32_t mt = ut_mask_tag(st->tag);
+            const int fresh = c->pseg_n == 0 || c->pseg[c->pseg_n - 1].run != cur ||
+                              c->pseg[c->pseg_n - 1].tag != mt;
+            if (fresh && c->pseg_n < CZ_PORTAL_SEGS)
+                c->pseg[c->pseg_n++] = (cz_portal_seg_t){ cur, c->n, 0, mt };
+        }
+        pack_scene_tri(&c->buf[c->n], st);
+        runs[cur].count += 3;
+        if (sky && c->pseg_n && c->pseg[c->pseg_n - 1].run == cur) c->pseg[c->pseg_n - 1].count += 3;
+        c->n += 3;
+    }
+}
+
+/** @brief Gather the textured block: each bucket's members into s_txscene in bucket order, each put in its draw order (tx_bucket_order), then pack their vertices.
+ *
+ * The blended-world block (bucket 11) leaves out an untextured triangle a
+ * group deferred to a material span. Location 3 carries the moby paint
+ * (rank, ordinal) pair; untextured block triangles carry UV 0. */
+static void cz_emit_textured(compose_t* c)
+{
+    NR_PROF_BEGIN("cmp.build_tex");
+    c->tx_start = c->n;
+    c->txtri = 0;
+    for (int b = 0; b < TX_BUCKETS; b++) {
+        c->txg_first[b] = c->tx_start + c->txtri * 3;
+        const int run_start = c->txtri;
+        const int* m = cz_members(c, CS_TX0 + b);
+        const int cnt = c->slot_cnt[CS_TX0 + b];
+        for (int i = 0; i < cnt; i++) {
+            if (c->tx_start + (c->txtri + 1) * 3 > s_cz_verts) break;
+            const int t = m[i];
+            if (b == 11 && !c->scene[t].textured && s_bw_deferred[t]) continue;
+            s_txscene[c->txtri++] = t;
+        }
+        tx_bucket_order(b, c->scene, &s_txscene[run_start], c->txtri - run_start);
+        c->txg_count[b] = (c->tx_start + c->txtri * 3) - c->txg_first[b];
+    }
+    NR_PROF_END();   /* cmp.build_tex */
+    NR_PROF_BEGIN("cmp.vb_tex");
+    for (int i = 0; i < c->txtri; i++) {
+        const scene_tri_t *st = &c->scene[s_txscene[i]];
+        for (int k = 0; k < 3; k++)
+            pack_scene_vert(&c->buf[c->tx_start + i * 3 + k], st, k,
+                            st->textured ? st->v[k].u : 0.0f,
+                            st->textured ? st->v[k].v : 0.0f);
+    }
+    c->n = c->tx_start + c->txtri * 3;
+    NR_PROF_END();   /* cmp.vb_tex */
+}
+
+/** @brief Append a screen-covering quad (cover_rect) of one vertex template at the first free vertex.
+ * @param c The compose.
+ * @param z View-Z of every vertex.
+ * @param w W of every vertex.
+ * @param rgba Colour of every vertex.
+ * @param u0 Left U.
+ * @param u1 Right U.
+ * @param v1 Bottom V; the top is 0.
+ * @return The quad's first vertex. */
+static int cz_emit_quad(compose_t* c, float z, float w, uint32_t rgba, float u0, float u1, float v1)
+{
+    float l, r, t, b;
+    cover_rect(c->full_extent, &l, &r, &t, &b);
+    const rhi_vertex tl = { l, t, z, u0, 0.0f, rgba, 0, .w = w };
+    const rhi_vertex tr = { r, t, z, u1, 0.0f, rgba, 0, .w = w };
+    const rhi_vertex br = { r, b, z, u1, v1, rgba, 0, .w = w };
+    const rhi_vertex bl = { l, b, z, u0, v1, rgba, 0, .w = w };
+    rhi_vertex* o = &c->buf[c->n];
+    o[0] = tl; o[1] = tr; o[2] = br;
+    o[3] = tl; o[4] = br; o[5] = bl;
+    c->n += 6;
+    return c->n - 6;
+}
+
+/** @brief Append the full-screen fade quad (func_800190D4) and the freeze-frame backdrop quad after the textured block, when the present draws them.
+ *
+ * The fade quad sits at view-Z 1 with the fade colour; mode 0 ((B+F)/2)
+ * gets alpha 128, the add and subtract modes ignore alpha. The freeze quad
+ * samples the frozen frame (u over frozen_u_span, v 0..1) tinted by the
+ * game's setRGB0 and the fade-to-black shift in alpha; retention passes
+ * white. */
+static void cz_emit_covers(compose_t* c, uint32_t freeze)
+{
+    c->fade_first = -1; c->fade_mode = -1;
+    if ((c->fade & (1u << 31)) && c->n + 6 <= s_cz_verts) {
+        c->fade_mode = (int)((c->fade >> 24) & 3u);
+        const uint32_t fa = (c->fade_mode == 0) ? 0x80u : 0xFFu;
+        const uint32_t frgba = ((c->fade >> 16) & 0xFFu) | (((c->fade >> 8) & 0xFFu) << 8) |
+                               ((c->fade & 0xFFu) << 16) | (fa << 24);
+        c->fade_first = cz_emit_quad(c, 1.0f, 1.0f, frgba, 0.0f, 0.0f, 0.0f);
+    }
+    c->freeze_first = -1;
+    const freeze_target_t *frozen_src = active_frozen();
+    c->freeze_pipe = ps_freeze_retained() ? s_nr.freeze_plain_pipe : s_nr.freeze_overlay_pipe;
+    if (!(freeze & (1u << 31)) || !frozen_src->valid || !c->freeze_pipe || c->n + 6 > s_cz_verts)
+        return;
+    const uint32_t trgb = freeze & 0xFFFFFFu;
+    const uint32_t fade7 = (freeze >> 24) & 0x7Fu;
+    const uint32_t ta8 = (fade7 * 255u + 63u) / 127u;    /* 0..127 -> 0..255 (rounded) */
+    uint32_t trgba = ((trgb >> 16) & 0xFFu) | (((trgb >> 8) & 0xFFu) << 8) | ((trgb & 0xFFu) << 16) |
+                     (ta8 << 24);
+    if (ps_freeze_retained()) trgba = 0xFFFFFFFFu;
+    float u0, u1;
+    frozen_u_span(frozen_src, &u0, &u1);
+    c->freeze_first = cz_emit_quad(c, 1.0f, 0.0f, trgba, u0, u1, 1.0f);
+}
+
+/** @brief Verify under OPENPETE_HUD6_DBG=<VBL> that bucket 6's vertex range still holds the glyph vertices at upload, and dump the cap triangles. */
+static void cz_hud6_vb_dbg(const compose_t* c)
+{
+    static int s_h6b = -2;
+    if (s_h6b == -2) { const char* e = getenv("OPENPETE_HUD6_DBG"); s_h6b = (e && *e) ? atoi(e) : -1; }
+    if (!(s_h6b >= 0 && (int)s_scene_frame >= s_h6b && (int)s_scene_frame < s_h6b + 2)) return;
+    const rhi_vertex* buf = c->buf;
+    const int f6 = c->ut_first[6], n6 = c->ut_count[6];
+    int hits = 0;
+    for (int v = f6; v < f6 + n6; v++)
+        if (buf[v].x > 0.20f && buf[v].x < 0.31f && buf[v].y > -0.82f && buf[v].y < -0.60f) hits++;
+    fprintf(stderr, "[hud6vb] f=%u ut6=[%d+%d] n=%d glyph-verts-in-Vwindow=%d\n",
+            s_scene_frame, f6, n6, c->n, hits);
+    for (int v = f6; v + 2 < f6 + n6; v += 3) {
+        const float x0 = buf[v].x, y0 = buf[v].y;
+        if (y0 < -0.75f || y0 > -0.60f) continue;
+        if ((x0 > 0.2515f && x0 < 0.2545f) || (x0 > 0.2345f && x0 < 0.2375f))
+            fprintf(stderr, "[hud6cap] f=%u vslot=%d (%.4f,%.4f,%.4f)(%.4f,%.4f,%.4f)(%.4f,%.4f,%.4f) rgba=%08X,%08X,%08X\n",
+                    s_scene_frame, v, (double)buf[v].x, (double)buf[v].y, (double)buf[v].z,
+                    (double)buf[v+1].x, (double)buf[v+1].y, (double)buf[v+1].z,
+                    (double)buf[v+2].x, (double)buf[v+2].y, (double)buf[v+2].z,
+                    buf[v].rgba, buf[v+1].rgba, buf[v+2].rgba);
+    }
+}
+
+/** @brief Pack the scene into scene_vb's layout and upload it.
+ *
+ * The background fill quad at vertex 0 when bg is set, then in vertex
+ * order: the layered groups' untextured buckets with their material spans,
+ * the untextured HUD buckets, the single-category buckets OVERLAY,
+ * HUD_PANEL, HUD3D and PORTAL_GUARD, SKY with its spans, WORLD_FILL, the
+ * retired slot 13 (empty), ACTOR_FRONT, the inner-rim buckets and the
+ * over-fade and under-player 2D buckets, the portal masks and sky colours,
+ * the textured block (buckets 0 to 14), and the fade and freeze quads. A
+ * full buffer truncates the layout's tail. */
+static void compose_pack(compose_t* c, uint32_t freeze)
+{
+    NR_PROF_BEGIN("cmp.classify");
+    s_utmat_n = 0; s_utmemo_n = 0;
+    memset(s_bw_deferred, 0, (size_t)c->scene_n);
+    compose_classify(c);
+    NR_PROF_END();
+    NR_PROF_BEGIN("cmp.scatter");
+    compose_scatter(c);
+    NR_PROF_END();
+    NR_PROF_BEGIN("cmp.build_ut");
+    c->n = 0;
+    if (c->bg != 0) cz_emit_quad(c, OPENPETE_DEPTH_VIEWZ_FAR, OPENPETE_DEPTH_VIEWZ_FAR, c->bg, 0.0f, 0.0f, 0.0f);
+    cz_emit_groups(c);
+    cz_emit_hud(c);
+    cz_emit_utc(c, UTC_OVERLAY, UTC_WORLD_FILL);
+    /* SKY takes the same material deferral as the numbered groups, through
+     * the same predicate; its deferred triangles stay in the blended-world
+     * block. */
+    cz_emit_deferring(c, CS_SKY, CS_DSKY, UT_BUCKET_SKY, UT_BUCKET_SKY,
+                      ut_mat_spans_ok(UT_BUCKET_SKY, 0, OPENPETE_SCENE_SKY), 0, 0);
+    cz_emit_utc(c, UTC_WORLD_FILL, UTC_WORLD_FILL + 1);
+    c->ut_first[13] = c->n;   /* retired slot: blend-3 content outside the decals is blended-world */
+    c->ut_count[13] = 0;
+    cz_emit_utc(c, UTC_ACTOR_FRONT, UTC_N);
+    c->pmask_n = c->psky_n = c->pseg_n = 0;
+    cz_emit_portal(c, 0);
+    cz_emit_portal(c, 1);
+    NR_PROF_END();   /* cmp.build_ut */
+    cz_emit_textured(c);
+    cz_emit_covers(c, freeze);
+    cz_hud6_vb_dbg(c);
+    NR_PROF_BEGIN("cmp.upload");
+    rhi_update_buffer(s_nr.scene_vb, c->buf, sizeof(rhi_vertex) * (size_t)(c->n > 0 ? c->n : 1));
+    NR_PROF_END();
+}
+
+/* ---- compose draw steps ------------------------------------------------ */
+
+/* One step of the compose draw: a function and the layered groups it runs
+ * in (bit gi), or 0 for a step outside the group loop. */
+typedef void (*cz_step_fn)(compose_t* c, int gi);
+typedef struct { unsigned groups; cz_step_fn fn; } cz_step_t;
+#define CZ_ALL 0x7Fu
+#define CZ_G(i) (1u << (i))
+
+/** @brief Confine the scene to the --aspect render rect (view_px_rect) unless it maps the full extent. */
+static void cz_step_scissor(compose_t* c, int gi)
+{
+    (void)gi;
+    if (c->full_extent) return;
+    const openpete_px_rect_t sc = view_px_rect();
+    rhi_set_scissor(s_nr.dev, sc.x, sc.y, sc.w, sc.h);
+}
+
+/** @brief Draw the backdrop pair (fill, then sky dome) up front when it is not deferred past the WORLD group or a freeze backdrop draws.
+ *
+ * Freeze frames skip the WORLD group, so they keep the up-front order with
+ * the fill under the freeze quad and no dome. */
+static void cz_step_backdrop_first(compose_t* c, int gi)
+{
+    (void)gi;
+    if (!c->backdrop_defer || c->freeze_first >= 0)
+        draw_backdrop_fills(c->bg, c->ut_first, c->ut_count,
+                            c->freeze_first < 0 && !c->backdrop_defer);
+}
+
+/** @brief Draw the freeze backdrop (the frozen native frame, desaturated and tinted) behind the world and UI. */
+static void cz_step_freeze(compose_t* c, int gi)
+{
+    (void)gi;
+    if (c->freeze_first < 0) return;
+    rhi_texture *frz = active_frozen()->tex;
+    if (!frz) return;
+    bind_scene_pipe(c->freeze_pipe);
+    rhi_bind_vram(s_nr.dev, frz);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    rhi_draw(s_nr.dev, 6, (uint32_t)c->freeze_first);
+}
+
+/** @brief Open the GPU zone of a layered group (OPENPETE_GPU_TIMERS). */
+static void cz_step_zone_begin(compose_t* c, int gi)
+{
+    (void)c;
+    static const char* const k_scene_zone[7] =
+        { "sc.world", "sc.shadow", "sc.actor", "sc.player", "sc.alpha", "sc.add", "sc.qadd" };
+    rhi_gpu_zone_begin(s_nr.dev, k_scene_zone[gi]);
+}
+
+/** @brief Close the GPU zone a step opened. */
+static void cz_step_zone_end(compose_t* c, int gi)
+{
+    (void)c; (void)gi;
+    rhi_gpu_zone_end(s_nr.dev);
+}
+
+/** @brief Before the PLAYER group: the flat 2D the game draws before the player, and the whole of flat pass 0 in the states hud_under names. */
+static void cz_step_before_player_2d(compose_t* c, int gi)
+{
+    (void)gi;
+    draw_before_player_2d(c->scene, c->scene_n, c->ut_first, c->ut_count, c->tx_start,
+                          c->txg_first, c->txg_count, c->hud_under);
+}
+
+/** @brief Dragon-rescue cutscene (actor_front): depth-isolate the cutscene actors just before the PLAYER group.
+ *
+ * Two passes over untextured bucket 14 and textured bucket 9: the PUNCH
+ * pass (colour-write-off twins, depth compare ALWAYS) replaces the stored
+ * depth on exactly the pixels the actors rasterize, then the COLOUR pass
+ * draws them through the ordinary opaque pipes, so they win over terrain
+ * they interpenetrate and keep exact self-occlusion. The depth left behind
+ * is min(true actor depth, world depth) on their own pixels, which the
+ * transparent groups test against. The punch pass keeps mod material
+ * overrides off: its job is depth only. */
+static void cz_step_actor_front_cutscene(compose_t* c, int gi)
+{
+    (void)gi;
+    if (!c->actor_front || c->freeze_first >= 0) return;
+    const int punch_ok = s_nr.gouraud_punch_pipe && s_nr.scene_tex_punch_pipe;
+    for (int pass = punch_ok ? 0 : 1; pass < 2; pass++) {
+        rhi_pipeline* upipe = pass ? s_nr.gouraud_pipe   : s_nr.gouraud_punch_pipe;
+        rhi_pipeline* tpipe = pass ? s_nr.scene_tex_pipe : s_nr.scene_tex_punch_pipe;
+        rhi_pipeline* hpipe = pass ? s_nr.hd_cutout_pipe : s_nr.hd_cutout_punch_pipe;
+        if (upipe && c->ut_count[14] > 0) {
+            bind_scene_pipe(upipe);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            rhi_draw(s_nr.dev, (uint32_t)c->ut_count[14], (uint32_t)c->ut_first[14]);
+        }
+        if (c->txg_count[9] > 0 && s_nr.vram_tex && tpipe) {
+            bind_scene_pipe(tpipe);
+            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            draw_tex_runs(c->txg_first[9], c->txg_count[9], c->tx_start, c->scene,
+                          &tpipe, 1, hpipe, pass, 0);
+        }
+    }
+}
+
+/** @brief Draw a layered group's untextured bucket.
+ *
+ * The SUBTRACT group is the Spyro silhouette shadow, fed as its fan plus
+ * the screen hull of its footprint prism: it draws through the depth-aware
+ * decal when the WORLD-opaque pre-pass depth exists, else through the
+ * depth-tested subtract pipe with the hardware depth bias set after the
+ * bind (binding a pipeline with static bias state invalidates the dynamic
+ * value). */
+static void cz_step_group_ut(compose_t* c, int gi)
+{
+    const cz_group_t *g = &c->groups[gi];
+    if (!g->utex || c->ut_count[g->utb] <= 0) return;
+    if (gi != 1) {
+        bind_scene_pipe(g->utex);
+    } else if (s_od_ready && s_nr.opaque_depth) {
+        bind_player_shadow_decal();
+    } else {
+        bind_scene_pipe(s_nr.gouraud_sub_ztest_pipe);
+        float cb, sb, cl;
+        shadow_hw_bias(&cb, &sb, &cl);
+        rhi_set_depth_bias(s_nr.dev, cb, cl, sb);
+    }
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    rhi_draw(s_nr.dev, (uint32_t)c->ut_count[g->utb], (uint32_t)c->ut_first[g->utb]);
+}
+
+/** @brief Draw a layered group's deferred untextured material spans. */
+static void cz_step_group_spans(compose_t* c, int gi)
+{
+    const cz_group_t *g = &c->groups[gi];
+    if (s_utmat_n && g->utex && ut_mat_spans_ok(gi, g->blend, g->gcat))
+        draw_ut_mat_spans(gi, g->utex, c->holefill_on && (gi == 0 || gi == 2), g->blend);
+}
+
+/** @brief Draw the moby shadows (textured bucket 1) in one call through the depth-aware textured decal.
+ *
+ * Every moby shadow shares one sprite and one tag, so the whole range is
+ * one draw with the first triangle's material. A mod material applies on
+ * the decal profile (openpete_psx_decal.glsl, the engine half hands the
+ * mod the visibility verdict) only when every triangle carries that tag;
+ * otherwise the range draws stock. */
+static void cz_draw_moby_decal(const compose_t* c)
+{
+    const int base = (c->txg_first[1] - c->tx_start) / 3;
+    const scene_tri_t *m0 = &c->scene[s_txscene[base]];   /* uniform material */
+    const openpete_shadow_decal_params *sp = ps_shadow();
+    shadow_decal_tex_pc pc;
+    pc.col0x = sp->cam_col0[0]; pc.col0y = sp->cam_col0[1]; pc.col0z = sp->cam_col0[2];
+    pc.col1x = sp->cam_col1[0]; pc.col1y = sp->cam_col1[1]; pc.col1z = sp->cam_col1[2];
+    pc.col2x = sp->cam_col2[0]; pc.col2y = sp->cam_col2[1]; pc.col2z = sp->cam_col2[2];
+    pc.cam_pos_up = sp->cam_pos_up;
+    pc.ofx = sp->ofx; pc.ofy = sp->ofy;
+    pc.h = sp->h;
+    pc.wall_height = sp->wall_height;
+    pc.steep_nup = sp->steep_nup;
+    /* height+steep test when the feeder supplied valid camera params, else
+     * draw-all (band). */
+    pc.mode = shadow_decal_mode(sp->valid ? 1.0f : 0.0f);
+    pc.band = shadow_decal_band();
+    pc.plat_eps = sp->plat_eps;
+    pc.plat_slack = sp->plat_slack;
+    pc.uax = s_od_uax; pc.ubx = s_od_ubx;
+    pc.vay = s_od_vay; pc.vby = s_od_vby;
+    pc.pvw = s_od_vw;  pc.pvh = s_od_vh;
+    scene_fc_affine dfc; scene_fragcoord_affine(&dfc);
+    pc.fax = dfc.fax; pc.fbx = dfc.fbx;
+    pc.fay = dfc.fay; pc.fby = dfc.fby;
+    pc.tpage = decal_pack_tpage(m0->tpage_x, m0->tpage_y);
+    pc.clut  = decal_pack_clut(m0->clut_x, m0->clut_y, m0->bpp);
+    rhi_pipeline* dpipe = s_nr.scene_tex_sub_decal_pipe;
+    openpete_mod_material_gpu_t dmg;
+    int dslot_ok = 0;
+    if (tag_split_on() && m0->tag) {
+        const int ntri1 = c->txg_count[1] / 3;
+        int uniform = 1;
+        for (int q = 1; q < ntri1 && uniform; q++)
+            uniform = c->scene[s_txscene[base + q]].tag == m0->tag;
+        if (uniform &&
+            openpete_mods_material_resolve(m0->tag, OPENPETE_MATERIAL_CONTRACT_DECAL, &dmg) >= 0) {
+            rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
+            const nr_mat_req dq = { NR_MAT_DECAL, 0, 0, 0 };
+            rhi_pipeline* ds = nr_pipe_of(nr_material_pipe(&dmg, &dq));
+            if (ds) { dpipe = ds; dslot_ok = 1; }
+        }
+    }
+    bind_scene_pipe(dpipe);
+    rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0); /* set 0 */
+    pc.key_contest = shadow_decal_bind_keys();              /* set 1 */
+    if (dslot_ok) nr_material_bind(&dmg, 0, 0);
+    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    rhi_draw(s_nr.dev, (uint32_t)c->txg_count[1], (uint32_t)c->txg_first[1]);
+}
+
+/** @brief Draw a layered group's textured bucket as material-coalesced runs.
+ *
+ * The moby shadows (gi 1) take the depth-aware decal (cz_draw_moby_decal)
+ * when the pre-pass depth and the pipe exist; otherwise the group's
+ * textured pipe draws, the shadows with the hardware depth bias. HD
+ * replacement per group family: opaque through the depth-tested cutout
+ * (the MARK twin for the stencil-MARK WORLD pipe), alpha and additive
+ * through their ztest/no-zwrite HD twins; the subtract group stays SD. Mod
+ * material overrides apply to every group but the shadows, through the
+ * MARK twin where the group marks hole-fill coverage. */
+static void cz_step_group_tex(compose_t* c, int gi)
+{
+    const cz_group_t *g = &c->groups[gi];
+    if (c->txg_count[g->txb] <= 0 || !s_nr.vram_tex || !g->tex) return;
+    if (gi == 1 && s_od_ready && s_nr.opaque_depth && s_nr.scene_tex_sub_decal_pipe &&
+        moby_shadow_decal_enabled()) {
+        cz_draw_moby_decal(c);
+        return;
+    }
+    bind_scene_pipe(g->tex);
+    if (gi == 1) {
+        float cb, sb, cl;
+        shadow_hw_bias(&cb, &sb, &cl);
+        rhi_set_depth_bias(s_nr.dev, cb, cl, sb);
+    }
+    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    rhi_pipeline *hd = (g->blend == 0) ? opaque_group_hd_pipe(g->tex)
+                     : (g->blend == 1) ? s_nr.hd_scene_blend_pipe
+                     : (g->blend == 2) ? s_nr.hd_scene_add_pipe
+                     : NULL;
+    const int mat_ok = (gi == 1) ? 0
+                     : (nr_shell_stock_of(g->tex) == s_nr.scene_tex_mark_pipe ? 2 : 1);
+    draw_tex_runs(c->txg_first[g->txb], c->txg_count[g->txb], c->tx_start, c->scene, &g->tex, 1,
+                  hd, mat_ok, g->blend);
+}
+
+/** @brief Draw the rescue actors (ACTOR_FRONT) at the ACTOR layer when no cutscene front-passes them.
+ *
+ * Same pipelines as the ACTOR group, stencil-MARK variants when hole-fill
+ * is on, so the LP fill never paints over the moby that covers an authored
+ * ground hole. */
+static void cz_step_actor_front_layer(compose_t* c, int gi)
+{
+    (void)gi;
+    if (c->actor_front) return;
+    rhi_pipeline* apipe = c->holefill_on ? s_nr.gouraud_mark_pipe : s_nr.gouraud_pipe;
+    rhi_pipeline* atex  = c->holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe;
+    rhi_pipeline* acut  = c->holefill_on ? s_nr.hd_cutout_mark_pipe : s_nr.hd_cutout_pipe;
+    if (apipe && c->ut_count[14] > 0) {
+        bind_scene_pipe(apipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)c->ut_count[14], (uint32_t)c->ut_first[14]);
+    }
+    if (c->txg_count[9] > 0 && s_nr.vram_tex && atex) {
+        bind_scene_pipe(atex);
+        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        draw_tex_runs(c->txg_first[9], c->txg_count[9], c->tx_start, c->scene,
+                      &atex, 1, acut, c->holefill_on ? 2 : 1, 0);
+    }
+}
+
+/** @brief Draw the portal inner-rim faces of the WORLD group through its inner-rim twins (draw_portal_rim). */
+static void cz_step_portal_rim(compose_t* c, int gi)
+{
+    draw_portal_rim(c->scene, c->tx_start, c->ut_count[16], c->txg_first[13], c->txg_count[13],
+                    c->holefill_on, gi);
+}
+
+/** @brief Draw the retained WORLD terrain of the sector-mesh cache in the WORLD group's slot. */
+static void cz_step_tercache_world(compose_t* c, int gi)
+{
+    (void)gi;
+    if (!openpete_tercache_frame_open()) return;
+    openpete_tercache_clip aff; tercache_clip_params(&aff);
+    openpete_tercache_draw(OPTC_DRAW_WORLD, &aff, s_nr.vram_tex, c->holefill_on, nr_tercache_keys());
+}
+
+/** @brief Draw the terrain LP hole-fill (bucket 12) after the ACTOR opaques: true LP depth, gated on stencil 0 so it paints only pixels no opaque MARK claimed. */
+static void cz_step_world_fill(compose_t* c, int gi)
+{
+    (void)gi;
+    if (!c->holefill_on || c->ut_count[12] <= 0) return;
+    bind_scene_pipe(s_nr.gouraud_fill_pipe);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    rhi_draw(s_nr.dev, (uint32_t)c->ut_count[12], (uint32_t)c->ut_first[12]);
+}
+
+/** @brief Draw the WORLD_FILL inner-rim faces (draw_portal_rim_fill). */
+static void cz_step_rim_fill(compose_t* c, int gi)
+{
+    draw_portal_rim_fill(c->ut_count[17], c->holefill_on, gi);
+}
+
+/** @brief Draw the terrain cache's LP hole-fill twin in the scene-fed fill's slot, before the portal stencil clear. */
+static void cz_step_tercache_fill(compose_t* c, int gi)
+{
+    (void)gi;
+    if (!c->holefill_on || !openpete_tercache_frame_open()) return;
+    openpete_tercache_clip aff; tercache_clip_params(&aff);
+    openpete_tercache_draw(OPTC_DRAW_FILL, &aff, s_nr.vram_tex, 0, nr_tercache_keys());
+}
+
+/** @brief Draw the four blended world classes in the scene's emission order, with the terrain cache's blended classes inside the terrain feed's span (draw_blended_world). */
+static void cz_step_blended_world(compose_t* c, int gi)
+{
+    (void)gi;
+    draw_blended_world(c->scene, c->tx_start, c->txg_first[11], c->txg_count[11],
+                       openpete_tercache_frame_open());
+}
+
+/** @brief Draw one portal sky run's colours: its material segments where a selector claimed them, stock elsewhere.
+ *
+ * Portal sky is opaque but depth-write off, so an override builds that
+ * variant (NR_MAT_SKY). A run without segments, or whose segments the
+ * table could not hold, draws its remainder stock.
+ * @param c The compose.
+ * @param run The run's index in c->psky. */
+static void cz_draw_portal_sky_run(const compose_t* c, int run)
+{
+    const cz_portal_run_t *sk = &c->psky[run];
+    int drawn = 0;
+    for (int sg = 0; c->split && sg < c->pseg_n; sg++) {
+        if (c->pseg[sg].run != run || c->pseg[sg].count <= 0) continue;
+        rhi_pipeline* pipe = NULL;
+        openpete_mod_material_gpu_t mg;
+        if (c->pseg[sg].tag &&
+            openpete_mods_material_resolve(c->pseg[sg].tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0) {
+            rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
+            const nr_mat_req sq = { NR_MAT_SKY, 0, 0, 0 };
+            pipe = nr_pipe_of(nr_material_pipe(&mg, &sq));
+            if (pipe) {
+                bind_scene_pipe(pipe);
+                rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
+                if (s_nr.mat_pack_dummy)
+                    rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
+                bind_material_keys();
+                nr_material_bind(&mg, 0, 0);
+                psx_material_hd zm;
+                memset(&zm, 0, sizeof zm);
+                rhi_push_constants(s_nr.dev, &zm, sizeof zm);
+            }
+        }
+        if (!pipe) bind_scene_pipe(s_nr.gouraud_noz_pipe);
+        rhi_draw(s_nr.dev, (uint32_t)c->pseg[sg].count, (uint32_t)c->pseg[sg].first);
+        drawn += c->pseg[sg].count;
+    }
+    if (drawn < sk->count) {
+        bind_scene_pipe(s_nr.gouraud_noz_pipe);
+        rhi_draw(s_nr.dev, (uint32_t)(sk->count - drawn), (uint32_t)(sk->first + drawn));
+    }
+}
+
+/** @brief Order the portal sky runs far to near by plane depth (a stable insertion sort, depth descending).
+ * @param c The compose.
+ * @param order Receives the run indices in draw order. */
+static void cz_portal_order(const compose_t* c, int* order)
+{
+    for (int oi = 0; oi < c->psky_n; oi++) order[oi] = oi;
+    for (int oi = 1; oi < c->psky_n; oi++) {
+        const int ov = order[oi];
+        int oj = oi - 1;
+        while (oj >= 0 && c->psky[order[oj]].depth < c->psky[ov].depth) { order[oj + 1] = order[oj]; oj--; }
+        order[oj + 1] = ov;
+    }
+}
+
+/** @brief Draw the PORTAL_GUARD near-band terrain redraw (untextured bucket 10, textured bucket 7) after every portal: the sky wrote no depth, so the guard's LEQUAL re-wins exactly its own pixels. */
+static void cz_draw_portal_guard(const compose_t* c)
+{
+    if (c->ut_count[10] > 0 && s_nr.gouraud_pipe) {
+        bind_scene_pipe(s_nr.gouraud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)c->ut_count[10], (uint32_t)c->ut_first[10]);
+    }
+    if (c->txg_count[7] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
+        bind_scene_pipe(s_nr.scene_tex_pipe);
+        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        draw_tex_runs(c->txg_first[7], c->txg_count[7], c->tx_start, c->scene, &s_nr.scene_tex_pipe, 1,
+                      s_nr.hd_cutout_pipe, 0, 0);
+    }
+}
+
+/** @brief Draw the portal-sky previews after the ACTOR group, then the near-band portal guard.
+ *
+ * Per portal, far to near by plane depth: clear stencil, rasterize the
+ * mask invisibly and depth-tested (the depth bias is set after the bind;
+ * portal_mask_bias), then the sky colours depth-tested and stencil-gated
+ * (cz_draw_portal_sky_run). A sky run without a matching mask uses its own
+ * footprint as the mask. The PORTAL_GUARD redraw (untextured bucket 10,
+ * textured bucket 7) follows once, re-winning exactly its own pixels. */
+static void cz_step_portal_sky(compose_t* c, int gi)
+{
+    (void)gi;
+    if (!s_nr.gouraud_noz_pipe || !s_nr.portal_mask_pipe || c->psky_n <= 0) return;
+    int order[CZ_PORTAL_RUNS];
+    cz_portal_order(c, order);
+    char mused[CZ_PORTAL_RUNS] = {0};
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    for (int oi = 0; oi < c->psky_n; oi++) {
+        const cz_portal_run_t *sk = &c->psky[order[oi]];
+        const cz_portal_run_t *mk = NULL;
+        for (int mj = 0; mj < c->pmask_n && !mk; mj++)
+            if (!mused[mj] && c->pmask[mj].group == sk->group) { mk = &c->pmask[mj]; mused[mj] = 1; }
+        const int mf = mk ? mk->first : sk->first;
+        const int mc = mk ? mk->count : sk->count;
+        if (sk->count <= 0 || mc <= 0) continue;
+        rhi_clear_stencil(s_nr.dev);
+        bind_scene_pipe(s_nr.portal_mask_pipe);
+        float cb, sb, cl;
+        portal_mask_bias(&cb, &sb, &cl);
+        rhi_set_depth_bias(s_nr.dev, cb, cl, sb);
+        rhi_draw(s_nr.dev, (uint32_t)mc, (uint32_t)mf);
+        cz_draw_portal_sky_run(c, order[oi]);
+    }
+    cz_draw_portal_guard(c);
+}
+
+/** @brief Draw the deferred backdrop pair right after the WORLD opaques, so early-Z spares every covered pixel. */
+static void cz_step_backdrop_deferred(compose_t* c, int gi)
+{
+    (void)gi;
+    if (c->backdrop_defer) draw_backdrop_fills(c->bg, c->ut_first, c->ut_count, 1);
+}
+
+/** @brief Print the inner-rim draw census (rim_draw_census) and open the HUD GPU zone. */
+static void cz_step_hud_begin(compose_t* c, int gi)
+{
+    (void)gi;
+    rim_draw_census(c->ut_count[16], c->ut_count[17], c->txg_count[13]);
+    rhi_gpu_zone_begin(s_nr.dev, "sc.hud");
+}
+
+/** @brief Draw the flat 2D HUD pass 0 over the whole scene, player included, unless hud_under drew it before the PLAYER group. */
+static void cz_step_hud_flat(compose_t* c, int gi)
+{
+    (void)gi;
+    if (!c->hud_under)
+        draw_hud_flat_layer(c->scene, c->scene_n, c->ut_first, c->ut_count, c->tx_start,
+                            c->txg_first[6], c->txg_count[6], 0);
+}
+
+/** @brief Decide where the HUD3D layer draws (hud3d_over_fade) and draw it here, under the fade, unless it is lifted over the fade. */
+static void cz_step_hud3d_under(compose_t* c, int gi)
+{
+    (void)gi;
+    c->hud3d_lift = hud3d_over_fade(c->scene, c->scene_n, c->fade);
+    draw_hud3d_pass(c->scene, c->scene_n, c->tx_start, c->ut_first, c->ut_count, c->txg_first,
+                    c->txg_count, c->hud3d_lift, 0);
+}
+
+/** @brief Draw the OVERLAY 2D flat quads (letterbox bars) over everything, depth-test off, before the fade. */
+static void cz_step_overlay(compose_t* c, int gi)
+{
+    (void)gi;
+    draw_overlay_quads(c->ut_first[7], c->ut_count[7]);
+}
+
+/** @brief Draw the full-screen fade quad over every layer above, in the PSX ABR blend.
+ *
+ * Mode 2 (B-F) subtracts through the plain subtractive fade pipe, mode 0
+ * ((B+F)/2) blends, modes 1 and 3 add. The pipes write no depth and the
+ * quad sits at view-Z 1, so it passes against the whole frame. */
+static void cz_step_fade(compose_t* c, int gi)
+{
+    (void)gi;
+    if (c->fade_first < 0) return;
+    rhi_pipeline* fp = (c->fade_mode == 2) ? s_nr.gouraud_sub_fade_pipe
+                     : (c->fade_mode == 0) ? s_nr.gouraud_blend_pipe
+                                           : s_nr.gouraud_add_pipe;
+    if (!fp) return;
+    bind_scene_pipe(fp);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    rhi_draw(s_nr.dev, 6, (uint32_t)c->fade_first);
+}
+
+/** @brief Draw the HUD3D layer after the fade when hud3d_over_fade lifted it. */
+static void cz_step_hud3d_over(compose_t* c, int gi)
+{
+    (void)gi;
+    draw_hud3d_pass(c->scene, c->scene_n, c->tx_start, c->ut_first, c->ut_count, c->txg_first,
+                    c->txg_count, c->hud3d_lift, 1);
+}
+
+/** @brief Draw the 2D the game links after the fade quad (draw_over_fade_2d) and close the HUD GPU zone. */
+static void cz_step_over_fade(compose_t* c, int gi)
+{
+    (void)gi;
+    draw_over_fade_2d(c->scene, c->scene_n, c->ut_first, c->ut_count, c->tx_start,
+                      c->txg_first[TX_BUCKET_OVER_HUD], c->txg_count[TX_BUCKET_OVER_HUD]);
+    rhi_gpu_zone_end(s_nr.dev);
+}
+
+/* The compose's draw steps in order: the steps before the layered groups,
+ * each group's steps (bit gi of .groups), and the HUD and cover steps
+ * after them. A freeze frame runs only the PLAYER group: the world is
+ * frozen into the backdrop, and the game's own player draw is what puts
+ * the avatar in that group. */
+static const cz_step_t k_cz_before[] = {
+    { 0, cz_step_scissor },
+    { 0, cz_step_backdrop_first },
+    { 0, cz_step_freeze },
+};
+static const cz_step_t k_cz_groups[] = {
+    { CZ_ALL,  cz_step_zone_begin },
+    { CZ_G(3), cz_step_before_player_2d },
+    { CZ_G(3), cz_step_actor_front_cutscene },
+    { CZ_ALL,  cz_step_group_ut },
+    { CZ_ALL,  cz_step_group_spans },
+    { CZ_ALL,  cz_step_group_tex },
+    { CZ_G(2), cz_step_actor_front_layer },
+    { CZ_G(0), cz_step_portal_rim },
+    { CZ_G(0), cz_step_tercache_world },
+    { CZ_G(2), cz_step_world_fill },
+    { CZ_G(2), cz_step_rim_fill },
+    { CZ_G(2), cz_step_tercache_fill },
+    { CZ_G(4), cz_step_blended_world },
+    { CZ_G(2), cz_step_portal_sky },
+    { CZ_ALL,  cz_step_zone_end },
+    { CZ_G(0), cz_step_backdrop_deferred },
+};
+static const cz_step_t k_cz_after[] = {
+    { 0, cz_step_hud_begin },
+    { 0, cz_step_hud_flat },
+    { 0, cz_step_hud3d_under },
+    { 0, cz_step_overlay },
+    { 0, cz_step_fade },
+    { 0, cz_step_hud3d_over },
+    { 0, cz_step_over_fade },
+};
+
+/** @brief Run the compose's draw steps over its packed layout. */
+static void compose_draw(compose_t* c)
+{
+    NR_PROF_BEGIN("cmp.record");
+    for (size_t i = 0; i < sizeof k_cz_before / sizeof k_cz_before[0]; i++) k_cz_before[i].fn(c, -1);
+    s_rim_draws = 0; s_rim_tex_runs = 0;
+    for (int gi = 0; gi < 7; gi++) {
+        if (c->freeze_first >= 0 && gi != 3) continue;
+        for (size_t i = 0; i < sizeof k_cz_groups / sizeof k_cz_groups[0]; i++)
+            if (k_cz_groups[i].groups & CZ_G(gi)) k_cz_groups[i].fn(c, gi);
+    }
+    for (size_t i = 0; i < sizeof k_cz_after / sizeof k_cz_after[0]; i++) k_cz_after[i].fn(c, -1);
+    NR_PROF_END();   /* cmp.record */
+    if (!c->full_extent) rhi_reset_scissor(s_nr.dev);
+}
+
+/** @brief Fill the layered groups' pipelines for this compose.
+ *
+ * The WORLD group draws through the stencil-MARK variants when hole-fill is
+ * on, so the FILL layer paints only uncovered pixels; the ACTOR group
+ * marks too, through its shell twins, so authored ground holes under
+ * static decor read as covered. */
+static void cz_group_pipes(compose_t* c)
+{
+    const int h = c->holefill_on;
+    rhi_pipeline* const ut[7] = {
+        h ? s_nr.gouraud_mark_pipe : s_nr.gouraud_pipe, s_nr.gouraud_sub_pipe,
+        nr_shell_twin_of(h ? s_nr.gouraud_mark_pipe : s_nr.gouraud_pipe), s_nr.gouraud_pipe,
+        s_nr.gouraud_blend_pipe, s_nr.gouraud_add_pipe, s_nr.gouraud_qadd_pipe };
+    rhi_pipeline* const tx[7] = {
+        h ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe, s_nr.scene_tex_sub_pipe,
+        nr_shell_twin_of(h ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe), s_nr.scene_tex_pipe,
+        s_nr.scene_tex_blend_pipe, s_nr.scene_tex_add_pipe, s_nr.scene_tex_qadd_pipe };
+    for (int gi = 0; gi < 7; gi++)
+        c->groups[gi] = (cz_group_t){ k_cz_group[gi].blend, k_cz_group[gi].gcat, k_cz_group[gi].utb,
+                                      k_cz_group[gi].txb, ut[gi], tx[gi] };
+}
+
 static bool draw_native_scene(bool full_extent);
 /** @brief Draw the selected scene with the material view captured with it installed.
  *
@@ -17121,17 +18326,90 @@ static bool draw_scene_with_matview(bool full_extent)
     return drew;
 }
 
-/** @brief Composes the present's scene into the bound render target, one pass per layer and bucket.
+/** @brief Repack the key pass's terrain, prop and actor batches and byte-compare them with the batches the pass recorded (OPENPETE_TERRAIN_KEY_IDENT=1).
  *
- * Packs the scene triangles into the vertex buffer and draws the world
- * groups, the HUD, overlay, panel, 3D-HUD, portal, sky, fill and
- * actor-front layers and the textured buckets in their fixed order.
- * Callers reach it through draw_scene_with_matview, which installs the
- * scene's material view around it.
+ * Proves the hoisted key pass and the scene draw packed from the same
+ * scene snapshot and clip mapping: the repack goes through the per-class
+ * packer (pack_terrain_key_batch), and a mismatch means the snapshot or the
+ * mapping moved between pass and draw, the one failure class a key-image
+ * capture cannot attribute (the shared image is overwritten per target, so
+ * a readback after the frame shows only the last pass). One line per class
+ * on stderr.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param full_extent Nonzero for the full-extent mapping. */
+static void key_ident_check(const scene_tri_t* scene, int scene_n, bool full_extent)
+{
+    static int s_ident = -1;
+    if (s_ident < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_IDENT");
+        s_ident = (e && *e && *e != '0'); }
+    if (!s_ident || s_tk_last.m < 0 || !openpete_native_key_resolve_on()
+        || s_tk_last.full_extent != (full_extent ? 1 : 0)
+        || !cz_instrument_run(&s_cz_ident, sizeof(rhi_vertex), "compose.key_ident",
+                              SCENE_VB_WAS, s_cz_verts)) return;
+    rhi_vertex *ibuf = (rhi_vertex *)s_cz_ident.data;
+    static keytex_span_t ispans[KEYTEX_MAX_SPANS];
+    for (int cls = 0; cls < 3; cls++) {
+        int lm = cls == 1 ? s_tk_last.mm : cls == 2 ? s_tk_last.am : s_tk_last.m;
+        const rhi_vertex* lb = (const rhi_vertex *)(cls == 1 ? s_tk_last.mbuf
+                             : cls == 2 ? s_tk_last.abuf : s_tk_last.buf)->data;
+        int iuntex = 0, inspans = 0;
+        int im = pack_terrain_key_batch(scene, scene_n, full_extent ? 1 : 0, cls, ibuf,
+                                        &iuntex, ispans, &inspans);
+        size_t db = 0, nb = sizeof(rhi_vertex) * (size_t)(im < lm ? im : lm);
+        const uint8_t* a = (const uint8_t*)ibuf;
+        const uint8_t* b = (const uint8_t*)lb;
+        while (db < nb && a[db] == b[db]) db++;
+        if (im != lm || db < nb)
+            fprintf(stderr, "[keyident f=%u] MISMATCH cls=%d fe=%d m=%d/%d scene=%p/%p n=%d/%d first-diff vert=%zu\n",
+                    s_scene_frame, cls, full_extent ? 1 : 0, im, lm,
+                    (const void*)scene, (const void*)s_tk_last.scene,
+                    scene_n, s_tk_last.scene_n, db / sizeof(rhi_vertex));
+        else
+            fprintf(stderr, "[keyident f=%u] OK cls=%d fe=%d m=%d\n",
+                    s_scene_frame, cls, full_extent ? 1 : 0, im);
+    }
+}
+
+/** @brief Print the load-window census line of the composed scene (OPENPETE_LOAD_CENSUS=1).
+ *
+ * Triangle counts per category (opaque triangles) and the blended count,
+ * with the fade and freeze words, the draw-env clear and the scene
+ * background; correlated with the game-side RE and MOBY-RE lines it
+ * attributes transition-window artifacts to their feeder or cover.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param fade The present's fade word.
+ * @param freeze The present's freeze word.
+ * @param scene_bg The scene's background colour. */
+static void load_census_scene(const scene_tri_t* scene, int scene_n, uint32_t fade, uint32_t freeze,
+                              uint32_t scene_bg)
+{
+    static int s_census = -1;
+    if (s_census < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_census = (e && *e && *e != '0'); }
+    if (!s_census) return;
+    int cat[13] = {0}, blend = 0;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].blend != 0) blend++;
+        else if (scene[t].category >= 0 && scene[t].category <= 12) cat[scene[t].category]++;
+    }
+    fprintf(stderr, "[census f=%u SCENE] n=%d wor=%d act=%d hud=%d ply=%d ovl=%d pan=%d h3d=%d psky=%d pmsk=%d sky=%d fill=%d blend=%d fade=%08x freeze=%u denv=%08x sbg=%08x\n",
+            s_scene_frame, scene_n, cat[0], cat[1], cat[2], cat[3], cat[4], cat[5], cat[6], cat[7], cat[8],
+            cat[10], cat[11], blend, fade, freeze, ps_drawenv_clear(), scene_bg);
+}
+
+/** @brief Compose the present's scene into the bound render target: pack it into scene_vb, then run the draw steps.
+ *
+ * Runs the per-present scene instruments, publishes the material UBO and
+ * decides the fallback to the PSX VRAM framebuffer; a scene that composes
+ * is packed by compose_pack and drawn by compose_draw. Callers reach it
+ * through draw_scene_with_matview, which installs the scene's material
+ * view around it.
  * @param full_extent 1 to map the full PSX extent (offscreen panel), 0 for the display mapping.
  * @return true when anything was drawn. */
 static bool draw_native_scene(bool full_extent)
 {
+    NR_PROF_BEGIN("cmp.pre");
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0, actor_front = 0;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under, &actor_front);
     scene_n = compose_reserve(scene_n);
@@ -17140,67 +18418,14 @@ static bool draw_native_scene(bool full_extent)
     fbsnap_present_census(scene, scene_n);
     s_cz_lift = scene_lifts_over_fade(scene, scene_n, scene_fade);
 
-    /* OPENPETE_TERRAIN_KEY_IDENT=1: prove the hoisted key pass and this draw
-     * packed from the SAME scene snapshot + clip mapping - repack here and
-     * byte-compare against the pass's recorded batch. A mismatch means the
-     * snapshot or mapping moved between pass and draw: the one failure class
-     * a key-image capture cannot attribute (the shared image is sequentially
-     * overwritten per target, so post-frame readbacks only ever show the
-     * LAST pass's content). */
-    { static int s_ident = -1;
-      if (s_ident < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_IDENT");
-          s_ident = (e && *e && *e != '0'); }
-      if (s_ident && s_tk_last.m >= 0 && openpete_native_key_resolve_on()
-          && s_tk_last.full_extent == (full_extent ? 1 : 0)
-          && cz_instrument_run(&s_cz_ident, sizeof(rhi_vertex), "compose.key_ident",
-                               SCENE_VB_WAS, s_cz_verts)) {
-          rhi_vertex *ibuf = (rhi_vertex *)s_cz_ident.data;
-          static keytex_span_t ispans[KEYTEX_MAX_SPANS];
-          for (int cls = 0; cls < 3; cls++) {
-              int lm = cls == 1 ? s_tk_last.mm : cls == 2 ? s_tk_last.am : s_tk_last.m;
-              const rhi_vertex* lb = (const rhi_vertex *)(cls == 1 ? s_tk_last.mbuf
-                                   : cls == 2 ? s_tk_last.abuf : s_tk_last.buf)->data;
-              int iuntex = 0, inspans = 0;
-              int im = pack_terrain_key_batch(scene, scene_n, full_extent ? 1 : 0, cls, ibuf,
-                                              &iuntex, ispans, &inspans);
-              size_t db = 0, nb = sizeof(rhi_vertex) * (size_t)(im < lm ? im : lm);
-              const uint8_t* a = (const uint8_t*)ibuf;
-              const uint8_t* b = (const uint8_t*)lb;
-              while (db < nb && a[db] == b[db]) db++;
-              if (im != lm || db < nb)
-                  fprintf(stderr, "[keyident f=%u] MISMATCH cls=%d fe=%d m=%d/%d scene=%p/%p n=%d/%d first-diff vert=%zu\n",
-                          s_scene_frame, cls, full_extent ? 1 : 0, im, lm,
-                          (const void*)scene, (const void*)s_tk_last.scene,
-                          scene_n, s_tk_last.scene_n, db / sizeof(rhi_vertex));
-              else
-                  fprintf(stderr, "[keyident f=%u] OK cls=%d fe=%d m=%d\n",
-                          s_scene_frame, cls, full_extent ? 1 : 0, im);
-          }
-      } }
+    key_ident_check(scene, scene_n, full_extent);
 
     /* Publish this present's interned per-instance material uniforms
      * into the material UBO before any draw_tex_runs override binds them.
      * No-op (and cheap) when no per-instance selector is active. */
     fill_material_ubo();
 
-    /* Load-window census (OPENPETE_LOAD_CENSUS=1): what THIS present actually
-     * composes - tri counts per category/blend + the fade/freeze covers. One
-     * line per present; correlate with the game-side RE / MOBY-RE lines to
-     * attribute transition-window artifacts (who fed what, what covers it). */
-    {
-        static int s_census = -1;
-        if (s_census < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_census = (e && *e && *e != '0'); }
-        if (s_census) {
-            int cat[13] = {0}, blend = 0;
-            for (int t = 0; t < scene_n; t++) {
-                if (scene[t].blend != 0) blend++;
-                else if (scene[t].category >= 0 && scene[t].category <= 12) cat[scene[t].category]++;
-            }
-            fprintf(stderr, "[census f=%u SCENE] n=%d wor=%d act=%d hud=%d ply=%d ovl=%d pan=%d h3d=%d psky=%d pmsk=%d sky=%d fill=%d blend=%d fade=%08x freeze=%u denv=%08x sbg=%08x\n",
-                    s_scene_frame, scene_n, cat[0], cat[1], cat[2], cat[3], cat[4], cat[5], cat[6], cat[7], cat[8],
-                    cat[10], cat[11], blend, scene_fade, scene_freeze, ps_drawenv_clear(), scene_bg);
-        }
-    }
+    load_census_scene(scene, scene_n, scene_fade, scene_freeze, scene_bg);
 
     /* Background colour = the GAMESTATE draw-env clear (s_drawenv_clear, captured
      * from PutDrawEnv) - the colour the canonical render actually auto-clears the
@@ -17215,1048 +18440,22 @@ static bool draw_native_scene(bool full_extent)
 
     const bool vram = !scene_compose_has_content(scene, scene_n, scene_freeze, bg);
     compose_note(vram);
+    NR_PROF_END();   /* cmp.pre */
     if (vram) return false;
     census_submit_note(scene, scene_n);
 
+    compose_t c;
+    c.scene = scene; c.scene_n = scene_n; c.full_extent = full_extent ? 1 : 0;
+    c.split = tag_split_on();
+    c.buf = (rhi_vertex *)s_cz_vb.data;
+    c.bg = bg; c.fade = scene_fade;
+    c.hud_under = hud_under; c.actor_front = actor_front; c.hud3d_lift = 0;
+    c.holefill_on = s_nr.gouraud_mark_pipe && s_nr.scene_tex_mark_pipe && s_nr.gouraud_fill_pipe;
+    c.backdrop_defer = backdrop_defer_on();
+    cz_group_pipes(&c);
     s_render_full_extent = full_extent ? 1 : 0;
-
-    rhi_vertex *buf = (rhi_vertex *)s_cz_vb.data;
-    int n = 0;
-    /* Background fill (untextured, far plane), drawn first; depth-tested actors
-     * sit in front of it. Covers the panel rect (window) or the full target. */
-    if (bg != 0) {
-        float l, r, t, b;
-        cover_rect(full_extent, &l, &r, &t, &b);
-        const float fz = OPENPETE_DEPTH_VIEWZ_FAR;   /* the backdrop view-Z */
-        const rhi_vertex tl = { l, t, fz, 0, 0, bg, 0, .w = fz };
-        const rhi_vertex tr = { r, t, fz, 0, 0, bg, 0, .w = fz };
-        const rhi_vertex br = { r, b, fz, 0, 0, bg, 0, .w = fz };
-        const rhi_vertex bl = { l, b, fz, 0, 0, bg, 0, .w = fz };
-        buf[0] = tl; buf[1] = tr; buf[2] = br;
-        buf[3] = tl; buf[4] = br; buf[5] = bl;
-        n = 6;
-    }
-    /* The scene draws in 7 LAYERED groups, in this order, so a ground-decal
-     * shadow lands OVER the terrain it falls on but UNDER the actors standing on
-     * it (the PSX terrain -> shadow -> Spyro draw order). A single near-bias on
-     * the shadow can't do both (it would also paint over Spyro's feet); the layer
-     * order does. Each group's UNTEXTURED tris are packed into a contiguous VB
-     * range (one batched draw); its TEXTURED tris are drawn per-tri (material
-     * push) by filtering the appended textured block. gcat <0 = any (only OPAQUE
-     * splits WORLD vs ACTOR vs PLAYER; transparent classes route by blend alone).
-     *   0 WORLD-opaque  (blend 0, cat WORLD)   terrain / sky / props
-     *   1 SUBTRACT      (blend 3)              shadows (depth_write_off)
-     *   2 ACTOR-opaque  (blend 0, cat ACTOR)   mobys - cover the shadows
-     *   --- HUD/overlay (depth-test off) drawn here: OVER mobys, UNDER the player ---
-     *   3 PLAYER-opaque (blend 0, cat PLAYER)  Spyro - covers the near-OT HUD text
-     *   4 ALPHA         (blend 1)              ABR0 semi-transparent
-     *   5 ADDITIVE      (blend 2)              ABR1 flame / glows
-     *   6 QUARTER-ADD   (blend 4)              ABR3 glass (last)
-     * Groups 4 to 6 keep no plain bucket content: their triangles draw from
-     * the emission-ordered blended-world block at gi 4, except those
-     * deferred into a mod material span.
-     * The HUD/overlay sits BETWEEN regular mobys and the player so the PSX's
-     * near-OT-slot UI (HUD icons, "DEMO MODE", level-intro / "RESCUED <dragon>"
-     * text) draws OVER mobys (e.g. the rescued dragon Nestor) yet UNDER the player
-     * Spyro (who flies in front of the intro text) - exactly the PSX OT order
-     * (text at the near slot, over other mobys; the player rendered on top). */
-    /* utb/txb name the untextured and textured bucket a group packs into.
-     * They are the group index for the six original groups; the quarter-add
-     * group takes the free slots above the HUD and overlay buckets, so those
-     * keep their numbers. */
-    struct scene_group { int blend, gcat, utb, txb; rhi_pipeline *utex, *tex; };
-    /* The WORLD-opaque group draws through the stencil-MARK variants
-     * (identical raster + stencil=1 coverage write) so the FILL layer below can
-     * paint only uncovered pixels. Falls back to the plain pipes (and no fill)
-     * if the mark/fill pipes didn't come up. */
-    const int holefill_on = s_nr.gouraud_mark_pipe && s_nr.scene_tex_mark_pipe
-                            && s_nr.gouraud_fill_pipe;
-    const struct scene_group groups[7] = {
-        { 0, OPENPETE_SCENE_WORLD, 0, 0,
-              holefill_on ? s_nr.gouraud_mark_pipe   : s_nr.gouraud_pipe,
-              holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe    },
-        { 3, -1, 1, 1,              s_nr.gouraud_sub_pipe,   s_nr.scene_tex_sub_pipe   },
-        /* ACTOR opaques also MARK coverage (like WORLD): authored HP ground
-         * holes under static decor (pedestal discs) must read as covered so
-         * the LP hole-fill - drawn after this group - never paints over the
-         * moby that hides them. */
-        { 0, OPENPETE_SCENE_ACTOR, 2, 2,
-              nr_shell_twin_of(holefill_on ? s_nr.gouraud_mark_pipe   : s_nr.gouraud_pipe),
-              nr_shell_twin_of(holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe) },
-        { 0, OPENPETE_SCENE_PLAYER, 3, 3, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
-        { 1, -1, 4, 4,              s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe },
-        { 2, -1, 5, 5,              s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe   },
-        /* 6 QUARTER-ADD (blend 4) ABR3 glass, after the additive group. */
-        { 4, -1, 15, 10,            s_nr.gouraud_qadd_pipe,  s_nr.scene_tex_qadd_pipe  },
-    };
-    /* ut group 6 = HUD untextured overlay (after ACTOR); 7 = OVERLAY (dead last,
-     * letterbox / HUD-OT 2D flat quads, over everything); 8 = HUD_PANEL (alpha,
-     * under the HUD text); 9 = HUD3D (in-game 3D icon mobys, DEPTH-TESTED on top
-     * after a depth clear). Groups 6/7/8 are depth-test off; 9 is depth-on.
-     * 11 = SKY (cyclorama dome - WORLD-like, drawn FIRST with the PLAIN pipe so
-     * it never stencil-marks; see OPENPETE_SCENE_SKY); 12 = WORLD_FILL (terrain
-     * LP hole-fill, stencil TEST_ZERO, right after the WORLD group). */
-    int ut_first[UT_BUCKETS], ut_count[UT_BUCKETS];
-    /* CPU attribution (--profile-out): the compose phase splits into
-     * build_ut (untextured bucketing incl. portal-run collection),
-     * build_tex (textured bucketing + material sort), vb_tex (textured
-     * vertex pack), upload (VB update) and record (draw recording). */
-
-
-    NR_PROF_BEGIN("cmp.build_ut");
-    s_utmat_n = 0; s_utmemo_n = 0;
-    memset(s_bw_deferred, 0, (size_t)scene_n);
-    for (int gi = 0; gi < 7; gi++) {
-        const int utb = groups[gi].utb;
-        ut_first[utb] = n;
-        int gb = groups[gi].blend, gc = groups[gi].gcat;
-        /* Defer only what this bucket will actually draw - see
-         * ut_mat_spans_ok - and only while the span table can still record
-         * it. Deferring more than that DELETES it: the tri leaves the plain
-         * span and nothing else draws it. */
-        const int defer_ok = tag_split_on() && ut_mat_spans_ok(gi, gb, gc) &&
-                             s_utmat_n < UT_MAT_SPANS;
-        int dn = 0;
-        for (int t = 0; t < scene_n; t++) {
-            if (scene[t].textured || n + 3 > s_cz_verts) continue;
-            if (scene[t].category == OPENPETE_SCENE_HUD ||
-                scene[t].category == OPENPETE_SCENE_HUD3D ||
-                scene[t].category == OPENPETE_SCENE_HUD_PANEL) continue;  /* -> HUD passes */
-            int b = scene[t].blend; if (b < 0 || b > 4) b = 0;   /* untextured class */
-            if (b != gb) continue;
-            if (ut_opaque_group_skips(gb, gc, &scene[t])) continue;
-            /* SUBTRACT group = the drop-shadow DECALS only (SHADOW category).
-             * Plain subtractive world content (blend 3, any other category -
-             * e.g. hypothetical untextured smoke) goes to slot 13 below and
-             * draws through the plain subtract pipe, not the decal. */
-            if (gb == 3 && scene[t].category != OPENPETE_SCENE_SHADOW) continue;
-            /* The SUBTRACT group (gb==3 = the depth-aware Spyro shadow decal)
-             * carries its PSX screen coord in u,v so shadow_decal.frag gets the
-             * exact per-pixel screen position via a NOPERSPECTIVE varying (no
-             * mode-specific affine - identical full-extent and panel). */
-            int is_shadow = (gb == 3);
-            /* OPENPETE_PLY_VBDBG=1: print PLAYER-group verts in the upper band
-             * (stamp forensics - sy<205 excludes Spyro's body). */
-            { static int s_pd = -1;
-              if (s_pd < 0) { const char* e = getenv("OPENPETE_PLY_VBDBG"); s_pd = (e && *e && *e != '0'); }
-              if (s_pd && gi == 3 && scene[t].v[0].sy < 205.0f) {
-                  static int s_pc = 0;
-                  if (s_pc++ < 40)
-                      fprintf(stderr, "[ply-vb] t=%d sxy=(%.0f,%.0f) z=(%.4f,%.4f,%.4f)\n",
-                              t, scene[t].v[0].sx, scene[t].v[0].sy,
-                              scene[t].v[0].z, scene[t].v[1].z, scene[t].v[2].z);
-              } }
-            if (defer_ok && scene[t].tag && ut_tag_resolves(scene[t].tag)) {
-                s_utdef_idx[dn++] = t;             /* appended after the plain span */
-                s_bw_deferred[t] = 1;
-                continue;
-            }
-            /* The blended classes (alpha, additive, quarter-additive here;
-             * blend 3 outside the shadow decals is the same case) draw from the
-             * emission-ordered blended-world block, not from this bucket. */
-            if (gb == 1 || gb == 2 || gb == 4) continue;
-            for (int k = 0; k < 3; k++)
-                pack_scene_vert(&buf[n + k], &scene[t], k,
-                                is_shadow ? scene[t].v[k].sx : 0.0f,
-                                is_shadow ? scene[t].v[k].sy : 0.0f);
-            n += 3;
-        }
-        ut_count[utb] = n - ut_first[utb];         /* the PLAIN (stock-drawn) span */
-        /* Deferred tris: grouped by resolve-relevant tag into contiguous
-         * spans after the plain span (ut_emit_deferred). */
-        n = ut_emit_deferred(gi, scene, buf, n, dn);
-    }
-    /* HUD untextured: every HUD-category untextured tri (any blend). The pipe is
-     * depth-test OFF by design (the layer must paint over the world uncondition-
-     * ally yet stay under the player), so ordering INSIDE the layer is painter's.
-     * Submission order is wrong for the near-OT mobys the game ROTATES - the
-     * inventory screen's spinning letter/dragon-icon mobys painted their back
-     * faces over their front faces. Sort the bucket stably BACK-TO-FRONT by
-     * centroid z (the tris carry real view-Z-derived depth), the depth-off
-     * analogue of the PSX OT bucket order - finer, per-tri - so a rotated glyph
-     * self-occludes correctly at every phase. Stability (z ties break on
-     * submission index) keeps every constant-z run - the 2D-UI carries at z=0,
-     * flat per-glyph quads - in submission order, i.e. exactly the old draw. */
-    ut_first[UT_BUCKET_HUD_UNDER] = n;
-    n = pack_hud_under_2d(scene, scene_n, buf, n);
-    ut_count[UT_BUCKET_HUD_UNDER] = n - ut_first[UT_BUCKET_HUD_UNDER];
-    ut_first[6] = n;
-    {
-        hud_paint_t *ho = (hud_paint_t *)s_cz_hud.data;
-        int hn = 0;
-        for (int t = 0; t < scene_n; t++) {
-            if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD ||
-                !tri_in_fade_pass(&scene[t], 0) || hud_tri_under_2d(&scene[t])) continue;
-            ho[hn].z = hud_paint_depth(&scene[t]);
-            ho[hn].t = t; hn++;
-        }
-        static int s_h6sort = -1;   /* OPENPETE_HUD6_NOSORT=1: A/B - submission order */
-        if (s_h6sort < 0) { const char* e = getenv("OPENPETE_HUD6_NOSORT"); s_h6sort = !(e && *e && *e != '0'); }
-        if (s_h6sort)
-            qsort(ho, (size_t)hn, sizeof ho[0], hud_paint_cmp);
-        /* OPENPETE_HUD6_DBG=frameLo: paint-order forensics - every bucket-6 tri
-         * whose v0 lands in a fixed probe box, in SORTED (drawn) order. */
-        static int s_h6 = -2;
-        if (s_h6 == -2) { const char* e = getenv("OPENPETE_HUD6_DBG"); s_h6 = (e && *e) ? atoi(e) : -1; }
-        int h6_live = s_h6 >= 0 && (int)s_scene_frame >= s_h6 && (int)s_scene_frame < s_h6 + 2;
-        for (int i = 0; i < hn && n + 3 <= s_cz_verts; i++) {
-            int t = ho[i].t;
-            if (h6_live) {
-                float x0 = scene[t].v[0].sx, x1 = x0, y0 = scene[t].v[0].sy, y1 = y0;
-                for (int k = 1; k < 3; k++) {
-                    float sx2 = scene[t].v[k].sx, sy2 = scene[t].v[k].sy;
-                    if (sx2 < x0) x0 = sx2;
-                    if (sx2 > x1) x1 = sx2;
-                    if (sy2 < y0) y0 = sy2;
-                    if (sy2 > y1) y1 = sy2;
-                }
-                if (i >= hn - 12 || (x1 >= 308.0f && x0 <= 336.0f && y1 >= 183.0f && y0 <= 214.0f)) {
-                    float c[3][2];
-                    for (int k = 0; k < 3; k++)
-                        scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &c[k][0], &c[k][1]);
-                    fprintf(stderr, "[hud6] f=%u i=%d/%d t=%d z=%.4f rgba=%08X "
-                            "v0=%.1f,%.1f v1=%.1f,%.1f v2=%.1f,%.1f clip=(%.4f,%.4f)(%.4f,%.4f)(%.4f,%.4f)\n",
-                            s_scene_frame, i, hn, t, (double)ho[i].z, scene[t].v[0].rgba,
-                            (double)scene[t].v[0].sx, (double)scene[t].v[0].sy,
-                            (double)scene[t].v[1].sx, (double)scene[t].v[1].sy,
-                            (double)scene[t].v[2].sx, (double)scene[t].v[2].sy,
-                            (double)c[0][0], (double)c[0][1], (double)c[1][0], (double)c[1][1],
-                            (double)c[2][0], (double)c[2][1]);
-                }
-            }
-            pack_scene_tri(&buf[n], &scene[t]);
-            n += 3;
-        }
-    }
-    ut_count[6] = n - ut_first[6];
-    ut_first[UT_BUCKET_OVER_HUD] = n;
-    n = pack_flat_pass_hud(scene, scene_n, buf, n, FLAT_PASS_OVER_FADE);
-    ut_count[UT_BUCKET_OVER_HUD] = n - ut_first[UT_BUCKET_OVER_HUD];
-    ut_first[UT_BUCKET_UNDER_HUD] = n;
-    n = pack_flat_pass_hud(scene, scene_n, buf, n, FLAT_PASS_UNDER_PLAYER);
-    ut_count[UT_BUCKET_UNDER_HUD] = n - ut_first[UT_BUCKET_UNDER_HUD];
-    /* The single-category untextured buckets, packed from one classifying
-     * count pass and two scatter passes instead of one full scan each:
-     *   7  OVERLAY: HUD-OT 2D flat quads (letterbox bars), drawn dead last
-     *      over everything (incl. the player); opaque, painter's order.
-     *   8  HUD_PANEL: the semi-transparent menu dark panel, drawn
-     *      alpha-blended at the start of the HUD layer; depth-test off.
-     *   9  HUD3D: the in-game 3D HUD icon mobys, depth-tested (opaque
-     *      gouraud_pipe after a mid-pass depth clear) so their faces Z-sort;
-     *      per-vertex z is the real view-Z depth.
-     *  10  PORTAL_GUARD: near-band terrain protection redraw, depth-tested
-     *      opaque right after the portal-sky sequence.
-     *  12  WORLD_FILL: terrain LP hole-fill, drawn after the WORLD group with
-     *      the TEST_ZERO pipe.
-     *  14  ACTOR_FRONT (blend 0): the rescue actors' flat-shaded faces, split
-     *      out so the dragon-rescue pass can front-pass only these.
-     * Each bucket keeps submission order and the vertex range it had, SKY
-     * (bucket 11) still packs between 10 and 12, and a full buffer truncates
-     * the buckets in the same order. */
-    int utc_cnt[UTC_N], utc_cur[UTC_N], utc_end[UTC_N];
-    utc_count(scene, scene_n, utc_cnt);
-    n = utc_reserve(UTC_OVERLAY, UTC_WORLD_FILL, utc_cnt, n, s_cz_verts, utc_cur, utc_end, ut_first, ut_count);
-    utc_scatter(UTC_OVERLAY, UTC_WORLD_FILL, scene, scene_n, buf, utc_cur, utc_end);
-    /* SKY (cyclorama dome) + WORLD_FILL (terrain LP hole-fill) untextured
-     * buckets. SKY draws before the group loop with the PLAIN opaque
-     * pipe (depth-tested backdrop, no stencil mark); FILL draws right after
-     * the WORLD group with the TEST_ZERO pipe. Both untextured by
-     * construction (gouraud dome / gouraud LP). */
-    ut_first[UT_BUCKET_SKY] = n;
-    {
-        /* SKY takes the same material deferral as the numbered groups, and
-         * through the same predicate - a dome-wide selector is one of the
-         * plainest things a mod can ask for, and without this the sky is the
-         * one opaque channel no material can reach. One tag, so at most one
-         * deferred span. */
-        const int sky_defer = tag_split_on() &&
-            ut_mat_spans_ok(UT_BUCKET_SKY, 0, OPENPETE_SCENE_SKY) &&
-            s_utmat_n < UT_MAT_SPANS;
-        int sdn = 0;
-        for (int t = 0; t < scene_n; t++) {
-            if (scene[t].textured || scene[t].category != OPENPETE_SCENE_SKY ||
-                n + 3 > s_cz_verts) continue;
-            if (sky_defer && scene[t].tag && ut_tag_resolves(scene[t].tag)) {
-                s_utdef_idx[sdn++] = t;
-                continue;
-            }
-            pack_scene_tri(&buf[n], &scene[t]);
-            n += 3;
-        }
-        ut_count[UT_BUCKET_SKY] = n - ut_first[UT_BUCKET_SKY];   /* PLAIN span */
-        n = ut_emit_deferred(UT_BUCKET_SKY, scene, buf, n, sdn);
-    }
-    /* Slot 13 is retired: untextured blend-3 content outside the shadow decals
-     * rides the emission-ordered blended-world block with the rest of its
-     * class, so it no longer has a bucket of its own. Its empty range sits
-     * between WORLD_FILL and ACTOR_FRONT. */
-    n = utc_reserve(UTC_WORLD_FILL, UTC_WORLD_FILL + 1, utc_cnt, n, s_cz_verts, utc_cur, utc_end, ut_first, ut_count);
-    ut_first[13] = n;
-    ut_count[13] = 0;
-    n = utc_reserve(UTC_ACTOR_FRONT, UTC_N, utc_cnt, n, s_cz_verts, utc_cur, utc_end, ut_first, ut_count);
-    utc_scatter(UTC_WORLD_FILL, UTC_N, scene, scene_n, buf, utc_cur, utc_end);
-    /* PORTAL buckets: sky colours (PORTAL_CYCLORAMA) + their stencil
-     * aperture masks (PORTAL_MASK), collected per-portal via the feeder's group
-     * id. Draw site (after the WORLD group): per group - clear stencil ->
-     * rasterize the mask invisibly, depth-TESTED against the world (the arch
-     * stone / a nearer wall punches it out) -> draw the colours stencil-gated
-     * and ALSO depth-TESTED (write off - "noz" is no z WRITE, not no z test),
-     * so a colour whose depth disagrees with the mask's silently drops out.
-     * Groups draw far->near by plane depth so a nearer portal
-     * paints over a farther one seen through it; within a group, submission
-     * order = the feeder's painter order (flat base -> dome). */
-    struct portal_run { int group; int first, count; float depth; };
-    enum { MAX_PORTAL_RUNS = 32 };
-    struct portal_run pmask[MAX_PORTAL_RUNS], psky[MAX_PORTAL_RUNS];
-    int pmask_n = 0, psky_n = 0;
-    /* Material segments inside a sky run. The run itself must stay
-     * one-per-portal - masks pair by group and groups sort by depth - so an
-     * override splits the DRAW of a run, not the run. Segments are contiguous
-     * and in submission order (flat base, then dome), which is what lets a
-     * selector take the close dome and leave the far chip stock. */
-    struct portal_seg { int run; int first, count; uint32_t tag; };
-    enum { MAX_PORTAL_SEGS = 96 };
-    struct portal_seg pseg[MAX_PORTAL_SEGS];
-    int pseg_n = 0;
-    for (int cat = 0; cat < 2; cat++) {   /* pass 0 = masks, pass 1 = sky colours */
-        const int want = cat ? OPENPETE_SCENE_PORTAL_CYCLORAMA : OPENPETE_SCENE_PORTAL_MASK;
-        struct portal_run *runs = cat ? psky : pmask;
-        int *rn = cat ? &psky_n : &pmask_n;
-        int cur = -1;   /* current run: a maximal streak of one group id */
-        for (int t = 0; t < scene_n; t++) {
-            if (scene[t].textured || scene[t].category != want || n + 3 > s_cz_verts) continue;
-            if (cur < 0 || runs[cur].group != scene[t].group) {
-                if (*rn >= MAX_PORTAL_RUNS) continue;   /* drop past cap */
-                cur = (*rn)++;
-                runs[cur].group = scene[t].group;
-                runs[cur].first = n; runs[cur].count = 0;
-                runs[cur].depth = scene[t].v[0].z;
-            }
-            /* Sky pass only: open a segment whenever the resolve-relevant tag
-             * changes (or the run did), so one portal's flat base and dome can
-             * take different materials. */
-            if (cat && tag_split_on()) {
-                uint32_t mt = ut_mask_tag(scene[t].tag);
-                int fresh = (pseg_n == 0) || pseg[pseg_n - 1].run != cur ||
-                            pseg[pseg_n - 1].tag != mt;
-                if (fresh && pseg_n < MAX_PORTAL_SEGS)
-                    pseg[pseg_n++] = (struct portal_seg){ cur, n, 0, mt };
-            }
-            pack_scene_tri(&buf[n], &scene[t]);
-            runs[cur].count += 3;
-            if (cat && pseg_n && pseg[pseg_n - 1].run == cur) pseg[pseg_n - 1].count += 3;
-            n += 3;
-        }
-    }
-    /* Textured tris, bucketed by draw group then (for opaque groups) material-
-     * sorted, so the draw loop coalesces same-material runs into ONE vkCmdDraw.
-     * Previously each textured triangle was its own vkCmdDraw + vkCmdPushConstants
-     * (~3800 draws/present in a busy scene, ×~480/s = the high-FPS bottleneck);
-     * material-sorting collapses that ~36× (terrain/mobys share few tpages).
-     *   buckets 0..3 = layered groups WORLD, SUBTRACT, ACTOR, PLAYER (SAME
-     *                  partition as the draw loop)
-     *   buckets 4, 5, 8, 10 = empty; bucket 11 = the emission-ordered
-     *                  blended-world block (draw_blended_world)
-     *   bucket  6    = HUD 2D textured backdrops (draw_hud_flat_layer)
-     *   bucket  7    = PORTAL_GUARD; bucket 9 = ACTOR_FRONT opaque faces
-     *   bucket 12    = HUD3D opaque textured faces (draw_hud3d_layer)
-     *   bucket 13    = opaque WORLD portal inner-rim faces (draw_portal_rim)
-     * Textured tris no bucket matches (HUD3D with a blend class) are dropped
-     * from the block. Opaque buckets (0,2,3,9,12) are material-sorted - depth resolves visibility regardless of draw order, so it
-     * is exact. Bucket 11 keeps emission order (bw_rank_sort on a replay);
-     * the other buckets (1, 6, 7) keep submission order and only coalesce
-     * already-adjacent runs. */
-    NR_PROF_END();   /* cmp.build_ut */
-    NR_PROF_BEGIN("cmp.build_tex");
-    int tx_start = n;
-    int txg_first[TX_BUCKETS], txg_count[TX_BUCKETS], txtri = 0;
-    for (int b = 0; b < TX_BUCKETS; b++) {
-        txg_first[b] = tx_start + txtri * 3;
-        int run_start = txtri;
-        const int gblend = b < 4 ? groups[b].blend : 0;
-        const int gcat   = b < 4 ? groups[b].gcat : -1;
-        for (int t = 0; t < scene_n; t++) {
-            if (tx_start + (txtri + 1) * 3 > s_cz_verts) break;
-            if (tx_bucket_belongs(b, scene, t, gblend, gcat)) s_txscene[txtri++] = t;
-        }
-        tx_bucket_order(b, scene, &s_txscene[run_start], txtri - run_start);
-        txg_count[b] = (tx_start + txtri * 3) - txg_first[b];
-    }
-    NR_PROF_END();   /* cmp.build_tex */
-    NR_PROF_BEGIN("cmp.vb_tex");
-    for (int i = 0; i < txtri; i++) {
-        const scene_tri_t *st = &scene[s_txscene[i]];
-        /* The blended-world block carries untextured triangles too; they
-         * draw through the gouraud pipes, which read no UV. Location 3
-         * carries the moby paint (rank, ordinal) pair for every textured tri:
-         * psx_scene.vert forwards it to the same-moby painter select, and
-         * unranked tris (rank 0) keep the select off. */
-        for (int k = 0; k < 3; k++)
-            pack_scene_vert(&buf[tx_start + i * 3 + k], st, k,
-                            st->textured ? st->v[k].u : 0.0f,
-                            st->textured ? st->v[k].v : 0.0f);
-    }
-    n = tx_start + txtri * 3;
-
-    /* Full-screen fade overlay (func_800190D4): a single full-panel quad at the
-     * near plane (z=0 passes LESS_OR_EQUAL against everything), drawn dead last so
-     * it tints the WHOLE composited frame - world, actors, HUD and 2D UI - exactly
-     * as the PSX's semi-transparent full-screen POLY_F4 does. The vertex colour is
-     * the fade colour; the blend mode (set below) reproduces the PSX ABR. */
-    NR_PROF_END();   /* cmp.vb_tex */
-    int fade_first = -1, fade_mode = -1;
-    if ((scene_fade & (1u << 31)) && n + 6 <= s_cz_verts) {
-        fade_mode  = (int)((scene_fade >> 24) & 3u);
-        int fr = (int)((scene_fade >> 16) & 0xFFu);
-        int fg = (int)((scene_fade >> 8) & 0xFFu);
-        int fb = (int)(scene_fade & 0xFFu);
-        /* mode 0 = (B+F)/2 -> alpha 128; add/subtract ignore alpha. */
-        uint32_t fa = (fade_mode == 0) ? 0x80u : 0xFFu;
-        uint32_t frgba = (uint32_t)fr | ((uint32_t)fg << 8) | ((uint32_t)fb << 16) | (fa << 24);
-        float l, r, t, b;
-        cover_rect(full_extent, &l, &r, &t, &b);
-        /* Screen-space quad: view-Z 1 (the near guard), W 1. */
-        const rhi_vertex tl = { l, t, 1.0f, 0, 0, frgba, 0, .w = 1.0f };
-        const rhi_vertex tr = { r, t, 1.0f, 0, 0, frgba, 0, .w = 1.0f };
-        const rhi_vertex br = { r, b, 1.0f, 0, 0, frgba, 0, .w = 1.0f };
-        const rhi_vertex bl = { l, b, 1.0f, 0, 0, frgba, 0, .w = 1.0f };
-        fade_first = n;
-        buf[n+0] = tl; buf[n+1] = tr; buf[n+2] = br;
-        buf[n+3] = tl; buf[n+4] = br; buf[n+5] = bl;
-        n += 6;
-    }
-
-    /* Freeze-frame green overlay backdrop (pause / inventory / flight results):
-     * a full-panel quad sampling frozen_tex (the last world frame's native render),
-     * desaturated + green-tinted by freeze_overlay_pipe. The tint rides the vertex
-     * colour (the game's setRGB0 0x4C,0x80,0x40). UV 0..1 (top-down, like the RT).
-     * Drawn FIRST (the backdrop) so the menu UI composites on top. Only when a
-     * world frame has been captured; else fall through (clear/bg shows). */
-    int freeze_first = -1;
-    const freeze_target_t *frozen_src = active_frozen();
-    const int frozen_ok = frozen_src->valid;
-    rhi_pipeline *freeze_pipe = ps_freeze_retained() ? s_nr.freeze_plain_pipe
-                                                 : s_nr.freeze_overlay_pipe;
-    if ((scene_freeze & (1u << 31)) && frozen_ok && freeze_pipe
-        && n + 6 <= s_cz_verts) {
-        uint32_t trgb = scene_freeze & 0xFFFFFFu;     /* rgb in R<<16|G<<8|B */
-        uint32_t tr8 = (trgb >> 16) & 0xFFu, tg8 = (trgb >> 8) & 0xFFu, tb8 = trgb & 0xFFu;
-        /* Fade-to-black shift (bits 24-30, 0..127) rides the vertex alpha as 0..1; the
-         * freeze_overlay shader subtracts it from the desaturated luma (GS_ExitLevel
-         * case 0). 0 for the static pause/inventory backdrop -> alpha 0 -> no shift. */
-        uint32_t fade7 = (scene_freeze >> 24) & 0x7Fu;
-        uint32_t ta8 = (fade7 * 255u + 63u) / 127u;    /* 0..127 -> 0..255 (rounded) */
-        uint32_t trgba = tr8 | (tg8 << 8) | (tb8 << 16) | (ta8 << 24);  /* byte order R,G,B,A */
-        /* blit.frag multiplies the sample by the vertex colour, so retention
-         * passes white: the frozen frame reaches the screen unaltered. */
-        if (ps_freeze_retained()) trgba = 0xFFFFFFFFu;
-        /* Fill the render rect (cover_rect = the --aspect display rect, fit into the
-         * window). frozen_tex is captured at the MATCHING aspect - 4:3 in the default
-         * /A-B path, or the Hor+ widescreen view in vk-widescreen (see compose_variant)
-         * - so this fills with no stretch and no pillarbox. cover_rect is the --aspect
-         * rect fit into the window, so a non-matching window letter/pillarboxes (bars,
-         * not stretch); it recomputes each present, tracking live resizes. */
-        float l, r, t, b;
-        cover_rect(full_extent, &l, &r, &t, &b);
-        /* A backdrop rendered wider than this compose is cropped to the
-         * compose's band of it (frozen_u_span). */
-        float u0, u1;
-        frozen_u_span(frozen_src, &u0, &u1);
-        const rhi_vertex tl = { l, t, 1.0f, u0, 0.0f, trgba, 0, .w = 0.0f };
-        const rhi_vertex tr = { r, t, 1.0f, u1, 0.0f, trgba, 0, .w = 0.0f };
-        const rhi_vertex br = { r, b, 1.0f, u1, 1.0f, trgba, 0, .w = 0.0f };
-        const rhi_vertex bl = { l, b, 1.0f, u0, 1.0f, trgba, 0, .w = 0.0f };
-        freeze_first = n;
-        buf[n+0] = tl; buf[n+1] = tr; buf[n+2] = br;
-        buf[n+3] = tl; buf[n+4] = br; buf[n+5] = bl;
-        n += 6;
-    }
-
-    {   /* OPENPETE_HUD6_DBG companion: verify the bucket-6 VB range still holds
-         * the glyph verts at upload time (catches a later build overwriting it). */
-        static int s_h6b = -2;
-        if (s_h6b == -2) { const char* e = getenv("OPENPETE_HUD6_DBG"); s_h6b = (e && *e) ? atoi(e) : -1; }
-        if (s_h6b >= 0 && (int)s_scene_frame >= s_h6b && (int)s_scene_frame < s_h6b + 2) {
-            int hits = 0;
-            for (int v = ut_first[6]; v < ut_first[6] + ut_count[6]; v++)
-                if (buf[v].x > 0.20f && buf[v].x < 0.31f && buf[v].y > -0.82f && buf[v].y < -0.60f) hits++;
-            fprintf(stderr, "[hud6vb] f=%u ut6=[%d+%d] n=%d glyph-verts-in-Vwindow=%d\n",
-                    s_scene_frame, ut_first[6], ut_count[6], n, hits);
-            /* the cap tris: any bucket-6 tri whose first vert x is ~0.2529 (f8a),
-             * ~0.2695 (f8b) or ~0.2359 (f10) with y in the V band - dump the whole tri */
-            for (int v = ut_first[6]; v + 2 < ut_first[6] + ut_count[6]; v += 3) {
-                float x0 = buf[v].x, y0 = buf[v].y;
-                if (y0 < -0.75f || y0 > -0.60f) continue;
-                if ((x0 > 0.2515f && x0 < 0.2545f) || (x0 > 0.2345f && x0 < 0.2375f))
-                    fprintf(stderr, "[hud6cap] f=%u vslot=%d (%.4f,%.4f,%.4f)(%.4f,%.4f,%.4f)(%.4f,%.4f,%.4f) rgba=%08X,%08X,%08X\n",
-                            s_scene_frame, v,
-                            (double)buf[v].x, (double)buf[v].y, (double)buf[v].z,
-                            (double)buf[v+1].x, (double)buf[v+1].y, (double)buf[v+1].z,
-                            (double)buf[v+2].x, (double)buf[v+2].y, (double)buf[v+2].z,
-                            buf[v].rgba, buf[v+1].rgba, buf[v+2].rgba);
-            }
-        }
-    }
-    NR_PROF_BEGIN("cmp.upload");
-    rhi_update_buffer(s_nr.scene_vb, buf, sizeof(rhi_vertex) * (size_t)(n > 0 ? n : 1));
-    NR_PROF_END();
-    NR_PROF_BEGIN("cmp.record");
-
-    /* Confine the scene to panel 0's pixel rect so triangles that extend off
-     * the PSX screen (legitimately, after near-plane culling) are clipped to
-     * the panel instead of streaking across the window. In full_extent mode the
-     * RT pass already scissors to the whole target (the frame fills it). */
-    if (!full_extent) {
-        /* Scissor to the --aspect render rect: the 4:3 content sub-rect (p0_hx)
-         * widened by the Hor+ factor (ws_factor). The revealed side world fills
-         * out to this rect; everything beyond is the letterbox/pillarbox bars
-         * (left clear -> black/bg), so the render respects --aspect instead of
-         * stretching to the window. ws_factor==1 -> exactly the 4:3 rect. */
-        const openpete_px_rect_t sc = view_px_rect();
-        rhi_set_scissor(s_nr.dev, sc.x, sc.y, sc.w, sc.h);
-    }
-
-    /* Background fill: the panel-rect far-plane quad built at buf[0..6) above.
-     * Drawn FIRST so all scene geometry composites over it; fills the cyclorama
-     * background colour where the sky dome / terrain don't cover the panel (the
-     * PSX draw-env clear). The off-display native_rtt receives this colour from
-     * its render-pass CLEAR, but the LIVE window offscreen is cleared to BLACK
-     * (so letterbox borders stay black) and then composes the scene over it - so
-     * without this draw the live window shows BLACK sky wherever the dome has a
-     * gap, even though screenshots (which read native_rtt) look correct. z=1.0
-     * (far) + depth-write: the dome (also z=1) overdraws it via LESS_OR_EQUAL,
-     * nearer geometry over that. */
-    /* Backdrop deferral: the bg fill and the cyclorama dome are far-plane
-     * (z=1.0) full-coverage fills that nearer opaque terrain almost entirely
-     * overdraws - drawn first (the PSX painter order) every one of their
-     * pixels is shaded and then repainted. Deferring the pair until after
-     * the WORLD-opaque group lets early-Z reject every covered pixel, so
-     * they shade only the gaps - identical output (both write z=1.0 and
-     * everything nearer beats them; their bg -> dome relative order is kept,
-     * LESS_OR_EQUAL gives the later dome the z=1.0 ties exactly as before).
-     * A large win at SSAA/high-res scene targets. OPENPETE_BACKDROP_DEFER=0
-     * restores draw-first; freeze frames skip the WORLD group, so they keep
-     * the up-front order (bg under the freeze overlay, no dome). */
-    const int backdrop_defer = backdrop_defer_on();
-    if (!backdrop_defer || freeze_first >= 0)
-        draw_backdrop_fills(bg, ut_first, ut_count,
-                            /*sky*/ freeze_first < 0 && !backdrop_defer);
-
-    /* Freeze backdrop FIRST (behind world/UI): the frozen native frame sampled
-     * by freeze_overlay_pipe (set 0 = frozen_tex), desaturated + green-tinted. On
-     * a freeze frame the world groups are empty (the game stops rendering the
-     * world), so this fills the screen and the menu UI composites over it. */
-    if (freeze_first >= 0) {
-        rhi_texture *frz = active_frozen()->tex;
-        if (frz) {
-            bind_scene_pipe(freeze_pipe);
-            rhi_bind_vram(s_nr.dev, frz);
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            rhi_draw(s_nr.dev, 6, (uint32_t)freeze_first);
-        }
-    }
-
-    /* GPU attribution (OPENPETE_GPU_TIMERS=1): one nested zone per layered
-     * group below, so the [gpu-pass]/trace "compose" cost splits by layer. */
-    static const char* const k_scene_zone[7] =
-        { "sc.world", "sc.shadow", "sc.actor", "sc.player", "sc.alpha", "sc.add",
-          "sc.qadd" };
-
-    /* Draw the 7 layered groups in order (WORLD-opaque, SUBTRACT shadows,
-     * ACTOR-opaque, PLAYER-opaque, ALPHA, ADDITIVE, QUARTER-ADD). For each: the batched
-     * untextured range, then its textured tris as material-coalesced runs
-     * (draw_tex_runs over the pre-bucketed/sorted block - one draw per material
-     * run, not per triangle). Opaque groups write depth; the transparent groups
-     * (1/4/5) are depth_write_off (test vs opaque, never occlude each other).
-     *
-     * The HUD/overlay layer (depth-test OFF) is drawn AFTER the ACTOR group (mobys,
-     * gi==2) and BEFORE the PLAYER group (Spyro, gi==3): it ignores world depth so
-     * it sits on top of the terrain AND regular mobys (the "DEMO MODE" banner /
-     * level-intro & "RESCUED <dragon>" text / HUD icons the .s forces to the near OT
-     * slot, over other mobys like the rescued dragon), but writes no depth, so the
-     * player Spyro drawn next still covers it (Spyro flies in front of the intro
-     * text). Matches the PSX moby OT: near-slot UI over other mobys, player on top. */
-    s_rim_draws = 0; s_rim_tex_runs = 0;
-    for (int gi = 0; gi < 7; gi++) {
-        /* Freeze backdrop active (pause / inventory / flight-results): the world is
-         * frozen INTO the backdrop (drawn above), and the canonical game render emits
-         * no world/actor/player/shadow/transparent geometry while a menu is up - only
-         * the HUD menu (text mobys, panel, 3D icons) on top. The high-FPS spine, by
-         * contrast, blindly re-extracts the still-in-RAM gameplay actors every present;
-         * drawing them here would paint full-colour Spyro/mobys over the green-tinted
-         * backdrop (a ghost double-image). Skip the gameplay groups; the HUD layers
-         * below still draw, so the animated menu stays smooth at the present rate.
-         *
-         * The PLAYER-opaque group is the exception. Its only feeder is the player
-         * walk, run from inside the game's own player draw (func_80023AC4) on the
-         * canonical tick and, on a sub-tick present, from the records that call
-         * appended for the tick shown; an epoch with no call carries no drawn
-         * record. A non-empty group is therefore the game's own verdict that it
-         * drew the avatar this tick, which GS_ExitLevel case 0 (func_8001C694)
-         * does over its grayscale backdrop; the pause, inventory and flight-result
-         * draws make no such call and leave the group empty. */
-        if (freeze_first >= 0 && gi != 3) continue;
-        rhi_gpu_zone_begin(s_nr.dev, k_scene_zone[gi]);
-        /* Before the PLAYER group: the flat 2D the game draws before the
-         * player (under_player, the flat HUD layer's pass 2), then, in the
-         * game states hud_under names (the GS_TitleScreen reveal, where Spyro
-         * flies in front of the text mobys), the whole of pass 0. In every
-         * other state pass 0 draws over the player (after the loop). */
-        if (gi == 3)
-            draw_before_player_2d(scene, scene_n, ut_first, ut_count, tx_start, txg_first, txg_count, hud_under);
-        const struct scene_group *g = &groups[gi];
-        const int utb = g->utb, txb = g->txb;
-        /* Dragon-rescue cutscene (actor_front): just BEFORE the PLAYER group,
-         * depth-isolate the cutscene actors and draw them there so they win
-         * over terrain they interpenetrate (Delvin's wing inside the tower).
-         * BEFORE the player, so Spyro still sorts against the dragon by real Z.
-         * The regular ACTOR group already drew normally at gi==2.
-         *
-         * Two passes over the SAME two buckets:
-         *  1. PUNCH - the colour-write-off twins (depth compare ALWAYS) replace
-         *     the stored depth on exactly the pixels the actors rasterize, so
-         *     whatever terrain occluded them is evicted from those pixels and
-         *     nowhere else. Texel-exact: same shaders, same discards.
-         *  2. COLOUR - the ordinary opaque pipes. Every actor fragment nearer
-         *     than the punched value passes, and the usual LESS_OR_EQUAL
-         *     ordering picks the nearest of them, so the actors keep exact
-         *     self-occlusion (the punched value is one of their own depths, so
-         *     the nearest is never rejected).
-         *
-         * The depth left behind is min(true actor depth, world depth) - the
-         * actors' own, on their own pixels; untouched everywhere else. That is
-         * what the transparent groups at gi==4/5 test against, so semi-
-         * transparent terrain buried behind the ground stays buried during a
-         * cutscene, and distant level mobys keep true occlusion at any LOD.
-         * (The predecessor cleared depth over the actors' whole screen bbox,
-         * which handed every later-drawn transparent face a free pass through
-         * the terrain inside that rect.) */
-        if (gi == 3 && actor_front && freeze_first < 0) {
-            const int punch_ok = s_nr.gouraud_punch_pipe && s_nr.scene_tex_punch_pipe;
-            for (int pass = punch_ok ? 0 : 1; pass < 2; pass++) {
-                rhi_pipeline* upipe = pass ? s_nr.gouraud_pipe   : s_nr.gouraud_punch_pipe;
-                rhi_pipeline* tpipe = pass ? s_nr.scene_tex_pipe : s_nr.scene_tex_punch_pipe;
-                rhi_pipeline* hpipe = pass ? s_nr.hd_cutout_pipe : s_nr.hd_cutout_punch_pipe;
-                if (upipe && ut_count[14] > 0) {
-                    bind_scene_pipe(upipe);
-                    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                    rhi_draw(s_nr.dev, (uint32_t)ut_count[14], (uint32_t)ut_first[14]);
-                }
-                if (txg_count[9] > 0 && s_nr.vram_tex && tpipe) {
-                    bind_scene_pipe(tpipe);
-                    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                    /* The punch pass keeps mod material overrides OFF: its job
-                     * is depth only, and a mod pipe would bring its own (and
-                     * possibly different) discard rule to the coverage. */
-                    draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
-                                  &tpipe, 1, hpipe, pass, 0);
-                }
-            }
-        }
-        /* SUBTRACT (shadow decal) group: engage the hardware slope-scaled
-         * depth bias for these draws (both sub pipes are .depth_bias). This is
-         * the replacement for a moby-shadow ×0.96 multiplicative view-Z
-         * pull, which is distance-PROPORTIONAL (a dimensional error for a
-         * coplanar tie-break); the hardware offset is
-         * distance-invariant, slope-aware at grazing angles, and its clamp
-         * bounds the total pull far below anything that could reorder a
-         * genuine occluder.
-         *   Vulkan rule: dynamic state is INVALIDATED by binding any pipeline
-         * that has the same state static (every non-decal pipeline here), so
-         * the bias must be set AFTER each depth_bias pipeline bind, before its
-         * draws - never rely on a value set earlier in the pass. */
-        if (g->utex && ut_count[utb] > 0) {
-            if (gi == 1) {
-                /* Untextured SUBTRACT = the Spyro silhouette shadow, fed as
-                 * its fan plus the screen hull of its footprint prism. Preferred path: the
-                 * DEPTH-AWARE decal (shadow_decal.frag samples the shared
-                 * WORLD-opaque pre-pass depth and decides every hull pixel
-                 * from the fan's footprint block). Fallback (pre-pass
-                 * unavailable this present / unsupported device): plain depth
-                 * test + hardware depth bias: the fed fan triangles draw with
-                 * their gouraud as before, and the hull's black vertices
-                 * subtract nothing. The decal discards the fan triangles. */
-                if (s_od_ready && s_nr.opaque_depth) {
-                    bind_player_shadow_decal();
-                } else {
-                    bind_scene_pipe(s_nr.gouraud_sub_ztest_pipe);
-                    float c, s, cl;
-                    shadow_hw_bias(&c, &s, &cl);
-                    rhi_set_depth_bias(s_nr.dev, c, cl, s);
-                }
-            } else {
-                bind_scene_pipe(g->utex);
-            }
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            rhi_draw(s_nr.dev, (uint32_t)ut_count[utb], (uint32_t)ut_first[utb]);
-        }
-        if (s_utmat_n && g->utex && ut_mat_spans_ok(gi, g->blend, g->gcat))
-            draw_ut_mat_spans(gi, g->utex, holefill_on && (gi == 0 || gi == 2),
-                              g->blend);
-        if (txg_count[txb] > 0 && s_nr.vram_tex && g->tex) {
-            /* MOBY SHADOWS (gi==1) prefer the DEPTH-AWARE textured decal when the
-             * shared WORLD-opaque depth pre-pass is available this present - the
-             * same fix Spyro's silhouette shadow got (shadow_decal_tex.frag owns
-             * per-pixel wall/steep/platform occlusion; depth-test OFF, so the flat
-             * fan never Z-fights the slanted/bumpy ground it drapes). All moby
-             * shadows share one shadow-sprite material (g_MobyShadows uv0/uv1), so
-             * the whole subtract range draws in one call. Fallback (device without
-             * depth sampling / pipe unavailable): the plain depth-tested subtract
-             * pipe + hardware bias below. */
-            int moby_decal = (gi == 1 && s_od_ready && s_nr.opaque_depth &&
-                              s_nr.scene_tex_sub_decal_pipe && moby_shadow_decal_enabled());
-            if (moby_decal) {
-                int base = (txg_first[1] - tx_start) / 3;
-                const scene_tri_t *m0 = &scene[s_txscene[base]];   /* uniform material */
-                const uint32_t s0_decal_tag = m0->tag;
-                shadow_decal_tex_pc pc;
-                pc.col0x = ps_shadow()->cam_col0[0];
-                pc.col0y = ps_shadow()->cam_col0[1];
-                pc.col0z = ps_shadow()->cam_col0[2];
-                pc.col1x = ps_shadow()->cam_col1[0];
-                pc.col1y = ps_shadow()->cam_col1[1];
-                pc.col1z = ps_shadow()->cam_col1[2];
-                pc.col2x = ps_shadow()->cam_col2[0];
-                pc.col2y = ps_shadow()->cam_col2[1];
-                pc.col2z = ps_shadow()->cam_col2[2];
-                pc.cam_pos_up = ps_shadow()->cam_pos_up;
-                pc.ofx = ps_shadow()->ofx; pc.ofy = ps_shadow()->ofy;
-                pc.h = ps_shadow()->h;
-                pc.wall_height = ps_shadow()->wall_height;
-                pc.steep_nup = ps_shadow()->steep_nup;
-                /* height+steep test when the feeder supplied valid camera params,
-                 * else draw-all (band). Env override shares the Spyro decal knob. */
-                pc.mode = shadow_decal_mode(ps_shadow()->valid ? 1.0f : 0.0f);
-                pc.band = shadow_decal_band();
-                pc.plat_eps = ps_shadow()->plat_eps;
-                pc.plat_slack = ps_shadow()->plat_slack;
-                pc.uax = s_od_uax; pc.ubx = s_od_ubx;
-                pc.vay = s_od_vay; pc.vby = s_od_vby;
-                pc.pvw = s_od_vw;  pc.pvh = s_od_vh;
-                scene_fc_affine dfc; scene_fragcoord_affine(&dfc);
-                pc.fax = dfc.fax; pc.fbx = dfc.fbx;
-                pc.fay = dfc.fay; pc.fby = dfc.fby;
-                pc.tpage = decal_pack_tpage(m0->tpage_x, m0->tpage_y);
-                pc.clut  = decal_pack_clut(m0->clut_x, m0->clut_y, m0->bpp);
-                /* Mod material on the DECAL PROFILE. The stock fragment
-                 * stage here owns per-pixel occlusion, so a plain material
-                 * would delete it (shadows would paint through walls) -
-                 * hence a second contract, openpete_psx_decal.glsl, whose
-                 * engine half hands the mod the visibility verdict to
-                 * apply. Layout is `mod_pipeline`'s with set 1 holding the
-                 * VRAM and terrain key images; set 3 the engine/mod UBO pair.
-                 *
-                 * The whole range is ONE draw because every moby shadow
-                 * shares one sprite AND one tag, so there is nothing to
-                 * split. A non-uniform tag would need run-splitting, so it
-                 * falls back to stock rather than paint most of the range
-                 * with the first tri's material. */
-                rhi_pipeline* dpipe = s_nr.scene_tex_sub_decal_pipe;
-                openpete_mod_material_gpu_t dmg;
-                int dslot_ok = 0;
-                if (tag_split_on() && s0_decal_tag) {
-                    int ntri1 = txg_count[1] / 3, uniform = 1;
-                    for (int q = 1; q < ntri1; q++)
-                        if (scene[s_txscene[base + q]].tag != s0_decal_tag) { uniform = 0; break; }
-                    if (uniform &&
-                        openpete_mods_material_resolve(s0_decal_tag, OPENPETE_MATERIAL_CONTRACT_DECAL, &dmg) >= 0) {
-                        rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
-                        const nr_mat_req dq = { NR_MAT_DECAL, 0, 0, 0 };
-                        rhi_pipeline* ds = nr_pipe_of(nr_material_pipe(&dmg, &dq));
-                        if (ds) { dpipe = ds; dslot_ok = 1; }
-                    }
-                }
-                bind_scene_pipe(dpipe);
-                rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0); /* set 0 */
-                pc.key_contest = shadow_decal_bind_keys();              /* set 1 */
-                if (dslot_ok) nr_material_bind(&dmg, 0, 0);
-                rhi_push_constants(s_nr.dev, &pc, sizeof pc);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, (uint32_t)txg_count[1], (uint32_t)txg_first[1]);
-            } else {
-                bind_scene_pipe(g->tex);
-                if (gi == 1) {
-                    float c, s, cl;
-                    shadow_hw_bias(&c, &s, &cl);
-                    rhi_set_depth_bias(s_nr.dev, c, cl, s);
-                }
-                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                /* HD replacement per group family: opaque -> depth-tested cutout
-                 * (WORLD's stencil-MARK variant gets the MARK twin so
-                 * hole-fill coverage stays intact); alpha/additive -> the
-                 * ztest/no-zwrite HD twins. SUBTRACTIVE (gi==1) stays SD - its
-                 * draws depend on the caller's dynamic depth-bias state, which
-                 * an HD rebind would invalidate. */
-                rhi_pipeline *hd =
-                    (g->blend == 0) ? opaque_group_hd_pipe(g->tex)
-                  : (g->blend == 1) ? s_nr.hd_scene_blend_pipe
-                  : (g->blend == 2) ? s_nr.hd_scene_add_pipe
-                  : NULL;
-                /* A group drawing through the stencil-MARK variant (hole-fill
-                 * coverage) overrides via the material's MARK twin so
-                 * overridden pixels still mark. The alpha/additive groups take
-                 * plain overrides at their own blend class.
-                 *
-                 * gi==1 (moby shadows) stays stock: its preferred path is the
-                 * depth-aware decal below, a different shader contract
-                 * (shadow_decal_tex, set 0 = pre-pass depth) whose FRAGMENT
-                 * stage owns occlusion - the very stage a material replaces.
-                 * Allowing the override only on the non-decal fallback would
-                 * make a mod's reach depend on the host's depth-sampling
-                 * support, so neither path takes it. */
-                int mat_ok = (gi == 1) ? 0
-                           : (nr_shell_stock_of(g->tex) == s_nr.scene_tex_mark_pipe ? 2 : 1);
-                draw_tex_runs(txg_first[txb], txg_count[txb], tx_start, scene, &g->tex, 1, hd,
-                              mat_ok, g->blend);
-            }
-        }
-        /* ACTOR_FRONT (rescue actors) at the normal actor layer - only when NO
-         * cutscene is active (a stale g_DragonCutscene pointer can still match a
-         * live moby outside states 1..6). During a cutscene they are front-passed
-         * above (gi==3), so skip them here then. Same pipelines as the ACTOR
-         * group: outside a cutscene this is pixel-identical to leaving them ACTOR. */
-        if (gi == 2 && !actor_front) {
-            /* ACTOR opaques also stencil-MARK their coverage when hole-fill is
-             * on: the level authors cut HP ground holes under static decor
-             * (dragon pedestal discs) - og never draws ground there, the moby
-             * always covers it. Without the mark the FILL below reads those
-             * pixels as uncovered and paints the coarse LP backing OVER the
-             * moby (the LP surface sits nearer than the buried disc rim, so
-             * depth can't save it). Mark pipes are raster-identical twins. */
-            rhi_pipeline* apipe = holefill_on ? s_nr.gouraud_mark_pipe : s_nr.gouraud_pipe;
-            rhi_pipeline* atex  = holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe;
-            rhi_pipeline* acut  = holefill_on ? s_nr.hd_cutout_mark_pipe : s_nr.hd_cutout_pipe;
-            if (apipe && ut_count[14] > 0) {
-                bind_scene_pipe(apipe);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, (uint32_t)ut_count[14], (uint32_t)ut_first[14]);
-            }
-            if (txg_count[9] > 0 && s_nr.vram_tex && atex) {
-                bind_scene_pipe(atex);
-                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
-                              &atex, 1, acut, holefill_on ? 2 : 1, 0);
-            }
-        }
-        /* Terrain sector-mesh GPU cache: the retained WORLD terrain (unclaimed
-         * sectors) draws in the same slot as the CPU-fed WORLD group - opaque
-         * depth-write, stencil-MARK when hole-fill is armed (identical raster
-         * roles; the vertex stage owns the per-face verdicts). */
-        draw_portal_rim(scene, tx_start, ut_count[16],
-                        txg_first[13], txg_count[13], holefill_on, gi);
-        if (gi == 0 && openpete_tercache_frame_open()) {
-            openpete_tercache_clip aff; tercache_clip_params(&aff);
-            openpete_tercache_draw(OPTC_DRAW_WORLD, &aff, s_nr.vram_tex, holefill_on,
-                                   nr_tercache_keys());
-        }
-        /* WORLD_FILL - terrain LP hole-fill: depth-tested at TRUE LP
-         * depth, gated on stencil==0 so it can only paint pixels no opaque
-         * coverage MARK claimed (LP<->HP T-junction seams - where the sky shows
-         * through). Runs at gi==2 AFTER the ACTOR opaques so authored HP holes
-         * hidden under static mobys (pedestal discs) stay covered by the moby,
-         * not repainted with LP; still before the portal sequence below, which
-         * clears stencil. (Under the dragon-rescue actor_front reorder the
-         * actors draw at gi==3 and don't mark - cutscene draw lists carry no
-         * fill-backed decor, so the seam fill stays correct there.) */
-        if (gi == 2 && holefill_on && ut_count[12] > 0) {
-            /* (The former sky-fan stencil pre-mark is retired with the
-             * plane-cover rule: fills that land inside an aperture draw at
-             * TRUE depth behind the opening plane, and the preview - testing
-             * at plane − M - repaints over them like any other covered
-             * opaque.) */
-            bind_scene_pipe(s_nr.gouraud_fill_pipe);
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
-        }
-        draw_portal_rim_fill(ut_count[17], holefill_on, gi);
-        /* Terrain-cache LP hole-fill twin: stencil TEST_ZERO at true LP depth,
-         * same slot as the scene-fed fill (before the portal stencil clear). */
-        if (gi == 2 && holefill_on && openpete_tercache_frame_open()) {
-            openpete_tercache_clip aff; tercache_clip_params(&aff);
-            openpete_tercache_draw(OPTC_DRAW_FILL, &aff, s_nr.vram_tex, 0, nr_tercache_keys());
-        }
-        /* The four blended world classes draw here, in the scene's own emission
-         * order, with the terrain cache's blended classes inside the terrain
-         * feed's span of that order. The per-class buckets the groups at gi 4,
-         * 5 and 6 used to draw are empty. */
-        if (gi == 4)
-            draw_blended_world(scene, tx_start, txg_first[11], txg_count[11],
-                               openpete_tercache_frame_open());
-        /* Portal-sky previews: drawn AFTER the ACTOR group (gi==2), BEFORE the
-         * PLAYER group - the native realization of the PSX sky bucket, which
-         * painted over everything OT-behind it:
-         *   - the sky depth-TESTS (LEQUAL at the portal-plane z, write OFF)
-         *     against world+actor depth, so it repaints over mobys BEHIND the
-         *     plane (they drew in the ACTOR group and wrote deeper z) while a
-         *     moby IN FRONT of the arch keeps its pixels;
-         *   - Spyro (PLAYER, drawn next) is never cut by it - he always sorts
-         *     on top, incl. flying/walking through the portal (the earlier
-         *     depth-STAMP variant clipped him mid-entry and was replaced by
-         *     this repaint ordering);
-         *   - the stencil mask confines everything to the aperture footprint
-         *     (side-poke impossible), and intra-portal compositing stays
-         *     painter order (backstops fed before the dome). */
-        if (gi == 2 && s_nr.gouraud_noz_pipe && s_nr.portal_mask_pipe && psky_n > 0) {
-            /* Per-portal stencil sequence, far->near by plane depth (a nearer
-             * portal seen in front of a farther one paints last): clear
-             * stencil -> mask (invisible, depth-tested) -> sky colours
-             * (depth-tested, stencil-gated). A sky run without a matching
-             * mask uses its own footprint as the mask. */
-            int order[MAX_PORTAL_RUNS];
-            for (int oi = 0; oi < psky_n; oi++) order[oi] = oi;
-            for (int oi = 1; oi < psky_n; oi++) {          /* depth descending */
-                int ov = order[oi], oj = oi - 1;
-                while (oj >= 0 && psky[order[oj]].depth < psky[ov].depth) {
-                    order[oj + 1] = order[oj]; oj--;
-                }
-                order[oj + 1] = ov;
-            }
-            char mused[MAX_PORTAL_RUNS] = {0};
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            for (int oi = 0; oi < psky_n; oi++) {
-                const struct portal_run *sk = &psky[order[oi]];
-                const struct portal_run *mk = NULL;
-                for (int mj = 0; mj < pmask_n; mj++)
-                    if (!mused[mj] && pmask[mj].group == sk->group) { mk = &pmask[mj]; mused[mj] = 1; break; }
-                int mf = mk ? mk->first : sk->first;
-                int mc = mk ? mk->count : sk->count;
-                if (sk->count <= 0 || mc <= 0) continue;
-                rhi_clear_stencil(s_nr.dev);
-                bind_scene_pipe(s_nr.portal_mask_pipe);
-                /* dynamic bias must be (re)set after THIS bind (see the note
-                 * at the shadow group). Default neutral - the tie-break margin
-                 * is already baked into the mask z (the feeder's world-unit
-                 * PORTAL_SKY_EPS_VZ pull); OPENPETE_PORTAL_MASK_BIAS adds the
-                 * optional close-range pull (see portal_mask_bias). NB a pull
-                 * here moves only the MASK - the sky colours depth-test
-                 * unbiased, so it cannot widen sky coverage on its own. */
-                {
-                    float c, s, cl;
-                    portal_mask_bias(&c, &s, &cl);
-                    rhi_set_depth_bias(s_nr.dev, c, cl, s);
-                }
-                rhi_draw(s_nr.dev, (uint32_t)mc, (uint32_t)mf);
-                /* Sky colours: material segments where a selector claimed
-                 * them, stock elsewhere. Portal sky is opaque but depth-write
-                 * OFF (it must not occlude what shows through the aperture),
-                 * so overrides build that variant rather than the plain
-                 * opaque one. */
-                int drawn = 0;
-                if (tag_split_on()) {
-                    for (int sg = 0; sg < pseg_n; sg++) {
-                        if (pseg[sg].run != order[oi] || pseg[sg].count <= 0) continue;
-                        rhi_pipeline* pipe = NULL;
-                        openpete_mod_material_gpu_t mg;
-                        if (pseg[sg].tag &&
-                            openpete_mods_material_resolve(pseg[sg].tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0) {
-                            rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
-                            const nr_mat_req sq = { NR_MAT_SKY, 0, 0, 0 };
-                            pipe = nr_pipe_of(nr_material_pipe(&mg, &sq));
-                            if (pipe) {
-                                bind_scene_pipe(pipe);
-                                rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
-                                if (s_nr.mat_pack_dummy)
-                                    rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
-                                bind_material_keys();
-                                nr_material_bind(&mg, 0, 0);
-                                psx_material_hd zm;
-                                memset(&zm, 0, sizeof zm);
-                                rhi_push_constants(s_nr.dev, &zm, sizeof zm);
-                            }
-                        }
-                        if (!pipe) bind_scene_pipe(s_nr.gouraud_noz_pipe);
-                        rhi_draw(s_nr.dev, (uint32_t)pseg[sg].count,
-                                 (uint32_t)pseg[sg].first);
-                        drawn += pseg[sg].count;
-                    }
-                }
-                if (drawn < sk->count) {
-                    /* No segments (nothing armed), or the segment table
-                     * overflowed - draw the run stock. */
-                    bind_scene_pipe(s_nr.gouraud_noz_pipe);
-                    rhi_draw(s_nr.dev, (uint32_t)(drawn ? sk->count - drawn : sk->count),
-                             (uint32_t)(drawn ? sk->first + drawn : sk->first));
-                }
-            }
-            /* PORTAL_GUARD: near-band terrain protection redraw - the PSX
-             * mask-bit mirror (see the category doc in the header). Drawn
-             * once after ALL portal groups; the sky wrote no depth, so the
-             * guard's normal LEQUAL re-wins exactly its own pixels. */
-            if (ut_count[10] > 0 && s_nr.gouraud_pipe) {
-                bind_scene_pipe(s_nr.gouraud_pipe);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, (uint32_t)ut_count[10], (uint32_t)ut_first[10]);
-            }
-            if (txg_count[7] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
-                bind_scene_pipe(s_nr.scene_tex_pipe);
-                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                draw_tex_runs(txg_first[7], txg_count[7], tx_start, scene, &s_nr.scene_tex_pipe, 1,
-                              s_nr.hd_cutout_pipe, 0, 0);
-            }
-        }
-        /* (Dragon-rescue front pass now runs at the TOP of gi==3, before PLAYER -
-         * per-pixel depth punch, so it never wipes terrain depth for the
-         * transparent groups below, and Spyro sorts against the dragon by
-         * real Z.) */
-        rhi_gpu_zone_end(s_nr.dev);
-        /* Deferred backdrops: right after the WORLD opaques so early-Z spares
-         * every covered pixel; still before the shadow/actor/portal layers,
-         * which depth-test against the z=1.0 they write, exactly as before. */
-        if (gi == 0 && backdrop_defer)
-            draw_backdrop_fills(bg, ut_first, ut_count, 1);
-    }
-    rim_draw_census(ut_count[16], ut_count[17], txg_count[13]);
-
-    /* Default: the flat 2D HUD/text pass 0 draws OVER the whole scene incl. the
-     * player; hud_under draws it before the PLAYER group instead
-     * (draw_before_player_2d). */
-    rhi_gpu_zone_begin(s_nr.dev, "sc.hud");
-    if (!hud_under)
-        draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6], 0);
-
-    /* The HUD3D layer draws here, under the fade, unless the game links
-     * every slotted HUD3D face below the fade quad's slot (hud3d_over_fade):
-     * then it draws after the fade, as the stitch orders it. */
-    const int hud3d_lift = hud3d_over_fade(scene, scene_n, scene_fade);
-    draw_hud3d_pass(scene, scene_n, tx_start, ut_first, ut_count, txg_first, txg_count, hud3d_lift, 0);
-
-    /* OVERLAY layer (2D flat quads, among them the cutscene letterbox bars):
-     * drawn after every scene group, over everything incl. the player,
-     * depth-test off (the opaque untextured HUD pipe), and before the fade.
-     * The OVERLAY triangles the game links after its fade quad (over_fade,
-     * the letterbox bars of a tick whose fade was called first) draw in the
-     * over-fade pass after it (draw_over_fade_2d) instead. */
-    draw_overlay_quads(ut_first[7], ut_count[7]);
-
-    /* Draw the full-screen fade overlay last (over every layer above), in the PSX
-     * ABR blend: mode 2 (B-F) subtract -> fade to black; mode 1 (B+F) add -> fade to
-     * white; mode 0 ((B+F)/2) -> alpha. These pipes are depth_write_off + the quad
-     * is at view-Z 1 (depth 0), so it test-passes against the whole frame and
-     * writes no depth. */
-    if (fade_first >= 0) {
-        /* Mode 2 uses gouraud_sub_FADE_pipe (plain subtractive, depth-off) -
-         * NOT gouraud_sub_pipe, which is now the depth-aware shadow decal (it
-         * would sample opaque_depth and height-discard, breaking the fade). */
-        rhi_pipeline* fp = (fade_mode == 2) ? s_nr.gouraud_sub_fade_pipe
-                         : (fade_mode == 0) ? s_nr.gouraud_blend_pipe
-                                            : s_nr.gouraud_add_pipe;  /* 1 (and 3) -> additive */
-        if (fp) {
-            bind_scene_pipe(fp);
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            rhi_draw(s_nr.dev, 6, (uint32_t)fade_first);
-        }
-    }
-    draw_hud3d_pass(scene, scene_n, tx_start, ut_first, ut_count, txg_first, txg_count, hud3d_lift, 1);
-    draw_over_fade_2d(scene, scene_n, ut_first, ut_count, tx_start,
-                      txg_first[TX_BUCKET_OVER_HUD], txg_count[TX_BUCKET_OVER_HUD]);
-    rhi_gpu_zone_end(s_nr.dev);   /* sc.hud */
-    NR_PROF_END();   /* cmp.record */
-
-    if (!full_extent) rhi_reset_scissor(s_nr.dev);
+    compose_pack(&c, scene_freeze);
+    compose_draw(&c);
     s_render_full_extent = 0;
     return true;
 }
@@ -20378,6 +20577,7 @@ static void compose_variant(void)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
             rhi_draw(s_nr.dev, 6, 6);   /* panel 1: the reference panel */
         }
+        NR_PROF_BEGIN("cmp.chrome");
         scene_postfx_split();                     /* SCENE point */
         draw_mod_overlay();                       /* mod HUD (content) */
         if (s_overlay_live) {
@@ -20389,6 +20589,7 @@ static void compose_variant(void)
         if (s_overlay_live && !native_postfx_point_active(0))
             openpete_devui_render(s_nr.dev);
         rhi_end_offscreen(s_nr.dev);
+        NR_PROF_END();   /* cmp.chrome */
         s_pc_cur = s_nr.ref_tex && s_nr.layout_ref_w > 0 ? PC_REF : PC_CLEAR;
         return;
     }
@@ -20468,6 +20669,7 @@ static void compose_variant(void)
             /* Empty scene -> PSX VRAM framebuffer fallback (1× direct, no SSAA). */
             draw_vram_fallback(s_nr.panels_vb);
         }
+        NR_PROF_BEGIN("cmp.chrome");
         scene_postfx_split();                     /* SCENE point: scene->chain->HUD */
         draw_mod_overlay();                       /* mod HUD (content - records too) */
         /* Freeze snapshot first, chrome after - see chrome_split_capture. */
@@ -20490,6 +20692,7 @@ static void compose_variant(void)
          * clear/cyclorama colour instead of the frozen world. Skipped when the
          * chrome split already took it. */
         if (!froze) capture_freeze_from_offscreen(world_frame);
+        NR_PROF_END();   /* cmp.chrome */
         return;
     }
 
@@ -20511,6 +20714,7 @@ static void compose_variant(void)
     }
 
     /* SCENE point then mod HUD - vk variant, live + record composes. */
+    NR_PROF_BEGIN("cmp.chrome");
     scene_postfx_split();
     draw_mod_overlay();
     bool froze = chrome_split_capture(world_frame);   /* backdrop before chrome */
@@ -20532,6 +20736,7 @@ static void compose_variant(void)
     rhi_end_offscreen(s_nr.dev);
 
     if (!froze) capture_freeze_from_offscreen(world_frame);
+    NR_PROF_END();   /* cmp.chrome */
 }
 
 /* ---- per-present phase timers (OPENPETE_PHASE_TIMERS=1) ---------------------
@@ -22596,6 +22801,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     /* Render the overlay glyphs at OVL_SS_FACTOR× into ovl_ss now - its own
      * render pass, so it must precede compose_variant's offscreen pass.
      * compose's draw_perf_overlay then composites the downsampled result. */
+    NR_PROF_BEGIN("cmp.ss");
     rhi_gpu_zone_begin(s_nr.dev, "ovl_ss");
     prepare_perf_overlay_ss();
     rhi_gpu_zone_end(s_nr.dev);
@@ -22608,6 +22814,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     rhi_gpu_zone_begin(s_nr.dev, "ver_ss");
     prepare_version_ss();      /* version line at OVL_SS_FACTOR× (own pass) */
     rhi_gpu_zone_end(s_nr.dev);
+    NR_PROF_END();   /* cmp.ss */
     rhi_gpu_zone_begin(s_nr.dev, "compose");
     compose_variant();
     rhi_gpu_zone_end(s_nr.dev);
@@ -22620,6 +22827,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
      * shows up BY MOD ID in the [gpu-pass] report - the per-mod budget
      * attribution. */
     {
+        OP_PROF_SCOPE("cmp.postfx");
         pfx_drain_retired();
         int pw = 0, ph = 0;
         rhi_offscreen_extent(s_nr.dev, &pw, &ph);
