@@ -111,7 +111,10 @@ void openpete_modsave_remove_owner(const char* mod_id);
 
 /** @brief A card image was loaded or provisioned: read its `.modsave`, arming when one exists.
  *
- * An unparseable sidecar is logged, renamed aside and treated as absent.
+ * An unparseable sidecar is logged, renamed aside and treated as absent. A
+ * sidecar that exists but cannot be read is logged and never written over:
+ * save records made while it stays unreadable are kept in memory and merged
+ * into it at the first write that can read it.
  * Under --adopt-saves the newest snapshot of every non-empty save takes the
  * running modset tag.
  * @param slot Card slot, 0 or 1.

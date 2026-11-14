@@ -22,6 +22,7 @@
   #include <fcntl.h>
   #include <pwd.h>
   #include <sys/file.h>
+  #include <time.h>
   #include <unistd.h>
   #define OPP_MKDIR(p) mkdir((p), 0755)
   #define OPP_SEP '/'
@@ -128,6 +129,19 @@ int openpete_paths_lock(const char* path, intptr_t* handle) {
     *handle = (intptr_t)fd;
 #endif
     return 0;
+}
+
+int openpete_paths_lock_wait(const char* path, intptr_t* handle, int wait_ms) {
+    for (int waited = 0;; waited += 5) {
+        const int rc = openpete_paths_lock(path, handle);
+        if (rc != -1 || waited >= wait_ms) return rc;
+#ifdef _WIN32
+        Sleep(5);
+#else
+        struct timespec ts = { 0, 5000000L };
+        while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
+#endif
+    }
 }
 
 void openpete_paths_unlock(intptr_t handle) {

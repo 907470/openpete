@@ -11,6 +11,11 @@
  *     speculative queue. Host effects of a speculative tick are queued and
  *     committed when runahead adopts the led ticks, discarded on rollback.
  *
+ * Sidecar file: every write takes "<sidecar>.lock", re-reads the file and
+ * merges it with the table before replacing it (sidecar_write), so two
+ * processes holding one card directory keep each other's snapshots. A
+ * sidecar that exists but cannot be read is never written over.
+ *
  * A snapshot is one save's records: the record hash, the lineage, the
  * session modset tag and per mod (id, schema, gap, bytes). Each save index
  * holds up to MS_CAP snapshots, newest first.
@@ -28,6 +33,9 @@
 #include "openpete_psx.h"
 #include "../host/sha256.h"
 
+#include "openpete_paths.h"
+
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,11 +137,24 @@ typedef struct {
 
 typedef struct { uint32_t n; ms_snap_t* s[MS_CAP]; } ms_list_t;
 
-enum { SC_NONE = 0, SC_PRESENT };
+/* SC_NONE: no sidecar file. SC_UNREADABLE: the file exists but could not
+ * be read; the table holds only this process's changes and is not written. */
+enum { SC_NONE = 0, SC_PRESENT, SC_UNREADABLE };
+
+/* A snapshot's identity in a list: (hash, lineage), the key list_put replaces by. */
+typedef struct { uint8_t hash[32]; uint8_t lineage[16]; } ms_key_t;
+
 typedef struct {
     int       state;
+    int       warned;        /* the unreadable refusal was logged since the mount */
     char      path[1300];
     ms_list_t idx[MS_MAX_IDX];
+    /* This process's changes the file does not hold yet, merged at the next
+     * write: per index the keys it put (oldest first) and whether it
+     * cleared the index (a drop or a format) first. */
+    ms_key_t  put[MS_MAX_IDX][MS_CAP];
+    uint32_t  n_put[MS_MAX_IDX];
+    uint8_t   cleared[MS_MAX_IDX];
 } ms_table_t;
 
 static ms_table_t s_sc[MS_SLOTS];
@@ -289,7 +310,7 @@ static ms_list_t view(int slot, int idx) {
     ms_list_t v;
     memset(&v, 0, sizeof v);
     if (slot < 0 || slot >= MS_SLOTS || idx < 0 || idx >= MS_MAX_IDX) return v;
-    if (s_sc[slot].state == SC_PRESENT) v = s_sc[slot].idx[idx];
+    if (s_sc[slot].state != SC_NONE) v = s_sc[slot].idx[idx];
     for (int q = 0; q < s_nq; q++) {
         const ms_qop_t* op = &s_queue[q];
         if (op->slot != slot) continue;
@@ -300,6 +321,42 @@ static ms_list_t view(int slot, int idx) {
 }
 
 static void sidecar_write(int slot);
+
+/** @brief 1 when snapshot @p s has key @p k. */
+static int snap_is(const ms_snap_t* s, const ms_key_t* k) {
+    return !memcmp(s->hash, k->hash, 32) && !memcmp(s->lineage, k->lineage, 16);
+}
+
+/** @brief 1 when this process put snapshot @p s's key at index @p i since the last write. */
+static int put_has(const ms_table_t* t, int i, const ms_snap_t* s) {
+    for (uint32_t k = 0; k < t->n_put[i]; k++) if (snap_is(s, &t->put[i][k])) return 1;
+    return 0;
+}
+
+/** @brief Note that this process put snapshot @p s at index @p i; past MS_CAP keys the oldest is forgotten, as the list evicts it. */
+static void mark_put(ms_table_t* t, int i, const ms_snap_t* s) {
+    if (put_has(t, i, s)) return;
+    if (t->n_put[i] == MS_CAP) {
+        memmove(&t->put[i][0], &t->put[i][1], (MS_CAP - 1) * sizeof t->put[i][0]);
+        t->n_put[i]--;
+    }
+    ms_key_t* k = &t->put[i][t->n_put[i]++];
+    memcpy(k->hash, s->hash, 32);
+    memcpy(k->lineage, s->lineage, 16);
+}
+
+/** @brief Note that this process cleared index @p i: the file's snapshots there are dropped at the next write. */
+static void mark_cleared(ms_table_t* t, int i) {
+    t->cleared[i] = 1;
+    t->n_put[i] = 0;
+}
+
+/** @brief Forget the changes noted since the last write: the file now holds them. */
+static void pending_reset(ms_table_t* t) {
+    memset(t->put, 0, sizeof t->put);
+    memset(t->n_put, 0, sizeof t->n_put);
+    memset(t->cleared, 0, sizeof t->cleared);
+}
 
 /** @brief The first `.modsave` of a card: one snapshot per non-empty record except @p skip, fresh lineage, no records, the card's `.modset` tag. */
 static void seed_card(int slot, int skip) {
@@ -324,24 +381,27 @@ static void seed_card(int slot, int skip) {
     }
 }
 
-/** @brief Commit one host op to the sidecar: seed the card's first `.modsave`, apply the op, write the file.
+/** @brief Commit one host op to the sidecar: seed the card's first `.modsave`, apply the op, note it for the merge, write the file.
  *
  * Takes ownership of the op's snapshot; a snapshot it replaces or evicts
- * is freed.
+ * is freed. No seed while the file exists but is unreadable.
  * @param op The op. */
 static void commit_op(const ms_qop_t* op) {
     ms_table_t* t = &s_sc[op->slot];
-    if (t->state != SC_PRESENT) seed_card(op->slot, op->kind == Q_FORMAT ? -1 : op->idx);
+    if (t->state == SC_NONE) seed_card(op->slot, op->kind == Q_FORMAT ? -1 : op->idx);
     if (op->kind == Q_FORMAT) {
         for (int i = 0; i < MS_MAX_IDX; i++) {
             for (uint32_t k = 0; k < t->idx[i].n; k++) snap_free(t->idx[i].s[k]);
             t->idx[i].n = 0;
+            mark_cleared(t, i);
         }
     } else if (op->kind == Q_DROP) {
         ms_list_t* l = &t->idx[op->idx];
         for (uint32_t k = 0; k < l->n; k++) snap_free(l->s[k]);
         l->n = 0;
+        mark_cleared(t, op->idx);
     } else {
+        mark_put(t, op->idx, op->snap);
         ms_snap_t* gone = list_put(&t->idx[op->idx], op->snap);
         if (gone && gone != op->snap) {
             char a[9];
@@ -456,26 +516,6 @@ int openpete_modsave_sidecar_bytes(int slot, uint8_t** out, size_t* len) {
     return 1;
 }
 
-/** @brief Write the slot's sidecar atomically, serialised by sidecar_serialise.
- *
- * A failure is logged and the snapshots stay in memory; every write
- * rewrites the whole file, so the next one retries.
- * @param slot Card slot. */
-static void sidecar_write(int slot) {
-    ms_table_t* t = &s_sc[slot];
-    if (!t->path[0]) return;
-    ms_buf_t b = { 0 };
-    sidecar_serialise(t, &b);
-    const char* fault = getenv("OPENPETE_MODSAVE_FAULT_WRITE");
-    int rc = b.bad ? -1 : (fault && *fault == '1') ? -1 : op_atomic_write_file(t->path, b.p, b.len);
-    free(b.p);
-    if (rc != 0)
-        OPL_ERROR_F("modsave", "card %d: writing %s failed; the save records stay in memory "
-                    "and are written at the next save", slot, t->path);
-    else
-        OPL_INFO_F("modsave", "card %d: wrote %s", slot, t->path);
-}
-
 typedef struct { const uint8_t* p; size_t len, at; int bad; } ms_rd_t;
 
 /** @brief Read bytes; a read past the end marks the reader bad and yields zeros. */
@@ -544,20 +584,31 @@ static int sidecar_parse(ms_table_t* t, const uint8_t* p, size_t len) {
     return r.bad ? -1 : 0;
 }
 
-/** @brief Read a whole file into memory; NULL when absent or unreadable. */
-static uint8_t* slurp(const char* path, size_t* len) {
+/** @brief Read a sidecar file whole, telling an absent file from one that exists but cannot be read.
+ *
+ * OPENPETE_MODSAVE_FAULT_READ=1 makes an existing file read as unreadable.
+ * @param path The file.
+ * @param out Receives the malloc'd bytes on a read, else NULL.
+ * @param len Receives their length, 0 for none.
+ * @return 1 read, 0 absent (no such file or directory), -1 present but the
+ *         open, a read or the allocation failed or the read came up short. */
+static int sidecar_read(const char* path, uint8_t** out, size_t* len) {
+    *out = NULL;
+    *len = 0;
+    errno = 0;
     FILE* f = fopen(path, "rb");
-    if (!f) return NULL;
+    if (!f) return errno == ENOENT || errno == ENOTDIR ? 0 : -1;
+    const char* fault = getenv("OPENPETE_MODSAVE_FAULT_READ");
     uint8_t* p = NULL;
-    long n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
-    if (n >= 0 && fseek(f, 0, SEEK_SET) == 0 && (p = (uint8_t*)malloc((size_t)n + 1u)) != NULL &&
-        fread(p, 1, (size_t)n, f) != (size_t)n) {
-        free(p);
-        p = NULL;
-    }
+    const long n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+    const int ok = !(fault && *fault == '1') && n >= 0 && fseek(f, 0, SEEK_SET) == 0 &&
+                   (p = (uint8_t*)malloc((size_t)n + 1u)) != NULL &&
+                   fread(p, 1, (size_t)n, f) == (size_t)n;
     fclose(f);
-    *len = p ? (size_t)n : 0u;
-    return p;
+    if (!ok) { free(p); return -1; }
+    *out = p;
+    *len = (size_t)n;
+    return 1;
 }
 
 /** @brief Rename an unparseable sidecar to the first free "<path>.bad-<n>". */
@@ -573,13 +624,117 @@ static void sidecar_set_aside(const char* path) {
     }
 }
 
-/** @brief Drop every snapshot of a table. */
+/** @brief Drop every snapshot of a table and the changes noted for its next write. */
 static void table_clear(ms_table_t* t) {
     for (int i = 0; i < MS_MAX_IDX; i++) {
         for (uint32_t k = 0; k < t->idx[i].n; k++) snap_free(t->idx[i].s[k]);
         t->idx[i].n = 0;
     }
+    pending_reset(t);
     t->state = SC_NONE;
+    t->warned = 0;
+}
+
+/** @brief Log, once per mount, that the slot's sidecar exists but cannot be read and is not written while so. */
+static void unreadable_note(int slot, ms_table_t* t) {
+    if (t->warned) return;
+    t->warned = 1;
+    OPL_ERROR_F("modsave", "card %d: %s exists but cannot be read; it is not written while it stays "
+                "unreadable, and save records made meanwhile stay in memory (mods read their records "
+                "as absent)", slot, t->path);
+}
+
+/** @brief Merge the file's table into the slot's: each index this process changed keeps its own puts, newest first, then (unless it cleared the index) the file's other snapshots, up to MS_CAP; every other index takes the file's list.
+ *
+ * A snapshot both hold under one key is this process's copy (the later
+ * writer's). Every snapshot of @p d is moved into @p t or freed, and every
+ * snapshot of @p t not kept is freed.
+ * @param t The slot's table.
+ * @param d The table read from the file; left empty. */
+static void table_merge(ms_table_t* t, ms_table_t* d) {
+    for (int i = 0; i < MS_MAX_IDX; i++) {
+        ms_list_t* m = &t->idx[i];
+        ms_list_t* f = &d->idx[i];
+        ms_list_t out;
+        memset(&out, 0, sizeof out);
+        const int changed = t->cleared[i] || t->n_put[i];
+        for (uint32_t k = 0; changed && k < m->n; k++)
+            if (put_has(t, i, m->s[k]) && out.n < MS_CAP) { out.s[out.n++] = m->s[k]; m->s[k] = NULL; }
+        for (uint32_t k = 0; !t->cleared[i] && k < f->n; k++)
+            if (!(changed && put_has(t, i, f->s[k])) && out.n < MS_CAP) { out.s[out.n++] = f->s[k]; f->s[k] = NULL; }
+        for (uint32_t k = 0; k < m->n; k++) snap_free(m->s[k]);
+        for (uint32_t k = 0; k < f->n; k++) snap_free(f->s[k]);
+        f->n = 0;
+        *m = out;
+    }
+}
+
+/* The longest wait for the sidecar lock, in milliseconds: another process
+ * holds it for one read, merge and file write. */
+#define MS_LOCK_WAIT_MS 1000
+
+/** @brief Write the slot's sidecar under the lock "<sidecar>.lock": re-read the file, merge it into the table (table_merge), replace the file atomically.
+ *
+ * Merge rule: an index this process changed since its last write keeps
+ * this process's snapshots ahead of the file's; a drop or a format here
+ * drops the file's snapshots of the index (the later writer wins); every
+ * other index takes the file's list, so another process's saves survive
+ * and become visible here. A file that exists but cannot be read is not
+ * written (logged once; the table and its noted changes stay in memory). A
+ * file that does not parse is renamed aside and replaced by the table. A
+ * failed or locked-out write is logged and the noted changes stay, so the
+ * next write merges them again.
+ * @param slot Card slot. */
+static void sidecar_write(int slot) {
+    ms_table_t* t = &s_sc[slot];
+    if (!t->path[0]) return;
+    intptr_t lk = 0;
+    char lp[sizeof t->path + 8];
+    snprintf(lp, sizeof lp, "%s.lock", t->path);
+    if (openpete_paths_lock_wait(lp, &lk, MS_LOCK_WAIT_MS) != 0) {
+        OPL_ERROR_F("modsave", "card %d: %s.lock could not be taken; the save records stay in memory "
+                    "and are written at the next save", slot, t->path);
+        return;
+    }
+    uint8_t* p = NULL;
+    size_t len = 0;
+    const int r = sidecar_read(t->path, &p, &len);
+    if (r < 0) {
+        t->state = SC_UNREADABLE;
+        unreadable_note(slot, t);
+        openpete_paths_unlock(lk);
+        return;
+    }
+    if (r > 0) {
+        ms_table_t* d = (ms_table_t*)calloc(1, sizeof *d);
+        if (!d) {
+            free(p);
+            openpete_paths_unlock(lk);
+            OPL_ERROR_F("modsave", "card %d: no memory to merge %s; the save records stay in memory",
+                        slot, t->path);
+            return;
+        }
+        if (sidecar_parse(d, p, len) != 0) sidecar_set_aside(t->path);
+        else table_merge(t, d);
+        table_clear(d);
+        free(d);
+        free(p);
+    }
+    t->state = SC_PRESENT;
+    t->warned = 0;
+    ms_buf_t b = { 0 };
+    sidecar_serialise(t, &b);
+    const char* fault = getenv("OPENPETE_MODSAVE_FAULT_WRITE");
+    const int rc = b.bad ? -1 : (fault && *fault == '1') ? -1 : op_atomic_write_file(t->path, b.p, b.len);
+    free(b.p);
+    openpete_paths_unlock(lk);
+    if (rc != 0) {
+        OPL_ERROR_F("modsave", "card %d: writing %s failed; the save records stay in memory "
+                    "and are written at the next save", slot, t->path);
+        return;
+    }
+    pending_reset(t);
+    OPL_INFO_F("modsave", "card %d: wrote %s", slot, t->path);
 }
 
 /** @brief --adopt-saves: the newest snapshot of every non-empty save on the card takes the running modset tag; the sidecar is rewritten when one changed. */
@@ -599,6 +754,7 @@ static void adopt_card(int slot) {
         if (sn->tag && !strcmp(sn->tag, cur)) continue;
         free(sn->tag);
         sn->tag = strdup(cur);
+        mark_put(t, (int)i, sn);
         changed = 1;
     }
     if (!changed) return;
@@ -612,8 +768,15 @@ void openpete_modsave_card_mounted(int slot, const char* image_path, int adopt) 
     table_clear(t);
     snprintf(t->path, sizeof t->path, "%s.modsave", image_path);
     size_t len = 0;
-    uint8_t* p = slurp(t->path, &len);
-    if (!p) return;
+    uint8_t* p = NULL;
+    const int r = sidecar_read(t->path, &p, &len);
+    if (r < 0) {
+        t->state = SC_UNREADABLE;
+        openpete_modsave_armed = 1;
+        unreadable_note(slot, t);
+        return;
+    }
+    if (r == 0) return;
     if (sidecar_parse(t, p, len) != 0) {
         table_clear(t);
         sidecar_set_aside(t->path);

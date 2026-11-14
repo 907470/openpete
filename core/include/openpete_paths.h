@@ -108,6 +108,14 @@ int openpete_exe_path(char* out, size_t cap);
  * @return 0 when taken, -1 when another process holds it, -2 when the file cannot be opened or locked. */
 int openpete_paths_lock(const char* path, intptr_t* handle);
 
+/** @brief Take an exclusive lock on a file as openpete_paths_lock does, retrying every 5 ms while another process holds it, for at most @p wait_ms.
+ *
+ * @param path The file.
+ * @param handle Receives the lock's handle.
+ * @param wait_ms The longest wait in milliseconds; 0 tries once.
+ * @return 0 when taken, -1 when another process held it for the whole wait, -2 when the file cannot be opened or locked. */
+int openpete_paths_lock_wait(const char* path, intptr_t* handle, int wait_ms);
+
 /** @brief Release a lock openpete_paths_lock took.
  *
  * @param handle The lock's handle. */
