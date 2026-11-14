@@ -152,6 +152,7 @@ scripts/golden-fleet.py run --all --hosts local,box2 --wait
 scripts/golden-fleet.py run --all --no-local --wait         # keep the dev box free
 scripts/golden-fleet.py run --game spyro-2 --pull all --wait
 scripts/golden-fleet.py run --all --expect moves.txt        # tag streamed moves against predictions
+scripts/golden-fleet.py run --all --commits main~6..main --queries queries --expect moves.txt --wait   # a scored batch
 scripts/golden-fleet.py run --game spyro-2 --hosts ptah \
   --filter summer_forest-12609f --freecam-filter summer_forest-12609f --repeat 40 --wait   # a repeat row
 scripts/golden-fleet.py stop <run-id> --unit spyro-3-presentation
@@ -171,6 +172,8 @@ scripts/golden-fleet.py stop <run-id>                       # every running and 
 | `--repeat N` | Capture every row the filters select `N` times on its one host and compare every copy against the blessed row (Repeat rows). Needs a filter. |
 | `--expect FILE` | Expected-moves file (Streamed divergences); a line naming a unit not in the run, or a substring matching nothing, refuses the run with exit 2 before it detaches. |
 | `--no-takeover` | Placement only: a free host never takes over a running unit (Takeover). |
+| `--commits RANGE` | The batch's commit range, recorded in `run-args.json`; `golden-census.py score` classes a miss `environment` when no commit of the range touches a renderer path. |
+| `--queries DIR` | The batch's query files ([Tile census](tile-census.md)). `run` copies `DIR` to `<local run dir>/queries/` before it detaches and records each file's SHA-256 in `run-args.json` before any leg starts; the local run directory keeps the copy for `golden-census.py score`. A missing directory exits 2. |
 
 `run` detaches the coordinator (`setsid`) and prints its log and done
 marker, `<local fleet_root>/runs/<run-id>/coordinator.log` and `done`.
@@ -259,10 +262,17 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    candidate directory: `build/presentation-candidate`,
    `build/presentation-candidate-<game>`, `build/dragon-candidate`, or
    `$PRESENTATION_GOLDEN_OUT` (with a `<game>-<tier>` subdirectory when the
-   run has several units). A unit fails when the report's `blessed.tsv` or
-   identity-baseline hash differs from the local file, its `compared`
-   census differs from the local row count, or its exit differs from the
-   supervisor's.
+   run has several units). On the presentation tier the pull also takes
+   `tile-digests.tsv`, `row-cost.tsv` and, by a second rsync under either
+   `--pull` mode, every tile's `*-vk.census` sidecar; a captured tile
+   without its sidecar refuses the unit. A unit fails when the report's
+   `blessed.tsv` or identity-baseline hash differs from the local file, its
+   `compared` census differs from the local row count, or its exit differs
+   from the supervisor's. An accepted presentation unit of an unfiltered,
+   unrepeated run that was not stopped is hard-linked into the census store
+   (`<local fleet_root>/census/<game>-presentation/<run-id>/`, finalized
+   after the done marker, two entries kept per unit; layout under
+   [Tile census](tile-census.md#census-store)).
 10. Heat diffs. The pulled divergent tiles are diffed locally against the
     store with `tests/harness/presentation-corpus-diff.py --expect-subset`
     into `<candidate>/diff`.
@@ -271,8 +281,9 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
     pulled into `<local run dir>/crashes/<host>/` and each kept leg is
     named in `coordinator.log`. `runs/<run-id>/` is then deleted on every
     host on every exit path; the local run directory keeps
-    `coordinator.log`, `done`, `active.lock`, `stream.log`, `expect.txt`,
-    `stop-request` and `crashes/`. A host unreachable at teardown keeps its directory for
+    `coordinator.log`, `done`, `active.lock`, `run-args.json`,
+    `stream.log`, `expect.txt`, `queries/`, `stop-request`,
+    `canary-verdict.txt` and `crashes/`. A host unreachable at teardown keeps its directory for
     `clean`.
 
 ## Connect retries
@@ -546,17 +557,35 @@ spyro-1-presentation cliff-town-vista__lodext__ far-band LOD change
 
 `<unit>` is the job name (`<game>-<tier>`); the substring is matched
 against tile names and manifest row names, so a row name covers the row's
-`__ident__` tiles. The file is copied into the local run directory before
-the coordinator detaches and only the copy is read. Each line's match count
-is printed at start. A streamed DIVERGE, EXTRA or EXCEED tile is EXPECTED
-when an expectation of its unit matches it, else UNEXPECTED (the tag in
-`stream.log`). At the end each expectation is `moved` (a matching tile
-moved), EXPECTED-NOT-MOVED (every matching tile streamed and none moved)
-or NOT-REACHED (a matching tile never streamed: a timed-out row, a stopped
-or SKIP unit). The summary counts EXPECTED, UNEXPECTED and
-EXPECTED-NOT-MOVED tiles over each unit's accepted attempt (imported lines
-included; a killed attempt's lines are tagged for display only). The tags
-and counts change no exit code and take no part in the unit-end check.
+`__ident__` tiles. At start each line must match a unit of the run and at
+least one blessed tile, the `__ident__` twin of a blessed canon tile, or a
+manifest row name; otherwise the run exits 2 before it detaches
+(`expected-moves file refused: line N: ...`). A bk2 row whose launch field
+selects extended LOD (`--lod extended`, `--no-lod`) runs its untagged leg
+at extended LOD too, so its tiles also match as their `__lodext__`-tagged
+names. The file is copied into the local run directory before the
+coordinator detaches and only the copy is read. Each line's match count is
+printed at start: `expect: <unit> '<substring>': <t> tile(s), <r> manifest
+row(s) match`.
+
+The streamed verbs that count as a move are DIVERGE (a blessed tile's
+digest changed), EXTRA (a tile with no blessed row: a new row) and EXCEED
+(an identity pair over its baseline, or an identity tile without its canon
+twin). A moved tile is EXPECTED when an expectation of its unit matches it,
+else UNEXPECTED (the tag at the end of its `stream.log` line). At the end
+each expectation prints `expect <unit> '<substring>': <status> (<k>
+matching tile(s)); <reason>`, the status one of `moved` (a matching tile
+moved), EXPECTED-NOT-MOVED (every matching tile, of `blessed.tsv` and of
+the stream, streamed and none moved) or NOT-REACHED (a matching tile never
+streamed: a timed-out row, a stopped or SKIP unit), and the run prints
+`expected moves: EXPECTED <a>, UNEXPECTED <b>, EXPECTED-NOT-MOVED <c>`,
+counted over each unit's accepted attempt (imported lines included; a
+killed attempt's lines are tagged for display only). The tags and counts
+change no exit code and take no part in the unit-end check.
+
+`scripts/golden-census.py expect` writes expected-moves lines from the
+census store: per tile a predicate over the tile counters selects, and per
+row added since the store's run ([Tile census](tile-census.md#expect)).
 
 `tests/harness/check_fleet_stream.sh` checks the stream on synthetic tiles
 (the line per verb against the end verdict's own scripts, the row poke,
@@ -594,9 +623,13 @@ host, attempt and wall time.
   trees/<key>/           the repository base: the last refreshed snapshot of any checkout of the repository
   trees/<key>.src        coordinator, repository (git common directory), last checkout path, last-run time
   trees/<key>.lock       flock: shared while a sync or build seed reads the base, exclusive while a refresh or clean replaces it
+  census/<game>-presentation/<run-id>/
+                         local host only: the census store (Tile census); removed only by clean --all
   runs/<run-id>/
     coordinator.log      local host only
     done                 local host only: rc=N, run=, reason=
+    run-args.json        local host only: the run's arguments, HEAD, source tree, units, --commits, query hashes
+    queries/             local host only: the run's copy of --queries DIR
     active.lock          held shared by the coordinator and supervisors
     ship/                supervise.sh, fields-<game>.txt, binaries.sha256
     tree/                the snapshot units run in
@@ -652,6 +685,13 @@ removes it once its checkout is gone or unused for 14 days, or by `--tree`.
   checkout's objects can be newer than this checkout's changed sources,
   which the build would then not rebuild. A refresh from a snapshot
   without a build tree keeps the previous build tree on the same rule.
+- Discs. The sync set holds the disc cue and bin of the run's games only:
+  the games of its units plus the canary's game (`run_games`). The refresh
+  replaces the whole base with the run's snapshot, so after a run limited
+  to some games (`--game G`) the base holds only those games' discs, and the
+  next run that captures another game sends that game's disc bin in full.
+  `--filter`, `--freecam-filter` and `--repeat` select rows, not games, and
+  leave the disc set unchanged.
 - Disk per host. Between runs: one base, about the source set plus the
   build tree (2.3 + 1.1 GiB). During a run from a new checkout the
   snapshot's files are copies (their mtimes differ from the base's), so
@@ -668,7 +708,7 @@ checkout path is gone or unused for 14 days; shipped images other than the
 current `:fleet` one and named by no other tag. A tree whose lock a sync
 holds is kept. `--tree PATH` removes only this coordinator's
 checkout-keyed trees of PATH; the repository base stays, so a gate
-worktree's teardown leaves it for the next run. `--all` removes `runs/`, `trees/`, the lock
+worktree's teardown leaves it for the next run. `--all` removes `runs/`, `trees/`, `census/`, the lock
 and image records, every fleet-labelled container and the `:fleet` tag
 (the image itself only when no other tag names it), and `fleet_root` when
 nothing else is in it. On the local host `clean` also removes the
@@ -682,8 +722,15 @@ runs. From `openpete/`:
 
 ```sh
 ../.claude/skills/orchestrate/scripts/worktree-setup.sh gate-<batch> --ref <batch-sha>   # detached at the batch commit, configured, not built
-cd worktrees/gate-<batch> && python3 scripts/golden-fleet.py run --all --expect <file>
+cd worktrees/gate-<batch> && python3 scripts/golden-fleet.py run --all --expect <file> \
+  --commits <base>..<batch-sha> --queries <queries dir>
 ```
+
+`--commits` and `--queries` are needed only when the batch's query files
+are scored afterwards (`golden-census.py score --run <local fleet_root>/runs/<run-id>`).
+The census store lies under the local `fleet_root`, not in the worktree,
+so a gate worktree's unfiltered run feeds the same store as a run from the
+main checkout.
 
 The run's in-image build writes the worktree's
 `build/linux-release-container`; `worktree-setup.sh --build` is not needed

@@ -346,7 +346,15 @@ path is not in the bundle, and a replay without it is refused with
    scratch directory, `<bundle without .zip>.replay/`
    (`OPENPETE_BUGREPORT_REPLAY_DIR` names another).
 2. The command line is rebuilt: the tester's argv without its output,
-   route and path flags, `~` remapped into the scratch directory; then the
+   route and path flags and without every flag that only modifies an
+   output (`--screenshot-native-only`, `--screenshot-overlays`,
+   `--screenshot-freeze-backdrop`, `--screenshot-presents-start`,
+   `--screenshot-presents-count`, `--record-cfr`, `--record-fps-overlay`,
+   `--no-record-audio` and the other `--record-*` settings; the list is
+   `k_drop` in `core/record/bugreport_replay.c`), `~` remapped into the
+   scratch directory; the developer's own capture flags decide what the
+   replay writes. Display flags (`--renderer`, `--window`, `--fullscreen`,
+   `--vsync`, `--gpu`, `--ssaa`, `--aspect`) pass. Then the
    replay's flags (headless, the scratch cards, the bundle's `mods/` as the
    mods root, `anchor.state` as the `--resume-handoff` file, `segment.bk2`
    as the `--bk2` movie at the anchor's consume point); then the
@@ -507,6 +515,57 @@ low threshold forwarded to be DIVERGED `region=fatal`; a bundle pressed
 while a corpus movie holds square to release it at the first row past
 the segment under `--bug-report-replay-beyond 60`; the `env not
 forwarded` line; and the refusal without `--disc`.
+
+### Display path of a headless replay
+
+A replay runs `--headless` unless `OPENPETE_BUGREPORT_REPLAY_WINDOWED` is
+set. Under `--headless` the native renderer comes up on a surfaceless
+Vulkan device only when the run has a consumer for it
+(`openpete_native_headless_consumer`): a `--screenshot-on-frame` or
+`--screenshot-intermediate-on-frame` request, the identity audit
+(`OPENPETE_IDENT_AUDIT`), or `OPENPETE_HEADLESS_NATIVE=1`. Without one the
+native renderer stays off and PsyCross keeps its GL path. PsyCross skips
+its own GPU work only in a headless run with `--screenshot-native-only`, no
+`--record`, and a native consumer; both decisions ask the same predicate,
+so a run always has one display path. An instrument that reads the native
+path in a replay therefore needs one of the consumers: a screenshot flag
+after `--` (`bugreport.py replay`) or on the command line, or
+`OPENPETE_BUGREPORT_REPLAY_ENV=OPENPETE_HEADLESS_NATIVE=1`. A windowed
+replay reaches the live present, which a headless run never builds:
+occlusion readback and eager production differ there.
+
+## A tester's bundle is untrusted input
+
+A bundle comes from another machine and is read as untrusted input.
+
+- `tools/bugreport.py` reads members by name with size bounds; refuses
+  absolute names, `..` components, drive letters, NUL bytes, duplicate
+  names and symlinks; never executes or imports anything from a bundle; and
+  runs under `python3 -I` with the standard library only. `info`,
+  `extract`, `subtick`, `audio`, `perf`, `corpus` and `diff-hashes` run
+  nothing from the bundle. `replay` unpacks an archived artifact with
+  unsafe names, links and devices skipped.
+- `--bug-report-replay` refuses a member name that is empty, absolute
+  (`/` or `\`), holds a `:` or a `..` component, and a member whose SHA-256
+  differs from `manifest.json`. The manifest is itself a member, so the
+  hashes prove the bundle is internally consistent, not where it came
+  from.
+- A replay executes code from the bundle. It passes the bundle's `mods/`
+  as `--mods-dir`, and the mod loader compiles each enabled mod's
+  `src/*.c` and loads the resulting shared object, or loads a prebuilt
+  object as is (`core/mods/mod_loader.c`). On the primary route it loads
+  the bundle's `module/<file>` as `--recomp-module`. The bundle's
+  `config-files/` become the config tiers and `env.txt`'s `OPENPETE_*`
+  variables are set.
+- Before replaying a bundle from outside the project, read it with
+  `bugreport.py info --members` and review `mods.txt` and every enabled
+  mod's files under `mods/<id>/`. A replay with `-- --mods ""` (developer
+  flags come after the replay's, and `--mods` beats `OPENPETE_MODS`)
+  enables no mod; a mod that writes guest RAM then makes the replay
+  DIVERGED, which is the expected verdict for a session the mods shaped.
+- Bundles stay outside the repository: a bundle holds the tester's
+  savestates, card images, log tails and configuration. Redaction covers
+  the home directory, user name and host name in text members only.
 
 ## Release archive
 

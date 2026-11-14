@@ -189,12 +189,15 @@ nav:
       - Unattended runs: developer/unattended-runs.md
       - Bug reports: developer/bug-reports.md
       - Golden fleet: developer/golden-fleet.md
+      - Tile census: developer/tile-census.md
       - Recording video: developer/recording-video.md
       - Adding a game: developer/adding-a-game.md
       - Render channel census: developer/render-channel-census.md
       - Mod API audit: developer/mod-api-audit.md
       - PsyCross boundary: developer/psycross-boundary.md
       - Disc I/O: developer/disc-io.md
+      - Windows thread-local storage: developer/windows-tls.md
+      - Glossary: developer/glossary.md
       - History: developer/history.md
       - PsyCross changes:
           - developer/psycross/README.md
