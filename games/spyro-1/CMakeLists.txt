@@ -299,8 +299,12 @@ if(OPENPETE_COMPILE_MODS)
     else()
         # Always runs (cheap: the exe's pass-1 content-hash check skips
         # up-to-date mods in milliseconds); nonzero exit fails the build.
+        # The run's log file and per-user directories resolve under a sandbox
+        # root in the build tree, so a build never rotates the player's log.
         add_custom_target(spyro1_mods ALL
-            COMMAND ${OPENPETE_GAME_BIN} ${OPENPETE_GAME_BIN_ARGS} --compile-mods
+            COMMAND ${CMAKE_COMMAND} -E env
+                    OPENPETE_SANDBOX=${CMAKE_BINARY_DIR}/compile-mods-sandbox
+                    ${OPENPETE_GAME_BIN} ${OPENPETE_GAME_BIN_ARGS} --compile-mods
                     --mods-dir ${OPENPETE_COMPILE_MODS_DIR}
             COMMENT "Compiling mods (${OPENPETE_GAME_BIN} --compile-mods)"
             VERBATIM)

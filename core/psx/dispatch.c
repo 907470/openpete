@@ -390,7 +390,8 @@ static int hang_claim(void) {
  * The working directory of a launched game is arbitrary (the install
  * directory, the user's home, a system directory), so the dumps go where
  * the log file goes. Falls back to the working directory only when no
- * state directory resolves.
+ * state directory resolves outside a sandbox (openpete_paths_sandbox); under
+ * one the path is empty, so the open fails and nothing is written.
  * @param leaf File name.
  * @param out Receives the path.
  * @param cap Capacity of out. */
@@ -403,6 +404,8 @@ static void hang_output_path(const char* leaf, char* out, size_t cap) {
     char dir[1024];
     if (openpete_paths_state_dir("logs", dir, sizeof dir, 1) == 0)
         snprintf(out, cap, "%s%c%s", dir, sep, leaf);
+    else if (openpete_paths_sandbox())
+        out[0] = '\0';
     else
         snprintf(out, cap, "%s", leaf);
 }

@@ -2244,6 +2244,15 @@ static const knob_desc_t g_builtin_debug[] = {
         "per-user card directory or the cards directory beside the "
         "executable. For automated runs, which must not touch a "
         "player's cards. Read at launch."),
+    ENVROW_LATCHED("SANDBOX", "Debug", "",
+        "Directory every file the run writes goes under: config, state and "
+        "data resolve to <root>/config, <root>/state and <root>/data on "
+        "every platform, the portable layout is off, and the overlay ini "
+        "moves to the config directory. The run refuses to start, exit 66, "
+        "when the root, a resolved leaf, or an output path a variable or "
+        "flag names lies in a per-user openpete directory or beside the "
+        "executable. For automated runs, which must not touch a player's "
+        "files. Read at launch."),
     ENVROW_LATCHED("RUN_RECOMP", "Debug", "",
         "Guest address (hex) the game fiber dispatches instead of the EXE "
         "header's entry point."),

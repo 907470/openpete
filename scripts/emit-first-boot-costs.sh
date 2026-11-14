@@ -43,7 +43,7 @@ OUT="games/$GAME/manifest/first_boot_costs.tsv"
 SCRATCH=$(mktemp -d)
 trap 'rm -rf "${SCRATCH:?}"' EXIT
 rm -f "$OUT.new"
-env XDG_DATA_HOME="$SCRATCH/data" XDG_STATE_HOME="$SCRATCH/state" XDG_CONFIG_HOME="$SCRATCH/config" \
+env OPENPETE_SANDBOX="$SCRATCH/sandbox" \
     OPENPETE_MSGBOX_SKIP=1 OPENPETE_FIRST_BOOT_COSTS_OUT="$PWD/$OUT.new" \
     "$BIN" --headless --no-config --no-card --vibration 0 --mute 1 --ingest "$CUE" --frame-limit 1 \
     > "$SCRATCH/run.log" 2>&1 || { tail -20 "$SCRATCH/run.log" >&2; exit 1; }

@@ -30,6 +30,10 @@
  * game that cannot write its saves at all is worse than one that writes
  * them somewhere less obvious.
  *
+ * A third layout, the sandbox (OPENPETE_SANDBOX=<root>), puts config,
+ * state and data under <root>/config, <root>/state and <root>/data for
+ * automated runs, which must not touch a player's files.
+ *
  * Deliberately SDL-free - config.c resolves paths before SDL exists, and
  * links into a console unit test.
  */
@@ -40,6 +44,51 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/** Exit status of a run the sandbox guard refuses (openpete_paths_sandbox_guard);
+ * distinct from 64, a gate harness's SKIP and the card guard's refusal. */
+#define OPENPETE_EXIT_SANDBOX_GUARD 66
+
+/** @brief The sandbox root every per-user location resolves under, or NULL when none is set.
+ *
+ * Latched on the first call from OPENPETE_SANDBOX: its canonical form is
+ * kept, and the directory is made by the first resolver that creates a
+ * directory under it. Under a root the config, state and data
+ * bases are <root>/config, <root>/state and <root>/data on every platform,
+ * the portable layout and the adoption of directories beside the
+ * executable are off, and writers with a working-directory fallback write
+ * nothing instead. A root that does not canonicalize or fit leaves NULL and
+ * makes openpete_paths_sandbox_guard refuse.
+ * @return The canonical root, or NULL. */
+const char* openpete_paths_sandbox(void);
+
+/** @brief Replace the sandbox root for the rest of the process; NULL or "" clears it.
+ *
+ * The layout is re-resolved at the next query. Whether the boot guard is
+ * enforced stays as the environment decided at the latch.
+ * @param root The new root, made by the first resolver that creates under it.
+ * @return 0, or -1 when the root does not canonicalize or fit (no root is
+ *         then set). */
+int openpete_paths_set_sandbox(const char* root);
+
+/** @brief Refuse a run whose OPENPETE_SANDBOX is set while a write path lies in a real per-user or executable-directory location.
+ *
+ * Enforced only when OPENPETE_SANDBOX was set in the environment at the
+ * latch. Tested: the root's config, state and data directories and every
+ * state and data leaf they resolve; the output paths OPENPETE_LOG_FILE,
+ * OPENPETE_HANG_TRACE, OPENPETE_HANG_RAM, OPENPETE_CARD_DIR and
+ * OPENPETE_CONFIG name; and the values of the output flags on the command
+ * line (--log-file, --card-dir, --card1, --card2, --config, --bk2-record,
+ * --screenshot-output, --state-save-output, --ram-dump-output, --record,
+ * --profile-out, --halt-cpu-dump-output, --mods-dir). A real location is
+ * a per-user config, state or data openpete directory (as the environment
+ * names it and, outside Windows, under the account's passwd home) or a
+ * leaf the portable layout writes beside the executable. Each path is
+ * compared after openpete_paths_canonical. The first match is printed.
+ * @param argc The argument count.
+ * @param argv The arguments.
+ * @return 0, or OPENPETE_EXIT_SANDBOX_GUARD. */
+int openpete_paths_sandbox_guard(int argc, char** argv);
 
 /** @brief Path of the running executable.
  *
@@ -98,8 +147,8 @@ void openpete_paths_set_portable(int tri);
 
 /** @brief The resolved layout: 1 portable, 0 user.
  *
- * The openpete_paths_set_portable preference, else the platform default,
- * degraded to 0 when the exe directory cannot be located or is not writable.
+ * 0 under a sandbox. Otherwise the openpete_paths_set_portable preference,
+ * else the platform default, degraded to 0 when the exe directory cannot be located or is not writable.
  * The result is cached until the next openpete_paths_set_portable, so the
  * degrade warning prints once per resolution.
  * @return 1 for the portable layout, 0 for the user layout. */
@@ -135,12 +184,12 @@ int openpete_paths_user_config_dir(char* out, size_t cap, int create);
  * @return 0 on success, -1 when no base resolves or the path does not fit. */
 int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create);
 
-/** @brief Name a leaf under the per-user state directory, whatever the layout, creating nothing.
+/** @brief Name a leaf under the per-user state directory, whatever the layout or sandbox, creating nothing.
  *
  * <leaf> under the openpete directory in the per-user state base
  * (%LOCALAPPDATA% on Windows, $XDG_STATE_HOME or ~/.local/state
  * elsewhere), the directory openpete_paths_state_dir returns outside the
- * portable layout.
+ * portable layout and the sandbox.
  * @param leaf The leaf ("cards").
  * @param out Receives the path.
  * @param cap Capacity of @p out.

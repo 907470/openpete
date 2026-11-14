@@ -13,7 +13,7 @@ over this checkout and requires it clean.
 Run: python3 scripts/fences/tests/test_wslenv_guard.py
 
 The fixtures are source text handed to the fence; nothing here launches a
-game (input-lock-guard: no-launch).
+game (input-lock-guard: no-launch, sandbox-guard: no-launch).
 """
 import os
 import sys

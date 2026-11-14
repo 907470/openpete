@@ -72,6 +72,8 @@ used; OPENPETE_RELEASE_ARCHIVE_DIR names the archive when --archive is
 absent.
 
 Run: python3 tests/harness/test_bugreport.py (exit 0 = every case passes).
+The game binary is named in expected output and never started
+(sandbox-guard: no-launch).
 """
 import hashlib
 import importlib.util

@@ -23,6 +23,7 @@
   #include <direct.h>
   #define rmdir_quiet(p) ((void)_rmdir(p))
 #else
+  #include <sys/stat.h>
   #include <unistd.h>
   #define rmdir_quiet(p) ((void)rmdir(p))
 #endif
@@ -843,6 +844,104 @@ static void case_portable_layout(void) {
           "dropping the directive must restore the platform default");
 }
 
+/* Set var to val, or unset it when val is NULL. */
+static void put_env(const char *var, const char *val) {
+#ifdef _WIN32
+    _putenv_s(var, val ? val : "");
+#else
+    if (val) setenv(var, val, 1);
+    else unsetenv(var);
+#endif
+}
+
+/* Make a directory, an existing one left as it is. */
+static void mkdir_quiet(const char *p) {
+#ifdef _WIN32
+    (void)_mkdir(p);
+#else
+    (void)mkdir(p, 0755);
+#endif
+}
+
+/* OPENPETE_SANDBOX moves every per-user class under the root, turns the
+ * portable layout off, leaves the real-location query real, and the boot
+ * guard refuses a root or an output path inside a real location. The real
+ * per-user state base is pointed at a scratch directory first, so nothing
+ * here touches the account's own directories. Runs before any other case:
+ * the root latches at the first paths query. */
+static void case_sandbox_layout(void) {
+    g_case = "sandbox";
+    const char *tmp = getenv("TMPDIR");
+    char base[512], root[600], fake[600], fake_op[640], dir[1100], p[1200];
+    snprintf(base, sizeof base, "%s/openpete-sandbox-test-%lld",
+             (tmp && *tmp) ? tmp : "/tmp", openpete_process_id());
+    snprintf(root, sizeof root, "%s/root", base);
+    snprintf(fake, sizeof fake, "%s/real-state", base);
+    snprintf(fake_op, sizeof fake_op, "%s/openpete", fake);
+    mkdir_quiet(base);
+    mkdir_quiet(fake);
+    mkdir_quiet(fake_op);
+    char saved[2][1024];
+    const char *const saved_var[2] = { "XDG_STATE_HOME", "LOCALAPPDATA" };
+    for (int i = 0; i < 2; i++) {
+        const char *v = getenv(saved_var[i]);
+        snprintf(saved[i], sizeof saved[i], "%s", v ? v : "");
+    }
+    put_env("XDG_STATE_HOME", fake);
+    put_env("LOCALAPPDATA", fake);
+    put_env("OPENPETE_SANDBOX", root);
+
+    CHECK(openpete_paths_sandbox() != NULL, "OPENPETE_SANDBOX must latch a root");
+    CHECK(openpete_paths_portable() == 0, "the sandbox must turn the portable layout off");
+    CHECK(openpete_paths_state_dir("logs", dir, sizeof dir, 0) == 0 &&
+          openpete_paths_within(dir, root), "logs must resolve under the root, got %s", dir);
+    snprintf(p, sizeof p, "%s/state", root);
+    CHECK(openpete_paths_within(dir, p), "state must be <root>/state, got %s", dir);
+    CHECK(openpete_paths_data_dir("bugreports", dir, sizeof dir, 0) == 0 &&
+          openpete_paths_within(dir, root), "bugreports must resolve under the root, got %s", dir);
+    snprintf(p, sizeof p, "%s/data", root);
+    CHECK(openpete_paths_within(dir, p), "data must be <root>/data, got %s", dir);
+    CHECK(openpete_paths_user_config_dir(dir, sizeof dir, 0) == 0, "config must resolve");
+    snprintf(p, sizeof p, "%s/config", root);
+    CHECK(openpete_paths_within(dir, p), "config must be <root>/config, got %s", dir);
+    CHECK(openpete_paths_user_state_dir("cards", dir, sizeof dir) == 0 &&
+          openpete_paths_within(dir, fake), "the real-location query must stay real, got %s", dir);
+
+    char *clean[] = { (char *)"openpete", (char *)"--headless", NULL };
+    CHECK(openpete_paths_sandbox_guard(2, clean) == 0, "a root outside real locations must pass");
+    snprintf(p, sizeof p, "%s/logs/x.log", fake_op);
+    char *logflag[] = { (char *)"openpete", (char *)"--log-file", p, NULL };
+    CHECK(openpete_paths_sandbox_guard(3, logflag) == OPENPETE_EXIT_SANDBOX_GUARD,
+          "--log-file inside the real state directory must be refused");
+    char eq[1300];
+    snprintf(eq, sizeof eq, "--card1=%s/cards/card1.mcr", fake_op);
+    char *cardflag[] = { (char *)"openpete", eq, NULL };
+    CHECK(openpete_paths_sandbox_guard(2, cardflag) == OPENPETE_EXIT_SANDBOX_GUARD,
+          "--card1=<real> must be refused");
+    put_env("OPENPETE_HANG_TRACE", p);
+    CHECK(openpete_paths_sandbox_guard(2, clean) == OPENPETE_EXIT_SANDBOX_GUARD,
+          "OPENPETE_HANG_TRACE inside the real state directory must be refused");
+    put_env("OPENPETE_HANG_TRACE", NULL);
+
+    /* A root inside the real state directory: every leaf lands there. */
+    snprintf(p, sizeof p, "%s/decoy", fake_op);
+    CHECK(openpete_paths_set_sandbox(p) == 0, "a decoy root must be taken");
+    CHECK(openpete_paths_sandbox_guard(2, clean) == OPENPETE_EXIT_SANDBOX_GUARD,
+          "a root inside a real location must be refused");
+    rmdir_quiet(p);
+
+    CHECK(openpete_paths_set_sandbox(NULL) == 0 && openpete_paths_sandbox() == NULL,
+          "clearing the sandbox must leave no root");
+    CHECK(openpete_paths_sandbox_guard(2, clean) == 0, "no root, no refusal");
+
+    put_env("OPENPETE_SANDBOX", NULL);
+    for (int i = 0; i < 2; i++) put_env(saved_var[i], saved[i][0] ? saved[i] : NULL);
+    rmdir_quiet(root);
+    rmdir_quiet(fake_op);
+    rmdir_quiet(fake);
+    rmdir_quiet(base);
+}
+
 /* The game-neutral stage writes nothing: its [env] winners are readable
  * through openpete_config_env and absent from the process, and the game
  * scope is not read. The full stage after it writes the environment once. */
@@ -971,6 +1070,7 @@ int main(void) {
      * back through. Only the names these cases actually use. */
     install_fake_key_names();
 
+    case_sandbox_layout();
     case_spelling_mirror();
     case_specificity_beats_notation();
     case_cross_spelling_inversion();

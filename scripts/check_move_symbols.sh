@@ -41,6 +41,7 @@ RECORD=${OPENPETE_MOVE_SYMBOLS_RECORD:-$BUILD_DIR/move_symbols.record}
 TAG=${GAME//-/}
 
 CORE_LIB=$BUILD_DIR/core/libopenpete_core.a
+# Read with nm, never started (sandbox-guard: no-launch).
 EXE=$BUILD_DIR/openpete
 MODULE_DIR=$BUILD_DIR/games/$GAME/CMakeFiles/${TAG}_recomp_module.dir
 

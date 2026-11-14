@@ -103,7 +103,7 @@ while IFS= read -r line; do
     last="${vbls[${#vbls[@]}-1]}"
     di="$OUT/$tag-inter" dc="$OUT/$tag-canon"
     mkdir -p "$di" "$dc"
-    find "$di" "$dc" -maxdepth 1 -name '*.png' -delete
+    find "${di:?}" "${dc:?}" -maxdepth 1 -name '*.png' -delete
     PG_CAPTURE_TIMEOUT=900
     PG_CAPTURE_ENV=(OPENPETE_LATE_TRACE="$((lo - 6)):$((hi + 4))"
                     OPENPETE_INTERMEDIATE_PRE_ALPHA=0,0.5 OPENPETE_INTERMEDIATE_ALPHA=1)

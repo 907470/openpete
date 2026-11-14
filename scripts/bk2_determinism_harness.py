@@ -30,6 +30,12 @@ from pathlib import Path
 os.environ.setdefault("OPENPETE_VIBRATION", "0")
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+import hostenv  # noqa: E402
+
+# Every run writes under a sandbox root, never the player's directories.
+hostenv.sandbox()
+
 EXE  = ROOT / "build" / "linux-release" / "openpete"
 DISC = ROOT / "games" / "spyro-1" / "spyro-1" / "build" / "SCUS-94228.cue"
 BK2  = ROOT / "games" / "spyro-1" / "bk2" / "frame-time-test.bk2"

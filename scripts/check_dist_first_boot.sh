@@ -55,7 +55,9 @@
 #
 # Both variants run against a scratch HOME/XDG, because a fresh install
 # writes to the per-user directories (openpete_paths) - the gate must not
-# read or write the developer's real ones.
+# read or write the developer's real ones. The gate tests that default
+# per-user layout itself, which OPENPETE_SANDBOX would replace
+# (sandbox-guard: intentional the default layout under a scratch HOME is what this gate checks).
 #
 # The glibc floor is asserted here too: a release-base artifact
 # must not require symbols newer than the floor, or it fails to

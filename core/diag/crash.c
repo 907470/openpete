@@ -565,10 +565,31 @@ void openpete_crash_thread_attach(void) {
     SetThreadStackGuarantee(&guarantee);
 }
 
+/** @brief Write the minidump's directory: the open log file's directory, else the logs state directory, created.
+ *
+ * An explicit log file (OPENPETE_LOG_FILE, --log-file) keeps the dump
+ * beside it; the logs state directory resolves under a sandbox's root.
+ * @param dir Receives the directory.
+ * @param cap Capacity of @p dir.
+ * @return 0, or -1 when neither resolves. */
+static int crash_dump_dir(char* dir, size_t cap) {
+    const char* log = openpete_log_file_path();
+    if (log && *log) {
+        const char* slash = strrchr(log, '\\');
+        const char* fwd = strrchr(log, '/');
+        if (fwd && (!slash || fwd > slash)) slash = fwd;
+        if (slash && (size_t)(slash - log) < cap) {
+            snprintf(dir, cap, "%.*s", (int)(slash - log), log);
+            return 0;
+        }
+    }
+    return openpete_paths_state_dir("logs", dir, cap, 1);
+}
+
 void openpete_psx_install_crash_handler(void) {
     g_main_tid = GetCurrentThreadId();
     char dir[1024];
-    if (openpete_paths_state_dir("logs", dir, sizeof dir, 1) == 0) {
+    if (crash_dump_dir(dir, sizeof dir) == 0) {
         char path[1100];
         snprintf(path, sizeof path, "%s\\openpete-crash.dmp", dir);
         if (!MultiByteToWideChar(CP_ACP, 0, path, -1, s_dump_path,

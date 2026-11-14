@@ -42,7 +42,8 @@
 # by directory: the presets fix binaryDir to build/<preset>, which stays the
 # host's. The basename keeps the linux-release fence checks running; CMake
 # hands them this directory's compile database. HOME and the XDG
-# directories sit under build/container/home. Every form but `shell` sets
+# directories sit under build/container/home (sandbox-guard: intentional
+# the container's HOME and XDG directories under build/container/home are its sandbox). Every form but `shell` sets
 # OPENPETE_NO_COMMITS=1 (no hook arming needed) and every run sets
 # OPENPETE_VIBRATION=0. Runs are headless.
 #

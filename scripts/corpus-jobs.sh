@@ -34,8 +34,13 @@ CORPUS_JOBS="${CORPUS_JOBS:-$(( $(nproc) * 3 / 8 ))}"
 [[ "$CORPUS_JOBS" -lt 1 ]] && CORPUS_JOBS=1
 export LP_NUM_THREADS="${LP_NUM_THREADS:-$(( ($(nproc) + CORPUS_JOBS - 1) / CORPUS_JOBS ))}"
 
+# Every capture runs in a sandbox root (scripts/lib/sandbox.sh), removed with
+# the status file on exit.
+# shellcheck source=scripts/lib/sandbox.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/sandbox.sh"
+
 _cj_status="$(mktemp -t corpus-jobs.XXXXXX)"
-trap 'rm -f "$_cj_status"' EXIT
+trap 'rm -f "${_cj_status:?}"; op_sandbox_cleanup' EXIT
 
 # Block until a slot frees. `wait -n` returns as soon as ANY child exits.
 _cj_slot() {

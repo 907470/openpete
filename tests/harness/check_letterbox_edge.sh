@@ -29,6 +29,8 @@ set -uo pipefail
 
 export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/../.."
+# shellcheck source=scripts/lib/sandbox.sh
+source scripts/lib/sandbox.sh
 
 OUT="build/letterbox-edge"
 ROWS=()

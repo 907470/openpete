@@ -866,6 +866,12 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME wslenv_guard_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_wslenv_guard.py)
     set_tests_properties(wslenv_guard_selftest PROPERTIES LABELS "fence")
+    # The sandbox fence's own tests: a launch without the sandbox library or
+    # OPENPETE_SANDBOX refused in shell and Python, the providers, helpers and
+    # markers passing, the provider closure, and the checkout clean.
+    add_test(NAME sandbox_guard_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_sandbox_guard.py)
+    set_tests_properties(sandbox_guard_selftest PROPERTIES LABELS "fence")
     # The recomp identity pair of the blessed manifests: the psx.map symbol
     # digest is invariant under the build path, address width and section
     # order; the generated-tree digest ignores stale files and refuses a
@@ -1724,6 +1730,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         LABELS "slow;input"
         RESOURCE_LOCK openpete_game
         TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Sandbox gate. Runs every writer a session reaches (log, pipeline
+    # cache, savestate, player screenshot, settings save, default bk2, bug
+    # bundle, hang files, a replay) under OPENPETE_SANDBOX and fails when a
+    # per-user listing changes or a file is missing under the run's root;
+    # its controls are a root inside a per-user directory (exit 66, nothing
+    # written) and a run without a root (the listing changes).
+    add_test(NAME sandbox
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_sandbox.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(sandbox PROPERTIES
+        LABELS "slow;tooling"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1200
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

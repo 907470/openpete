@@ -103,12 +103,6 @@ void openpete_bugreport_replay_tick(unsigned frame, int vbl, uint64_t total, con
  *         OPENPETE_BUGREPORT_REPLAY_REFUSED. */
 int openpete_bugreport_replay_exit(int rc);
 
-/** @brief Return the directory a bundle written during a replay goes to: the replay's scratch directory.
- *
- * @return The scratch directory while a replay runs, else NULL (the
- *         bugreports data directory). */
-const char* openpete_bugreport_replay_output_dir(void);
-
 #ifdef __cplusplus
 }
 #endif

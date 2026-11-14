@@ -127,6 +127,63 @@ Defined in `core/include/openpete.h`.
 | 1 | Panic, crash, or watchdog timeout. |
 | 2 | State divergence against the golden - the oracle gate's verdict. |
 | 3 | Setup error: unknown flag, disc not found. |
+| 64 | The card guard refused a card path in the per-user card directory (`OPENPETE_CARD_GUARD`); a gate harness's SKIP. |
+| 66 | The sandbox guard refused a write path outside the `OPENPETE_SANDBOX` root (`core/include/openpete_paths.h`). |
+
+## The sandbox
+
+A run writes into the per-user directories by default: it rotates
+`openpete.log`, writes the hang watchdog's `hang-trace.bin` and
+`hang-ram.bin`, puts a bug-report bundle among the player's own, saves the
+settings menu's changes into `openpete.toml`, fills the Vulkan pipeline
+cache, and reads the player's config. A scripted run sets
+`OPENPETE_SANDBOX=<root>`, under which `core/config/paths.c` resolves the
+config, state and data directories to `<root>/config/openpete`,
+`<root>/state/openpete` and `<root>/data/openpete` on every platform: logs
+and hang files in `state/openpete/logs`, cards, savestates and the pipeline
+cache in `state/openpete`, bundles, screenshots, recordings, the library
+and modules in `data/openpete`, the settings file and the overlay's
+`openpete-devui.ini` in `config/openpete`. The portable layout and the
+adoption of directories beside the executable are off, and the default
+screenshot, `--bk2-record` and hang-file paths never fall back to the
+working directory.
+
+The game refuses to start, exit 66, when the root, a state or data leaf it
+resolves, or an output path named by `OPENPETE_LOG_FILE`,
+`OPENPETE_HANG_TRACE`, `OPENPETE_HANG_RAM`, `OPENPETE_CARD_DIR`,
+`OPENPETE_CONFIG` or an output flag (`--log-file`, `--card1`, `--config`,
+`--bk2-record`, `--screenshot-output` and the rest
+`openpete_paths_sandbox_guard` lists) lies in a per-user openpete
+directory (as XDG or `%APPDATA%`/`%LOCALAPPDATA%` names it and, outside
+Windows, under the account's passwd home) or in a leaf the portable layout
+writes beside the executable. The guard runs before anything is written,
+and only when the variable was set by the caller; a bug-report replay sets
+its own root, `<scratch>/sandbox`.
+
+Harnesses take the root from `scripts/lib/sandbox.sh` (sourced; also
+through `scratch_cards.sh`, `presentation-game.sh`, `game.sh` and
+`corpus-jobs.sh`) or `hostenv.sandbox()` in Python: a fresh
+`$TMPDIR/openpete-harness-sandbox/<pid>.<random>` removed at exit (another
+parent with `OPENPETE_SANDBOX_PARENT`), its `state/openpete/cache` a link to
+one shared pipeline cache, `~/.cache/openpete-harness/cache`
+(`OPENPETE_SANDBOX_CACHE`), so runs stay warm. `op_sandbox_run_root` and
+`hostenv.sandbox_run_root()` make a fresh root per run; `pg_capture` uses
+one for every run. `scripts/lib/wslenv.sh` and `hostenv.child_env` forward
+the root to a Windows exe as a Windows path; a root on a Windows drive
+gets a plain cache directory instead of the link.
+`scripts/fences/sandbox_guard.py` (in the `openpete_launch_guards` build
+target) refuses a script that launches the game without the library or the
+variable; a script that needs the player's real state or a fresh-user
+boot carries `sandbox-guard: intentional <reason>`, one that never starts
+the game `sandbox-guard: no-launch`.
+
+`tests/harness/check_sandbox.sh` proves it: it lists the per-user
+directories (path, mtime, size) before and after runs that write a log,
+the pipeline cache, a savestate, a player screenshot, a settings save, a
+default `--bk2-record`, a bug bundle, the hang watchdog's files and a
+replay, fails on a change, and requires each file under the run's root.
+Its controls: a root inside a per-user directory exits 66 with nothing
+written, and a run without a root changes the listing.
 
 ## Artifacts, not interaction
 

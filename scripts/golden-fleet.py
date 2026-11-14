@@ -2357,7 +2357,7 @@ def binary_rels():
 
     The tree is a shared-linkage Linux build: one executable, `openpete` at its
     root, with each game's <tag>-recomp.so beside it."""
-    # rumble-guard: no-launch  input-lock-guard: no-launch  (the path is hashed and synced; the
+    # rumble-guard: no-launch  input-lock-guard: no-launch  sandbox-guard: no-launch  (the path is hashed and synced; the
     # coordinator never runs the binary, the capture image's supervisor does)
     return [f"{BUILD_TREE}/openpete"] + [f"{BUILD_TREE}/{g.replace('-', '')}-recomp.so" for g in GAMES]
 

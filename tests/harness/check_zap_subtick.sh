@@ -110,7 +110,7 @@ run_alpha() {
     local alpha="$1" tag="$2" mid="$3" flim="$4" sfx="${5:-}"
     local dir="$OUT/$tag-a$alpha$sfx" log="$OUT/$tag-a$alpha$sfx.log"
     mkdir -p "$dir"
-    find "$dir" -maxdepth 1 -name '*.png' -delete
+    find "${dir:?}" -maxdepth 1 -name '*.png' -delete
     PG_CAPTURE_ENV=(OPENPETE_ZAP_TRACE=1 OPENPETE_INTERMEDIATE_ALPHA="$alpha")
     [[ -n "$sfx" ]] && PG_CAPTURE_ENV+=(OPENPETE_ZAP_WIDTH=0)
     PG_CAPTURE_TIMEOUT=900

@@ -27,9 +27,11 @@
 #
 # Exit 0 PASS, 1 FAIL, 64 SKIP (no binary or no disc).
 #
-# HOME and XDG_CONFIG_HOME are redirected into the scratch tree: the whole
-# point is a per-user file, and a harness that wrote into the developer's own
-# ~/.config would both pollute it and read whatever was already there.
+# The per-user config directory is the scratch tree's sandbox root
+# (OPENPETE_SANDBOX=$OUT/sandbox, config under sandbox/config/openpete): the
+# whole point is a per-user file, and a harness that wrote into the
+# developer's own ~/.config would both pollute it and read whatever was
+# already there.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -52,16 +54,16 @@ OUT="${TMPDIR:-/tmp}/openpete_controllerdb"
 [[ -f "$DISC" ]] || { echo "[controllerdb] no disc at $DISC - SKIP" >&2; exit 64; }
 
 rm -rf "$OUT"                       # never read a previous run's logs
-mkdir -p "$OUT/home/.config/openpete"
+mkdir -p "$OUT/sandbox/config/openpete"
 
-USERDB="$OUT/home/.config/openpete/gamecontrollerdb.txt"
+USERDB="$OUT/sandbox/config/openpete/gamecontrollerdb.txt"
 
 run() {   # run <tag> [env assignments...]
     local tag="$1"; shift
     # pg_capture deletes the log before the run, so a leg can never resolve
     # its mapping out of the previous leg's log and silences
     # vibration for the run.
-    local -a PG_CAPTURE_ENV=(HOME="$OUT/home" XDG_CONFIG_HOME="$OUT/home/.config"
+    local -a PG_CAPTURE_ENV=(HOME="$OUT/home" OPENPETE_SANDBOX="$OUT/sandbox"
                              OPENPETE_INPUT_VGAMEPAD=1 "$@")
     pg_capture "$OUT/$tag.log" "" -- --mute 1 --frame-limit "$FRAMES"
     [[ -s "$OUT/$tag.log" ]] || { echo "[controllerdb] $tag produced no log" >&2; return 1; }

@@ -442,10 +442,11 @@ static int arg_is_disc_image(const char* a) {
 /** @brief The default --bk2-record path, "<bk2 dir>/<YYYYmmdd-HHMMSS>.bk2", creating the directory.
  *
  * The bk2 directory is the "bk2" data directory from openpete_paths_data_dir,
- * or "bk2" relative to the working directory when none resolves. A failed
- * directory creation is logged and the path is still returned. Returns a
- * heap buffer kept for the process lifetime, or NULL when allocation
- * fails. */
+ * or "bk2" relative to the working directory when none resolves outside a
+ * sandbox (openpete_paths_sandbox). A failed directory creation is logged
+ * and the path is still returned. Returns a heap buffer kept for the
+ * process lifetime, or NULL when allocation fails or no directory resolves
+ * under a sandbox. */
 static char* resolve_default_bk2_record_path(void) {
     char stamp[24];
     time_t now = time(NULL);
@@ -466,6 +467,9 @@ static char* resolve_default_bk2_record_path(void) {
         dir = (char*)malloc(strlen(resolved) + 1);
         if (!dir) return NULL;
         strcpy(dir, resolved);
+    } else if (openpete_paths_sandbox()) {
+        fprintf(stderr, "openpete: --bk2-record: no bk2 directory resolves under the sandbox root\n");
+        return NULL;
     } else {
         dir = (char*)malloc(4);  /* "bk2" + NUL - relative to CWD */
         if (!dir) return NULL;

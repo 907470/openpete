@@ -59,6 +59,7 @@ int  openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win);
  * per-game file is only read and stays in place. Runs headless too: it
  * touches files only. openpete_devui_create calls it before loading the
  * ini; the session start calls it so a headless run migrates as well.
+ * Under a sandbox (openpete_paths_sandbox) nothing is copied.
  * @return 1 when a file was copied, 0 when nothing was due, -1 when the
  *         copy failed. */
 int  openpete_devui_seed_ini(void);

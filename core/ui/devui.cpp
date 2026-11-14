@@ -47,6 +47,7 @@ extern "C" {
 #include "openpete_menu.h"
 #include "openpete_mods.h"
 #include "openpete_mod_ui.h"
+#include "openpete_paths.h"
 #include "openpete_settings_save.h"
 #include "openpete_rebind.h"
 
@@ -105,12 +106,23 @@ int openpete_devui_inject_mouse_requested(float *x, float *y)
     return 1;
 }
 
-/** @brief Format the overlay's ini path, openpete-devui.ini beside the executable.
+/** @brief Format the overlay's ini path: openpete-devui.ini beside the executable, or in the config directory under a sandbox.
  *
+ * Under a sandbox (openpete_paths_sandbox) the file is
+ * <root>/config/openpete/openpete-devui.ini, the directory made; when that
+ * does not resolve the path is empty and no ini is loaded or written.
  * @param out Receives the path.
  * @param cap Capacity of @p out. */
 static void devui_ini_path(char *out, size_t cap)
 {
+    if (openpete_paths_sandbox()) {
+        char dir[1024];
+        if (openpete_paths_user_config_dir(dir, sizeof dir, 1) == 0)
+            openpete_paths_join(out, cap, dir, "openpete-devui.ini");
+        else if (cap)
+            out[0] = '\0';
+        return;
+    }
     const char *base = SDL_GetBasePath();
     snprintf(out, cap, "%sopenpete-devui.ini", base ? base : "");
 }
@@ -120,6 +132,7 @@ int openpete_devui_seed_ini(void)
     static bool s_done = false;
     if (s_done) return 0;
     s_done = true;
+    if (openpete_paths_sandbox()) return 0;  /* per-game inis live beside the exe */
     char shared[1024];
     devui_ini_path(shared, sizeof shared);
     SDL_PathInfo info;
@@ -167,8 +180,8 @@ static void devui_save_ini(bool force)
 /** @brief Seed and load the overlay ini once per context.
  *
  * UI state (window position, collapse) lives in one file beside the
- * executable, not the working directory, shared by every game the
- * executable runs and by the launcher. */
+ * executable (in the config directory under a sandbox), not the working
+ * directory, shared by every game the executable runs and by the launcher. */
 static void devui_load_ini(void)
 {
     if (s_ini_path[0]) return;

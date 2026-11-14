@@ -12,6 +12,7 @@
 #include "game_pick.h"
 #include "launcher_assets.h"
 #include "openpete_bugreport_replay.h"
+#include "openpete_paths.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -142,7 +143,9 @@ static void install_dump() {
  *
  * stdio is reconnected first, before any output and whichever game runs.
  * A --bug-report-replay command line is first rebuilt from the bundle
- * (openpete_bugreport_replay_prepare); a refused bundle exits 64.
+ * (openpete_bugreport_replay_prepare); a refused bundle exits 64. A run
+ * whose write paths leave the OPENPETE_SANDBOX root for a real per-user
+ * location exits OPENPETE_EXIT_SANDBOX_GUARD (openpete_paths_sandbox_guard).
  * The game is the one --disc names, else the launcher's pick over every
  * linked game's library entries (game_pick.h), which installs each game
  * whose jobs it runs; the final install here makes the picked game the
@@ -156,9 +159,13 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "openpete: this executable links no game\n");
         return 1;
     }
-    /* A bug-report replay rebuilds the command line from the bundle before
-     * the game is chosen from it. */
+    /* The sandbox root is latched from the environment before a replay
+     * replaces it, so the guard is enforced exactly when the caller set
+     * OPENPETE_SANDBOX. A bug-report replay rebuilds the command line from
+     * the bundle before the game is chosen from it. */
+    (void)openpete_paths_sandbox();
     if (const int rrc = openpete_bugreport_replay_prepare(&argc, &argv)) return rrc;
+    if (const int src = openpete_paths_sandbox_guard(argc, argv)) return src;
     const openpete_game_build_t* b = openpete_game_build_named(argc, argv);
     if (!b) {
         int rc = 0;

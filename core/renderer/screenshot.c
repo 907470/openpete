@@ -134,10 +134,17 @@ int openpete_screenshot_user_path(char* out, size_t cap) {
      * exe in a portable install, under the per-user data directory otherwise -
      * which is also where a read-only install medium (an AppImage mount,
      * Program Files) lands. A relative path is the last resort, so a run whose
-     * exe location cannot be determined still saves something. */
+     * exe location cannot be determined still saves something; under a
+     * sandbox the shot is refused instead, since the working directory lies
+     * outside the root. */
     char dir[1024];
-    if (openpete_paths_data_dir("screenshots", dir, sizeof dir, 0) != 0)
+    if (openpete_paths_data_dir("screenshots", dir, sizeof dir, 0) != 0) {
+        if (openpete_paths_sandbox()) {
+            OPL_ERROR_F("screenshot", "%s", "no screenshots directory resolves under the sandbox root");
+            return -1;
+        }
         snprintf(dir, sizeof dir, "screenshots");
+    }
     if (!SDL_CreateDirectory(dir)) {  /* mkdir -p; true if it already exists */
         OPL_ERROR_F("screenshot", "could not create %s: %s", dir, SDL_GetError());
         return -1;

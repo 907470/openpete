@@ -13,7 +13,7 @@ Run: python3 scripts/fences/tests/test_rumble_guard.py
 
 The fixtures are source text handed to the fences; nothing here launches a
 game (rumble-guard: no-launch, input-lock-guard: no-launch,
-wslenv-guard: no-launch).
+wslenv-guard: no-launch, sandbox-guard: no-launch).
 """
 import os
 import sys

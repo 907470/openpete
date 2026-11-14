@@ -44,9 +44,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../presentation-game.sh"
 # from PG_RUN_ARGS, ahead of the caller's arguments so the caller can override
 # them.
 #
-# Memory cards: the run's default card directory is a fresh directory inside
-# the scratch one scripts/lib/scratch_cards.sh exports, deleted after the
-# run; the player's cards are never opened.
+# Sandbox: each run's OPENPETE_SANDBOX is a fresh root inside the one
+# scripts/lib/sandbox.sh exports, deleted after the run; the player's cards,
+# logs and other files are never opened or written.
 #
 # Optional, set by the caller before the call:
 #   PG_CAPTURE_ENV      array of KEY=VALUE assignments for the run
@@ -65,13 +65,15 @@ pg_capture() {
     rm -f "$log"
     [[ ${#out_arr[@]} -gt 0 ]] && rm -f "${out_arr[@]}"
 
-    # Each run boots on its own fresh pair of cards, a directory under the
-    # scratch card directory removed after the run, so no run reads what an
-    # earlier one saved. An OPENPETE_CARD_DIR in PG_CAPTURE_ENV comes later
-    # on the env line and wins; a --card1/--card2/--card-dir argument beats both.
-    local cards
-    cards="$(mktemp -d "$OPENPETE_CARD_DIR/run.XXXXXX")" || return 1
-    local -a pre=(env OPENPETE_VIBRATION=0 "OPENPETE_CARD_DIR=$cards")
+    # Each run boots in its own sandbox root under the harness's
+    # (scripts/lib/sandbox.sh), removed after the run, so no run reads the
+    # cards, savestates or settings an earlier one wrote. An OPENPETE_SANDBOX
+    # or OPENPETE_CARD_DIR in PG_CAPTURE_ENV comes later on the env line and
+    # wins; a --card1/--card2/--card-dir argument beats both.
+    local run_root
+    run_root="$(op_sandbox_run_root)" || return 1
+    local -a pre=(env OPENPETE_VIBRATION=0 "OPENPETE_SANDBOX=$run_root"
+                  "OPENPETE_CARD_DIR=$run_root/cards")
     [[ -n "${PG_CAPTURE_ENV+set}" ]] && pre+=("${PG_CAPTURE_ENV[@]}")
     [[ -n "${PG_CAPTURE_TIMEOUT:-}" && "${PG_CAPTURE_TIMEOUT:-0}" != 0 ]] &&
         pre+=(timeout -k "$OP_OWN_GRACE" "$PG_CAPTURE_TIMEOUT")
@@ -90,7 +92,7 @@ pg_capture() {
         rc=$?
     fi
 
-    rm -rf "${cards:?}"
+    rm -rf "${run_root:?}"
 
     local o
     for o in "${out_arr[@]}"; do

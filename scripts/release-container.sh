@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # scripts/release-container.sh - build and package the Linux release
-# inside the Debian 11 base.
+# inside the Debian 11 base. The surface dumps it runs execute in the
+# container, whose HOME is not the developer's (sandbox-guard: intentional
+# the release build's surface dump writes no per-user file and runs in the container).
 #
 # The symbol floor of the shipped binary is set by the machine that
 # compiles it, so the release build is not a dev-box build with different

@@ -1074,7 +1074,11 @@ def replay_plan(b, exe=None, disc=None, arch=None, work=None):
     disc = Path(disc) if disc else default_disc(man)
     work = (Path(work) if work else Path("bugreport-replay") / b.path.stem).resolve()
     hit = None if exe else find_archived(man, arch)
-    env = {}
+    # The replay unpacks into its own scratch directory under the work
+    # directory and runs inside a sandbox root there, so neither touches the
+    # developer's per-user directories.
+    env = {"OPENPETE_SANDBOX": str(work / "sandbox"),
+           "OPENPETE_BUGREPORT_REPLAY_DIR": str(work / "scratch")}
     if man.get("module_march"):
         env["OPENPETE_MODULE_MARCH"] = str(man["module_march"])
     plan = {"env": env, "disc": disc, "work": work, "archive": arch,

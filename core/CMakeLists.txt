@@ -824,11 +824,15 @@ if(NOT CMAKE_HOST_WIN32)
         # An unattended launcher that can open a window locks host input, so
         # host keyboard, mouse or pad input cannot steer or end the run.
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/input_lock_guard.py ${CMAKE_SOURCE_DIR}
+        # A launcher runs the game inside a sandbox root (OPENPETE_SANDBOX via
+        # scripts/lib/sandbox.sh or hostenv.sandbox), so no run writes into
+        # the player's per-user directories.
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/sandbox_guard.py ${CMAKE_SOURCE_DIR}
         # The keymap's KM_LEVEL / KM_DELTA flags against their consumer sites:
         # the parser enforces them for mouse sources and the unit test cannot
         # see the consumers.
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/keymap_flags.py ${CMAKE_SOURCE_DIR}
-        COMMENT "launcher fences: silence the pad, make env knobs cross into WSL, keymap flags match consumers"
+        COMMENT "launcher fences: silence the pad, make env knobs cross into WSL, lock host input, sandbox the run, keymap flags match consumers"
         VERBATIM)
 
     # Cognitive-complexity ratchet. The fence acts in a git pre-commit hook,

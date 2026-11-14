@@ -472,13 +472,17 @@ path is not in the bundle, and a replay without it is refused with
    version differs), `cross-regions` (the region tables do not share every
    name; totals are then not compared).
 5. The replay writes nothing into the user's directories. After
-   `env.txt` it sets `OPENPETE_LOG_FILE` to `<scratch>/openpete.log` and
-   `OPENPETE_HANG_TRACE`, `OPENPETE_HANG_RAM` to `<scratch>/hang/`
-   (a tester's values of these are never used; `OPENPETE_BUGREPORT_REPLAY_ENV`
-   may still name the two hang variables, and the developer's `--log-file`
-   wins), and a bundle the replay writes (its own fatal exit, a key press)
-   goes to `<scratch>/bugreports/`. The `bug-report-replay: outputs under`
-   line names the directory.
+   `env.txt` it makes `<scratch>/sandbox` the process's sandbox root
+   (`OPENPETE_SANDBOX`, [unattended runs](unattended-runs.md#the-sandbox)):
+   the log file and the hang watchdog's files go to
+   `<scratch>/sandbox/state/openpete/logs/`, a bundle the replay writes
+   (its own fatal exit, a key press) to
+   `<scratch>/sandbox/data/openpete/bugreports/`, and every other per-user
+   file under the same root. A tester's `OPENPETE_SANDBOX`,
+   `OPENPETE_LOG_FILE`, `OPENPETE_HANG_TRACE` and `OPENPETE_HANG_RAM` are
+   never used; `OPENPETE_BUGREPORT_REPLAY_ENV` may still name the two hang
+   variables, and the developer's `--log-file` wins. The
+   `bug-report-replay: outputs under` line names the root.
 6. The anchor loads at its park site on an empty CD queue, waiting up to
    9000 park waits (`OPENPETE_BUGREPORT_REPLAY_SITE_WAIT`), with the movie
    held until the load commits and the anchor's card images restored at

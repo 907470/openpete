@@ -734,8 +734,9 @@ runner's home directory. `--mute 1` sits before the pass-through flags so a
 forwarded `-- --mute 0` still wins. `OPENPETE_VIBRATION=0` is exported for
 the run (fenced by `scripts/fences/rumble_guard.py`). A recipe without a
 card fixture boots on two freshly formatted cards in a scratch directory
-(`scripts/lib/scratch_cards.sh` exports `OPENPETE_CARD_DIR`), never the
-per-user cards, so a save left there cannot change the verdict.
+(`scripts/lib/scratch_cards.sh` sources `scripts/lib/sandbox.sh`, which
+exports `OPENPETE_SANDBOX` and `OPENPETE_CARD_DIR` under a scratch root),
+never the per-user cards, so a save left there cannot change the verdict.
 
 Anything after `--` is forwarded verbatim to openpete. This is how a
 feature with a game-side producer is proven gameplay-neutral: run openpete

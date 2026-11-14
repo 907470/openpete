@@ -315,7 +315,8 @@ uint16_t openpete_psx_root_counter2(void);
  * openpete_crash.h) and
  * re-raises under the default disposition. On Windows it sets an
  * unhandled-exception filter that writes the report, writes a minidump
- * (openpete-crash.dmp in the logs state directory) and continues the
+ * (openpete-crash.dmp beside the open log file, else in the logs state
+ * directory, which a sandbox puts under its root) and continues the
  * search, and records the calling thread as main for the thread label.
  * The guest registers come from the CPUState passed to
  * openpete_psx_set_diag_cpu. */

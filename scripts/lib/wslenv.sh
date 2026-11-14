@@ -13,8 +13,9 @@
 #
 # WSLENV_ARGS holds the assignments plus the WSLENV entry that makes them
 # actually arrive. OPENPETE_THREAD_ROLE_FATAL, OPENPETE_THREAD_ROLE_REPORT,
-# OPENPETE_CARD_GUARD and OPENPETE_CARD_DIR (translated to its Windows path),
-# when set in the caller's environment, are forwarded too. Safe on native Linux: WSLENV is simply ignored there.
+# OPENPETE_CARD_GUARD, OPENPETE_CARD_DIR and OPENPETE_SANDBOX (both translated
+# to their Windows paths), when set in the caller's environment, are forwarded
+# too. Safe on native Linux: WSLENV is simply ignored there.
 
 wslenv_forward() {
   WSLENV_ARGS=()
@@ -37,6 +38,10 @@ wslenv_forward() {
     names="${names}${names:+:}OPENPETE_CARD_GUARD/w"
   [ -n "${OPENPETE_CARD_DIR:-}" ] && [[ ":$names:" != *":OPENPETE_CARD_DIR/"* ]] &&
     names="${names}${names:+:}OPENPETE_CARD_DIR/wp"
+  # The sandbox root crosses translated, so a Windows exe writes under it and
+  # never into %APPDATA%, %LOCALAPPDATA% or its own directory.
+  [ -n "${OPENPETE_SANDBOX:-}" ] && [[ ":$names:" != *":OPENPETE_SANDBOX/"* ]] &&
+    names="${names}${names:+:}OPENPETE_SANDBOX/wp"
   [ -n "$names" ] && WSLENV_ARGS+=("WSLENV=${WSLENV:+$WSLENV:}${names}")
 }
 

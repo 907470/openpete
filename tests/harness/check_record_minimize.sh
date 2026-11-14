@@ -38,6 +38,7 @@ DISC="$ROOT/games/spyro-2/spyro-2/build/SCUS-94425.cue"
 [[ -f "$DISC" ]] || { echo "check_record_minimize: SKIP: no disc at $DISC"; exit 64; }
 command -v powershell.exe >/dev/null || { echo "check_record_minimize: SKIP: no powershell.exe (not WSL)"; exit 64; }
 
+. "$ROOT/scripts/lib/sandbox.sh"
 . "$ROOT/scripts/lib/wslenv.sh"
 wslenv_forward OPENPETE_VIBRATION=0
 mkdir -p "$OUT"

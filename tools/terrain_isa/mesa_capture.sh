@@ -19,7 +19,9 @@
 #   gpl     GPL libraries + LTO links (default), AFFINE_UV=0
 #   gplaff  the same with --texture-mapping affine (AFFINE_UV=1)
 #   mono    OPENPETE_PIPELINE_LIBRARY=0, monolithic pipelines
-# Writes <out-dir>/drv-<arm>.err (the dump) and .out, both deleted first.
+# Writes <out-dir>/drv-<arm>.err (the dump) and .out, both deleted first; the
+# run's own files (log, pipeline cache) go to <out-dir>/sandbox-<arm>
+# (OPENPETE_SANDBOX).
 set -u
 DRVDBG=${DRVDBG:?set DRVDBG}
 NICE=${NICE:-}
@@ -34,6 +36,7 @@ run() {
     [[ -n "$extra" ]] && read -r -a ex <<<"$extra"
     rm -f "${OUT:?}/drv-$tag.err" "${OUT:?}/drv-$tag.out" "${OUT:?}/shot-$tag-"*.png
     env "${drv[@]}" SDL_VIDEO_DRIVER=offscreen OPENPETE_VIBRATION=0 OPENPETE_COMPILE_POOL=1 \
+        OPENPETE_SANDBOX="$OUT/sandbox-$tag" \
         OPENPETE_SHADER_DIR="$SPV" MESA_SHADER_CACHE_DISABLE=true \
         LD_LIBRARY_PATH="$ROOT/lib" "$@" \
         "${nice[@]}" timeout 1200 "$B/openpete" --game spyro-1 --headless --no-config --disc "$D" \

@@ -267,6 +267,7 @@ static struct {
     int      on;              /* a replay was prepared */
     char     bundle[RP_PATH];
     char     scratch[RP_PATH];
+    char     sandbox[RP_PATH];
     jv_t     man;             /* manifest.json */
     /* What the manifest names. */
     char     game[32];
@@ -798,12 +799,13 @@ static int rp_dev_args(rp_argv_t* a, int argc, char** argv)
  * would write a bundle, set a knob (knobs.txt carries the change and its
  * tick), take extra anchors, dump the ring, exec a handoff or end the run
  * early, the injected host input (the movie carries the
- * pad it produced), and the config file the tiers replace. */
+ * pad it produced), the config file the tiers replace, and the tester's
+ * sandbox root (the replay sets its own). */
 static const char* const k_env_drop[] = {
     "OPENPETE_BUGREPORT_AT", "OPENPETE_BUGREC_ANCHOR_AT", "OPENPETE_BUGREC_DUMP_AT",
     "OPENPETE_BUGREC_DUMP_DIR", "OPENPETE_HANDOFF_AT", "OPENPETE_FRAME_LIMIT", "OPENPETE_CONFIG",
     "OPENPETE_LOG_FILE", "OPENPETE_MOUSE_INJECT", "OPENPETE_MOUSE_INJECT_RAW",
-    "OPENPETE_DEVUI_INJECT_MOUSE", "OPENPETE_BUGREPORT_KNOB_AT",
+    "OPENPETE_DEVUI_INJECT_MOUSE", "OPENPETE_BUGREPORT_KNOB_AT", "OPENPETE_SANDBOX",
 };
 
 /** @brief Report whether a variable is one of k_env_drop's harness triggers. */
@@ -980,25 +982,24 @@ static void rp_env_clear(void)
                 nlost, lost);
 }
 
-/** @brief Point the log file, the hang watchdog's files and the bundle writer at the scratch directory.
+/** @brief Make <scratch>/sandbox the process's sandbox root, so every file the session writes stays in the scratch directory.
  *
- * Set after env.txt, so a tester's OPENPETE_HANG_TRACE or OPENPETE_HANG_RAM
- * never names a path here, and before OPENPETE_BUGREPORT_REPLAY_ENV, so a
- * developer can still forward either. Bundles take the scratch directory
- * through openpete_bugreport_replay_output_dir. */
+ * The log file, the hang watchdog's files, a bundle, savestates, cards,
+ * screenshots and the pipeline cache resolve under the root
+ * (openpete_paths_sandbox), never in the developer's directories. Set
+ * after env.txt, whose OPENPETE_SANDBOX is dropped and whose
+ * OPENPETE_HANG_TRACE and OPENPETE_HANG_RAM are unset here, and before
+ * OPENPETE_BUGREPORT_REPLAY_ENV, so a developer can still forward either. */
 static void rp_env_outputs(void)
 {
-    char d[RP_PATH], p[RP_PATH];
-    rp_join(d, sizeof d, R.scratch, "hang");
-    (void)rp_mkdirs(d);
-    rp_join(p, sizeof p, d, "hang-trace.bin");
-    rp_setenv("OPENPETE_HANG_TRACE", p);
-    rp_join(p, sizeof p, d, "hang-ram.bin");
-    rp_setenv("OPENPETE_HANG_RAM", p);
-    rp_join(p, sizeof p, R.scratch, "openpete.log");
-    rp_setenv("OPENPETE_LOG_FILE", p);
-    fprintf(stderr, "bug-report-replay: outputs under %s: openpete.log (the log file), hang/ (the hang watchdog's "
-            "files), bugreports/ (a bundle the replay writes); none in the user's directories\n", R.scratch);
+    rp_setenv("OPENPETE_HANG_TRACE", NULL);
+    rp_setenv("OPENPETE_HANG_RAM", NULL);
+    rp_join(R.sandbox, sizeof R.sandbox, R.scratch, "sandbox");
+    (void)openpete_paths_set_sandbox(R.sandbox);
+    rp_setenv("OPENPETE_SANDBOX", R.sandbox);
+    fprintf(stderr, "bug-report-replay: outputs under the sandbox root %s (state/openpete/logs: the log file "
+            "and the hang watchdog's files; data/openpete/bugreports: a bundle the replay writes); none in "
+            "the user's directories\n", R.sandbox);
 }
 
 /** @brief Unset every OPENPETE_* variable of this process except the replay's own, then set env.txt's (remapped), the scratch output paths, OPENPETE_BUGREPORT_REPLAY_ENV's and OPENPETE_VIBRATION=0.
@@ -1742,7 +1743,7 @@ static void rp_exit_flush(void)
     R.run_fatal_tick = openpete_frame + 1u;
     if (!strcmp(R.run_fatal, "hang")) R.hang_kind = openpete_hang_trip(&R.hang_at);
     const int code = rp_verdict();
-    fprintf(stderr, "bug-report-replay: the fatal exit's files are under %s (hang/, bugreports/)\n", R.scratch);
+    fprintf(stderr, "bug-report-replay: the fatal exit's files are under the sandbox root %s\n", R.sandbox);
     fflush(stderr);
     openpete_log_file_sync();
     openpete_crash_set_fatal_status(code);
@@ -1754,7 +1755,3 @@ int openpete_bugreport_replay_exit(int rc)
     return rp_verdict();
 }
 
-const char* openpete_bugreport_replay_output_dir(void)
-{
-    return R.on && R.scratch[0] ? R.scratch : NULL;
-}

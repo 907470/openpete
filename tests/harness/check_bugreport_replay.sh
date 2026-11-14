@@ -3,7 +3,7 @@
 # and replay them with --bug-report-replay on the same build.
 #
 # Runs: two recordings under OPENPETE_BUGREPORT_AT (the press at a feed key),
-# each bundle written under a scratch XDG_DATA_HOME:
+# each bundle written under a scratch sandbox root (OPENPETE_SANDBOX):
 #   skip    --skip-to-level summer_forest, press at VBL 1500 (the skip
 #           induces near VBL 1260 and the level is playable near VBL 1360,
 #           both after the session's first anchor)
@@ -19,8 +19,7 @@
 #           = game and hide_player = on at feed key 1400 (before the
 #           bundle's anchor, the session's second) and dither = on at 3000
 #           (after it); a native screenshot at feed key 4390
-#   hang    as skip, under OPENPETE_HANG_THRESHOLD=2000 and with XDG_STATE_HOME
-#           in the scratch directory: the entry watchdog trips at VBL 1357,
+#   hang    as skip, under OPENPETE_HANG_THRESHOLD=2000: the entry watchdog trips at VBL 1357,
 #           as the level goes live, and the exit flush writes a fatal bundle
 #           (trigger hang)
 #   charge  games/spyro-2/bk2/10-second-charge.bk2 from boot (square held
@@ -156,7 +155,7 @@ PG_CAPTURE_TIMEOUT=600
 REC_ENV=()
 record() {
     local tag="$1" at="$2"; shift 2
-    PG_CAPTURE_ENV=("XDG_DATA_HOME=$OUT/xdg-$tag" "OPENPETE_BUGREPORT_AT=$at" "OPENPETE_BUGREPORT_NOTE=0"
+    PG_CAPTURE_ENV=("OPENPETE_SANDBOX=$ABS_OUT/xdg-$tag" "OPENPETE_BUGREPORT_AT=$at" "OPENPETE_BUGREPORT_NOTE=0"
                     "${REC_ENV[@]}")
     pg_capture "$OUT/rec-$tag.log" "" -- --game "$GAME" --mute 1 --frame-limit $((at + 20)) "$@" </dev/null ||
         return 1
@@ -199,7 +198,7 @@ display_zip="$(record display 900 "${DISPLAY_KEPT[@]}" --screenshot-native-only 
     --record-fps-overlay 1 --no-record-audio --screenshot-on-frame 890 --screenshot-output "$OUT/display-rec__{n}.png")" ||
     fail+=("display recording failed (see $OUT/rec-display.log)")
 # The hang recording exits 2 at the trip, so record() reports no bundle: find it.
-REC_ENV=("XDG_STATE_HOME=$ABS_OUT/xdg-hang/state" "OPENPETE_HANG_THRESHOLD=2000")
+REC_ENV=("OPENPETE_HANG_THRESHOLD=2000")
 record hang 2400 --skip-to-level summer_forest >/dev/null
 grep -q 'watchdog: hang detected: 2001 dispatch entries' "$OUT/rec-hang.log" ||
     fail+=("hang recording: the watchdog did not trip (see $OUT/rec-hang.log)")
@@ -486,10 +485,11 @@ fi
 [[ "${h_tick:-x}" == "$((last + 1))" ]] || fail+=("hang: tick=${h_tick:-none}, want the last row $last plus one")
 grep -qE ' hang-at=0x[0-9A-F]{8} hang-kind=entries' <<<"$line" || fail+=("hang: the verdict names no hang-at")
 scr="$OUT/scratch-hang"
-for f in hang/hang-trace.bin hang/hang-ram.bin openpete.log; do
-    [[ -f "$scr/$f" ]] || fail+=("hang: no $f under the scratch directory")
+for f in hang-trace.bin hang-ram.bin openpete.log; do
+    [[ -f "$scr/sandbox/state/openpete/logs/$f" ]] || fail+=("hang: no $f under the scratch directory's sandbox root")
 done
-compgen -G "$scr/bugreports/bug-*-hang.zip" >/dev/null || fail+=("hang: no nested bundle under the scratch directory")
+compgen -G "$scr/sandbox/data/openpete/bugreports/bug-*-hang.zip" >/dev/null ||
+    fail+=("hang: no nested bundle under the scratch directory's sandbox root")
 leak="$(find "$user" -type f \( -name 'bug-*.zip' -o -name 'hang-*.bin' -o -name 'openpete.log' \) 2>/dev/null)"
 [[ -z "$leak" ]] || fail+=("hang: the replay wrote into the user's directories: $leak")
 r_hang="$v_hang/${h_ok:-none}/$h_rows"

@@ -21,7 +21,9 @@
 #                   installed.
 
 GAMES_OTHER="$(sdk_other_game)"
-GAMES_XDG="$WORK/games-xdg"
+# The rungs' sandbox root: the library sits in its data directory.
+GAMES_ROOT="$WORK/games-sandbox"
+GAMES_XDG="$GAMES_ROOT/data"
 GAMES_LIB="$GAMES_XDG/openpete/library"
 GAMES_MODS="$WORK/games-mods"
 
@@ -107,7 +109,7 @@ EOF_PY
         > "$GAMES_LIB/0000000000000001/disc.cue"
     printf 'label = "%s"\nsource = "scratch"\nsha256 = "0"\nlast_played = 0\ngame = "%s"\n' \
         "$GAMES_OTHER" "$GAMES_OTHER" > "$GAMES_LIB/0000000000000001/meta.toml"
-    out="$( PG_CAPTURE_ENV=("XDG_DATA_HOME=$GAMES_XDG"); run_game "$GAMES_MODS" $((300 + KEY0)) )"
+    out="$( PG_CAPTURE_ENV=("OPENPETE_SANDBOX=$GAMES_ROOT"); run_game "$GAMES_MODS" $((300 + KEY0)) )"
     opt="$(printf '%s\n' "$out" | grep -o 'games-opt: installed=.*' | head -1)"
     if printf '%s\n' "$out" | grep -q "library disc of $GAMES_OTHER: $GAMES_LIB/" &&
        printf '%s\n' "$out" | grep -q "games-req: entered"; then
@@ -131,7 +133,7 @@ EOF_PY
     # Leg B: the library empty.
     rm -rf "${GAMES_XDG:?}"
     mkdir -p "$GAMES_LIB"
-    out="$( PG_CAPTURE_ENV=("XDG_DATA_HOME=$GAMES_XDG"); run_game "$GAMES_MODS" $((300 + KEY0)) )"
+    out="$( PG_CAPTURE_ENV=("OPENPETE_SANDBOX=$GAMES_ROOT"); run_game "$GAMES_MODS" $((300 + KEY0)) )"
     opt="$(printf '%s\n' "$out" | grep -o 'games-opt: installed=.*' | head -1)"
     if printf '%s\n' "$out" | grep -q "\"games-req\" requires $GAMES_OTHER, which has no disc in the library" &&
        ! printf '%s\n' "$out" | grep -q "games-req: entered"; then

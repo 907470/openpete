@@ -14,6 +14,7 @@ OPENPETE_* knob near a Windows launch without going through here.
 """
 import atexit
 import os
+import re
 import shutil
 import tempfile
 
@@ -21,7 +22,8 @@ import tempfile
 # Knobs a gate harness exports that cross with every forward, with their
 # WSLENV flags (/p translates a path).
 FORWARDED = {"OPENPETE_THREAD_ROLE_FATAL": "/w", "OPENPETE_THREAD_ROLE_REPORT": "/wp",
-             "OPENPETE_CARD_GUARD": "/w", "OPENPETE_CARD_DIR": "/wp"}
+             "OPENPETE_CARD_GUARD": "/w", "OPENPETE_CARD_DIR": "/wp",
+             "OPENPETE_SANDBOX": "/wp"}
 
 
 def child_env(knobs, base=None):
@@ -38,23 +40,54 @@ def child_env(knobs, base=None):
     return env
 
 
-def scratch_cards():
-    """Export OPENPETE_CARD_DIR as a fresh card directory owned by this process.
+def sandbox_cache_dir():
+    """The shared pipeline-cache directory linked into every sandbox root, created.
 
-    The Python side of scripts/lib/scratch_cards.sh, same parent directory and
-    naming (<pid>.<random> under $TMPDIR/openpete-harness-cards): without it a
-    run given no card flag opens the player's cards in the per-user state
-    directory. Every child this process starts inherits the variable and boots
-    on two freshly formatted cards; --card1, --card2 and --card-dir still beat
-    it. An inherited directory under the parent that exists is kept (the
-    caller is a harness that already made one). The directory is removed at
-    exit; directories whose owning process is gone are removed on each call.
-    A Windows exe launched from WSL receives it through child_env.
-    Returns the directory.
+    $OPENPETE_SANDBOX_CACHE, else $XDG_CACHE_HOME/openpete-harness/cache
+    (~/.cache/openpete-harness/cache); the same directory
+    scripts/lib/sandbox.sh links.
     """
-    parent = os.path.join(os.environ.get("TMPDIR") or "/tmp", "openpete-harness-cards")
-    cur = os.environ.get("OPENPETE_CARD_DIR", "")
+    c = os.environ.get("OPENPETE_SANDBOX_CACHE") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "openpete-harness", "cache")
+    os.makedirs(c, exist_ok=True)
+    return c
+
+
+def sandbox_link_cache(root):
+    """Make root/state/openpete and link its cache to the shared directory; a
+    root on a Windows drive (/mnt/<letter>/) gets a plain directory."""
+    state = os.path.join(root, "state", "openpete")
+    os.makedirs(state, exist_ok=True)
+    cache = os.path.join(state, "cache")
+    if os.path.lexists(cache):
+        return
+    if re.match(r"/mnt/[a-z]/", root):
+        os.makedirs(cache, exist_ok=True)
+    else:
+        os.symlink(sandbox_cache_dir(), cache)
+
+
+def sandbox():
+    """Export OPENPETE_SANDBOX as a fresh root owned by this process; returns it.
+
+    The Python side of scripts/lib/sandbox.sh, same parent and naming
+    (<pid>.<random> under $OPENPETE_SANDBOX_PARENT, else
+    $TMPDIR/openpete-harness-sandbox): under the root the game resolves every
+    per-user directory (config, logs, hang files, bug bundles, cards,
+    savestates, screenshots, recordings), so no run touches the player's
+    files, and it refuses to start when a write path lies in a real one.
+    OPENPETE_CARD_DIR is exported as <root>/cards. An inherited root under the
+    parent that exists is kept. The root is removed at exit; roots whose
+    owning process is gone are removed on each call. A Windows exe launched
+    from WSL receives it through child_env.
+    """
+    parent = os.environ.get("OPENPETE_SANDBOX_PARENT") or os.path.join(
+        os.environ.get("TMPDIR") or "/tmp", "openpete-harness-sandbox")
+    cur = os.environ.get("OPENPETE_SANDBOX", "")
     if cur.startswith(parent + os.sep) and os.path.isdir(cur):
+        os.environ.setdefault("OPENPETE_CARD_DIR", os.path.join(cur, "cards"))
+        os.makedirs(os.environ["OPENPETE_CARD_DIR"], exist_ok=True)
         return cur
     os.makedirs(parent, exist_ok=True)
     for name in os.listdir(parent):
@@ -62,9 +95,29 @@ def scratch_cards():
         if pid.isdigit() and not os.path.isdir(f"/proc/{pid}"):
             shutil.rmtree(os.path.join(parent, name), ignore_errors=True)
     d = tempfile.mkdtemp(prefix=f"{os.getpid()}.", dir=parent)
-    os.environ["OPENPETE_CARD_DIR"] = d
+    sandbox_link_cache(d)
+    os.makedirs(os.path.join(d, "cards"), exist_ok=True)
+    os.environ["OPENPETE_SANDBOX"] = d
+    os.environ["OPENPETE_CARD_DIR"] = os.path.join(d, "cards")
     atexit.register(shutil.rmtree, d, True)
     return d
+
+
+def sandbox_run_root():
+    """A fresh per-run root under OPENPETE_SANDBOX (sandbox() first), with the
+    shared cache linked in and an empty cards directory; removed with the
+    parent root at exit."""
+    r = tempfile.mkdtemp(prefix="run.", dir=sandbox())
+    sandbox_link_cache(r)
+    os.makedirs(os.path.join(r, "cards"), exist_ok=True)
+    return r
+
+
+def scratch_cards():
+    """The scratch memory cards of a harness, now its sandbox: sandbox(), then
+    the card directory OPENPETE_CARD_DIR names (<root>/cards). Returns it."""
+    sandbox()
+    return os.environ["OPENPETE_CARD_DIR"]
 
 
 LVP_ICD = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
