@@ -51,14 +51,14 @@ and logs a warning naming the directory it could not write.
 `--log-file PATH` redirects the mirror, `--no-log-file` disables it.
 `--log-level SPEC` (or `OPENPETE_LOG`) sets levels as comma-separated
 `subsystem:level` rules, levels `trace`, `debug`, `info`, `warn` and
-`error`; `*` sets the default, which is `info`. A rule matches a subsystem
-name exactly, and a segment is split at its first colon, so no rule
-selects one mod's `mod:<id>` lines: `mod:debug` matches nothing and
-`mod:<id>:debug` is skipped as an unknown level. Show a mod's
-`OP_MOD_LOG_DEBUG` lines by raising the default:
+`error`; `*` sets the default, which is `info`. The level follows the
+last colon of a rule. Mod lines carry the subsystem `mod:<id>`:
+`mod:<level>` sets every mod's level, and `mod:<id>:<level>` sets one
+mod's, taking precedence over `mod:<level>` in either order. Show one
+mod's `OP_MOD_LOG_DEBUG` lines:
 
 ```
-openpete --mods your_mod --log-level '*:debug'
+openpete --mods your_mod --log-level 'mod:your_mod:debug'
 ```
 
 A distribution Windows build links as a GUI-subsystem application, so

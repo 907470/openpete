@@ -117,6 +117,34 @@ static int run_semantics(void) {
     CHECK(!emitted(OPL_INFO, "c"), "unknown level segment skipped");
     CHECK(!emitted(OPL_TRACE, "b"), "set_spec clears earlier rules");
 
+    /* Mod lines log under "mod:<id>": "mod:<level>" covers every mod,
+     * "mod:<id>:<level>" one mod, and the per-mod rule wins in either order. */
+    openpete_log_set_spec("mod:debug");
+    CHECK(emitted(OPL_DEBUG, "mod:foo"), "mod:debug covers mod:foo");
+    CHECK(emitted(OPL_DEBUG, "mod:bar"), "mod:debug covers mod:bar");
+    CHECK(emitted(OPL_DEBUG, "mod"), "mod:debug covers mod");
+    CHECK(!emitted(OPL_DEBUG, "mods"), "mod:debug leaves mods at the default");
+    CHECK(!emitted(OPL_DEBUG, "modx:foo"), "mod:debug leaves modx:foo at the default");
+    openpete_log_set_spec("mod:foo:debug");
+    CHECK(emitted(OPL_DEBUG, "mod:foo"), "mod:foo:debug covers mod:foo");
+    CHECK(!emitted(OPL_DEBUG, "mod:bar"), "mod:foo:debug leaves mod:bar");
+    CHECK(!emitted(OPL_DEBUG, "mod:foobar"), "mod:foo:debug leaves mod:foobar");
+    openpete_log_set_spec("mod:foo:trace,mod:warn");
+    CHECK(emitted(OPL_TRACE, "mod:foo"), "per-mod rule before the mod rule wins");
+    CHECK(!emitted(OPL_INFO, "mod:bar"), "mod:warn drops mod:bar info");
+    openpete_log_set_spec("mod:warn,mod:foo:trace");
+    CHECK(emitted(OPL_TRACE, "mod:foo"), "per-mod rule after the mod rule wins");
+    CHECK(!emitted(OPL_INFO, "mod:bar"), "mod:warn drops mod:bar info, later per-mod rule");
+    {   /* A mod id of 63 bytes, the longest the loader accepts. */
+        char sub[80], spec[96];
+        snprintf(sub, sizeof sub, "mod:%.63s",
+                 "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijk");
+        snprintf(spec, sizeof spec, "%s:debug", sub);
+        openpete_log_set_spec(spec);
+        CHECK(emitted(OPL_DEBUG, sub), "mod:<63-byte id>:debug covers that mod");
+        CHECK(!emitted(OPL_DEBUG, "mod:abc"), "long per-mod rule leaves mod:abc");
+    }
+
     /* The empty name is a rule NULL subsystems match. */
     openpete_log_set_spec(":trace");
     CHECK(emitted(OPL_TRACE, NULL), "rule for the empty name matches NULL");

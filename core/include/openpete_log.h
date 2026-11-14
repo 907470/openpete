@@ -5,7 +5,9 @@
 //   json  -> {"t":1.234,"level":"info","subsystem":"subsys","msg":"...","key":"value",...}
 //
 // Per-subsystem level filters via OPENPETE_LOG env var or --log-level.
-// Spec: "subsystem:level,subsystem:level,...,*:default-level".
+// Spec: "subsystem:level,subsystem:level,...,*:default-level". The level
+// follows the last colon; a rule for "mod" also covers every "mod:<id>"
+// subsystem, and a rule naming one "mod:<id>" exactly wins over it.
 // Levels: trace < debug < info < warn < error.
 
 #ifndef OPENPETE_LOG_H

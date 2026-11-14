@@ -28,7 +28,7 @@
 #include <time.h>
 
 typedef struct level_rule {
-    char prefix[32];          /* subsystem name; "" matches a NULL subsystem */
+    char prefix[72];          /* subsystem name; "" matches a NULL subsystem */
     openpete_log_level_t lvl;
 } level_rule_t;
 
@@ -143,7 +143,7 @@ typedef struct {
     int oom;                  /* a rule allocation failed; the rule was dropped */
 } spec_build_t;
 
-/** @brief Append a rule for prefix at lvl, truncating the name to 31 bytes; on allocation failure drop it. */
+/** @brief Append a rule for prefix at lvl, truncating the name to 71 bytes; on allocation failure drop it. */
 static void build_push_rule(spec_build_t* b, const char* prefix,
                             openpete_log_level_t lvl) {
     if (b->n_rules == b->cap) {
@@ -161,9 +161,12 @@ static void build_push_rule(spec_build_t* b, const char* prefix,
     r->lvl = lvl;
 }
 
-/** @brief Apply one "subsystem:level" segment to b; a segment without a colon or with an unknown level is skipped. */
+/** @brief Apply one "subsystem:level" segment to b; a segment without a colon or with an unknown level is skipped.
+ *
+ * The level follows the last colon, so a subsystem name may itself hold
+ * colons ("mod:<id>:debug" names the subsystem "mod:<id>"). */
 static void build_apply_segment(spec_build_t* b, char* seg) {
-    char* colon = strchr(seg, ':');
+    char* colon = strrchr(seg, ':');
     if (!colon) return;
     *colon = '\0';
     openpete_log_level_t lvl;
@@ -174,8 +177,8 @@ static void build_apply_segment(spec_build_t* b, char* seg) {
 
 /** @brief Apply a comma-separated "subsystem:level" spec to b.
  *
- * Segments longer than 63 bytes are truncated and subsystem names longer than
- * 31 bytes are truncated. "*" sets the default level; any other name appends
+ * Segments longer than 95 bytes are truncated and subsystem names longer than
+ * 71 bytes are truncated. "*" sets the default level; any other name appends
  * a rule, and lookup_level takes the last rule of a name, so a later segment
  * for the same name wins. A NULL or empty spec changes nothing. */
 static void build_parse_spec(spec_build_t* b, const char* spec) {
@@ -184,7 +187,7 @@ static void build_parse_spec(spec_build_t* b, const char* spec) {
     while (*p) {
         const char* comma = strchr(p, ',');
         size_t seg_len = comma ? (size_t)(comma - p) : strlen(p);
-        char seg[64];
+        char seg[96];
         if (seg_len >= sizeof(seg)) seg_len = sizeof(seg) - 1;
         memcpy(seg, p, seg_len);
         seg[seg_len] = '\0';
@@ -234,7 +237,9 @@ static int snapshot_publish(const log_snapshot_t* cur, log_snapshot_t* next) {
 /** @brief Return the level filter for subsystem under snapshot s.
  *
  * The rule whose stored name equals the subsystem exactly wins, the most
- * recently added of equal names first; otherwise the default level.
+ * recently added of equal names first; otherwise the most recent rule whose
+ * non-empty name followed by ':' begins the subsystem (the rule "mod" for
+ * "mod:<id>"); otherwise the default level.
  * @param s Snapshot in force.
  * @param subsystem Subsystem name, or NULL for the default. */
 static openpete_log_level_t lookup_level(const log_snapshot_t* s,
@@ -242,6 +247,11 @@ static openpete_log_level_t lookup_level(const log_snapshot_t* s,
     if (!subsystem) return s->dflt;
     for (size_t i = s->n_rules; i-- > 0;) {
         if (strcmp(s->rules[i].prefix, subsystem) == 0) return s->rules[i].lvl;
+    }
+    for (size_t i = s->n_rules; i-- > 0;) {
+        const char* name = s->rules[i].prefix;
+        const size_t n = strlen(name);
+        if (n && strncmp(name, subsystem, n) == 0 && subsystem[n] == ':') return s->rules[i].lvl;
     }
     return s->dflt;
 }
