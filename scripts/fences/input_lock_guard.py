@@ -14,7 +14,9 @@ without WSLENV (wslenv_guard.py enforces that half for the env spelling).
 --bk2 replay and the injection script still drive a locked run, and closing
 the window still ends it.
 
-Scope. A file is in scope when it names the game binary, its name marks it as
+Scope. A file is in scope when it launches the game binary (rumble_guard's
+`launches`: a shell launch site, or the binary named in Python code outside
+comments and docstrings), its name marks it as
 an unattended launcher (the rumble guard's convention), and it can open a
 window: it never passes `--headless`, or it names a Windows binary, which
 harnesses run windowed on the real GPU. A script whose launches all go through
@@ -66,7 +68,7 @@ def offends(name, text, require_unattended=True):
     never locks host input. The write-time hook passes
     require_unattended=False: there the file is known to be a launcher
     whatever it is called."""
-    if not LAUNCH.search(text):
+    if not rumble_guard.launches(name, text):
         return False
     if require_unattended and not UNATTENDED.match(name):
         return False

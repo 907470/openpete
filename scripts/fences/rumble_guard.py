@@ -32,19 +32,27 @@ launching one, so: wslenv-guard: no-launch
 Run: python3 scripts/fences/rumble_guard.py [root]
 Exit: 0 clean, 65 a script could rumble a connected controller.
 """
+import io
 import os
 import re
+import shlex
 import sys
+import tokenize
 
-# A file only matters if it names the game binary: a per-game name, or the
-# one executable `openpete` as a build-tree path (`build/linux-release/openpete`,
-# `$BUILD_DIR/openpete`, `... / "openpete"`), never a longer name that starts
-# with it (openpete-recomp-linkage.txt, openpete.toml). Matching a bare `$EXE`
-# swept in icon converters and a toolchain wrapper - a fence whose output
-# nobody can read is a fence nobody runs.
-LAUNCH = re.compile(r"""openpete-spyro1|openpete_spyro1
-    | (?:build|BUILD[A-Z_]*\}?|linux-release[\w-]*|\$\{?[A-Z_]*BUILD[A-Z_]*\}?)/openpete\b(?![-_.])
-    | /\s*["']openpete["']""", re.X)
+# A file only matters if it names the game binary: a per-game name
+# (`openpete-spyro2`, `openpete-spyro1.exe`), the Windows executable
+# `openpete.exe` after any path separator, or the one executable `openpete`
+# as a path under a build tree or a variable (`build/linux-release/openpete`,
+# `build/windows-mingw/openpete.exe`, `"$W/openpete.exe"`, `... / "openpete"`),
+# never a longer name that starts with it (openpete-recomp-linkage.txt,
+# openpete.toml) and never a directory (`$ROOT/openpete/scripts`). Matching a
+# bare `$EXE` swept in icon converters and a toolchain wrapper - a fence whose
+# output nobody can read is a fence nobody runs.
+LAUNCH = re.compile(r"""openpete[-_]spyro\d(?:\.exe)?\b
+    | [/\\]openpete\.exe\b
+    | (?:build|BUILD[A-Z_]*\}?|linux-release[\w-]*|windows-mingw[\w-]*|\$\{?\w+\}?)
+      /openpete(?:\.exe)?(?![\w./-])
+    | /\s*["']openpete(?:\.exe)?["']""", re.X)
 
 # ...and only the UNATTENDED launchers are in scope. A scripted run is the
 # hazard: no player uses the pad, and the run passes either way so the
@@ -58,16 +66,24 @@ LAUNCH = re.compile(r"""openpete-spyro1|openpete_spyro1
 # which is exactly the set below.
 UNATTENDED = re.compile(r"^(check_|bench-|capture_|.*-corpus|.*_harness)")
 
-# The flag itself, in any of the spellings a script might build it with.
-SANCTIONED = re.compile(r"""
-      --vibration[=\s]+0\b            # the flag, passed directly
-    | --vibration[=\s]+"?\$           # the flag, forwarded from a variable
-    | \bOPENPETE_VIBRATION\s*=\s*0\b  # the env spelling, shell
-    | OPENPETE_VIBRATION"\s*,\s*"0    # the env spelling, python setdefault
+# The env spelling silences every launch of the file (and of the processes it
+# starts); scripts/lib/game.sh's pg_capture sets it on every run it makes.
+ENV_SANCTIONED = re.compile(r"""
+      \bOPENPETE_VIBRATION\s*=\s*0\b  # shell
+    | OPENPETE_VIBRATION"\s*,\s*"0    # python setdefault
     | OPENPETE_VIBRATION['"]\]\s*=\s*['"]0   # ...and python dict assignment
     | OPENPETE_VIBRATION['"]\s*[:,]\s*['"]0   # ...and a python dict literal
+""", re.X)
+
+# The flag silences the launch it is passed to, in any of the spellings a
+# script might build it with.
+FLAG = re.compile(r"""
+      --vibration[=\s]+["']?0\b       # the flag, passed directly
+    | --vibration[=\s]+"?\$           # the flag, forwarded from a variable
     | --vibration['"]\s*,\s*['"]0    # the flag, as python argv list members
 """, re.X)
+
+SANCTIONED = re.compile(ENV_SANCTIONED.pattern + "|" + FLAG.pattern, re.X)
 
 # The escape hatch, for the one kind of script that SHOULD rumble: a hands-on
 # feel check, where a human is deliberately holding the pad. Spelled out so it
@@ -79,6 +95,162 @@ EXEMPT = re.compile(r"rumble-guard:\s*(intentional|no-launch)")
 SKIP_DIRS = {".git", "worktrees", "build", "__pycache__", "node_modules",
              "third_party", "dist"}
 SUFFIXES = (".sh", ".py", ".bash")
+
+
+SHELL_SUFFIXES = (".sh", ".bash")
+# A shell assignment: `NAME=`, `NAME+=`, after export/local/declare and its
+# options; group 3 is the value to the end of the logical line.
+SH_ASSIGN = re.compile(r"""(?:^\s*|[;&|(]\s*|\b(?:export|local|readonly|declare|typeset)
+    (?:\s+-\w+)*\s+)([A-Za-z_]\w*)(\+?=)(.*)""", re.X)
+# Words that may precede the executed word of a command: wrappers, their
+# numeric arguments, options, assignments and array expansions of a prefix.
+PREFIX_WORD = re.compile(r"""(?:env|exec|command|nohup|setsid|time|nice|timeout
+    |stdbuf|ionice|taskset|sudo|xvfb-run|op_own_run|!|then|do|else
+    |[\d.]+[smhd]?|-\S*|[A-Za-z_]\w*=\S*|"?\$\{\w+\[@\]\}"?)$""", re.X)
+# Text after a binary that marks it as executed: an option or forwarded
+# arguments.
+ARGS_AFTER = re.compile(r"""["'}]*\s+["']?(?:-|\$@|\$\{\w+\[@\]\})""")
+
+
+def code_text(name, text):
+    """`text` without comments: shell `#` comments, or Python comments and
+    docstrings (a string that is a statement by itself)."""
+    if name.endswith(".py"):
+        try:
+            toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            return text
+        keep = []
+        opener = (tokenize.NEWLINE, tokenize.NL, tokenize.INDENT, tokenize.DEDENT)
+        for n, t in enumerate(toks):
+            if t.type == tokenize.COMMENT:
+                continue
+            if t.type == tokenize.STRING:
+                prev = next((p for p in reversed(toks[:n]) if p.type != tokenize.COMMENT
+                             and p.type != tokenize.NL), None)
+                nxt = toks[n + 1] if n + 1 < len(toks) else None
+                if (prev is None or prev.type in opener) and \
+                        (nxt is None or nxt.type in (tokenize.NEWLINE, tokenize.ENDMARKER)):
+                    continue
+            keep.append(t)
+        return tokenize.untokenize(keep)
+    return "\n".join(re.sub(r"(?:^|(?<=\s))#.*", "", line)
+                     for line in text.splitlines())
+
+
+def logical_lines(text):
+    """Shell lines with backslash continuations joined."""
+    out, cur = [], ""
+    for line in text.splitlines():
+        if line.endswith("\\"):
+            cur += line[:-1] + " "
+            continue
+        out.append(cur + line)
+        cur = ""
+    if cur:
+        out.append(cur)
+    return out
+
+
+def var_ref(name):
+    return re.compile(r"\$\{?%s\b(?:\[@\])?\}?" % re.escape(name))
+
+
+def is_definition(line):
+    """True for a line that only assigns variables (`BIN=...`,
+    `local -a cmd=(...)`): a binary named there is not executed there."""
+    try:
+        words = shlex.split(line)
+    except ValueError:
+        words = line.split()
+    while words and words[0] in ("export", "local", "readonly", "declare", "typeset"):
+        words = words[1:]
+        while words and words[0].startswith("-"):
+            words = words[1:]
+    if not words or not re.match(r"[A-Za-z_]\w*\+?=", words[0]):
+        return False
+    if re.match(r"[A-Za-z_]\w*\+?=\(", words[0]):
+        return True
+    return all(re.match(r"[A-Za-z_]\w*\+?=", w) for w in words)
+
+
+def shell_launches(lines):
+    """(binary vars, cleared vars, [(line, start, end)] launch sites): a site
+    is the binary (a LAUNCH path or a variable holding it) at a command's
+    executed position or followed by arguments."""
+    assigns = []
+    for line in lines:
+        for m in SH_ASSIGN.finditer(line):
+            assigns.append((m.group(1), m.group(3)))
+    binary, cleared = set(), set()
+    changed = True
+    while changed:
+        changed = False
+        for var, val in assigns:
+            if var not in binary and (LAUNCH.search(val) or
+                                      any(var_ref(b).search(val) for b in binary)):
+                binary.add(var)
+                changed = True
+            if var not in cleared and (FLAG.search(val) or
+                                       any(var_ref(c).search(val) for c in cleared)):
+                cleared.add(var)
+                changed = True
+    sites = []
+    for line in lines:
+        if is_definition(line):
+            continue
+        spans = [m.span() for m in LAUNCH.finditer(line)]
+        for b in binary:
+            spans += [m.span() for m in var_ref(b).finditer(line)]
+        for start, end in spans:
+            head = line[:start]
+            head = re.split(r"\$\(|[;&|(`]", head)[-1]
+            head = re.sub(r"[\"']$", "", head.strip())
+            at_command = all(PREFIX_WORD.match(w) for w in head.split())
+            if at_command or ARGS_AFTER.match(line, end):
+                sites.append((line, start, end))
+    return binary, cleared, sites
+
+
+QUERY = re.compile(r"\s*(?:\[\[?|test|echo|printf|:)\s")
+
+
+def passed_on(lines, binary):
+    """True when a variable holding the binary is handed to another command
+    (`run "$EXE" log`, a function that launches its argument), outside
+    definitions and path queries (`[ -x "$EXE" ]`, `echo "$EXE"`)."""
+    return any(not is_definition(line) and not QUERY.match(line) and
+               any(var_ref(b).search(line) for b in binary) for line in lines)
+
+
+def shell_offends(code):
+    """True when a launch site in shell code carries no --vibration 0 (on
+    its line or in a variable it expands). A file that only names the binary
+    (`echo "$1/openpete.exe"`, `[ -x "$BIN" ]`) has no site; one that hands
+    the binary to a function has no site the guard can follow and needs the
+    flag somewhere in its code."""
+    lines = logical_lines(code)
+    binary, cleared, sites = shell_launches(lines)
+    if not sites:
+        return passed_on(lines, binary) and FLAG.search(code) is None
+    for line, _s, _e in sites:
+        if FLAG.search(line) or any(var_ref(c).search(line) for c in cleared):
+            continue
+        return True
+    return False
+
+
+def launches(name, text):
+    """True when a file starts the game binary: a shell file with a launch
+    site, any other file naming the binary outside comments and docstrings."""
+    if not LAUNCH.search(text):
+        return False
+    code = code_text(name, text)
+    if name.endswith(SHELL_SUFFIXES):
+        lines = logical_lines(code)
+        binary, _cleared, sites = shell_launches(lines)
+        return bool(sites) or passed_on(lines, binary)
+    return LAUNCH.search(code) is not None
 
 
 def offends(name, text, require_unattended=True):
@@ -99,9 +271,12 @@ def offends(name, text, require_unattended=True):
         return False
     if require_unattended and not UNATTENDED.match(name):
         return False
-    if EXEMPT.search(text) or SANCTIONED.search(text):
+    if EXEMPT.search(text) or ENV_SANCTIONED.search(text):
         return False
-    return True
+    code = code_text(name, text)
+    if name.endswith(SHELL_SUFFIXES):
+        return shell_offends(code)
+    return LAUNCH.search(code) is not None and FLAG.search(code) is None
 
 
 def scan(root):
