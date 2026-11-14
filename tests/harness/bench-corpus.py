@@ -270,7 +270,8 @@ def build_rollup(per_movie, platform, meta):
                 "args_sidecar": m["args_sidecar"],
                 "presents": (m["summary"] or {}).get("presents_total", 0),
                 "engaged_ticks": engaged_ticks(m["summary"]),
-                "fps": (m["summary"] or {}).get("fps", {})}
+                "fps": (m["summary"] or {}).get("fps", {}),
+                "scheduler": (m["summary"] or {}).get("scheduler")}
                for m in per_movie]
     roll = {"schema": ROLLUP_SCHEMA, "platform": platform,
             "movies": len(per_movie),
@@ -305,6 +306,16 @@ def render_rollup_text(roll):
         L.append("%-22s %-11d%-9d%-9s%s" % (pm["movie"][:22], pm["presents"],
                                            pm["engaged_ticks"],
                                            pm["fps"].get("avg", "?"), pm["exit_reason"]))
+    sch = [(pm["movie"], pm.get("scheduler")) for pm in roll["per_movie"] if pm.get("scheduler")]
+    if sch:
+        L.append("[scheduler]            cost_ema  cost_dev  tail_us  pred/s  meas/s  level            afford")
+        for movie, c in sch:
+            top = sorted(c["afford_dist"].items(), key=lambda kv: -kv[1])[:3]
+            L.append("%-22s %9.1f %9.1f %8.1f %7.1f %7.1f  %-16s %s"
+                     % (movie[:22], c["cost_ema_p50_us"], c["cost_dev_p50_us"], c["tail_p50_us"],
+                        c["predicted_presents_per_s"], c["measured_presents_per_s"],
+                        " ".join("%s:%.0f%%" % kv for kv in c["level_dist"].items())[:16],
+                        " ".join("%s:%.0f%%" % kv for kv in top)))
     for group, title in (("cpu_scopes", "cpu.scope"), ("gpu_zones", "gpu.zone")):
         rows = [r for r in roll["scopes"] if r["group"] == group]
         if not rows:

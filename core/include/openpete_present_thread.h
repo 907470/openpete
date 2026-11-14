@@ -118,6 +118,15 @@ unsigned openpete_present_thread_presents(void);
  * be superseded. Read without the thread's mutex.
  * @return The average in nanoseconds, 0 before the first present. */
 int64_t  openpete_present_thread_cost_ns(void);
+/** @brief Read the two moving averages openpete_present_thread_cost_ns sums: the scene render and the present step.
+ *
+ * The render average is the render into a stage image, per scene; the
+ * present average is the acquire, blit and queue present, per frame. Each is
+ * an 8-sample exponential average, 0 before its first sample. Read without
+ * the thread's mutex; the caller only reads them.
+ * @param render_ns Receives the render average in nanoseconds.
+ * @param present_ns Receives the present-step average in nanoseconds. */
+void     openpete_present_thread_emas(int64_t *render_ns, int64_t *present_ns);
 
 #ifdef __cplusplus
 }

@@ -828,3 +828,10 @@ unsigned openpete_present_thread_presents(void) { return s_pt.presents; }
  * off this is the display's real throughput ceiling; the planner spaces
  * targets no denser than it, or most scenes are made only to be superseded. */
 int64_t openpete_present_thread_cost_ns(void) { return s_pt.render_ema + s_pt.present_ema; }
+
+/* Documented at the declaration in openpete_present_thread.h. */
+void openpete_present_thread_emas(int64_t *render_ns, int64_t *present_ns)
+{
+    *render_ns = s_pt.render_ema;
+    *present_ns = s_pt.present_ema;
+}

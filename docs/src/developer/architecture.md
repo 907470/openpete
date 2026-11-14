@@ -175,6 +175,129 @@ on one run compare decision for decision; the wall-clock fields (the
 trace rows against a blessed digest
 ([Loop decision trace](unattended-runs.md#loop-decision-trace)).
 
+## Eager present rate
+
+Under eager production the presents per second are decided by the span
+planner in `core/runtime/eager.c`, once per canonical tick, and by the
+present thread's cost floor (`core/runtime/present_thread.c`). Eager runs
+only windowed: `host_eager_start` returns under `--headless`
+(`core/runtime/eager.c:1065-1068`), and `host_subtick_live` requires a
+window (`core/runtime/host_present.c:442-447`).
+
+### Inputs
+
+| Input | Sample | Update |
+|---|---|---|
+| `cost_ema` | one eager scene: `eager_produce_one` from its start through the VRAM sync, the re-extract, the mods' present flush, the publish and the present-thread kick (`eager.c:820-874`); canonical and intermediate scenes, published or refused by a full ring | `(7 * ema + sample) / 8`; the first sample seeds it (`eager.c:872`) |
+| `cost_dev` | the absolute difference of the sample from the old `cost_ema`, capped at `cost_ema + 4 * cost_dev` | `(31 * dev + d) / 32`, before `cost_ema` moves (`eager.c:858-871`); a mean absolute deviation, not a standard deviation |
+| warmup | `cost_n` counts scenes up to `EAGER_COST_WARMUP` = 8 (`eager.c:83`) | before it the tail is 0 and the afford is one scene per slot |
+| tail | `cost_ema + 3 * cost_dev` after warmup, else 0 (`eager_tail_cost`, `eager.c:204-208`) | the produce guard and the grid's cost floor read it |
+| `vbl_ema` | the fiber run of each non-drawing VBL (`host_loop.c:276-278`); a run of half a tick or more is a stall and skipped | `(7 * ema + sample) / 8` (`eager.c:215-221`) |
+| `tick_late` | the drawing VBL's start past its pacer deadline | kept when half a tick or more, else 0 (`eager.c:222`) |
+| `tick_ema`, `tick_peak`, lag | the drawing VBL's fiber run | lag = decaying peak + 0.3 ms, raised at once, lowered after 30 spans (`eager_lag_update`, `eager.c:507-523`) |
+| safety margin | `EAGER_BUDGET_SAFETY_NS` = 1 ms (`eager.c:212`) | constant |
+| present thread `render_ema` | one scene rendered into a stage image | `(7 * ema + sample) / 8` (`present_thread.c:586`) |
+| present thread `present_ema` | one staged present that reached the swapchain: blit and queue present; the swapchain acquire runs after the render and is in neither average (`present_thread.c:600-604`) | `(7 * ema + sample) / 8` (`present_thread.c:685`) |
+
+`openpete_present_thread_cost_ns` is `render_ema + present_ema`
+(`present_thread.c:830`).
+
+### One span
+
+`eager_canonical` (`eager.c:953-995`) runs at the canonical present of each
+drawn tick. The span runs from the newest capture stamp (or now when the
+stamp is two ticks old) for one tick; `prod_end` is the pacer deadline of
+the next drawing VBL and `produce_end` that of the non-drawing VBL between
+(`host_present.c:495-504`, `host_pacer.c:292`). A canonical every VBL
+(the pause window) plans a span of one VBL priced from now
+(`eager.c:980-986`).
+
+1. Grid period (`eager_grid_period`, `eager.c:539-577`). The render period
+   (`1 / --render-fps`, which defaults to the display refresh) is kept,
+   moved onto the refresh when vsync is on and the refresh is more than
+   1.125 render periods, or put on the fitted vblank lattice. It is then
+   floored at `max(tail or 250 us, render_ema + present_ema)`.
+2. Slots (`eager_span_slots`, `eager.c:329-365`): every grid period from
+   the slot after the previous span's last target through the span end
+   plus the lag.
+3. Budget and afford (`eager_afford`, `eager.c:452-477`):
+   `budget = prod_end - (now - tick_late) - vbl_ema - 1 ms`, floored at 0.
+   After warmup, afford is the largest N in 1..128 with
+   `N * cost_ema + 2 * sqrt(N) * cost_dev <= budget`
+   (`op_eager_ladder_afford`, `core/include/openpete_eager_ladder.h:40-50`);
+   before it, `budget / tail` when the tail is known, else the slot count.
+   `OPENPETE_EAGER_AFFORD` overrides it.
+4. Level, vsync on (the divisor ladder, `op_eager_ladder_step`,
+   `openpete_eager_ladder.h:71-92`). `need = ceil(slots / afford)`. A
+   shortfall is `need` above the standing level, or a previous span cut
+   for any cause except a stalled tick start; it plans its own span at
+   `max(level, need)` and raises the standing level to `need` (at least one
+   step on a cut) only when another shortfall came within the last
+   `EAGER_HEADROOM_RUNS` = 8 spans. After 8 consecutive clean spans whose
+   `need` is below the standing level, the level falls in one step to the
+   highest `need` of the run. The span targets every level-th slot
+   (`eager.c:798`). `OPENPETE_EAGER_LEVEL` pins the level.
+5. Count, vsync off (a free span, `eager_free_span`, `eager.c:627-635`).
+   There is no display grid and the level is 1. The span plans
+   `round(afford * (1 - deficit))` scenes spread evenly over it, no closer
+   than the render period, the present thread's cost, or a recent ring
+   cut's drain floor. A deadline cut adds one scene of deficit (at most
+   half of afford), a ring cut sets the drain floor to the span's length
+   over the scenes it made for 32 spans, and 16 consecutive spans that end
+   with room for two more scenes give one scene back
+   (`op_eager_count_step`, `openpete_eager_ladder.h:210-235`).
+
+### Production and cut spans
+
+`eager_produce` (`eager.c:908-937`) makes the canonical scene, then the
+targets in order: a target more than half a grid period past is skipped
+(an `INSTANT_PASSED` shed); the walk stops when the scene ring has one free
+slot or less, or when `now + tail` passes the deadline. The deadline is
+`produce_end - 0.5 ms` at the plan (now when the world is not live,
+`eager.c:994`), then the next pacer deadline less 0.5 ms on each idle
+iteration (`host_present.c:796-799`). The budget's 1 ms margin is the sum
+of those two guards; the up-to-one tail the guard leaves unused in each
+window is not in the budget.
+
+A span whose targets were not all produced is a cut span, closed at the
+next plan (`eager_close_span`, `eager.c:257-270`): its cause is late (planned
+after a stalled tick start), withheld (world not live, or never resumed),
+ring, or deadline; each unproduced target is a `NO_BUDGET` shed while the
+world is live. The cut feeds the next span's step: a shortfall on the
+ladder, or a count-controller step on a free span.
+
+### Display modes
+
+- Vsync on (FIFO or FIFO-relaxed): the grid is the render period on the
+  refresh, the divisor ladder decides, and the swapchain shows at most one
+  image per refresh.
+- Vsync off (mailbox, immediate): free spans; the rate is the afford less
+  the count controller's deficit, floored by the present thread's cost.
+- Vblank lattice (`OPENPETE_EAGER_LATTICE=1`, off by default,
+  `present_thread.c:296-301`): with vsync on the present thread fits the
+  vblank instants from observed flips, the planner puts targets on whole
+  refreshes and the present thread issues each present one refresh before
+  its target plus a 0.9 ms guard (`compose_at_locked`,
+  `present_thread.c:450-461`). Off, presents are issued at their targets.
+
+### Observing it
+
+With `--profile-out`, each plan writes `eager_prof_plan`'s profiler
+counters on the canonical scene's marker: `eager.cost_ema_ns`,
+`eager.cost_dev_ns`, `eager.tail_ns`, `eager.budget_ns`, `eager.afford`,
+`eager.slots`, `eager.planned`, `eager.level`, `eager.std_level`,
+`eager.period_ns`, `eager.grid_period_ns`, `eager.free`, `eager.lattice`,
+`eager.warm`, `eager.vbl_ema_ns`, `eager.tick_late_ns`, `eager.lag_ns`,
+`pt.render_ema_ns`, `pt.present_ema_ns`. `scripts/profile-summary.py`
+prints them as one `[scheduler]` line (cost, deviation and tail
+percentiles, the level and afford distributions, the afford recomputed
+from the recorded budget and costs, the planned rate (scenes planned per
+span times spans per second), the cost floor's rate, and the predicted
+rate, the lower of the two, beside the measured present and scene rates); `tests/harness/bench-corpus.py` prints one `[scheduler]` row per
+movie. The pace log's `EAGER_PLAN` record carries the budget, tail,
+afford, slots, planned scenes, both levels and the grid period
+([Bug reports](bug-reports.md)).
+
 ## Presentation
 
 `--renderer` selects the rasterizer (`core/config/options.c:956-963`):

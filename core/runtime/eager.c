@@ -652,9 +652,60 @@ static void eager_plan_record(op_time_t now, const eager_span_t *sp, op_time_t p
                                     (s_eager.tick_late > 0 ? OP_PACE_EP_LATE : 0u) |
                                     (s_eager.pinned > 0 ? OP_PACE_EP_PINNED : 0u) |
                                     (s_eager.policy == 1 ? OP_PACE_EP_GREEDY : 0u));
-    openpete_pace_eager_plan(openpete_frame, now, flags, s_eager.level, s_eager.level, sp->ns,
+    openpete_pace_eager_plan(openpete_frame, now, flags, s_eager.level, s_eager.ladder.level, sp->ns,
                              afford, planned, period, budget, eager_tail_cost(), s_eager.lag,
                              s_eager.vbl_ema, s_eager.tick_late);
+}
+
+/* The scheduler's per-span state as profiler counters, in eager_prof_plan's order. */
+static const char *const s_eager_prof_names[] = {
+    "eager.cost_ema_ns", "eager.cost_dev_ns", "eager.tail_ns", "eager.budget_ns",
+    "eager.afford", "eager.slots", "eager.planned", "eager.level", "eager.std_level",
+    "eager.period_ns", "eager.grid_period_ns", "eager.free", "eager.lattice",
+    "eager.warm", "eager.vbl_ema_ns", "eager.tick_late_ns", "eager.lag_ns",
+    "pt.render_ema_ns", "pt.present_ema_ns"
+};
+#define EAGER_PROF_N ((int)(sizeof(s_eager_prof_names) / sizeof(s_eager_prof_names[0])))
+
+/** @brief Emit the span plan's scheduler inputs and outputs as profiler COUNT records while a trace is open.
+ *
+ * One COUNT per name in s_eager_prof_names, raised on the sim thread after
+ * the plan and before the canonical scene's SCENE marker, so each canonical
+ * scene of the trace carries the plan it opened: the per-scene cost mean and
+ * deviation and the tail bound built from them, the budget, the afford, the
+ * slot count, the scenes planned, the span's and the standing level, the
+ * planned and the display grid period, whether the span is free and whether
+ * the vblank lattice was used, whether the cost estimate is past warmup, the
+ * non-drawing VBL cost, the tick's start lateness, the lag, and the present
+ * thread's render and present-step averages. It reads the scheduler's state
+ * and writes none of it. Negative values are written as 0. Names are
+ * interned on the first call made with a trace open.
+ * @param budget The production budget in nanoseconds.
+ * @param afford The scenes the budget affords.
+ * @param ns The span's slot count.
+ * @param period The planned grid period in nanoseconds.
+ * @param grid_period The display grid period before the cost floor.
+ * @param free_grid Nonzero when the span had no display grid.
+ * @param lat_on Nonzero when the targets went on the vblank lattice. */
+static void eager_prof_plan(op_time_t budget, int afford, int ns, op_time_t period,
+                            op_time_t grid_period, int free_grid, int lat_on)
+{
+    if (!op_prof_on()) return;
+    static int ids[EAGER_PROF_N], interned;
+    if (!interned) {
+        for (int q = 0; q < EAGER_PROF_N; q++) ids[q] = op_prof_intern(s_eager_prof_names[q]);
+        interned = 1;
+    }
+    int64_t render = 0, present = 0;
+    openpete_present_thread_emas(&render, &present);
+    const int64_t v[EAGER_PROF_N] = {
+        s_eager.cost_ema, s_eager.cost_dev, eager_tail_cost(), budget,
+        afford, ns, s_eager.n, s_eager.level, s_eager.ladder.level,
+        period, grid_period, free_grid != 0, lat_on != 0,
+        s_eager.cost_n >= EAGER_COST_WARMUP, s_eager.vbl_ema, s_eager.tick_late, s_eager.lag,
+        render, present
+    };
+    for (int q = 0; q < EAGER_PROF_N; q++) op_prof_count(ids[q], v[q] > 0 ? (uint64_t)v[q] : 0u);
 }
 
 /** @brief Plan the display instants of the span that starts now and adjust the decimation level.
@@ -676,8 +727,8 @@ static void eager_plan_record(op_time_t now, const eager_span_t *sp, op_time_t p
  * spaced, at level 1); otherwise moves the level (eager_ladder_step).
  * Records whether the span follows a stalled tick start. Stores every
  * level-th slot (policy 0) or afford evenly
- * spaced instants (policy 1) in s_eager.target, sets last_target and counts
- * the span.
+ * spaced instants (policy 1) in s_eager.target, sets last_target, writes the
+ * profiler counters (eager_prof_plan) and counts the span.
  * @param now Current time on the op_now() clock.
  * @param first A render-grid instant at or after now.
  * @param period The render grid period in nanoseconds.
@@ -748,6 +799,7 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
     }
     s_eager.last_target = s_eager.n ? s_eager.target[s_eager.n - 1] : 0;
     eager_shed_unplanned(sp.first, sp.end, grid_period, period, ns);
+    eager_prof_plan(budget, afford, ns, period, grid_period, free_grid, lat.on);
     s_eager.spans++;
 }
 

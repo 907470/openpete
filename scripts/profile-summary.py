@@ -20,6 +20,14 @@ Notes:
   * rex.* scopes are children of rex_total; compose/* GPU zones are children of
     compose. Per-scope share% is of the kind's total present_busy and will sum
     to >100% because of that nesting - it's a breakdown, not a partition.
+  * [scheduler] reads the eager planner's per-span counters (eager.*, pt.*)
+    off the canonical scene markers: cost mean and deviation, the tail bound,
+    budget, level and afford distributions, the afford recomputed from the
+    recorded budget and costs (a check that the record matches the rule), and
+    the planned rate (scenes planned per span times spans per second), the
+    cost floor's rate (1 / max(tail, present-thread render + present step)),
+    the prediction (the lower of the two) and the measured present and scene
+    rates. Absent without eager.
   * [sim.split] breaks the sim tick down: each fiber hook's inclusive cost
     (hook.<feature>), the guest renderer it calls (<feature>.srend), and the
     remainder - openpete's own extraction on the game fiber. The bottom
@@ -29,7 +37,9 @@ Notes:
     and shown as <b>'s part "deferred_from_<a>".
 """
 import argparse
+import collections
 import json
+import math
 import os
 import sys
 
@@ -71,6 +81,100 @@ def cadence(records):
         "interval_max_us": iv[-1] if iv else 0,
         "intervals": len(iv),
         "span_us": sum(iv),
+    }
+
+
+def ladder_afford(budget, ema, dev, cap=128):
+    """The eager planner's afford (op_eager_ladder_afford): the largest N with
+    N * ema + 2 * sqrt(N) * dev <= budget, at least 1, at most cap."""
+    if ema <= 0:
+        return cap
+    n = 0
+    while n < cap:
+        m = n + 1
+        if m * ema + 2.0 * math.sqrt(m) * dev > budget:
+            break
+        n += 1
+    return max(1, n)
+
+
+def plan_afford(c):
+    """The afford eager_afford computes from one span's recorded counters:
+    priced on the sum past warmup, on the per-scene tail before it, one per
+    slot before any cost exists; at least 1."""
+    if c["eager.warm"] and c["eager.cost_ema_ns"] > 0:
+        a = ladder_afford(c["eager.budget_ns"], c["eager.cost_ema_ns"], c["eager.cost_dev_ns"])
+    elif c["eager.tail_ns"] > 0:
+        a = c["eager.budget_ns"] // c["eager.tail_ns"]
+    else:
+        a = c["eager.slots"]
+    return max(1, a)
+
+
+def scheduler(markers, present_cadence, scene_cadence):
+    """The eager scheduler's per-span counters (eager_prof_plan), read off the
+    canonical scene markers that carry them: the cost estimate, the tail and
+    the budget, the level and afford distributions, the afford recomputed
+    from the recorded budget and costs against the recorded one, and the
+    predicted rate (the lower of the planned rate, scenes planned per span
+    times spans per second, and the cost floor's rate) against the measured
+    present and scene rates. None when no marker
+    carries the counters (eager production did not run)."""
+    plans = [p for p in markers if "eager.afford" in p.counts]
+    if not plans:
+        return None
+    keys = ("eager.cost_ema_ns", "eager.cost_dev_ns", "eager.tail_ns", "eager.budget_ns",
+            "eager.afford", "eager.slots", "eager.planned", "eager.level", "eager.std_level",
+            "eager.period_ns", "eager.grid_period_ns", "eager.free", "eager.lattice",
+            "eager.warm", "eager.vbl_ema_ns", "eager.tick_late_ns", "eager.lag_ns",
+            "pt.render_ema_ns", "pt.present_ema_ns")
+    rows = [{k: p.counts.get(k, 0) for k in keys} for p in plans]
+
+    def q(k, f=0.5, scale=1e-3):
+        return round(pct(sorted(r[k] for r in rows), f) * scale, 1)
+
+    def dist(k):
+        h = collections.Counter(r[k] for r in rows)
+        return {str(v): round(100.0 * n / len(rows), 1) for v, n in sorted(h.items())}
+
+    t = sorted(p.t_now_us for p in plans)
+    span_s = (t[-1] - t[0]) / 1e6 if len(t) > 1 else 0.0
+    spans_per_s = (len(t) - 1) / span_s if span_s > 0 else 0.0
+    planned = sum(r["eager.planned"] for r in rows) / len(rows)
+    warm = [r for r in rows if r["eager.warm"]]
+    match = sum(1 for r in rows if plan_afford(r) == r["eager.afford"])
+    pt_cost = sorted(r["pt.render_ema_ns"] + r["pt.present_ema_ns"] for r in rows)
+    floor_ns = max(pct(sorted(r["eager.tail_ns"] for r in rows), 0.5), pct(pt_cost, 0.5))
+    return {
+        "spans": len(rows),
+        "warm_spans": len(warm),
+        "free_pct": round(100.0 * sum(r["eager.free"] for r in rows) / len(rows), 1),
+        "lattice_pct": round(100.0 * sum(r["eager.lattice"] for r in rows) / len(rows), 1),
+        "cost_ema_p50_us": q("eager.cost_ema_ns"), "cost_ema_p99_us": q("eager.cost_ema_ns", 0.99),
+        "cost_dev_p50_us": q("eager.cost_dev_ns"), "cost_dev_p99_us": q("eager.cost_dev_ns", 0.99),
+        "tail_p50_us": q("eager.tail_ns"), "tail_p99_us": q("eager.tail_ns", 0.99),
+        "budget_p50_us": q("eager.budget_ns"), "budget_p01_us": q("eager.budget_ns", 0.01),
+        "period_p50_us": q("eager.period_ns"), "grid_period_p50_us": q("eager.grid_period_ns"),
+        "lag_p50_us": q("eager.lag_ns"), "vbl_ema_p50_us": q("eager.vbl_ema_ns"),
+        "pt_render_p50_us": q("pt.render_ema_ns"), "pt_present_p50_us": q("pt.present_ema_ns"),
+        "slots_mean": round(sum(r["eager.slots"] for r in rows) / len(rows), 2),
+        "planned_mean": round(planned, 2),
+        "level_dist": dist("eager.level"),
+        "std_level_dist": dist("eager.std_level"),
+        "afford_dist": dist("eager.afford"),
+        "afford_recomputed_match_pct": round(100.0 * match / len(rows), 1),
+        "spans_per_s": round(spans_per_s, 2),
+        "predicted_scenes_per_s": round(planned * spans_per_s, 1),
+        "cost_floor_per_s": round(1e9 / floor_ns, 1) if floor_ns > 0 else 0.0,
+        # A span plans at least its canonical scene, so the plan alone cannot
+        # show a present thread slower than one present per tick; the
+        # prediction is the lower of the plan's rate and the cost floor's.
+        "predicted_presents_per_s": round(min(planned * spans_per_s, 1e9 / floor_ns), 1)
+        if floor_ns > 0 else round(planned * spans_per_s, 1),
+        "measured_presents_per_s": round(present_cadence["intervals"] * 1e6 / present_cadence["span_us"], 1)
+        if present_cadence.get("span_us") else 0.0,
+        "measured_scenes_per_s": round(scene_cadence["intervals"] * 1e6 / scene_cadence["span_us"], 1)
+        if scene_cadence.get("span_us") else 0.0,
     }
 
 
@@ -156,6 +260,8 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
                               if tr.scenes and p.tid not in tr.scene_tids))
     out["scene"] = dict(cadence([p for p in tr.scenes if p.canon_tick >= skip_ticks]),
                         threads=sorted(tr.scene_tids))
+    out["scheduler"] = scheduler([p for p in presents if p.kind == KIND_CANONICAL],
+                                 out["present"], out["scene"])
     intervals = [all_t[i] - all_t[i - 1] for i in range(1, len(all_t)) if all_t[i] > all_t[i - 1]]
     if intervals:
         total_s = sum(intervals) / 1e6
@@ -330,6 +436,8 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
     cen = {}
     for p in presents:
         for name, val in p.counts.items():
+            if name.startswith(("eager.", "pt.")):
+                continue   # the scheduler's counters: [scheduler]
             cen.setdefault(name, []).append(val)
     for name, vals in cen.items():
         sv = sorted(vals)
@@ -381,6 +489,26 @@ def render_text(s):
                  "scene publication on the sim worker"
                  % (sc["records"], sc["interval_p50_us"], sc["interval_p99_us"],
                     sc["interval_max_us"]))
+    sch = s.get("scheduler")
+    if sch:
+        def dist(d):
+            return " ".join("%s:%.0f%%" % kv for kv in d.items())
+        L.append("[scheduler] spans=%d (warm %d, free %.0f%%, lattice %.0f%%)  cost_ema p50/p99 %.1f/%.1f us  "
+                 "cost_dev %.1f/%.1f us  tail %.1f/%.1f us  budget p50 %.1f p1 %.1f us  pt render/present "
+                 "p50 %.1f/%.1f us  period p50 %.1f us (grid %.1f)  slots %.2f planned %.2f per span  "
+                 "level %s  std %s  afford %s  afford recomputed %.1f%%  planned %.1f/s (%.2f spans/s), "
+                 "cost floor %.1f/s, predicted %.1f/s, measured presents %.1f/s scenes %.1f/s"
+                 % (sch["spans"], sch["warm_spans"], sch["free_pct"], sch["lattice_pct"],
+                    sch["cost_ema_p50_us"], sch["cost_ema_p99_us"], sch["cost_dev_p50_us"],
+                    sch["cost_dev_p99_us"], sch["tail_p50_us"], sch["tail_p99_us"],
+                    sch["budget_p50_us"], sch["budget_p01_us"], sch["pt_render_p50_us"],
+                    sch["pt_present_p50_us"], sch["period_p50_us"], sch["grid_period_p50_us"],
+                    sch["slots_mean"], sch["planned_mean"], dist(sch["level_dist"]),
+                    dist(sch["std_level_dist"]), dist(sch["afford_dist"]),
+                    sch["afford_recomputed_match_pct"], sch["predicted_scenes_per_s"],
+                    sch["spans_per_s"], sch["cost_floor_per_s"], sch["predicted_presents_per_s"],
+                    sch["measured_presents_per_s"],
+                    sch["measured_scenes_per_s"]))
     L.append("# producer threads: %s" % ", ".join(str(t) for t in s.get("threads", [])))
     gf = s.get("gpu_frames", {})
     if gf.get("frames"):
