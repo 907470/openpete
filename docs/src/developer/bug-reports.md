@@ -11,12 +11,13 @@ from a harness.
 
 ## Bundle members
 
-`manifest.json` (schema 1) lists every member with its size and SHA-256,
+`manifest.json` (schema 2; readers accept 1 and 2) lists every member with its size and SHA-256,
 and the identity fields: build version and commit, exe SHA-256, module
 SHA-256 and march, codegen and ROM stamps, disc name and SHA-256, game,
 argv, the anchor and press records (frame, VBL, feed key, park site), the
 taint counts, the thumbnail list, the sub-tick ring's counts, the note
-state and the redaction counts with their findings. Its `records` field
+state and the redaction counts with their findings, the members left out
+and the members shipped flagged (schema 2). Its `records` field
 names the performance records the writing build records: the pace record
 types (`pace.types`), whether GPU_FRAME records were on
 (`pace.gpu_frames`), and the coarse ring's member, version, row count and
@@ -43,13 +44,84 @@ these records existed; the reader still reads its pace ring.
 | `module.txt`, `module/<file>` | the recomp module's linkage, stamps and march; the module itself when it is a file |
 | `notes.txt` | the tester's note, when one was saved |
 
-Text members are redacted: every form of the home directory becomes `~`,
-the user name `<user>`, the host name `<host>`; the state files' card
-paths are rewritten to `card1.mcd` and `card2.mcd`. Guest bytes, modules
-and mod objects are never rewritten; a hit in them is a finding listed in
-the manifest and logged as `bugreport: finding:`. A mod config row marked
-`secret = true`, and every key the mod's schema does not declare, is
-written as a comment naming the key.
+### Redaction
+
+The redactor's identities: the home directory as `$HOME` (`%USERPROFILE%`
+and `%HOMEDRIVE%%HOMEPATH%` on Windows) gives it, resolved through links,
+with either separator and, on Windows, its 8.3 short and long names; the
+user name from `$USER`, else `$LOGNAME` (`%USERNAME%`), else the home
+directory's last component; the host names from the uname nodename,
+`%COMPUTERNAME%` and `$HOSTNAME`, each with its first label when dotted.
+
+Text members (`manifest.json`, every `.txt` member, `input-events.csv`,
+the raw config files, `mods/<id>/config.toml` and every entry of
+`segment.bk2`) are rewritten:
+
+- a token starting with a home form becomes `~`; `$XDG_DATA_HOME`,
+  `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME`, `$XDG_CACHE_HOME`,
+  `%LOCALAPPDATA%` and `%APPDATA%` outside home become their variable's
+  name; any other absolute path keeps its last component only;
+- the user name and the host names become `<user>` and `<host>`, in any
+  letter case, wherever one stands as a whole word: bounded by bytes that
+  are not ASCII letters or digits, `_`, `-` or UTF-8 bytes, so
+  `user@host` and `host: name` are replaced and a longer word holding a
+  name is not;
+- a name shorter than 3 bytes is replaced only as a whole path component
+  or a whole `key=` value, since a one- or two-byte word occurs in
+  ordinary text; the scan below does not look for it.
+
+The state files' card paths are rewritten to `card1.mcd` and `card2.mcd`.
+
+Every rewritten member is scanned again for the home forms and the names
+of 3 bytes or more. A member is left out of the bundle, listed in
+`redaction.dropped` with the reason (`dropped_total` is the exact count)
+and logged as `bugreport: left out`, when its redaction runs out of
+memory, an identity survives it (a home form inside a longer token), its
+bk2 does not parse, its state image does not parse (the card paths cannot
+be rewritten), or its name holds an identity. A bundle missing one member
+is still a usable report, so a member is dropped rather than the bundle
+refused; `manifest.json` cannot be dropped, so a manifest whose redaction
+fails or whose scan matches refuses the bundle (`BUG REPORT FAILED`).
+
+Members never rewritten are scanned: the state files beyond their card
+paths, card images, `.modsave` records, `hashes.csv`, `host-trace.bin`,
+`pace.oppl`, `pace-coarse.bin`, `subtick.bin`, `hang/`, `crash/`, the
+PNGs, the recomp module and every file of an enabled mod. Each match is a
+finding in `redaction.list` (the first 256; `findings` is the exact count)
+logged as `bugreport: finding:`. A member with a match ships unchanged,
+listed in `redaction.flagged` with its counts by kind (`flagged_total` is
+the exact count) and logged as `bugreport: shipped <member> unchanged
+with identity matches`. A name match in binary data can be a coincidence
+of bytes; a home match is a path. A Windows minidump holds the module
+paths and so the home directory whenever the program runs from inside
+it.
+
+A mod config row marked `secret = true`, and every key the mod's schema
+does not declare, is written as a comment naming the key.
+
+What the bundle records about the machine and the tester:
+
+| Fact | Member | Redaction |
+| --- | --- | --- |
+| command line | `argv.txt`, `manifest.json` `argv` | text rules |
+| every set `OPENPETE_*` variable | `env.txt` | text rules |
+| resolved settings, raw `openpete.toml` tiers, key bindings, knob values | `config.txt`, `config-files/`, `keymap.txt`, `knobs.txt` | text rules |
+| log tails | `log.txt`, `log-prev.txt` | text rules |
+| OS name, kernel release and version string, architecture, CPU model and count, RAM, `/etc/os-release` name and version, WSL flag | `device.txt` | text rules; no host name is read for it |
+| session type, desktop, SDL drivers, Steam Deck flags, `WSL_DISTRO_NAME`; whether `DISPLAY`, `WAYLAND_DISPLAY`, `GAMESCOPE_WAYLAND_DISPLAY` are set | `device.txt` | text rules; display values are not recorded |
+| GPU name, vendor and device ids, driver name, info and version, extensions, swapchain | `device.txt`, `reports.txt` | text rules; no device UUID or LUID |
+| display names (the monitor's model), modes and scales; audio drivers and format | `device.txt` | text rules; no EDID serial |
+| controllers: vendor and product ids, SDL GUID, name and mapping when in SDL's database | `devices.txt` | names outside the database withheld; keyboard and mouse names withheld; the SDL GUID holds bus, vendor, product, version and a name CRC, no serial |
+| disc | `manifest.json` `disc`, `disc_sha256` | the file name only |
+| executable | `manifest.json` `exe_sha256` | the hash only |
+| recomp module path | `module.txt` | text rules |
+| mods: ids, versions, relative file paths and hashes, enabled mods' files and objects, declared non-secret config values | `mods.txt`, `mods/` | `mods.txt` and `config.toml` by text rules; the files are scanned only |
+| tester's note | `notes.txt` | text rules |
+| card paths | `*.state` | rewritten |
+
+The bundle records no network address, MAC address, machine or disk
+serial, or account id. The rules do not replace a real name, an e-mail
+address, another account's name, or a short name outside a path.
 
 ## Performance records
 
@@ -173,8 +245,8 @@ after boot (`C` without `L`: it changed back). `raw` is the number the
 row's setter takes (`-` for a string row). Action rows (buttons) have no
 line. The member is a text member: a path value is redacted by the rule
 above (home to `~`, a path outside home to its basename) and the user and
-host names as a whole path component; no other knob value holds a device
-or personal name.
+host names as whole words; no other knob value holds a device or personal
+name.
 
 The class decides what `--bug-report-replay` does with a change:
 
@@ -582,7 +654,8 @@ A bundle comes from another machine and is read as untrusted input.
   `env.txt` has been read.
 - Bundles stay outside the repository: a bundle holds the tester's
   savestates, card images, log tails and configuration. Redaction covers
-  the home directory, user name and host name in text members only.
+  the home directory, user name and host name in text members only;
+  `redaction.flagged` names each other member that holds one.
 
 ## Release archive
 

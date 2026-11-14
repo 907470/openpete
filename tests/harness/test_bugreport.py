@@ -3,7 +3,8 @@
 
 Bundle access: a synthetic schema-1 bundle opens, every member verifies, and
 `info` prints the manifest's identity, counters, taint, redaction, pace and
-log fields and the replay route; `extract` writes every member with its
+log fields and the replay route; a schema-2 bundle's members left out and
+members shipped flagged are listed under the redaction line; `extract` writes every member with its
 manifest hash; a member altered after the manifest was written fails `info`
 and `extract` with exit 1.
 
@@ -214,6 +215,26 @@ class InfoExtract(Base):
                   "[error] gpu: lost", "replay route: fallback", "--bug-report-replay"]:
             self.assertIn(s, out)
         self.assertNotIn("[info ] boot", out)
+        self.assertNotIn("this reader knows", out)
+        self.assertNotIn("left out:", out)
+
+    def test_schema2_redaction_lists(self):
+        mem = dict(members())
+        red = {"replacements": 5, "findings": 1, "list": [
+                   {"member": "host-trace.bin", "section": "", "offset": 4, "what": "home"}],
+               "dropped_total": 1, "dropped": [
+                   {"member": "log-prev.txt", "reason": "the home directory survives redaction"}],
+               "flagged_total": 1, "flagged": [
+                   {"member": "host-trace.bin", "home": 1, "user": 0, "host": 0}]}
+        z = write_bundle(self.d / "b.zip", mem, manifest(mem, schema=2, redaction=red))
+        rc, out, err = run("info", z, "--archive", self.arch)
+        self.assertEqual(rc, 0, out + err)
+        for s in ["schema 2", "left out: 1 member(s) that could not be redacted",
+                  "log-prev.txt: the home directory survives redaction",
+                  "flagged: 1 member(s) shipped unchanged with identity matches",
+                  "host-trace.bin: home 1 user 0 host 0"]:
+            self.assertIn(s, out)
+        self.assertNotIn("this reader knows", out)
 
     def test_extract_round_trip(self):
         z = write_bundle(self.d / "b.zip")

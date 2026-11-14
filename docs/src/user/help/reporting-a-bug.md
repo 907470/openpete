@@ -38,13 +38,30 @@ what you did, what you expected, and what you saw instead).
 - your note, when you typed one
 
 It does not hold the disc image (only its file name and checksum) or any
-file from your own folders besides the ones listed above. In its text
-files and in the savestates' card paths, your home folder is replaced by
-`~`, your user name by `<user>`, and your computer name by `<host>`. A
-home folder, user name or computer name found in data that is not text
-(the game's memory, a mod's memory, a compiled mod) is not changed; the log
-names the file and offset on a `finding:` line. A mod setting marked
-secret is listed by name, without its value.
+file from your own folders besides the ones listed above.
+
+In its text files (the logs, settings, reports and your note), your home
+folder is replaced by `~`, your user name by `<user>` and your computer
+name by `<host>`, in any letter case, wherever one stands as a whole word:
+`me@mypc` becomes `<user>@<host>`, and a longer word that contains the
+name is kept. A user or computer name of one or two letters is replaced
+only as a folder name in a path. A text file that still holds one of them
+afterwards is left out of the zip, and the log names it on a `left out`
+line. The savestates' card paths are replaced by `card1.mcd` and
+`card2.mcd`.
+
+Files that are not text (the savestates and memory cards, a mod's saved
+data, files and compiled code, the screenshots, the recordings of timing
+and sound, the crash dump) are not changed. When one of them holds your
+home folder, user name or computer name, it is kept in the zip and the log
+names it on a `shipped ... unchanged with identity matches` line; read
+those lines before you send the zip.
+
+Other things that identify you, such as your real name or an e-mail
+address, are not replaced: leave them out of the note. A mod setting
+marked secret is listed by name, without its value. The zip records the
+graphics card, displays, processor, controllers and operating system by
+model and version, not by serial number, and records no network address.
 
 ### Where it is saved
 

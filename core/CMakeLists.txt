@@ -124,6 +124,7 @@ add_library(openpete_core STATIC
     record/bugrec_input.c
     record/bugrec_subtick.c
     record/bugreport_redact.c
+    record/bugreport_pass.c
     record/bugreport_replay.c
     record/bugreport_replay_knobs.c
     record/bugreport_write.c

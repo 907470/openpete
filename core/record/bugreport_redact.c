@@ -29,8 +29,19 @@ static int is_delim(unsigned char c)
            c == '}' || c == '<' || c == '>' || c == '|' || c == '`';
 }
 
-/** @brief Report whether a byte may belong to a name (user or host). */
-static int is_name_byte(unsigned char c) { return isalnum(c) || c == '_' || c == '-'; }
+/** @brief Report whether a byte may belong to a word: an ASCII letter or digit, `_`, `-`, or any byte of a multi-byte UTF-8 sequence. */
+static int is_name_byte(unsigned char c)
+{
+    return (c >= '0' && c <= '9') || ((c | 0x20) >= 'a' && (c | 0x20) <= 'z') || c == '_' ||
+           c == '-' || c >= 0x80;
+}
+
+/** @brief Return the length of the placeholder `<user>` or `<host>` at @p s, or 0. */
+static size_t placeholder_at(const char* s, size_t n)
+{
+    if (n < 6 || s[0] != '<' || s[5] != '>') return 0;
+    return !memcmp(s + 1, "user", 4) || !memcmp(s + 1, "host", 4) ? 6 : 0;
+}
 
 /** @brief Compare two bytes as the redactor does: separators equal, letters folded when asked. */
 static int byte_eq(unsigned char a, unsigned char b, int fold)
@@ -129,13 +140,23 @@ static void base_add(br_redactor_t* r, const char* var, const char* repl)
 #endif
 }
 
-/** @brief Add a host name when it is new and at least two bytes long. */
+/** @brief Add one host name form when it is new and at least two bytes long. */
+static void host_add_one(br_redactor_t* r, const char* h, size_t n)
+{
+    if (n < 2 || n >= sizeof r->host[0] || r->nhost >= BR_NAME_MAX) return;
+    for (int i = 0; i < r->nhost; i++)
+        if (strlen(r->host[i]) == n && SDL_strncasecmp(r->host[i], h, n) == 0) return;
+    memcpy(r->host[r->nhost], h, n);
+    r->host[r->nhost++][n] = '\0';
+}
+
+/** @brief Add a host name and, for a dotted name, its first label. */
 static void host_add(br_redactor_t* r, const char* h)
 {
-    if (!h || strlen(h) < 2 || r->nhost >= BR_NAME_MAX) return;
-    for (int i = 0; i < r->nhost; i++)
-        if ((r->fold_case ? SDL_strcasecmp(r->host[i], h) : strcmp(r->host[i], h)) == 0) return;
-    snprintf(r->host[r->nhost++], sizeof r->host[0], "%s", h);
+    if (!h) return;
+    host_add_one(r, h, strlen(h));
+    const char* dot = strchr(h, '.');
+    if (dot) host_add_one(r, h, (size_t)(dot - h));
 }
 
 /** @brief Order prefixes longest first, so a longer form wins over its own prefix. */
@@ -145,48 +166,63 @@ static int prefix_cmp(const void* a, const void* b)
     return x < y ? 1 : (x > y ? -1 : 0);
 }
 
+/** @brief Add a redactor's given home forms, user name and host names. */
+static void identity_add(br_redactor_t* r, const br_identity_t* id)
+{
+    for (size_t i = 0; i < sizeof id->home / sizeof id->home[0]; i++) home_add(r, id->home[i]);
+    if (id->user && *id->user) snprintf(r->user, sizeof r->user, "%s", id->user);
+    for (size_t i = 0; i < sizeof id->host / sizeof id->host[0]; i++) host_add(r, id->host[i]);
+}
+
+void br_redactor_init_identity(br_redactor_t* r, const br_identity_t* id)
+{
+    memset(r, 0, sizeof *r);
+    r->fault_after = -1;
+    r->fold_case = id->fold_case;
+    identity_add(r, id);
+    qsort(r->pre, (size_t)r->npre, sizeof r->pre[0], prefix_cmp);
+}
+
 void br_redactor_init(br_redactor_t* r)
 {
     memset(r, 0, sizeof *r);
+    r->fault_after = -1;
+    br_identity_t id = {0};
 #ifdef _WIN32
     r->fold_case = 1;
-    home_add(r, getenv("USERPROFILE"));
-    char hp[1024];
+    char hp[1024] = "";
     const char* hd = getenv("HOMEDRIVE");
     const char* hpath = getenv("HOMEPATH");
-    if (hd && hpath) {
-        snprintf(hp, sizeof hp, "%s%s", hd, hpath);
-        home_add(r, hp);
-    }
-    home_add(r, getenv("HOME"));
+    if (hd && hpath) snprintf(hp, sizeof hp, "%s%s", hd, hpath);
+    id.home[0] = getenv("USERPROFILE");
+    id.home[1] = hp[0] ? hp : NULL;
+    id.home[2] = getenv("HOME");
+    id.user = getenv("USERNAME");
+    id.host[0] = getenv("COMPUTERNAME");
+#else
+    id.home[0] = getenv("HOME");
+    id.user = getenv("USER");
+    if (!id.user || !*id.user) id.user = getenv("LOGNAME");
+    struct utsname un;
+    if (uname(&un) == 0) id.host[0] = un.nodename;
+    id.host[1] = getenv("COMPUTERNAME");
+#endif
+    id.host[2] = getenv("HOSTNAME");
+    identity_add(r, &id);
+#ifdef _WIN32
     base_add(r, "LOCALAPPDATA", "%LOCALAPPDATA%");
     base_add(r, "APPDATA", "%APPDATA%");
-    const char* u = getenv("USERNAME");
-#else
-    home_add(r, getenv("HOME"));
-    const char* u = getenv("USER");
-    if (!u || !*u) u = getenv("LOGNAME");
 #endif
     base_add(r, "XDG_DATA_HOME", "$XDG_DATA_HOME");
     base_add(r, "XDG_CONFIG_HOME", "$XDG_CONFIG_HOME");
     base_add(r, "XDG_STATE_HOME", "$XDG_STATE_HOME");
     base_add(r, "XDG_CACHE_HOME", "$XDG_CACHE_HOME");
-    if (u && *u) {
-        snprintf(r->user, sizeof r->user, "%s", u);
-    } else if (r->npre > 0) {
+    if (!r->user[0] && r->npre > 0) {
         const char* h = r->pre[0].form;
         const char* last = h;
         for (const char* p = h; *p; p++) if (is_sep((unsigned char)*p) && p[1]) last = p + 1;
         snprintf(r->user, sizeof r->user, "%s", last);
     }
-#ifdef _WIN32
-    host_add(r, getenv("COMPUTERNAME"));
-#else
-    struct utsname un;
-    if (uname(&un) == 0) host_add(r, un.nodename);
-#endif
-    host_add(r, getenv("HOSTNAME"));
-    host_add(r, getenv("COMPUTERNAME"));
     qsort(r->pre, (size_t)r->npre, sizeof r->pre[0], prefix_cmp);
 }
 
@@ -197,7 +233,7 @@ void br_redactor_free(br_redactor_t* r)
 }
 
 /* A growable output buffer. */
-typedef struct { char* b; size_t n, cap; int oom; } obuf_t;
+typedef struct { char* b; size_t n, cap; int oom; long* fault; } obuf_t;
 
 /** @brief Append bytes to an output buffer. */
 static void ob_put(obuf_t* o, const char* s, size_t n)
@@ -206,7 +242,9 @@ static void ob_put(obuf_t* o, const char* s, size_t n)
     if (o->n + n + 1 > o->cap) {
         size_t cap = o->cap ? o->cap * 2 : 4096;
         while (cap < o->n + n + 1) cap *= 2;
-        char* g = (char*)realloc(o->b, cap);
+        /* The redactor's fault_after: the allocations that still succeed, or -1. */
+        char* g = o->fault && *o->fault == 0 ? NULL : (char*)realloc(o->b, cap);
+        if (o->fault && *o->fault > 0) (*o->fault)--;
         if (!g) { o->oom = 1; return; }
         o->b = g;
         o->cap = cap;
@@ -216,17 +254,32 @@ static void ob_put(obuf_t* o, const char* s, size_t n)
     o->b[o->n] = '\0';
 }
 
-/** @brief Report whether a span equals the user name or a host name; returns the replacement or NULL. */
+/** @brief Report whether a span equals the user name or a host name in any letter case; returns the replacement or NULL. */
 static const char* name_repl(const br_redactor_t* r, const char* s, size_t n)
 {
-    if (r->user[0] && strlen(r->user) == n &&
-        (r->fold_case ? SDL_strncasecmp(s, r->user, n) : strncmp(s, r->user, n)) == 0)
-        return "<user>";
+    if (r->user[0] && strlen(r->user) == n && SDL_strncasecmp(s, r->user, n) == 0) return "<user>";
     for (int i = 0; i < r->nhost; i++)
-        if (strlen(r->host[i]) == n &&
-            (r->fold_case ? SDL_strncasecmp(s, r->host[i], n) : strncmp(s, r->host[i], n)) == 0)
-            return "<host>";
+        if (strlen(r->host[i]) == n && SDL_strncasecmp(s, r->host[i], n) == 0) return "<host>";
     return NULL;
+}
+
+/** @brief Return the length of the user or host name of at least BR_NAME_WORD_MIN bytes that starts at @p s, in any letter case, and is not followed by a word byte; 0 when none.
+ * @param r The redactor.
+ * @param s The bytes.
+ * @param n Their count from @p s.
+ * @param what Receives the name's kind. */
+static size_t name_at(const br_redactor_t* r, const char* s, size_t n, br_needle_kind_t* what)
+{
+    for (int k = -1; k < r->nhost; k++) {
+        const char* nm = k < 0 ? r->user : r->host[k];
+        const size_t ln = strlen(nm);
+        if (ln < BR_NAME_WORD_MIN || ln > n || (ln < n && is_name_byte((unsigned char)s[ln])))
+            continue;
+        if (SDL_strncasecmp(s, nm, ln) != 0) continue;
+        *what = k < 0 ? BRF_USER : BRF_HOST;
+        return ln;
+    }
+    return 0;
 }
 
 /** @brief Write a path token's components, replacing a component equal to the user or a host name.
@@ -304,37 +357,80 @@ static size_t redact_token(br_redactor_t* r, obuf_t* o, const char* s, size_t n)
     return t ? t : 1;
 }
 
-char* br_redact_text(br_redactor_t* r, const char* in, size_t n, size_t* out_n)
+/** @brief Replace a user or host name that is the whole value after the `key=` whose `=` is at @p in[i].
+ * @return The bytes consumed from the `=`, or 0 when the value is no name. */
+static size_t redact_key_value(br_redactor_t* r, obuf_t* o, const char* in, size_t i, size_t n)
 {
-    obuf_t o = {0};
-    ob_put(&o, "", 0);
+    if (i == 0 || !is_name_byte((unsigned char)in[i - 1])) return 0;
+    size_t j = i + 1;
+    while (j < n && !is_delim((unsigned char)in[j]) && !is_sep((unsigned char)in[j])) j++;
+    if (j == i + 1 || (j < n && !is_delim((unsigned char)in[j]))) return 0;
+    const char* rep = name_repl(r, in + i + 1, j - i - 1);
+    if (!rep) return 0;
+    ob_put(o, "=", 1);
+    ob_put(o, rep, strlen(rep));
+    r->replacements++;
+    return j - i;
+}
+
+/** @brief First pass: rewrite each path token (home and base prefixes, absolute paths, name components) and each name that is a whole `key=` value.
+ * @param r The redactor.
+ * @param in The text.
+ * @param n Its length.
+ * @param o The output. */
+static void redact_paths(br_redactor_t* r, const char* in, size_t n, obuf_t* o)
+{
     size_t i = 0;
     while (i < n) {
         const unsigned char c = (unsigned char)in[i];
-        if (is_delim(c)) {
-            /* The whole value after `key=` is a name candidate. */
-            if (c == '=' && i > 0 && is_name_byte((unsigned char)in[i - 1])) {
-                size_t j = i + 1;
-                while (j < n && !is_delim((unsigned char)in[j]) && !is_sep((unsigned char)in[j])) j++;
-                const char* rep = j > i + 1 && (j == n || is_delim((unsigned char)in[j]))
-                                      ? name_repl(r, in + i + 1, j - i - 1) : NULL;
-                if (rep) {
-                    ob_put(&o, "=", 1);
-                    ob_put(&o, rep, strlen(rep));
-                    r->replacements++;
-                    i = j;
-                    continue;
-                }
-            }
-            ob_put(&o, in + i, 1);
-            i++;
+        if (!is_delim(c)) {
+            i += redact_token(r, o, in + i, n - i);
             continue;
         }
-        i += redact_token(r, &o, in + i, n - i);
+        const size_t kv = c == '=' ? redact_key_value(r, o, in, i, n) : 0;
+        if (!kv) ob_put(o, in + i, 1);
+        i += kv ? kv : 1;
     }
-    if (o.oom) { free(o.b); return NULL; }
-    *out_n = o.n;
-    return o.b;
+}
+
+/** @brief Second pass: replace every whole-word user or host name of BR_NAME_WORD_MIN bytes or more, wherever it stands, copying the placeholders as they are.
+ * @param r The redactor.
+ * @param in The first pass's output.
+ * @param n Its length.
+ * @param o The output. */
+static void redact_names(br_redactor_t* r, const char* in, size_t n, obuf_t* o)
+{
+    for (size_t k = 0; k < n;) {
+        const char* s = in + k;
+        br_needle_kind_t what = BRF_USER;
+        size_t len = placeholder_at(s, n - k);
+        if (len) {
+            ob_put(o, s, len);
+        } else if ((k == 0 || !is_name_byte((unsigned char)s[-1])) &&
+                   (len = name_at(r, s, n - k, &what)) != 0) {
+            ob_put(o, what == BRF_USER ? "<user>" : "<host>", 6);
+            r->replacements++;
+        } else {
+            ob_put(o, s, 1);
+            len = 1;
+        }
+        k += len;
+    }
+}
+
+char* br_redact_text(br_redactor_t* r, const char* in, size_t n, size_t* out_n)
+{
+    obuf_t paths = {.fault = &r->fault_after}, names = {.fault = &r->fault_after};
+    ob_put(&paths, "", 0);
+    redact_paths(r, in, n, &paths);
+    if (!paths.oom) {
+        ob_put(&names, "", 0);
+        redact_names(r, paths.b, paths.n, &names);
+    }
+    free(paths.b);
+    if (paths.oom || names.oom) { free(names.b); return NULL; }
+    *out_n = names.n;
+    return names.b;
 }
 
 /** @brief Return the length of the home form that starts at @p s, or 0.
@@ -349,24 +445,6 @@ static size_t home_at(const br_redactor_t* r, const char* s, size_t n)
     return 0;
 }
 
-/** @brief Return the length of the user or host name that starts at @p s and ends before a non-name byte, or 0.
- * @param r The redactor.
- * @param s The bytes.
- * @param n Their count from @p s.
- * @param what Receives the name's kind. */
-static size_t name_at(const br_redactor_t* r, const char* s, size_t n, br_needle_kind_t* what)
-{
-    for (int k = -1; k < r->nhost; k++) {
-        const char* nm = k < 0 ? r->user : r->host[k];
-        const size_t ln = strlen(nm);
-        if (!ln || ln > n || (ln < n && is_name_byte((unsigned char)s[ln]))) continue;
-        if ((r->fold_case ? SDL_strncasecmp(s, nm, ln) : strncmp(s, nm, ln)) != 0) continue;
-        *what = k < 0 ? BRF_USER : BRF_HOST;
-        return ln;
-    }
-    return 0;
-}
-
 size_t br_scan(const br_redactor_t* r, const uint8_t* d, size_t n,
                void (*hit)(void* ud, size_t off, br_needle_kind_t what), void* ud)
 {
@@ -374,6 +452,8 @@ size_t br_scan(const br_redactor_t* r, const uint8_t* d, size_t n,
     for (size_t i = 0; i < n; i++) {
         const char* s = (const char*)d + i;
         br_needle_kind_t what = BRF_HOME;
+        const size_t ph = placeholder_at(s, n - i);
+        if (ph) { i += ph - 1; continue; }
         size_t len = home_at(r, s, n - i);
         if (!len && (i == 0 || !is_name_byte(d[i - 1]))) len = name_at(r, s, n - i, &what);
         if (!len) continue;

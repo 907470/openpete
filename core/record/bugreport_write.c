@@ -45,8 +45,6 @@
 /* Tails of the logs: the current run's and the previous run's. */
 #define BR_LOG_TAIL (4u << 20)
 #define BR_LOG_PREV_TAIL (2u << 20)
-/* Findings kept for manifest.json; the count is exact beyond it. */
-#define BR_FINDINGS_MAX 256
 
 /* A growable text buffer. */
 typedef struct { char* b; size_t n, cap; int oom; } wbuf_t;
@@ -685,132 +683,6 @@ static void pace_lines(wbuf_t* w, const char* txt)
     }
 }
 
-/* The redaction and scan pass's state. */
-typedef struct {
-    br_finding_t* f;
-    size_t        nf, total;
-    const char*   member;
-    const char*   section;
-    size_t        base;
-} scan_t;
-
-/** @brief Record one finding of the scan in progress. */
-static void scan_hit(void* ud, size_t off, br_needle_kind_t what)
-{
-    scan_t* s = (scan_t*)ud;
-    s->total++;
-    if (s->nf >= BR_FINDINGS_MAX) return;
-    br_finding_t* f = &s->f[s->nf++];
-    snprintf(f->member, sizeof f->member, "%s", s->member);
-    snprintf(f->section, sizeof f->section, "%s", s->section ? s->section : "");
-    f->offset = s->base + off;
-    f->what = what;
-}
-
-/** @brief Scan a member's bytes, by section for a state file.
- * @param R The redactor.
- * @param s The scan.
- * @param mb The member. */
-static void scan_member(const br_redactor_t* R, scan_t* s, const br_member_t* mb)
-{
-    s->member = mb->name;
-    s->section = NULL;
-    s->base = 0;
-    if (mb->kind == BRM_STATE) {
-        openpete_state_section_t sec[16];
-        const int n = openpete_state_image_sections(mb->data, mb->len, sec, 16);
-        for (int i = 0; i < n; i++) {
-            s->section = sec[i].name;
-            s->base = sec[i].off;
-            br_scan(R, mb->data + sec[i].off, sec[i].len, scan_hit, s);
-        }
-        if (n > 0) return;
-    }
-    br_scan(R, mb->data, mb->len, scan_hit, s);
-}
-
-/** @brief Rebuild a bk2 zip with its text entries redacted.
- * @param R The redactor.
- * @param mb The member, replaced in place.
- * @return 0, or -1 when the archive does not parse (left as it was). */
-static int redact_bk2(br_redactor_t* R, br_member_t* mb)
-{
-    mz_zip_archive in, out;
-    memset(&in, 0, sizeof in);
-    memset(&out, 0, sizeof out);
-    if (!mz_zip_reader_init_mem(&in, mb->data, mb->len, 0)) return -1;
-    if (!mz_zip_writer_init_heap(&out, 0, 0)) { mz_zip_reader_end(&in); return -1; }
-    int ok = 1;
-    const mz_uint n = mz_zip_reader_get_num_files(&in);
-    for (mz_uint i = 0; i < n && ok; i++) {
-        mz_zip_archive_file_stat st;
-        if (!mz_zip_reader_file_stat(&in, i, &st)) { ok = 0; break; }
-        size_t len = 0;
-        void* d = mz_zip_reader_extract_to_heap(&in, i, &len, 0);
-        if (!d) { ok = 0; break; }
-        size_t rn = len;
-        char* r = br_redact_text(R, (const char*)d, len, &rn);
-        ok = r && mz_zip_writer_add_mem(&out, st.m_filename, r, rn, MZ_DEFAULT_LEVEL);
-        free(r);
-        mz_free(d);
-    }
-    mz_zip_reader_end(&in);
-    void* zb = NULL;
-    size_t zl = 0;
-    if (ok) ok = mz_zip_writer_finalize_heap_archive(&out, &zb, &zl);
-    mz_zip_writer_end(&out);
-    if (!ok) { free(zb); return -1; }
-    free(mb->data);
-    mb->data = (uint8_t*)zb;
-    mb->len = zl;
-    return 0;
-}
-
-/** @brief Redact every member by its class and scan the ones never rewritten, collecting the findings.
- * @param R The redactor.
- * @param m The members.
- * @param s The scan. */
-static void redact_all(br_redactor_t* R, br_members_t* m, scan_t* s)
-{
-    for (size_t i = 0; i < m->n; i++) {
-        br_member_t* mb = &m->v[i];
-        switch (mb->kind) {
-        case BRM_TEXT: {
-            size_t rn = 0;
-            char* r = br_redact_text(R, (const char*)mb->data, mb->len, &rn);
-            if (r) { free(mb->data); mb->data = (uint8_t*)r; mb->len = rn; }
-            /* A second pass over redacted text rewrites nothing; a home
-             * form still present is a redactor miss. */
-            s->member = mb->name;
-            s->section = "text";
-            s->base = 0;
-            for (int k = 0; k < R->npre; k++) {
-                if (R->pre[k].repl[0] != '~') continue;
-                const uint8_t* at = mb->data;
-                while ((at = (const uint8_t*)br_memmem(at, mb->len - (size_t)(at - mb->data),
-                                                    R->pre[k].form, R->pre[k].len)) != NULL) {
-                    scan_hit(s, (size_t)(at - mb->data), BRF_HOME);
-                    at += R->pre[k].len;
-                }
-            }
-            break;
-        }
-        case BRM_STATE: {
-            const int n = openpete_state_image_card_paths_set(mb->data, mb->len, "card1.mcd", "card2.mcd");
-            if (n > 0) R->replacements += (uint64_t)n;
-            scan_member(R, s, mb);
-            break;
-        }
-        case BRM_BK2:
-            (void)redact_bk2(R, mb);
-            break;
-        default:
-            scan_member(R, s, mb);
-            break;
-        }
-    }
-}
-
 /* Documented at the declaration in bugreport_internal.h. */
 int br_disc_sha(const char* path, char out[65])
 {
@@ -968,12 +840,46 @@ static void json_records(wbuf_t* w, const br_job_t* j)
               j->pace_coarse_rows, span);
 }
 
+/** @brief Write the manifest's redaction field: replacements, findings, the members left out with their reasons and the members shipped flagged with their counts.
+ * @param w The output.
+ * @param j The job.
+ * @param s The pass's results. */
+static void json_redaction(wbuf_t* w, const br_job_t* j, const br_pass_t* s)
+{
+    wb_printf(w, ",\n  \"redaction\": {\"replacements\": %llu, \"findings\": %zu, \"list\": [",
+              (unsigned long long)j->replacements, s->total);
+    for (size_t i = 0; i < s->nf; i++) {
+        wb_printf(w, "%s\n    {\"member\": ", i ? "," : "");
+        wb_json_str(w, s->f[i].member);
+        wb_printf(w, ", \"section\": ");
+        wb_json_str(w, s->f[i].section);
+        wb_printf(w, ", \"offset\": %llu, \"what\": \"%s\"}", (unsigned long long)s->f[i].offset,
+                  k_needle_names[s->f[i].what]);
+    }
+    wb_printf(w, "],\n    \"dropped_total\": %zu, \"dropped\": [", s->drop_total);
+    for (size_t i = 0; i < s->ndrop; i++) {
+        wb_printf(w, "%s\n    {\"member\": ", i ? "," : "");
+        wb_json_str(w, s->drop[i].member);
+        wb_printf(w, ", \"reason\": ");
+        wb_json_str(w, s->drop[i].reason);
+        wb_printf(w, "}");
+    }
+    wb_printf(w, "],\n    \"flagged_total\": %zu, \"flagged\": [", s->flag_total);
+    for (size_t i = 0; i < s->nflag; i++) {
+        wb_printf(w, "%s\n    {\"member\": ", i ? "," : "");
+        wb_json_str(w, s->flag[i].member);
+        wb_printf(w, ", \"home\": %zu, \"user\": %zu, \"host\": %zu}", s->flag[i].hits[BRF_HOME],
+                  s->flag[i].hits[BRF_USER], s->flag[i].hits[BRF_HOST]);
+    }
+    wb_printf(w, "]}");
+}
+
 /** @brief Write the manifest's session fields: anchor, press, window, taint, mods, answers and the member list.
  * @param w The output.
  * @param j The job.
  * @param m The members (redacted).
  * @param s The scan's findings. */
-static void json_session(wbuf_t* w, const br_job_t* j, const br_members_t* m, const scan_t* s)
+static void json_session(wbuf_t* w, const br_job_t* j, const br_members_t* m, const br_pass_t* s)
 {
     wb_printf(w, ",\n  \"anchor\": ");
     if (j->have_anchor) json_anchor(w, &j->anchor); else wb_printf(w, "null");
@@ -1007,17 +913,8 @@ static void json_session(wbuf_t* w, const br_job_t* j, const br_members_t* m, co
               SDL_GetAtomicInt((SDL_AtomicInt*)&j->main_facts) == BR_DONE ? "done" : "absent");
     wb_printf(w, ",\n  \"press_us\": %llu,\n  \"display_us\": %llu", (unsigned long long)j->press_us,
               (unsigned long long)j->display_us);
-    wb_printf(w, ",\n  \"redaction\": {\"replacements\": %llu, \"findings\": %zu, \"list\": [",
-              (unsigned long long)j->replacements, s->total);
-    for (size_t i = 0; i < s->nf; i++) {
-        wb_printf(w, "%s\n    {\"member\": ", i ? "," : "");
-        wb_json_str(w, s->f[i].member);
-        wb_printf(w, ", \"section\": ");
-        wb_json_str(w, s->f[i].section);
-        wb_printf(w, ", \"offset\": %llu, \"what\": \"%s\"}", (unsigned long long)s->f[i].offset,
-                  k_needle_names[s->f[i].what]);
-    }
-    wb_printf(w, "]},\n  \"members\": [");
+    json_redaction(w, j, s);
+    wb_printf(w, ",\n  \"members\": [");
     for (size_t i = 0; i < m->n; i++) {
         char sha[65];
         sha_hex(m->v[i].data, m->v[i].len, sha);
@@ -1153,31 +1050,56 @@ void br_job_write(br_job_t* j)
     char mod_sha[65];
     add_module(&m, mod_sha);
     add_mods(&m, j);
-    scan_t s = {0};
-    s.f = (br_finding_t*)calloc(BR_FINDINGS_MAX, sizeof *s.f);
-    redact_all(&R, &m, &s);
+    br_pass_t* s = (br_pass_t*)calloc(1, sizeof *s);
+    if (!s) {
+        OPL_ERROR_F("bugreport", "redaction pass: out of memory");
+        j->rc = -1;
+        br_members_free(&m);
+        br_redactor_free(&R);
+        stage_remove(j);
+        return;
+    }
+    br_redact_members(&R, &m, s);
     j->replacements = R.replacements;
-    j->findings = s.total;
+    j->findings = s->total;
     wbuf_t man = {0};
     json_identity(&man, j, mod_sha);
-    json_session(&man, j, &m, &s);
+    json_session(&man, j, &m, s);
     /* The manifest is a text member too (argv, the disc's name). */
     size_t rn = 0;
     char* red = man.oom ? NULL : br_redact_text(&R, man.b, man.n, &rn);
-    if (red) { free(man.b); man.b = red; man.n = rn; man.cap = rn + 1; }
+    free(man.b);
+    man.b = red;
+    man.n = red ? rn : 0;
+    /* The manifest cannot be left out: a manifest whose redaction failed or
+     * that still holds an identity refuses the bundle. */
+    const size_t man_hits = red ? br_scan(&R, (const uint8_t*)red, rn, NULL, NULL) : 0;
+    if (!red) OPL_ERROR_F("bugreport", "manifest redaction ran out of memory; bundle not written");
+    else if (man_hits)
+        OPL_ERROR_F("bugreport", "manifest holds %zu identity match(es) after redaction; bundle not written",
+                    man_hits);
     j->replacements = R.replacements;
+    j->dropped = s->drop_total;
+    j->flagged = s->flag_total;
     uint64_t bytes = 0;
-    j->rc = man.oom ? -1 : write_zip(j, &m, &man, &bytes);
+    j->rc = (!red || man_hits) ? -1 : write_zip(j, &m, &man, &bytes);
     j->members = m.n + 1;
     j->zip_bytes = bytes;
-    for (size_t i = 0; i < s.nf && i < 8; i++)
-        OPL_WARN_F("bugreport", "finding: %s %s offset %llu: %s", s.f[i].member, s.f[i].section,
-                   (unsigned long long)s.f[i].offset, k_needle_names[s.f[i].what]);
+    for (size_t i = 0; i < s->ndrop; i++)
+        OPL_WARN_F("bugreport", "left out %s: %s", s->drop[i].member, s->drop[i].reason);
+    for (size_t i = 0; i < s->nflag; i++)
+        OPL_WARN_F("bugreport", "shipped %s unchanged with identity matches (home %zu, user %zu, host %zu): "
+                   "it cannot be rewritten without breaking it; check it before sending the bundle",
+                   s->flag[i].member, s->flag[i].hits[BRF_HOME], s->flag[i].hits[BRF_USER],
+                   s->flag[i].hits[BRF_HOST]);
+    for (size_t i = 0; i < s->nf && i < 8; i++)
+        OPL_WARN_F("bugreport", "finding: %s %s offset %llu: %s", s->f[i].member, s->f[i].section,
+                   (unsigned long long)s->f[i].offset, k_needle_names[s->f[i].what]);
     OPL_INFO_F("bugreport", "answers: screen %s, display %s, devices %s",
                shot == BR_DONE ? "done" : "absent", disp == BR_DONE ? "done" : "absent",
                main_ok == BR_DONE ? "done" : "absent");
     free(man.b);
-    free(s.f);
+    free(s);
     br_members_free(&m);
     br_redactor_free(&R);
     stage_remove(j);

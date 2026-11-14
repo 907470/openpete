@@ -96,7 +96,7 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 
-SCHEMA = 1
+SCHEMA = 2
 MANIFEST = "manifest.json"
 MANIFEST_MAX = 16 << 20       # manifest.json byte bound
 MEMBER_MAX = 1 << 30          # one member's uncompressed bound
@@ -1161,7 +1161,7 @@ def cmd_info(args):
     o = []
     w = o.append
     w(f"bundle {b.path.name}: schema {b.schema}"
-      + ("" if b.schema == SCHEMA else f" (this reader knows schema {SCHEMA}; fields may be missing)"))
+      + ("" if b.schema in (1, SCHEMA) else f" (this reader knows schemas 1-{SCHEMA}; fields may be missing)"))
     trig = m.get("trigger") or "press"
     if trig != "press":
         w(f"trigger {trig}: written at a fatal exit on the {m.get('exit_thread') or '?'} thread; "
@@ -1222,6 +1222,13 @@ def cmd_info(args):
       + (f" ({len(lst)} listed)" if red.get("findings") != len(lst) else ""))
     for (mem, sec, what), n in sorted(by.items(), key=lambda kv: -kv[1])[:6]:
         w(f"  {n:4d} {what} in {mem} [{sec}]")
+    if "dropped_total" in red:
+        w(f"left out: {red.get('dropped_total')} member(s) that could not be redacted")
+        for d in red.get("dropped") or []:
+            w(f"  {d.get('member')}: {d.get('reason')}")
+        w(f"flagged: {red.get('flagged_total')} member(s) shipped unchanged with identity matches")
+        for f in red.get("flagged") or []:
+            w(f"  {f.get('member')}: home {f.get('home')} user {f.get('user')} host {f.get('host')}")
     ver = b.verify()
     bad = [v for v in ver if v[1] != "ok"]
     total = sum(x.get("size") or 0 for x in b.listed.values())

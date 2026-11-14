@@ -114,10 +114,10 @@ static void bundle_reap(int wait) OP_REQUIRES(sim)
     if (j->rc == 0) {
         s_bp.written++;
         OPL_INFO_F("bugreport", "wrote %s: %zu member(s), %llu bytes, %llu redaction(s), "
-                   "%zu finding(s), press %llu us on the sim thread, display %llu us, "
-                   "worker %llu ms; mods: %s; nothing was uploaded",
+                   "%zu finding(s), %zu member(s) left out, %zu shipped flagged, press %llu us "
+                   "on the sim thread, display %llu us, worker %llu ms; mods: %s; nothing was uploaded",
                    j->zip_path, j->members, (unsigned long long)j->zip_bytes,
-                   (unsigned long long)j->replacements, j->findings,
+                   (unsigned long long)j->replacements, j->findings, j->dropped, j->flagged,
                    (unsigned long long)j->press_us, (unsigned long long)j->display_us,
                    (unsigned long long)j->write_ms, j->mods_line[0] ? j->mods_line : "none");
         openpete_osd_notify("host", BR_OSD_KEY, 8000, "BUG REPORT: SAVED");
@@ -731,9 +731,10 @@ static void bundle_exit_flush(void)
     SDL_WaitThread(t, NULL);
     if (j->rc == 0)
         OPL_INFO_F("bugreport", "wrote %s at the fatal exit (%s): %zu member(s), %llu bytes, "
-                   "%llu redaction(s), %zu finding(s), worker %llu ms; nothing was uploaded",
+                   "%llu redaction(s), %zu finding(s), %zu member(s) left out, %zu shipped flagged, "
+                   "worker %llu ms; nothing was uploaded",
                    j->zip_path, j->fatal, j->members, (unsigned long long)j->zip_bytes,
-                   (unsigned long long)j->replacements, j->findings,
+                   (unsigned long long)j->replacements, j->findings, j->dropped, j->flagged,
                    (unsigned long long)j->write_ms);
     else
         OPL_ERROR_F("bugreport", "fatal exit: bundle %s not written (see the lines above)", j->zip_path);

@@ -861,6 +861,26 @@ endif()
 set_target_properties(exe_loader_cap_test PROPERTIES CXX_STANDARD 20)
 add_test(NAME exe_loader_cap_test COMMAND exe_loader_cap_test)
 
+# bugreport_redact_test - the bug-report redactor and redaction pass on a
+# made-up identity given by parameter: whole-word user and host names in
+# text, the member drops (redaction out of memory, a bk2 or state image that
+# does not parse, an identity surviving redaction, an identity in a member's
+# name) and the flag on a scanned binary member. The state-image functions
+# are stubbed in the test.
+add_executable(bugreport_redact_test
+    bugreport_redact_test.c
+    ${CMAKE_SOURCE_DIR}/core/record/bugreport_redact.c
+    ${CMAKE_SOURCE_DIR}/core/record/bugreport_pass.c
+    ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c)
+target_include_directories(bugreport_redact_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/record
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt
+    ${CMAKE_SOURCE_DIR}/third_party/miniz)
+target_link_libraries(bugreport_redact_test PRIVATE SDL3::SDL3-static)
+set_target_properties(bugreport_redact_test PROPERTIES C_STANDARD 11)
+add_test(NAME bugreport_redact_test COMMAND bugreport_redact_test)
+
 # disc_cache_short_read_test - a chunk the disc cache loader reads short is
 # retried, then served from the file, and never served as stale heap bytes.
 # The test TU includes disc_cache.c with fread and malloc replaced.

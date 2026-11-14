@@ -45,8 +45,9 @@ struct openpete_options;
 extern "C" {
 #endif
 
-/* manifest.json's schema version. */
-#define OPENPETE_BUGREPORT_SCHEMA 1
+/* manifest.json's schema version. 2 adds redaction.dropped and
+ * redaction.flagged with their totals; a reader accepts 1 and 2. */
+#define OPENPETE_BUGREPORT_SCHEMA 2
 
 /** @brief Read the harness variables and register the fatal-exit bundle.
  *

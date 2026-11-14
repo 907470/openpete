@@ -144,6 +144,8 @@ typedef struct br_job {
     uint64_t zip_bytes;
     uint64_t replacements;
     size_t   findings;
+    size_t   dropped;           /* members left out because they could not be redacted */
+    size_t   flagged;           /* scanned members shipped with identity matches */
     uint64_t write_ms;
     char     mods_line[256];    /* the enabled mods' ids, comma-separated */
 } br_job_t;
@@ -175,7 +177,11 @@ void br_job_write(br_job_t* job);
 void br_job_free(br_job_t* job);
 
 #define BR_PREFIX_MAX 24
-#define BR_NAME_MAX 3
+#define BR_NAME_MAX 6
+/* Names shorter than this are replaced only as a whole path component or a
+ * whole `key=` value, and never scanned for: a one- or two-byte word occurs
+ * in ordinary text and data. */
+#define BR_NAME_WORD_MIN 3
 
 /* A path prefix whose occurrences at a path token's start are replaced. */
 typedef struct {
@@ -190,8 +196,11 @@ typedef struct {
     char        user[256];           /* "" when unknown */
     char        host[BR_NAME_MAX][256];
     int         nhost;
-    int         fold_case;           /* Windows: names and prefixes match in any case */
+    int         fold_case;           /* Windows: path prefixes match in any case (names always do) */
     uint64_t    replacements;        /* tokens rewritten since init */
+    long        fault_after;         /* output allocations that still succeed; -1 (the
+                                        init value) never fails. A fault-injection seam
+                                        for the unit test. */
 } br_redactor_t;
 
 /** @brief Fill a redactor with the home directory in every form, the base directories outside it, the user name and the host names.
@@ -202,9 +211,26 @@ typedef struct {
  * $XDG_DATA_HOME, $XDG_CONFIG_HOME, $XDG_STATE_HOME, $XDG_CACHE_HOME,
  * %LOCALAPPDATA%, %APPDATA%. User name: $USER / %USERNAME%, else the home
  * directory's last component. Host names: the uname nodename,
- * %COMPUTERNAME% and $HOSTNAME.
+ * %COMPUTERNAME% and $HOSTNAME, each with its first label when dotted.
  * @param r The redactor. */
 void br_redactor_init(br_redactor_t* r);
+
+/* A redactor's identities given by the caller instead of the environment. */
+typedef struct {
+    const char* home[4];             /* home directory forms; NULL entries ignored */
+    const char* user;                /* NULL or "" when unknown */
+    const char* host[3];             /* NULL entries ignored */
+    int         fold_case;
+} br_identity_t;
+
+/** @brief Fill a redactor with the given identities only: no environment, no base directories.
+ *
+ * Each home form is added as br_redactor_init adds $HOME (both separators,
+ * resolved through links when it exists); the user name and the host names
+ * as given.
+ * @param r The redactor.
+ * @param id The identities. */
+void br_redactor_init_identity(br_redactor_t* r, const br_identity_t* id);
 
 /** @brief Release a redactor's prefix strings.
  * @param r The redactor. */
@@ -218,8 +244,12 @@ void br_redactor_free(br_redactor_t* r);
  * replaced by `~`; a base outside home is replaced by its variable name.
  * Any other absolute path token (`/...`, `X:\...`, `\\...`) keeps only its
  * last component. The user name and the host names are replaced by
- * `<user>` and `<host>` only where they are a whole path component or the
- * whole value after a `key=`.
+ * `<user>` and `<host>`, in any letter case: a name of BR_NAME_WORD_MIN
+ * bytes or more wherever it stands as a whole word (between bytes that are
+ * not ASCII letters, digits, `_`, `-` or UTF-8 bytes), a shorter one only
+ * as a whole path component or the whole value after a `key=`. A dotted host
+ * name's first label is a host name too. The placeholders themselves are
+ * never matched.
  * @param r The redactor; its replacement count grows.
  * @param in The text.
  * @param n Its length.
@@ -229,8 +259,10 @@ char* br_redact_text(br_redactor_t* r, const char* in, size_t n, size_t* out_n);
 
 /** @brief Find the home forms, the user name and the host names in a byte range.
  *
- * Home forms match as substrings; a name matches only between two bytes
- * that are not letters, digits, `_` or `-`.
+ * Home forms match as substrings; a user or host name of BR_NAME_WORD_MIN
+ * bytes or more matches in any letter case as a whole word, as
+ * br_redact_text replaces it; the placeholders `<user>` and `<host>` never
+ * match.
  * @param r The redactor.
  * @param d The bytes.
  * @param n Their count.
@@ -239,6 +271,52 @@ char* br_redact_text(br_redactor_t* r, const char* in, size_t n, size_t* out_n);
  * @return The match count. */
 size_t br_scan(const br_redactor_t* r, const uint8_t* d, size_t n,
                void (*hit)(void* ud, size_t off, br_needle_kind_t what), void* ud);
+
+/* A member left out of the bundle, and why. */
+typedef struct {
+    char member[160];
+    char reason[96];
+} br_drop_t;
+
+/* A scanned member shipped with identity findings, by kind. */
+typedef struct {
+    char   member[160];
+    size_t hits[BRF_N];
+} br_flag_t;
+
+#define BR_FINDINGS_MAX 256
+#define BR_DROPS_MAX 64
+#define BR_FLAGS_MAX 64
+
+/* The redaction pass's results: findings (exact count, the first
+ * BR_FINDINGS_MAX kept), dropped members and flagged members (exact counts,
+ * the first BR_DROPS_MAX / BR_FLAGS_MAX kept), and the scan's cursor. */
+typedef struct {
+    br_finding_t f[BR_FINDINGS_MAX];
+    size_t       nf, total;
+    br_drop_t    drop[BR_DROPS_MAX];
+    size_t       ndrop, drop_total;
+    br_flag_t    flag[BR_FLAGS_MAX];
+    size_t       nflag, flag_total;
+    const char*  member;
+    const char*  section;
+    size_t       base;
+    size_t       hits[BRF_N];   /* the current member's findings */
+} br_pass_t;
+
+/** @brief Redact every member by its class, scan the ones never rewritten, and drop each member that cannot be shipped redacted.
+ *
+ * Text members are redacted (br_redact_text) and scanned again; a member
+ * whose redaction fails or whose redacted text still holds an identity is
+ * dropped. A bk2 has its entries redacted and scanned the same way; one that
+ * does not parse is dropped. A state file has its card paths rewritten; one
+ * that does not parse is dropped. Every other member is scanned and shipped
+ * as it is; one with findings is flagged. A member whose name holds an
+ * identity is dropped.
+ * @param R The redactor; its replacement count grows.
+ * @param m The members; dropped ones are removed and freed.
+ * @param s The results, zeroed by the caller. */
+void br_redact_members(br_redactor_t* R, br_members_t* m, br_pass_t* s);
 
 /** @brief Append a member, taking ownership of @p data.
  * @param m The list.
