@@ -58,7 +58,8 @@
 #include "openpete_recomp_module.h"
 #include "openpete_fiber.h"           /* openpete_frame */
 #include "renderer/render_paths.h"
-#include "renderer/hook_bracket.h"   /* hook_reextract_ready */
+#include "renderer/hook_bracket.h"   /* hook_reextract_ready_held */
+#include "renderer/cut_guard.h"      /* cut_held_sets_t: the held cut's tick N-1 set */
 #include "renderer/native_gte.h"
 #include "renderer/portal_spyro23.h"
 #include "renderer/portal_plane.h"     /* openpete_portal_plane_margin */
@@ -102,6 +103,17 @@ typedef struct {
 } p3_tick;
 
 static p3_tick s_curr, s_prev;
+
+/** @brief Exchange the current tick's captures with the previous tick's. */
+static void p3_sets_swap(void) {
+    const p3_tick t = s_curr; s_curr = s_prev; s_prev = t;
+}
+
+/* The two captured ticks keyed by canonical epoch: the pass's first run in an
+ * epoch retires the current tick into s_prev, and a held camera cut shows the
+ * tick N-1 set (cut_held_sets_enter). */
+static cut_held_sets_t s_sets = { p3_sets_swap, &s_curr.n, "portal", { 0u, 0u }, 0u };
+static int s_pick = -1;   /* the set a held present shows (cut_held_pick_t), -1 outside a hold */
 static int s_in_pass = 0;
 static uint32_t s_rec_next = 0;   /* the first record index the next background capture may name */
 static int s_leaf_calls = 0;      /* engagement: leaf hooks seen this tick */
@@ -1177,6 +1189,7 @@ static int p3_opening_poly(const p3_preview* p, const p3_opening* op, p3_v* out,
 }
 
 int portal_s23_sky_recent(void) {
+    if (s_pick >= 0) return s_pick != CUT_HELD_EMPTY && s_curr.n > 0;
     return s_sky_fed_frame != 0u && (openpete_frame - s_sky_fed_frame) <= 2u;
 }
 
@@ -1230,8 +1243,9 @@ int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_sky
     /* No preview paints an opening while the portal path is deselected
      * (p3_feed), so terrain keeps its faces there. */
     if (!render_path_enabled(RP_PORTAL)) return 0;
+    if (s_pick == CUT_HELD_EMPTY) return 0;
     if (!s_curr.valid || s_curr.n == 0 || max <= 0) return 0;
-    if (openpete_frame - s_curr.frame > 3u) return 0;
+    if (s_pick < 0 && openpete_frame - s_curr.frame > 3u) return 0;
     const float offx = (float)(v->ofx - P3_CX), offy = (float)(v->ofy - P3_CY);
     int n = 0;
     for (int i = 0; i < s_curr.n && n < max; i++) {
@@ -1889,8 +1903,12 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
     if (s_in) return 0;
     s_in = 1;
     if (openpete_frame != s_curr.frame) {
-        s_prev = s_curr;
-        s_prev.valid = s_curr.valid && (openpete_frame - s_curr.frame <= 3u);
+        /* The epoch's first pass retires the current tick into s_prev; a
+         * speculative render inside the epoch replaces the current tick only. */
+        const uint32_t epoch = s_sets.epoch[0];
+        cut_held_sets_capture(&s_sets);
+        if (s_sets.epoch[0] != epoch)
+            s_prev.valid = s_prev.valid && (openpete_frame - s_prev.frame <= 3u);
         s_curr.n = 0; s_curr.frame = openpete_frame; s_curr.valid = 1;
     }
     s_leaf_calls = 0;
@@ -1995,15 +2013,27 @@ static void p3_lerp_preview(p3_preview* O, const p3_preview* P, const p3_preview
         }
 }
 
+void portal_s23_reextract_enter(int hold) {
+    s_pick = cut_held_sets_enter(&s_sets, hold);
+}
+
+void portal_s23_reextract_leave(void) {
+    cut_held_sets_leave(&s_sets, s_pick);
+    s_pick = -1;
+}
+
 /* Sub-tick re-extract: replays the tick's previews, lerped per portal. */
 void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) OP_REQUIRES(sim) {
-    if (!hook_reextract_ready(RP_PORTAL)) return;  /* scene on, selected, canon-drawn */
+    /* Scene on, selected, and canon-drawn; on a held cut the set's own epoch
+     * stands in for the canon-drawn term. */
+    if (!hook_reextract_ready_held(RP_PORTAL, s_pick)) return;
     if (!s_curr.valid || s_curr.n == 0) return;
     p3_tick T = s_curr;
     /* At alpha 1 the present is the current tick's own view: replay the
      * capture unchanged, so the identity present reproduces the canonical one
-     * bit for bit (a lerp evaluated at 1 rounds differently). */
-    int can_lerp = interp_on && p3_interp_on() && alpha < 0.999 && s_prev.valid;
+     * bit for bit (a lerp evaluated at 1 rounds differently). A held set is
+     * tick N-1's capture shown under tick N-1's camera, replayed unchanged. */
+    int can_lerp = s_pick < 0 && interp_on && p3_interp_on() && alpha < 0.999 && s_prev.valid;
     if (can_lerp) {
         const float a = (float)alpha;
         for (int i = 0; i < T.n; i++) {

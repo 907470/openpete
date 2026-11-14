@@ -615,9 +615,13 @@ static void game_reextract_body(void* cpu_v) {
     RX_CENSUS_BEGIN();
     cyclorama_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* sky dome + background */
     RX_CENSUS_STEP("cyclorama");
+    /* A held cut shows tick N-1's portal set: terrain reads its opening
+     * planes and the portal feeder draws its previews. */
+    portal_s23_reextract_enter(hold);
     terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed, 0);
     RX_CENSUS_STEP("terrain");
     portal_s23_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
+    portal_s23_reextract_leave();
     RX_CENSUS_STEP("portal");
     /* The two model kinds are queued and replayed apart: the animated queue is
      * a staged view of the tick's draw scratch, the simple models' queue a host

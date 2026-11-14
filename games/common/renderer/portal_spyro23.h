@@ -96,12 +96,26 @@ typedef struct portal_game_s23_consts {
  * the registered descriptor's table here before any feeder runs. */
 extern portal_game_s23_consts_t portal_game_s23;
 
+/** @brief Selects the captured tick a sub-tick present shows: tick N-1's set on a held camera cut.
+ *
+ * Outside a hold nothing changes. On a hold the set is cut_held_set_pick's,
+ * swapped in until portal_s23_reextract_leave, so portal_s23_sky_planes,
+ * portal_s23_sky_recent and portal_s23_reextract read tick N-1's previews,
+ * the set tick N-1's camera drew.
+ * @param hold Nonzero on a held camera cut. */
+void portal_s23_reextract_enter(int hold);
+
+/** @brief Undoes portal_s23_reextract_enter, restoring the current tick's set. */
+void portal_s23_reextract_leave(void);
+
 /** @brief Feeds the tick's captured portal previews again on a sub-tick present.
  *
  * Returns without feeding when the native scene is off, when the portal path
- * did not draw on the canonical present, or when the current tick captured
- * nothing. With `interp_on`, OPENPETE_PORTAL3_INTERP not starting with 0,
- * `alpha` below 0.999 and a valid previous capture, each preview is lerped
+ * did not draw on the canonical present (on a held cut, when tick N-1 drew
+ * no set), or when the shown tick captured nothing. A held set
+ * (portal_s23_reextract_enter) is fed unchanged. Otherwise, with
+ * `interp_on`, OPENPETE_PORTAL3_INTERP not starting with 0, `alpha` below
+ * 0.999 and a valid previous capture, each preview is lerped
  * toward its partner on the previous tick (clip rect, world depth, IR0, far
  * colour and the pentagon edges the two share); a preview with no partner
  * keeps its own capture. Otherwise the capture is fed unchanged, so a present at alpha 1
@@ -114,13 +128,17 @@ void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) OP_REQUIRE
 /** @brief Reports whether a portal preview emitted geometry within the last two VBLs.
  *
  * Compares openpete_frame, the VBL counter, against the value it held when
- * the feeder last emitted a preview triangle.
- * @return Nonzero when a preview emitted at most two VBLs ago, else 0. */
+ * the feeder last emitted a preview triangle. On a held cut it reports
+ * whether the held set holds a preview.
+ * @return Nonzero when a preview emitted at most two VBLs ago (on a held
+ *         cut, when the held set holds one), else 0. */
 int portal_s23_sky_recent(void);
 
 /** @brief Fills `out` with the screen-space opening of every portal in the latest capture.
  *
- * The latest capture counts only when it was taken at most three VBLs ago.
+ * The latest capture counts only when it was taken at most three VBLs ago;
+ * on a held cut the held set counts whatever its age, and no set counts
+ * when tick N-1 drew none.
  * One entry is written per portal, from its base record (leaf argument 1),
  * and a record without a pentagon of at least three edges, or whose
  * re-derived opening is off-screen, is skipped. The opening polygon is the
