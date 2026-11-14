@@ -393,13 +393,16 @@ static int rp_is_file(const char* path)
     return SDL_GetPathInfo(path, &info) && info.type == SDL_PATHTYPE_FILE;
 }
 
-/** @brief Remove one directory entry, recursing into directories (SDL_EnumerateDirectory callback). */
+/** @brief Remove one directory entry, recursing into real directories only (SDL_EnumerateDirectory callback).
+ *
+ * A link is removed itself and never entered, so a link planted in the
+ * scratch directory cannot direct the reset at its target. */
 static SDL_EnumerationResult SDLCALL rp_rm_cb(void* ud, const char* dirname, const char* fname)
 {
     (void)ud;
     char p[RP_PATH];
     snprintf(p, sizeof p, "%s%s", dirname, fname);
-    if (rp_is_dir(p)) (void)SDL_EnumerateDirectory(p, rp_rm_cb, NULL);
+    if (!openpete_paths_is_link(p) && rp_is_dir(p)) (void)SDL_EnumerateDirectory(p, rp_rm_cb, NULL);
     (void)SDL_RemovePath(p);
     return SDL_ENUM_CONTINUE;
 }
@@ -409,6 +412,8 @@ static SDL_EnumerationResult SDLCALL rp_rm_cb(void* ud, const char* dirname, con
 #define RP_MARKER ".openpete-bugreport-replay"
 
 /** @brief Empty the scratch directory (only one carrying the marker), or create it.
+ *
+ * Links inside it are removed, not followed (rp_rm_cb).
  * @return 0, or -1 when it exists without the marker or cannot be made. */
 static int rp_scratch_reset(const char* dir)
 {

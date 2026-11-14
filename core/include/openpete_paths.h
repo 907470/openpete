@@ -99,6 +99,12 @@ int openpete_paths_sandbox_guard(int argc, char** argv);
  * @return 0 on success, -1 when the path cannot be read or does not fit. */
 int openpete_exe_path(char* out, size_t cap);
 
+/** @brief Report whether a path is itself a link, without following it: a symbolic link (lstat) on POSIX, a reparse point (a symbolic link or junction) on Windows.
+ *
+ * @param path The path, UTF-8 on Windows.
+ * @return 1 for a link, 0 otherwise (including a missing path). */
+int openpete_paths_is_link(const char* path);
+
 /** @brief Take an exclusive, non-blocking lock on a file, creating it when absent: flock on POSIX, LockFileEx on Windows.
  *
  * The lock lasts until openpete_paths_unlock or the process ends.

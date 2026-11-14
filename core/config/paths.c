@@ -90,6 +90,18 @@ int openpete_exe_dir(char* out, size_t cap) {
     return 0;
 }
 
+int openpete_paths_is_link(const char* path) {
+#ifdef _WIN32
+    wchar_t w[OPP_PATH_MAX];
+    if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, w, (int)(sizeof w / sizeof w[0]))) return 0;
+    const DWORD a = GetFileAttributesW(w);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+    struct stat st;
+    return lstat(path, &st) == 0 && S_ISLNK(st.st_mode);
+#endif
+}
+
 int openpete_paths_lock(const char* path, intptr_t* handle) {
 #ifdef _WIN32
     wchar_t w[OPP_PATH_MAX];
