@@ -11242,15 +11242,20 @@ static unsigned s_tie_face_stamp;
 
 /** @brief The splice ordinal of walk triangle i's moby in its world bucket, at most MOBY_TIE_MAX_ORD.
  *
- * The ordinal counts the mobys the scene's emits put in that bucket before
- * this one. The emits feed the records in the game's queue order and a
- * moby's faces contiguously, so the first face of a moby in a bucket names
- * its place in that bucket's tail splices; its other faces there take the
- * same ordinal. The count runs across every emit into one scene
- * (openpete_native_scene_epoch), as the game's splices run across its draw
- * calls. A face with no world bucket
- * and a face of a record the extended-LOD reveal appended (the game splices
- * no prim of it) take 0 and leave the count unchanged.
+ * The ordinal counts the mobys before this one that put a face into that
+ * bucket through moby_tie_pull, the only caller: an opaque ACTOR face of an
+ * unmangled moby outside the true-depth classes, while the face key and key
+ * resolve are on (moby_face_stamp_key). A blended face, a mangled moby's
+ * face, a face of another category and a true-depth class's face do not
+ * reach it, so a moby with only such faces in the bucket is not counted,
+ * though the game splices its prims there. The emits feed the records in the
+ * game's queue order and a moby's faces contiguously, so the first counted
+ * face of a moby in a bucket names its place among the counted mobys; its
+ * other faces there take the same ordinal. The count runs across every emit
+ * into one scene (openpete_native_scene_epoch), as the game's splices run
+ * across its draw calls. A face with no world bucket and a face of a record
+ * the extended-LOD reveal appended (the game splices no prim of it) take 0
+ * and leave the count unchanged.
  * @param i Walk triangle index.
  * @return The ordinal, 0 to MOBY_TIE_MAX_ORD. */
 static int moby_tie_ordinal(int i) {
@@ -11348,8 +11353,9 @@ static int moby_tie_coincident(int i, int b, int ord) {
 
 /** @brief The tie pull of walk triangle i in steps: its splice ordinal when it coincides with an earlier record's face of its world bucket, else 0.
  *
- * Every face that reaches the key stamp advances its bucket's splice state
- * (moby_tie_ordinal) and is kept for the faces after it.
+ * Called once per opaque, unmangled ACTOR face outside the true-depth
+ * classes (moby_face_stamp_key); each such face advances its bucket's splice
+ * state (moby_tie_ordinal) and is kept for the faces after it.
  * @param i Walk triangle index.
  * @return The pull in MOBY_TIE_STEP units, 0 to MOBY_TIE_MAX_ORD. */
 static int moby_tie_pull(int i) {
