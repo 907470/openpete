@@ -24927,6 +24927,28 @@ int openpete_native_render_screenshot(const char *path, const char *what)
     return openpete_native_render_screenshot_ext(path, what, NULL, NULL);
 }
 
+int openpete_native_render_screenshot_async(const char *path, const char *what)
+{
+    ps_apply_geometry();
+    if (!s_nr.enabled || !path) return 1;
+    const size_t cap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
+    if (cap == 0) return 1;
+    unsigned char *buf = malloc(cap);
+    if (!buf) return 1;
+    int w = 0, h = 0;
+    const op_time_t t0 = op_now();   /* clock-guard: wall */
+    if (!rhi_read_offscreen(s_nr.dev, buf, cap, &w, &h)) {
+        free(buf);
+        return 1;
+    }
+    /* Alpha forced opaque, as shot_write_offscreen_ext does. */
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++)
+        buf[i * 4 + 3] = 0xFF;
+    const double readback_ms = (double)(op_now() - t0) / 1e6;   /* clock-guard: wall */
+    return openpete_write_png_rgba_async(path, buf, w, h, what ? what : "offscreen",
+                                         openpete_feed_key_now(), readback_ms);
+}
+
 void openpete_native_render_record_flush(void)
 {
     if (!s_nr.enabled || !openpete_record_active())
@@ -24940,6 +24962,7 @@ void openpete_native_render_record_flush(void)
 
 void openpete_native_render_shutdown(void)
 {
+    openpete_png_async_drain();   /* the player screenshots still queued */
     scene_box_summary();
     hide_hud_report();
     /* Kept freeze-backdrop sources: a flip is a settle drawn after the

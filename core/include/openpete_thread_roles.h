@@ -148,7 +148,8 @@ extern "C" {
     X(crashdemo, 16)    \
     X(ingest,    17)    \
     X(bugreport, 18)    \
-    X(audio,     19)
+    X(audio,     19)    \
+    X(shotpng,   20)
 
 typedef struct OP_CAPABILITY_TYPE("role") op_role_cap { char unused; } op_role_cap_t;
 
@@ -226,6 +227,7 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:log_file.c@F@pump_entry", "arg:_beginthreadex|arg:pthread_create", "logpump") /* thread-roles: the pump_entry thread entry binds logpump */ \
     ROW("c:music_override.c@F@mo_worker", "arg:SDL_CreateThreadRuntime", "music") /* thread-roles: the mo_worker thread entry binds music */ \
     ROW("c:audio_consumer.c@F@ac_thread_main", "arg:SDL_CreateThreadRuntime", "audio") /* thread-roles: the audio feed's consumer thread entry binds audio */ \
+    ROW("c:screenshot.c@F@png_writer_main", "arg:SDL_CreateThreadRuntime", "shotpng") /* thread-roles: the screenshot PNG writer thread entry binds shotpng */ \
     ROW("c:present_thread.c@F@present_thread_main", "arg:SDL_CreateThreadRuntime", "present") /* thread-roles: the present_thread_main thread entry binds present */ \
     ROW("c:record.c@F@rec_thread_main", "arg:SDL_CreateThreadRuntime", "record") /* thread-roles: the rec_thread_main thread entry binds record */ \
     ROW("c:rhi_vulkan.c@F@pcache_save_worker", "arg:SDL_CreateThreadRuntime|direct:", "pcache") /* thread-roles: the pcache_save_worker thread entry binds pcache */ \

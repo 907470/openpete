@@ -2112,6 +2112,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}")
 
+    # Player screenshot off the sim thread: Spyro 3 windowed on a private
+    # Xvfb display in Lost Fleet, three `shot` requests with the PNG write
+    # lengthened by 40 ms; on the writer thread no feed stretch or slip
+    # follows a screenshot, inline (OPENPETE_SHOT_SYNC=1) one does. Labels
+    # `slow;audio`. Exit 64 (skip) without xvfb-run, the binary or the disc.
+    add_test(NAME screenshot_async
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_screenshot_async.sh
+                     --out ${CMAKE_BINARY_DIR}/screenshot-async)
+    set_tests_properties(screenshot_async PROPERTIES
+        LABELS "slow;audio"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}")
+
     # Matrix determinism gate - broaden coverage from one (aspect,
     # scenario) cell to a sweep across aspects × fovs × scenarios.
     # Divergence in an open channel of the game's channel registry is

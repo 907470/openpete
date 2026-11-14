@@ -75,6 +75,42 @@ int  openpete_write_png_rgba_stride(const char* path, const void* pixels, int w,
  *         or a write failure. */
 int  openpete_write_png_rgba(const char* path, const void* pixels, int w, int h);
 
+/** @brief Queue a top-down, packed RGBA8 buffer for PNG encoding and writing on the writer thread.
+ *
+ * The writer thread is created on the first call and runs the queued jobs
+ * in order, each through openpete_write_png_rgba, then logs
+ * `<what> screenshot WxH -> <path> key=<key>` with the readback and
+ * encode spans. The caller returns without waiting on the encoder or the
+ * file system. With OPENPETE_SHOT_SYNC=1, a full queue (8 jobs) or no
+ * writer thread, the job runs inline on the calling thread instead. The
+ * path counts as taken for openpete_screenshot_user_path until the file
+ * is committed. openpete_png_async_drain, also registered with atexit,
+ * writes every queued job before the program ends.
+ * @param path Output path, copied.
+ * @param pixels w*h*4 bytes from malloc; ownership passes to the call, which frees them.
+ * @param w Width in pixels.
+ * @param h Height in pixels.
+ * @param what Label for the log line ("player").
+ * @param key The feed key at the readback, logged.
+ * @param readback_ms The caller's readback span, logged.
+ * @return 0 when the job was queued or written; 1 on a NULL argument, a
+ *         non-positive dimension or an allocation failure (the pixels are
+ *         freed). */
+int  openpete_write_png_rgba_async(const char* path, unsigned char* pixels, int w, int h,
+                                   const char* what, unsigned key, double readback_ms);
+
+/** @brief Report whether a queued or running asynchronous PNG write targets a path.
+ * @param path The path to test; NULL returns 0.
+ * @return 1 when a write to @p path is queued or running, else 0. */
+int  openpete_png_async_pending(const char* path);
+
+/** @brief Write every queued asynchronous PNG and stop the writer thread.
+ *
+ * Blocks until the queue is empty and the writer has exited; a later
+ * openpete_write_png_rgba_async starts a new writer. Safe to call when no
+ * writer ran. */
+void openpete_png_async_drain(void);
+
 /** @brief Name the next player-facing screenshot and create its directory.
  *
  * The name is `<dir>/openpete-<YYYYmmdd-HHMMSS>.png` in local time, then

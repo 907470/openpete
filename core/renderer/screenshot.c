@@ -4,6 +4,7 @@
 #include "openpete_atomic_file.h"
 #include "openpete_log.h"
 #include "openpete_paths.h"
+#include "openpete_thread_roles.h"
 
 #include <time.h>
 
@@ -43,6 +44,159 @@ int openpete_write_png_rgba_stride(const char* path, const void* pixels, int w, 
 
 int openpete_write_png_rgba(const char* path, const void* pixels, int w, int h) {
     return openpete_write_png_rgba_stride(path, pixels, w, h, w * 4);
+}
+
+/* Asynchronous PNG writer: one worker thread drains a FIFO of encode-and-write
+ * jobs, so the thread that read the pixels back never waits on the encoder or
+ * the file system. The queue, the busy flag and the thread handle are guarded
+ * by s_aw.mx; a queued job's path stays reserved (openpete_png_async_pending)
+ * until its file is committed. */
+#define PNG_ASYNC_SLOTS 8
+
+typedef struct png_job {
+    char           path[1100];
+    char           what[32];
+    unsigned char* px;          /* owned; freed by the writer */
+    int            w, h;
+    unsigned       key;         /* the feed key at the readback */
+    double         readback_ms; /* the caller's readback span */
+} png_job_t;
+
+static struct {
+    SDL_Mutex*     mx;
+    SDL_Condition* cv;          /* a job was queued, or quit was raised */
+    SDL_Condition* idle;        /* the queue emptied and no job is running */
+    SDL_Thread*    th;
+    png_job_t*     q[PNG_ASYNC_SLOTS];
+    int            head, n;
+    png_job_t*     cur;         /* the job being written, NULL when none */
+    int            quit;
+    int            failed;      /* thread creation failed once: write inline */
+} s_aw;
+
+/** @brief Encode one job's pixels to its PNG, log the line the synchronous path logs, and free the job.
+ *
+ * Runs on the writer thread, or inline on the caller's when no writer
+ * thread is available. OPENPETE_SHOT_WRITE_DELAY_MS lengthens the write by
+ * a fixed sleep.
+ * @param j The job; freed on return.
+ * @param where "writer" or "inline", named in the log line. */
+static void png_job_run(png_job_t* j, const char* where) {
+    const Uint64 t0 = SDL_GetTicksNS();   /* clock-guard: wall */
+    /* OPENPETE_SHOT_WRITE_DELAY_MS=N adds N ms to the write: a slow file
+     * system or an on-access scanner, for the harness that measures which
+     * thread waits on it. */
+    const char* delay = getenv("OPENPETE_SHOT_WRITE_DELAY_MS");
+    if (delay && *delay) SDL_DelayNS((Uint64)strtoul(delay, NULL, 10) * 1000000u);
+    const int rc = openpete_write_png_rgba(j->path, j->px, j->w, j->h);
+    const double enc_ms = (double)(SDL_GetTicksNS() - t0) / 1e6;   /* clock-guard: wall */
+    if (rc == 0)
+        OPL_INFO_F("native", "%s screenshot %dx%d -> %s key=%u (readback %.2f ms; encode and write %.2f ms %s)",
+                   j->what, j->w, j->h, j->path, j->key, j->readback_ms, enc_ms, where);
+    else
+        OPL_ERROR_F("screenshot", "%s screenshot: PNG write to %s failed", j->what, j->path);
+    free(j->px);
+    free(j);
+}
+
+/** @brief Writer thread entry: run queued jobs in order until quit is raised and the queue is empty.
+ * @param ud Unused.
+ * @return 0. */
+static int SDLCALL png_writer_main(void* ud) {
+    OP_ROLE_BIND(shotpng);
+    (void)ud;
+    SDL_LockMutex(s_aw.mx);
+    for (;;) {
+        while (s_aw.n == 0 && !s_aw.quit) SDL_WaitCondition(s_aw.cv, s_aw.mx);
+        if (s_aw.n == 0) break;
+        png_job_t* j = s_aw.q[s_aw.head];
+        s_aw.head = (s_aw.head + 1) % PNG_ASYNC_SLOTS;
+        s_aw.n--;
+        s_aw.cur = j;
+        SDL_UnlockMutex(s_aw.mx);
+        png_job_run(j, "on the writer");
+        SDL_LockMutex(s_aw.mx);
+        s_aw.cur = NULL;
+        if (s_aw.n == 0) SDL_BroadcastCondition(s_aw.idle);
+    }
+    SDL_BroadcastCondition(s_aw.idle);
+    SDL_UnlockMutex(s_aw.mx);
+    return 0;
+}
+
+/** @brief Create the writer's lock objects once; 0 when they cannot be created. */
+static int png_async_init(void) {
+    if (s_aw.mx) return 1;
+    SDL_Mutex* mx = SDL_CreateMutex();
+    SDL_Condition* cv = SDL_CreateCondition();
+    SDL_Condition* idle = SDL_CreateCondition();
+    if (!mx || !cv || !idle) {
+        if (mx) SDL_DestroyMutex(mx);
+        if (cv) SDL_DestroyCondition(cv);
+        if (idle) SDL_DestroyCondition(idle);
+        return 0;
+    }
+    s_aw.cv = cv;
+    s_aw.idle = idle;
+    s_aw.mx = mx;
+    atexit(openpete_png_async_drain);
+    return 1;
+}
+
+int openpete_write_png_rgba_async(const char* path, unsigned char* pixels, int w, int h,
+                                  const char* what, unsigned key, double readback_ms) {
+    if (!path || !pixels || w <= 0 || h <= 0) { free(pixels); return 1; }
+    png_job_t* j = (png_job_t*)calloc(1, sizeof *j);
+    if (!j) { free(pixels); return 1; }
+    snprintf(j->path, sizeof j->path, "%s", path);
+    snprintf(j->what, sizeof j->what, "%s", what ? what : "offscreen");
+    j->px = pixels; j->w = w; j->h = h; j->key = key; j->readback_ms = readback_ms;
+    const char* sync = getenv("OPENPETE_SHOT_SYNC");
+    int queued = 0;
+    if (!(sync && *sync && *sync != '0') && png_async_init()) {
+        SDL_LockMutex(s_aw.mx);
+        if (!s_aw.th && !s_aw.failed && !s_aw.quit) {
+            s_aw.th = SDL_CreateThread(png_writer_main, "openpete-shotpng", NULL);
+            if (!s_aw.th) {
+                s_aw.failed = 1;
+                OPL_WARN_F("screenshot", "PNG writer thread not created: %s; writing inline", SDL_GetError());
+            }
+        }
+        if (s_aw.th && !s_aw.quit && s_aw.n < PNG_ASYNC_SLOTS) {
+            s_aw.q[(s_aw.head + s_aw.n) % PNG_ASYNC_SLOTS] = j;
+            s_aw.n++;
+            queued = 1;
+            SDL_SignalCondition(s_aw.cv);
+        }
+        SDL_UnlockMutex(s_aw.mx);
+    }
+    if (!queued) png_job_run(j, "inline");
+    return 0;
+}
+
+int openpete_png_async_pending(const char* path) {
+    if (!path || !s_aw.mx) return 0;
+    int hit = 0;
+    SDL_LockMutex(s_aw.mx);
+    if (s_aw.cur && strcmp(s_aw.cur->path, path) == 0) hit = 1;
+    for (int i = 0; !hit && i < s_aw.n; i++)
+        if (strcmp(s_aw.q[(s_aw.head + i) % PNG_ASYNC_SLOTS]->path, path) == 0) hit = 1;
+    SDL_UnlockMutex(s_aw.mx);
+    return hit;
+}
+
+void openpete_png_async_drain(void) {
+    if (!s_aw.mx) return;
+    SDL_LockMutex(s_aw.mx);
+    SDL_Thread* th = s_aw.th;
+    s_aw.quit = 1;
+    s_aw.th = NULL;
+    SDL_BroadcastCondition(s_aw.cv);
+    SDL_UnlockMutex(s_aw.mx);
+    if (th) SDL_WaitThread(th, NULL);
+    SDL_LockMutex(s_aw.mx);
+    s_aw.quit = 0;   /* a later request starts a new writer */
+    SDL_UnlockMutex(s_aw.mx);
 }
 
 int openpete_screenshot_save_png(SDL_Renderer* renderer, const char* path) {
@@ -160,14 +314,16 @@ int openpete_screenshot_user_path(char* out, size_t cap) {
         snprintf(stamp, sizeof stamp, "screenshot");
 
     /* One-second stamp resolution, so a second shot within the same second
-     * would overwrite the first: suffix until the name is free. */
+     * would overwrite the first: suffix until the name is free, a name a
+     * queued asynchronous write still holds counting as taken. */
     for (int n = 1; n < 1000; n++) {
         char leaf[64];
         if (n == 1) snprintf(leaf, sizeof leaf, "openpete-%s.png", stamp);
         else        snprintf(leaf, sizeof leaf, "openpete-%s-%d.png", stamp, n);
         openpete_paths_join(out, cap, dir, leaf);
         SDL_PathInfo info;
-        if (!SDL_GetPathInfo(out, &info)) return 0;   /* nothing there: take it */
+        /* Nothing there and no queued write will create it: take it. */
+        if (!SDL_GetPathInfo(out, &info) && !openpete_png_async_pending(out)) return 0;
     }
     OPL_ERROR_F("screenshot", "no free filename for %s/openpete-%s", dir, stamp);
     out[0] = '\0';

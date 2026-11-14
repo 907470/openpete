@@ -3304,6 +3304,18 @@ int openpete_native_render_screenshot(const char *path, const char *what);
 int openpete_native_render_screenshot_ext(const char *path, const char *what,
                                           int *out_w, int *out_h);
 
+/** @brief Read the offscreen target back and queue it for PNG encoding and writing off the calling thread.
+ *
+ * As openpete_native_render_screenshot, except that only the readback (a
+ * device wait and a copy) runs on the calling thread; the encode and the
+ * file write run on the PNG writer thread (openpete_write_png_rgba_async),
+ * which logs the line once the file is committed.
+ * @param path Output PNG path.
+ * @param what Label for the log line; NULL reads as offscreen.
+ * @return 0 when the image was read back and queued, nonzero when native
+ *         render is disabled, @p path is NULL, or the readback fails. */
+int openpete_native_render_screenshot_async(const char *path, const char *what);
+
 /** @brief Drain the --record readback ring's queued tail images to the encoder.
  *
  * The ring still holds the last few presents when the run loop ends; they
