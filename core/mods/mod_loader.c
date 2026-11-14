@@ -72,6 +72,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 
 #include <dirent.h> /* MinGW provides it too */
@@ -5448,6 +5449,104 @@ static int zip_extract_all(mz_zip_archive* zip, const char* dest, size_t wrap_le
     return 1;
 }
 
+/** @brief SHA-256 of a file as hex.
+ *
+ * @param path The file.
+ * @param hex Receives the digest.
+ * @return 0, or -1 when the file does not open. */
+static int file_sha_hex(const char* path, char hex[65]) {
+    openpete_sha256_ctx hc;
+    openpete_sha256_init(&hc);
+    if (hash_file(&hc, path) != 0) return -1;
+    uint8_t digest[32];
+    openpete_sha256_final(&hc, digest);
+    openpete_sha256_hex(digest, hex);
+    return 0;
+}
+
+/* The player's state in an unpacked zip mod's tree: the data directory
+ * api->data_dir returns (`<mod dir>/data`) and the config.toml the Mods
+ * tab writes. A changed zip replaces the tree; these two move into the new
+ * tree first, so data_dir keeps its path and its contents. */
+#define ZIP_KEEP_DATA "data"
+#define ZIP_KEEP_ZIPDATA ".zip-data"
+
+/** @brief Move every entry of the zip's own data directory that the player's lacks into the player's, then remove the rest.
+ *
+ * @param staging The staged tree, holding the player's data/ and the zip's under ZIP_KEEP_ZIPDATA. */
+static void zip_merge_data(const char* staging) {
+    char zd[MOD_PATH_MAX + 16], ud[MOD_PATH_MAX + 16];
+    snprintf(zd, sizeof zd, "%s/" ZIP_KEEP_ZIPDATA, staging);
+    snprintf(ud, sizeof ud, "%s/" ZIP_KEEP_DATA, staging);
+    DIR* d = opendir(zd);
+    if (d) {
+        struct dirent* e;
+        while ((e = readdir(d)) != NULL) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            char from[MOD_PATH_MAX * 2], to[MOD_PATH_MAX * 2];
+            snprintf(from, sizeof from, "%s/%s", zd, e->d_name);
+            snprintf(to, sizeof to, "%s/%s", ud, e->d_name);
+            if (file_mtime(to) == (time_t)-1) (void)rename(from, to);
+        }
+        closedir(d);
+    }
+    (void)mod_rmtree(zd);
+}
+
+/** @brief Move the player's data directory and edited config.toml from the unpacked tree into the staged one.
+ *
+ * data/ moves whole (one rename); entries the zip ships under data/ that
+ * the player's lacks join it. config.toml is copied over the zip's when the
+ * player changed it: when its hash differs from the shipped copy's the
+ * stamp recorded, or the stamp records none (an older stamp).
+ * @param dest The unpacked tree.
+ * @param staging The staged tree.
+ * @param shipped_cfg The stamp's hash of the config.toml the previous zip shipped, "-" for none, "" when unrecorded.
+ * @param id The mod id, for log lines.
+ * @return 1 when data/ moved (zip_return_data puts it back if the swap fails), 0 when there was none, -1 when it could not move. */
+static int zip_carry_player_state(const char* dest, const char* staging, const char* shipped_cfg,
+                                  const char* id) {
+    char ucfg[MOD_PATH_MAX + 16], scfg[MOD_PATH_MAX + 16], hex[65];
+    snprintf(ucfg, sizeof ucfg, "%s/config.toml", dest);
+    snprintf(scfg, sizeof scfg, "%s/config.toml", staging);
+    if (file_sha_hex(ucfg, hex) == 0 && (!shipped_cfg[0] || strcmp(hex, shipped_cfg) != 0)) {
+        if (op_atomic_copy_file(ucfg, scfg) != 0) {
+            OPL_ERROR_F("mods", "%s.zip: cannot carry the player's config.toml into the new tree", id);
+            return -1;
+        }
+        OPL_INFO_F("mods", "%s.zip: kept the player's config.toml", id);
+    }
+    char udata[MOD_PATH_MAX + 16], sdata[MOD_PATH_MAX + 16], zdata[MOD_PATH_MAX + 16];
+    snprintf(udata, sizeof udata, "%s/" ZIP_KEEP_DATA, dest);
+    snprintf(sdata, sizeof sdata, "%s/" ZIP_KEEP_DATA, staging);
+    snprintf(zdata, sizeof zdata, "%s/" ZIP_KEEP_ZIPDATA, staging);
+    if (file_mtime(udata) == (time_t)-1) return 0;
+    const int zip_has = file_mtime(sdata) != (time_t)-1;
+    if (zip_has && rename(sdata, zdata) != 0) return -1;
+    if (rename(udata, sdata) != 0) {
+        OPL_ERROR_F("mods", "%s.zip: cannot move the player's data directory %s: %s", id, udata,
+                    strerror(errno));
+        if (zip_has) (void)rename(zdata, sdata);
+        return -1;
+    }
+    if (zip_has) zip_merge_data(staging);
+    OPL_INFO_F("mods", "%s.zip: kept the player's data directory", id);
+    return 1;
+}
+
+/** @brief Put the player's data directory back into the unpacked tree after a failed swap.
+ *
+ * @param dest The unpacked tree, still the previous one.
+ * @param staging The staged tree holding the player's data/. */
+static void zip_return_data(const char* dest, const char* staging) {
+    char udata[MOD_PATH_MAX + 16], sdata[MOD_PATH_MAX + 16];
+    snprintf(udata, sizeof udata, "%s/" ZIP_KEEP_DATA, dest);
+    snprintf(sdata, sizeof sdata, "%s/" ZIP_KEEP_DATA, staging);
+    if (rename(sdata, udata) != 0)
+        OPL_ERROR_F("mods", "cannot return the player's data directory to %s: %s (it is at %s)", udata,
+                    strerror(errno), sdata);
+}
+
 /** @brief Unpack `<mods_dir>/<id>.zip` to `<mods_dir>/.unpacked/<id>/` so a zipped mod loads like a folder.
  *
  * The zip's SHA-256 is stamped at `.unpacked/<id>.hash`, so an unchanged
@@ -5458,7 +5557,11 @@ static int zip_extract_all(mz_zip_archive* zip, const char* dest, size_t wrap_le
  * `.unpacked/<id>.new/`, which then replaces the previous tree whole by
  * renaming it aside (op_atomic_replace_dir), so a file the new version
  * dropped (a source, a texture, a shader) does not survive, and a failed
- * extraction or swap leaves the previous tree in place.
+ * extraction or swap leaves the previous tree in place. The player's
+ * data/ and an edited config.toml move into the new tree before the swap
+ * (zip_carry_player_state), so they survive it at the same paths. The
+ * stamp's second line records the hash of the config.toml the zip ships
+ * (`config -` for none), which tells a player's edit from the shipped copy.
  * An entry path that is absolute or contains ".." aborts the archive.
  * @return 0 when unpacked or already current; -1 when the zip is missing
  *         or unreadable, an entry is unsafe or fails to extract, no
@@ -5481,13 +5584,17 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
     snprintf(dest, sizeof dest, "%s/.unpacked/%s", mods_dir, id);
     snprintf(stamp, sizeof stamp, "%s.hash", dest);
 
-    char stamped[65] = "";
+    char stamped[65] = "", shipped_cfg[65] = "";
     FILE* sf = fopen(stamp, "rb");
     if (sf) {
-        size_t got = fread(stamped, 1, sizeof stamped - 1, sf);
-        stamped[got] = '\0';
-        if (got && stamped[got - 1] == '\n') stamped[got - 1] = '\0';
+        char text[160] = "";
+        const size_t got = fread(text, 1, sizeof text - 1, sf);
+        text[got] = '\0';
         fclose(sf);
+        char* nl = strchr(text, '\n');
+        if (nl) *nl = '\0';
+        snprintf(stamped, sizeof stamped, "%.64s", text);
+        if (nl && sscanf(nl + 1, "config %64s", shipped_cfg) != 1) shipped_cfg[0] = '\0';
     }
     char probe[MOD_PATH_MAX + 12];
     snprintf(probe, sizeof probe, "%s/mod.toml", dest);
@@ -5523,14 +5630,25 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
         (void)mod_rmtree(staging);
         return -1;
     }
-    if (op_atomic_replace_dir(staging, dest, mod_rmtree) != 0) {
-        OPL_ERROR_F("mods", "%s.zip: cannot replace %s (a file in it is in "
-                    "use?) - skipped", id, dest);
+    char new_cfg[65] = "-", staged_cfg[MOD_PATH_MAX + 24];
+    snprintf(staged_cfg, sizeof staged_cfg, "%s/config.toml", staging);
+    if (file_sha_hex(staged_cfg, new_cfg) != 0) snprintf(new_cfg, sizeof new_cfg, "-");
+    const int moved = zip_carry_player_state(dest, staging, shipped_cfg, id);
+    if (moved < 0) {
+        OPL_ERROR_F("mods", "%s.zip: the player's data could not move to the new version - previous "
+                    "tree kept, skipped", id);
         (void)mod_rmtree(staging);
         return -1;
     }
-    char line[80];
-    int ln = snprintf(line, sizeof line, "%s\n", key);
+    if (op_atomic_replace_dir(staging, dest, mod_rmtree) != 0) {
+        OPL_ERROR_F("mods", "%s.zip: cannot replace %s (a file in it is in "
+                    "use?) - skipped", id, dest);
+        if (moved) zip_return_data(dest, staging);
+        (void)mod_rmtree(staging);
+        return -1;
+    }
+    char line[160];
+    int ln = snprintf(line, sizeof line, "%s\nconfig %s\n", key, new_cfg);
     (void)op_atomic_write_file(stamp, line, (size_t)ln);
     OPL_INFO_F("mods", "%s: unpacked %d file%s from %s.zip", id, files,
                files == 1 ? "" : "s", id);

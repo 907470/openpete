@@ -51,7 +51,8 @@ the exe if that dir exists and is writable, or `portable = true` in
 
 `<id>.zip` with `mod.toml` at root (or under one wrapping folder) loads
 identically; unpacked to `mods/.unpacked/<id>/`, re-unpacked only when the
-zip hash changes. Folder beats zip with the same id.
+zip hash changes; the re-unpack keeps the player's `data/` and edited
+`config.toml`. Folder beats zip with the same id.
 
 `mods/enabled.txt`: one id per line, `#` comments. Missing file = every mod,
 lexicographic. ORDER IS PRIORITY: later line = runs first on a shared

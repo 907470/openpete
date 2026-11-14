@@ -1219,6 +1219,79 @@ else
     bad "zip/build caches missed on the second boot"
 fi
 
+# ── 15b. zip mods: a changed zip keeps the player's data/ and config.toml ──
+# A zip mod counts its boots in <data_dir>/count.txt and reads the config
+# key `level` (its zip ships config.toml with level = 1). Boot 1 runs v1.
+# Boot 2 runs v2 (a new file, a new comment in the shipped config.toml)
+# with config.toml untouched: the count goes on and config.toml is v2's
+# shipped copy. Then the player's config.toml sets level = 7 (the file the
+# Mods tab's Apply writes, openpete_mods_config_write over
+# <mod dir>/config.toml) and boot 3 runs v3: the count goes on, level = 7
+# is kept, and data_dir keeps its path throughout.
+say "zip mods: a changed zip keeps the player's data/ and config.toml"
+mkdir -p "$WORK/zipkeepsrc/src" "$WORK/zipkeep"
+printf '[mod]\nid = "zip-keeper"\nversion = "0.0.1"\napi = '"$API_VER"'\n\n[[config]]\nkey = "level"\ntype = "int"\ndefault = 1\n' \
+    > "$WORK/zipkeepsrc/mod.toml"
+printf '# zip-keeper settings\nlevel = 1\n' > "$WORK/zipkeepsrc/config.toml"
+cat > "$WORK/zipkeepsrc/src/keeper.c" <<'CEOF'
+#include <openpete_mod_api.h>
+#include <stdio.h>
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    char path[1024];
+    int count = 0;
+    snprintf(path, sizeof path, "%s/count.txt", api->data_dir(self));
+    FILE* f = fopen(path, "r");
+    if (f) { if (fscanf(f, "%d", &count) != 1) count = 0; fclose(f); }
+    count++;
+    f = fopen(path, "w");
+    if (f) { fprintf(f, "%d\n", count); fclose(f); }
+    api->log(self, OP_MOD_LOG_INFO, "zip-keeper: boot %d level %d data %s", count,
+             (int)api->config_int(self, "level", 1), api->data_dir(self));
+    return 0;
+}
+CEOF
+zipkeep() { # zipkeep <extra file content> - (re)write zip-keeper.zip
+    python3 - "$WORK/zipkeepsrc" "$WORK/zipkeep/zip-keeper.zip" "$1" <<'PYEOF'
+import os, sys, zipfile
+src, out, extra = sys.argv[1], sys.argv[2], sys.argv[3]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for f in ("mod.toml", "config.toml", "src/keeper.c"):
+        z.write(os.path.join(src, f), f)
+    if extra:
+        z.writestr("NOTES.txt", extra)
+        z.writestr("config.toml", open(os.path.join(src, "config.toml")).read() + "# " + extra + "\n")
+PYEOF
+}
+zipkeep ""
+echo zip-keeper > "$WORK/zipkeep/enabled.txt"
+run_game "$WORK/zipkeep" 100 > "$WORK/zipkeep1.log" 2>&1
+zipkeep "version 2"
+run_game "$WORK/zipkeep" 100 > "$WORK/zipkeep2.log" 2>&1
+v2cfg="$(cat "$WORK/zipkeep/.unpacked/zip-keeper/config.toml" 2>/dev/null)"
+printf '# zip-keeper settings\nlevel = 7\n' > "$WORK/zipkeep/.unpacked/zip-keeper/config.toml"
+zipkeep "version 3"
+run_game "$WORK/zipkeep" 100 > "$WORK/zipkeep3.log" 2>&1
+d1="$(sed -n 's/.*zip-keeper: boot 1 level 1 data //p' "$WORK/zipkeep1.log" | head -1)"
+d3="$(sed -n 's/.*zip-keeper: boot [0-9]* level [0-9]* data //p' "$WORK/zipkeep3.log" | head -1)"
+if [ -n "$d1" ] && grep -q "unpacked [0-9]* files* from zip-keeper.zip" "$WORK/zipkeep2.log" &&
+   grep -q "unpacked [0-9]* files* from zip-keeper.zip" "$WORK/zipkeep3.log"; then
+    ok "boot 1 counted 1; each changed zip was re-extracted"
+else
+    bad "zip-keeper did not boot or re-extract (see $WORK/zipkeep[123].log)"
+fi
+if grep -q "zip-keeper: boot 2 level 1 data " "$WORK/zipkeep2.log" &&
+   printf '%s\n' "$v2cfg" | grep -q "# version 2"; then
+    ok "untouched config.toml takes the new zip's copy; data kept"
+else
+    bad "boot 2 lost the data or kept a stale config: $(grep -o 'zip-keeper: boot.*' "$WORK/zipkeep2.log")"
+fi
+if grep -q "zip-keeper: boot 3 level 7 data " "$WORK/zipkeep3.log" && [ "$d1" = "$d3" ] &&
+   [ -f "$WORK/zipkeep/.unpacked/zip-keeper/NOTES.txt" ]; then
+    ok "player's data and edited config.toml kept across the replace, data_dir unchanged ($d3)"
+else
+    bad "player's data or config lost across the zip replace: $(grep -o 'zip-keeper: boot.*' "$WORK/zipkeep3.log")"
+fi
+
 # ── 16. live modset toggle: tick-boundary disable/enable ────────────────
 # hello-anchor's CameraUpdate hook is scheduled off at canonical tick
 # 2200 and back on at 3300 (OPENPETE_MODS_TOGGLE); the per-mod timer

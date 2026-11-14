@@ -36,7 +36,9 @@ prints the folder in use.
 
 A `.zip` is unpacked into `mods/.unpacked/<id>/` on the next start, where
 `<id>` is the zip's file name without `.zip`. The zip must hold `mod.toml`
-at its root, or inside one top-level folder.
+at its root, or inside one top-level folder. Replacing the zip with a new
+version keeps the mod's `data/` folder and the settings changed in the
+Mods tab.
 
 ## Choosing which mods load
 

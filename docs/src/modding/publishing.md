@@ -153,12 +153,11 @@ strips the wrapping folder on extraction. Players drop the zip into
 `mods/` unchanged. Leave out `.build/` (compile cache, except a prebuilt
 object a mod without `src/` ships) and `data/` (per-player state).
 
-!!! warning "A new zip version deletes the player's data and settings"
-
-    The engine runs a zip mod from `mods/.unpacked/<id>/` and replaces
-    that whole tree when the zip changes, which deletes the mod's
-    `data/` directory and the `config.toml` the player edited in the Mods
-    tab ([Getting started](getting-started.md#directory-layout)). A mod
-    that keeps per-player files across updates ships as a folder, or
-    tells players to back up `mods/.unpacked/<id>/data/` and
-    `config.toml` before replacing the zip.
+The engine runs a zip mod from `mods/.unpacked/<id>/` and replaces that
+tree when the zip changes. The mod's `data/` directory and a
+`config.toml` the player edited in the Mods tab
+([Getting started](getting-started.md#directory-layout)) move into the new
+tree, so `data_dir` returns the same path with the same files. Files the
+new zip ships under `data/` are added where the player's `data/` has no
+entry of that name. A `config.toml` the player left as shipped is
+replaced by the new zip's.
