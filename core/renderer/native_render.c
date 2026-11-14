@@ -4231,6 +4231,34 @@ static void carry_entry_delta(const scene_tri_t* p, const scene_tri_t* c,
     *dx = sx / 3.0f; *dy = sy / 3.0f;
 }
 
+static int carry_nearer_twin(const scene_tri_t* prev, int prev_n,
+                             const scene_tri_t* curr, int self);
+
+/** @brief Return whether a span of ordinal pairs is contested: one of its current entries has a previous entry of its own shape nearer than its ordinal partner.
+ *
+ * The ordinal pairing of a run assumes the run's members keep their order
+ * from tick to tick. A run that inserts or drops an entry in the middle (a
+ * sprite whose frame straddles a texture page is emitted as two quads, so
+ * the split moves along a row of sprites animating out of phase) shifts
+ * every later ordinal onto the neighbouring sprite, and the shifted members
+ * agree on one translation, the row's pitch. The sprite itself is then the
+ * nearer same-shape entry (carry_nearer_twin), standing where it stood, and
+ * the nearer entry names the partner, the rule carry_run_pick applies to
+ * whole runs.
+ * @param prev Previous capture.
+ * @param prev_n Previous entry count.
+ * @param plo First previous entry of the span.
+ * @param curr Current capture.
+ * @param clo First current entry of the span.
+ * @param len Entries in the span.
+ * @return 1 when contested, else 0. */
+static int carry_span_contested(const scene_tri_t* prev, int prev_n, int plo,
+                                const scene_tri_t* curr, int clo, int len) {
+    for (int i = 0; i < len; i++)
+        if (carry_nearer_twin(prev, prev_n, &curr[clo + i], plo + i)) return 1;
+    return 0;
+}
+
 /** @brief Pair an ordinal-paired run that no single translation carries, span by span.
  *
  * The run is partitioned into maximal contiguous spans whose every vertex
@@ -4246,9 +4274,13 @@ static void carry_entry_delta(const scene_tri_t* p, const scene_tri_t* c,
  * treatment, while a body sharing a run with a body that moves differently
  * keeps its own glide instead of both snapping.
  *
+ * A span that a nearer previous entry contests takes no pairing either
+ * (carry_span_contested): its members fall through to the occupancy pass.
+ *
  * carry_pair_runs calls this only after the whole-run test has failed, so a
  * run carried by one translation reaches none of this code.
  * @param prev Previous capture.
+ * @param prev_n Previous entry count.
  * @param plo First entry of the previous run.
  * @param curr Current capture.
  * @param clo First entry of the current run.
@@ -4256,7 +4288,7 @@ static void carry_entry_delta(const scene_tri_t* p, const scene_tri_t* c,
  * @param mt Match under construction; match, prev_taken and anchored are written.
  * @param segs Incremented once per span carried.
  * @return The number of entries paired. */
-static int carry_pair_run_segments(const scene_tri_t* prev, int plo,
+static int carry_pair_run_segments(const scene_tri_t* prev, int prev_n, int plo,
                                    const scene_tri_t* curr, int clo, int len,
                                    carry_match_t* mt, int* segs) {
     int paired = 0;
@@ -4266,6 +4298,7 @@ static int carry_pair_run_segments(const scene_tri_t* prev, int plo,
         if (!carry_run_rigid(prev, plo + k, curr, clo + k, 1, dx, dy)) { k++; continue; }
         int e = k + 1;
         while (e < len && carry_run_rigid(prev, plo + e, curr, clo + e, 1, dx, dy)) e++;
+        if (carry_span_contested(prev, prev_n, plo + k, curr, clo + k, e - k)) { k = e; continue; }
         for (int i = k; i < e; i++) {
             mt->match[clo + i] = plo + i;
             mt->prev_taken[plo + i] = 1;
@@ -4411,13 +4444,14 @@ static int carry_take_run(carry_runs_t* pr, int q, const carry_runs_t* cr, int c
  * the entries of it that no span carried fall through. Single-entry runs are
  * skipped.
  * @param prev Previous capture.
+ * @param prev_n Previous entry count.
  * @param pr Runs of the previous capture; taken is written.
  * @param curr Current capture.
  * @param cr Runs of the current capture.
  * @param mt Match under construction.
  * @param st Receives the pass's run tallies for the census.
  * @return The number of entries paired. */
-static int carry_pair_runs(const scene_tri_t* prev, carry_runs_t* pr,   /* pr->taken is written */
+static int carry_pair_runs(const scene_tri_t* prev, int prev_n, carry_runs_t* pr,   /* pr->taken is written */
                            const scene_tri_t* curr, const carry_runs_t* cr,
                            carry_match_t* mt, carry_run_stats_t* st) {
     int paired = 0;
@@ -4436,7 +4470,7 @@ static int carry_pair_runs(const scene_tri_t* prev, carry_runs_t* pr,   /* pr->t
         float dx = cr->cx[i] - pr->cx[q], dy = cr->cy[i] - pr->cy[q];
         if (!carry_run_rigid(prev, pr->lo[q], curr, cr->lo[i], len, dx, dy)) {
             int segs = 0;
-            int got = carry_pair_run_segments(prev, pr->lo[q], curr, cr->lo[i], len,
+            int got = carry_pair_run_segments(prev, prev_n, pr->lo[q], curr, cr->lo[i], len,
                                               mt, &segs);
             if (got == 0) { st->disagree++; continue; }
             pr->taken[q] = 1;
@@ -4634,7 +4668,7 @@ static int carry_pair_all(const carry_key_map_t* m,
     carry_keys_build(curr, curr_n, mt->ckey);
     carry_runs_build(prev, m->key, prev_n, &s_prun);
     carry_runs_build(curr, mt->ckey, curr_n, &s_crun);
-    int paired = carry_pair_runs(prev, &s_prun, curr, &s_crun, mt, st);
+    int paired = carry_pair_runs(prev, prev_n, &s_prun, curr, &s_crun, mt, st);
     paired += carry_pair_occupancy(m, prev, curr, curr_n, mt);
     paired += carry_pair_content(m, prev, prev_n, curr, curr_n, &s_crun, mt);
     return paired + carry_pair_snapshot(prev, prev_n, curr, curr_n, mt);
