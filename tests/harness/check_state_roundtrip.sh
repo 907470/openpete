@@ -519,6 +519,43 @@ ok = len(gaps) == 1 and not mism
 print(f"  driver: jumps={gaps} mismatches={len(mism)} -> " + ("PASS" if ok else "FAIL"))
 sys.exit(0 if ok else 1)
 EOF
+# Short-replay leg: OPENPETE_REWIND_FAULT_SHORT=1 ends the first rewind
+# step's replay after its first replayed tick, as a yield that makes no
+# tick ends it; the later steps of the hold rewind on from there. The
+# input log must keep one entry per VBL up to the frame the timeline
+# reached (offset moved: 0); at least one replay must end short of its
+# target (engagement), and no row may differ from the clean run's row of
+# its frame. The short step leaves the scrub at another frame than the
+# driver leg's and its later steps repeat a frame, so the row sequence is
+# not held to one backward jump.
+PG_CAPTURE_ENV=(OPENPETE_REWIND_FAULT_SHORT=1)
+run "$RA_MOVIE" "$OUT/drv-short.csv" \
+    --rewind 30 --rewind-hold "$HOLD" \
+    || { echo "  short-replay run FAILED"; fail=1; }
+PG_CAPTURE_ENV=()
+short_line="$(grep -o 'replays short of their target: [0-9]*; input log offset moved: [0-9]*' "$OUT/drv-short.csv.log" | tail -1)"
+n_short="$(echo "$short_line" | awk '{print $6}' | tr -d ';')"
+n_moved="$(echo "$short_line" | awk '{print $NF}')"
+if [ -z "$short_line" ]; then
+    echo "  short-replay: no rewind report line -> FAIL"; fail=1
+elif [ "${n_short:-0}" -eq 0 ]; then
+    echo "  short-replay: $short_line -> VACUOUS FAIL (no replay ended short)"; fail=1
+elif [ "${n_moved:-1}" -ne 0 ]; then
+    echo "  short-replay: $short_line -> FAIL"; fail=1
+else
+    echo "  short-replay: $short_line -> PASS"
+fi
+python3 - "$OUT/drv-clean.csv" "$OUT/drv-short.csv" <<'EOF' || fail=1
+import csv, sys
+clean = {r[0]: r[2] for r in csv.reader(open(sys.argv[1])) if r and r[0] != 'frame'}
+rows = [r for r in csv.reader(open(sys.argv[2])) if r and r[0] != 'frame']
+fr = [int(r[0]) for r in rows]
+gaps = [(fr[i-1], fr[i]) for i in range(1, len(fr)) if fr[i] < fr[i-1]]
+mism = [r[0] for r in rows if r[0] in clean and clean[r[0]] != r[2]]
+ok = bool(gaps) and not mism
+print(f"  short-replay driver: jumps={len(gaps)} mismatches={len(mism)} -> " + ("PASS" if ok else "FAIL"))
+sys.exit(0 if ok else 1)
+EOF
 fi
 
 [ $fail -eq 0 ] && echo "ALL STATE ROUNDTRIP GATES PASS" || echo "STATE ROUNDTRIP GATES FAILED"
