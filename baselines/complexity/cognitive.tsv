@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: ce4cc1b2e12ef6e2e96330c7e9e5677f083ff1ef
+# head: 5327ec35c3584b113c8cb7e007cead5b7b479bdd
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -96,7 +96,7 @@ games/common/renderer/flame.c	flame_build_strip	59	0
 games/common/renderer/flame.c	flame_dump	26	0	
 games/common/renderer/flame.c	flame_strip_compare	52	0	
 games/common/renderer/moby.c	append_revealed_regular_inner	94	0	
-games/common/renderer/moby.c	build_shaded_walk_tris	99	0	
+games/common/renderer/moby.c	build_shaded_walk_tris	94	0	
 games/common/renderer/moby.c	capture_gte	49	0	
 games/common/renderer/moby.c	compare_and_report	90	0	
 games/common/renderer/moby.c	compare_walk_vs_prims	251	0	
@@ -113,7 +113,7 @@ games/common/renderer/moby.c	shaded_verify	48	0
 games/common/renderer/moby.c	special_census_face	38	0	
 games/common/renderer/moby.c	specular_env_calibrate	47	0	
 games/common/renderer/moby.c	walk_prologue	38	0	
-games/common/renderer/moby.c	walk_records	367	0	
+games/common/renderer/moby.c	walk_records	340	0	
 games/common/renderer/moby_game_spyro23.c	s23_decode_faces_stride	56	0	
 games/common/renderer/moby_game_spyro23.c	s23_special_face	43	0	
 games/common/renderer/native_gte.c	ngte_walk_prims	48	0	

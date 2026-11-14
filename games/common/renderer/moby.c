@@ -4896,13 +4896,6 @@ static uint8_t s_wtri_front[MAX_NTRI]; /* 1 = this tri's moby is a dragon-rescue
                                         * passes ONLY the rescue actors (per-pixel depth punch),
                                         * leaving every other moby's terrain occlusion
                                         * intact - the --lod extended leak fix. */
-/* Per-record emit tags. Thread-local because the face walk fans records out
- * across the extraction worker pool: each worker holds the tags of the record
- * it is walking, and without that separation workers stamp their triangles with
- * each other's moby identity, HUD routing and OT bias. */
-static _Thread_local int     s_cur_ui;      /* set per-record by the walks before emitting its tris */
-static _Thread_local int     s_cur_front;   /* per-record: 1 = a cutscene actor (front-pass) */
-
 /** @brief Whether a moby is in the actor set of the game's cutscene renderer.
  *
  * The actor set is the mobys that renderer draws while it owns the draw.
@@ -4950,7 +4943,7 @@ static uint8_t  s_wtri_mangle[MAX_NTRI]; /* any vertex near-fixed-up (unr) or
                                           * projection - never a key emitter */
 static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
 static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenance tag) */
-/* The triangle's class bits 0 to 6 (OPENPETE_CB_*): the emit target's record
+/* The triangle's class bits 0 to 6 (OPENPETE_CB_*): the emit context's record
  * word cb_rec, its face word cb_face and the vertex regime bits, copied to the
  * scene triangle's cbits at the emit. */
 static uint8_t  s_wtri_cbits[MAX_NTRI];
@@ -4971,18 +4964,6 @@ static uint8_t  s_wtri_single[MAX_NTRI];
  * (moby_otk_splice_bucket), one value for every triangle of a face; -1 when
  * the face carries no bucket word or its record no splice. */
 static int16_t  s_wtri_wbk[MAX_NTRI];
-static _Thread_local int32_t s_emit_otk = -1;
-/* s_wtri_wbk of every triangle emitted while it is >= 0: the second model
- * kind's record links all its prims into one world bucket. */
-static _Thread_local int16_t  s_cur_wbk = -1;
-static _Thread_local uint8_t  s_cur_single;     /* s_wtri_single of the record being walked */
-static _Thread_local uint32_t s_cur_moby_key;   /* moby for the record currently being walked */
-static _Thread_local uint16_t s_cur_moby_cls;   /* m_Class of that moby (set beside the key) */
-static _Thread_local int8_t   s_cur_moby_dofs;  /* authored OT bias (set beside the key) */
-static _Thread_local float    s_cur_env_az;     /* current record's TR azimuth (env-UV bias) */
-static _Thread_local uint32_t s_emit_fkey;      /* packed index triple for the next emit_wtri */
-static _Thread_local uint8_t  s_emit_special;   /* special-material id for the next emit_wtri */
-static _Thread_local uint8_t  s_emit_tmix;      /* texel fog-row mix for the next emit_wtri */
 #define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
 
 /** @brief The signed doubled area of a screen-space triangle, the GTE NCLIP analog on float coordinates.
@@ -5114,7 +5095,6 @@ typedef struct {
 } mn_walkdiag;
 /* Slot 0 is the serial walk's, and the slot every parallel run sums into. */
 static mn_walkdiag s_wdiag[MN_MAX_WORKERS];
-static _Thread_local mn_walkdiag* t_diag = &s_wdiag[0];
 
 /* Where emitted triangles land: the global s_wtri* arrays for a serial walk, a
  * per-worker slab for a parallel one. Cursor and capacity travel with the
@@ -5128,31 +5108,96 @@ typedef struct {
     int16_t*  wbk;
     uint8_t*  cbits;
     int n, cap;
-    /* Class bits of the record being walked into this target (OPENPETE_CB_MOBY_GPF,
-     * _SIMPLE, _SCREEN), set beside s_cur_moby_cls, and of the face being
-     * emitted (OPENPETE_CB_MOBY_ENV, _NEARCUT), set at the face and cleared at
-     * its end; emit_wtri_store ORs both into every triangle it stores and
-     * resets neither. They travel with the target, which emit_wtri_store
-     * already holds, so a store reads no thread-local beyond t_out. */
-    uint8_t   cb_rec, cb_face;
 } mn_out;
 static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
                          s_wtri_front, s_wtri_mangle, s_wtri_dofs, s_wtri_special,
                          s_wtri_otk, s_wtri_isxy, s_wtri_single, s_wtri_wbk, s_wtri_cbits,
-                         0, MAX_NTRI, 0u, 0u };
-static _Thread_local mn_out* t_out = &s_gout;
+                         0, MAX_NTRI };
 
-/* The water-plane split of the face being emitted (moby_wplane_face): set
- * for a face whose corners lie on both sides of its record's plane, so
- * emit_wtri cuts each triangle it is handed; NULL otherwise. */
-static _Thread_local const moby_wplane_t* t_emit_wp;
-static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, proj_xy* c,
-                             uint32_t ca, uint32_t cb, uint32_t cc,
-                             float ua, float va, float ub, float vb, float uc, float vc,
-                             int tex, int tpx, int tpy, int clx, int cly, int bpp, int blend);
+/* One coincident-face class of moby_coincident_pull: its vertex key, the
+ * member the draw paints last, and the member count. */
+typedef struct { uint32_t key[12]; int top, n; } coinc_slot;
+
+/* One walk thread's emit context: the target its triangles land in, its
+ * diagnostics, the state of the record and face being emitted, and its
+ * coincidence table. Every emit function takes it as an argument, so a stored
+ * triangle reads no thread-local storage. The sim thread's context (s_esim)
+ * serves the serial walk, the shaded pass, the simple models and the
+ * instruments, all of which emit into s_gout; each pool worker of a parallel
+ * walk has its own (s_ework), emitting into its slab. */
+typedef struct {
+    mn_out*      out;
+    mn_walkdiag* diag;
+    /* Record scope (mn_emit_record, mn_emit_ui), copied to every triangle. */
+    uint32_t moby;     /* face identity: the moby the record draws */
+    uint16_t cls;      /* its m_Class (provenance tag for mod shaders) */
+    int8_t   dofs;     /* its authored OT bias (rot >> 24) */
+    uint8_t  ui;       /* HUD tag: 0 actor, 1 flat HUD, 2 depth-tested HUD */
+    uint8_t  front;    /* 1 = a cutscene actor (front-pass eligible) */
+    uint8_t  single;   /* s_wtri_single of the record */
+    /* s_wtri_wbk of every triangle while >= 0: a simple-model record
+     * links all its prims into one world bucket. */
+    int16_t  wbk;
+    float    env_az;   /* the record's TR azimuth (env-UV bias, specular_env_uv) */
+    /* Class bits of the record (OPENPETE_CB_MOBY_GPF, _SIMPLE, _SCREEN) and of
+     * the face being emitted (OPENPETE_CB_MOBY_ENV, _NEARCUT); emit_wtri_store
+     * ORs both into every triangle it stores and resets neither. The face word
+     * is cleared at each face's start and end. */
+    uint8_t  cb_rec, cb_face;
+    /* The water-plane split of the face being emitted (moby_wplane_face): set
+     * for a face whose corners lie on both sides of its record's plane, so
+     * emit_wtri cuts each triangle it is handed; NULL otherwise. */
+    const moby_wplane_t* wp;
+    coinc_slot* coinc;   /* moby_coincident_pull's open-addressed table */
+    int coinc_cap;
+} mn_emit;
+static mn_emit s_esim = { &s_gout, &s_wdiag[0], 0u, 0u, 0, 0u, 0u, 0u, -1, 0.0f, 0u, 0u, NULL, NULL, 0 };
+/* The parallel walk's per-worker slabs and contexts; walk_slabs_ready points
+ * context w at slab w and diagnostics slot w. */
+static mn_out  s_wout[MN_MAX_WORKERS];
+static mn_emit s_ework[MN_MAX_WORKERS];
+
+/* The tags one triangle carries besides its geometry and material: the face
+ * identity (packed vertex-index triple), the bucket word in its record's paint
+ * order (-1 for none), the texel fog-row mix and the special-material id. */
+typedef struct { uint32_t fkey; int32_t otk; uint8_t tmix, special; } mn_tag;
 
 /* A walk triangle's material: texture page, CLUT, depth and blend code. */
 typedef struct { int tex, tpx, tpy, clx, cly, bpp, blend; } mn_mat;
+
+static void emit_wtri_wplane(mn_emit* E, const mn_tag* g, const moby_wplane_t* wp,
+                             proj_xy* a, proj_xy* b, proj_xy* c,
+                             uint32_t ca, uint32_t cb, uint32_t cc,
+                             float ua, float va, float ub, float vb, float uc, float vc,
+                             const mn_mat* m);
+
+/** @brief Set the record scope of an emit context: the moby, its class and OT bias, the single-bucket flag and the record class bits.
+ *
+ * The world bucket is reset to -1 and the face class word to 0; the HUD tag
+ * and front-pass flag follow from mn_emit_ui.
+ * @param E The emit context.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's address, 0 for none (class and bias read as 0).
+ * @param single The record's single-bucket flag (s_wtri_single).
+ * @param cb_rec The record's class bits. */
+static void mn_emit_record(mn_emit* E, CPUState* cpu, uint32_t moby, uint8_t single, uint8_t cb_rec) {
+    E->moby   = moby;
+    E->cls    = moby ? (uint16_t)cpu->read_half(moby + game_layout.moby.class_off) : 0;
+    E->dofs   = moby ? (int8_t)cpu->read_byte(moby + game_layout.moby.angle_off + 3u) : 0;
+    E->single = single;
+    E->wbk    = -1;
+    E->cb_rec = cb_rec;
+    E->cb_face = 0u;
+}
+
+/** @brief Set an emit context's HUD tag, and with it the front-pass flag: set for a cutscene actor (moby_is_cutscene_actor) whose tag is 0.
+ * @param E The emit context, its record scope set.
+ * @param cpu The guest CPU state, read only.
+ * @param ui The HUD tag. */
+static void mn_emit_ui(mn_emit* E, CPUState* cpu, int ui) {
+    E->ui = (uint8_t)ui;
+    E->front = (uint8_t)(ui == 0 && moby_is_cutscene_actor(cpu, E->moby));
+}
 
 /** @brief Whether a face's pinned screen box exceeds the GPU's primitive extent, 1023 x 511 px, the class the PSX GPU discards.
  * @param p The face's three vertices, at their pinned positions.
@@ -5243,25 +5288,27 @@ static void mnear_flush(void) {
 }
 
 /** @brief The census row of the moby being walked, opening a new table when the feed key moved on.
+ * @param moby The moby of the record being walked.
  * @return The row, or NULL when the census is off or the table is full. */
-static mnear_row_t* mnear_row(void) {
+static mnear_row_t* mnear_row(uint32_t moby) {
     if (!mnear_on()) return NULL;
     const unsigned key = openpete_feed_key_now();
     if (key != s_mnear_key) { mnear_flush(); s_mnear_key = key; }
     for (int i = s_mnear_n - 1; i >= 0; i--)
-        if (s_mnear[i].moby == s_cur_moby_key) return &s_mnear[i];
+        if (s_mnear[i].moby == moby) return &s_mnear[i];
     if (s_mnear_n >= MNEAR_ROWS) return NULL;
     mnear_row_t* r = &s_mnear[s_mnear_n++];
     memset(r, 0, sizeof *r);
-    r->moby = s_cur_moby_key;
+    r->moby = moby;
     return r;
 }
 
 /** @brief Count one face that reached the near-plane policy: its pinned screen box and its eye-plane verdict.
  *
+ * @param moby The moby of the record being walked.
  * @param p The face's three vertices, as the walk projected them. */
-static void mnear_face(const proj_xy* const p[3]) {
-    mnear_row_t* r = mnear_row();
+static void mnear_face(uint32_t moby, const proj_xy* const p[3]) {
+    mnear_row_t* r = mnear_row(moby);
     if (!r) return;
     int le0 = 0;
     for (int k = 0; k < 3; k++) le0 |= p[k]->tvz <= 0.0f;
@@ -5275,18 +5322,20 @@ static void mnear_face(const proj_xy* const p[3]) {
  * At the key asked for, a face with a vertex in the regime is printed:
  * moby, face key, material, and per vertex the screen position, tvz, fed
  * depth, texture coordinates and colour.
+ * @param moby The moby of the record being walked.
+ * @param fkey The triangle's face key.
  * @param p The emitted vertices; sx, sy are what the scene receives.
  * @param uv Their texture coordinates.
  * @param col Their colour words.
  * @param m The face's material. */
-static void mnear_store(const proj_xy* const p[3], const float uv[3][2], const uint32_t col[3],
-                        const mn_mat* m) {
-    mnear_row_t* r = mnear_row();
+static void mnear_store(uint32_t moby, uint32_t fkey, const proj_xy* const p[3], const float uv[3][2],
+                        const uint32_t col[3], const mn_mat* m) {
+    mnear_row_t* r = mnear_row(moby);
     if (!r) return;
     if ((unsigned long)s_mnear_at == s_mnear_key && s_mnear_at > 1 &&
         (p[0]->unr | p[1]->unr | p[2]->unr)) {
         fprintf(stderr, "[mnear-face key=%u] ext=%d moby=%08X fkey=%08X tex=%d tp=(%d,%d) clut=(%d,%d) bpp=%d blend=%d",
-                s_mnear_key, s_mnear_ext, s_cur_moby_key, s_emit_fkey, m->tex, m->tpx, m->tpy, m->clx, m->cly,
+                s_mnear_key, s_mnear_ext, moby, fkey, m->tex, m->tpx, m->tpy, m->clx, m->cly,
                 m->bpp, m->blend);
         for (int k = 0; k < 3; k++)
             fprintf(stderr, " v%d=(%.1f,%.1f w=%.2f vz=%.1f uv=%.2f,%.2f c=%06X unr=%d)", k,
@@ -5306,55 +5355,56 @@ static void mnear_store(const proj_xy* const p[3], const float uv[3][2], const u
     if (isfinite(e) && e > r->err) r->err = e;
 }
 
-/** @brief Append one float triangle to the current emit target as it stands.
+/** @brief Append one float triangle to an emit context's target as it stands.
  *
- * The target is the thread's t_out: the global s_gout arrays for a serial walk
- * or a worker slab for a parallel one; a full target drops the call. The
- * triangle stores its per-triangle side data from the walk's thread-local
- * state (s_cur_ui, s_cur_front, s_cur_moby_key, s_cur_moby_dofs,
- * s_cur_moby_cls, s_emit_fkey, s_emit_special, s_emit_otk, s_emit_tmix), a
- * mangle flag when any vertex is unr or sat, its class bits (the target's
- * record word cb_rec and face word cb_face, OPENPETE_CB_MOBY_UNR and _SAT
- * from the vertices) and the integer SXY of each vertex, then
- * resets s_emit_otk to -1 and s_emit_tmix to 0; a dropped call leaves both
- * unchanged. The face word is not reset: every triangle of the face takes it.
+ * The target is the global s_gout arrays for the sim thread's context or a
+ * worker slab for a parallel walk's; a full target drops the call. The
+ * triangle stores its side data from the context's record scope (HUD tag,
+ * front-pass flag, moby, OT bias, class, single-bucket flag, world bucket)
+ * and from its tags (face key, special-material id, bucket word, texel fog
+ * mix), a mangle flag when any vertex is unr or sat, its class bits (the
+ * context's record word cb_rec and face word cb_face, OPENPETE_CB_MOBY_UNR
+ * and _SAT from the vertices) and the integer SXY of each vertex.
+ * @param E The emit context.
+ * @param g The triangle's tags.
  * @param p The three vertices, screen position final.
  * @param uv Their texture coordinates.
  * @param col Their colour words.
  * @param m The material. */
-static void emit_wtri_store(const proj_xy* const p[3], const float uv[3][2],
-                            const uint32_t col[3], const mn_mat* m) {
-    mn_out* O = t_out;
-    if (O->n >= O->cap) return;
-    if (s_mnear_at) mnear_store(p, uv, col, m);
-    O->ui[O->n] = (uint8_t)s_cur_ui;       /* HUD/UI tag for this tri (current record) */
-    O->front[O->n] = (uint8_t)s_cur_front;    /* cutscene actor (front-pass eligible) */
-    O->moby[O->n] = s_cur_moby_key;           /* face identity: moby address */
-    O->dofs[O->n] = s_cur_moby_dofs;
+static void emit_wtri_store(mn_emit* E, const mn_tag* g, const proj_xy* const p[3],
+                            const float uv[3][2], const uint32_t col[3], const mn_mat* m) {
+    mn_out* const O = E->out;
+    const int i = O->n;
+    if (i >= O->cap) return;
+    if (s_mnear_at) mnear_store(E->moby, g->fkey, p, uv, col, m);
     const int unr = p[0]->unr || p[1]->unr || p[2]->unr;
     const int sat = p[0]->sat || p[1]->sat || p[2]->sat;
-    O->mangle[O->n] = (uint8_t)(unr | sat);
-    O->cbits[O->n] = (uint8_t)(O->cb_rec | O->cb_face
-                               | (uint32_t)unr * OPENPETE_CB_MOBY_UNR | (uint32_t)sat * OPENPETE_CB_MOBY_SAT);
-    O->fkey[O->n] = s_emit_fkey;
-    O->special[O->n] = s_emit_special;
-    O->otk[O->n] = s_emit_otk;
-    O->single[O->n] = s_cur_single;
-    O->wbk[O->n] = s_cur_wbk;
+    const uint8_t cbits = (uint8_t)(E->cb_rec | E->cb_face | (uint32_t)unr * OPENPETE_CB_MOBY_UNR
+                                    | (uint32_t)sat * OPENPETE_CB_MOBY_SAT);
+    O->ui[i] = E->ui;           /* HUD/UI tag for this tri (current record) */
+    O->front[i] = E->front;     /* cutscene actor (front-pass eligible) */
+    O->moby[i] = E->moby;       /* face identity: moby address */
+    O->dofs[i] = E->dofs;
+    O->cls[i] = E->cls;         /* provenance tag for mod shaders */
+    O->single[i] = E->single;
+    O->wbk[i] = E->wbk;
+    O->mangle[i] = (uint8_t)(unr | sat);
+    O->cbits[i] = cbits;
+    O->fkey[i] = g->fkey;
+    O->special[i] = g->special;
+    O->otk[i] = g->otk;
     for (int k = 0; k < 3; k++) {
-        O->isxy[O->n][2 * k] = p[k]->iv.sx; O->isxy[O->n][2 * k + 1] = p[k]->iv.sy;
+        O->isxy[i][2 * k] = p[k]->iv.sx; O->isxy[i][2 * k + 1] = p[k]->iv.sy;
     }
-    s_emit_otk = -1;
-    O->cls[O->n] = s_cur_moby_cls;            /* provenance tag for mod shaders */
-    ntri_t* t = &O->tri[O->n++];
+    ntri_t* t = &O->tri[i];
+    O->n = i + 1;
     for (int k = 0; k < 3; k++)
         t->v[k] = (ntri_vert){ p[k]->sx, p[k]->sy, p[k]->vz, uv[k][0], uv[k][1], col[k],
                                p[k]->ex, p[k]->ey, p[k]->ez, p[k]->tvz, p[k]->kvz, p[k]->okz };
     t->textured = m->tex; t->tpage_x = m->tpx; t->tpage_y = m->tpy;
     t->clut_x = m->clx; t->clut_y = m->cly; t->bpp = m->bpp; t->blend = m->blend;
-    t->tmix = s_emit_tmix;
-    s_emit_tmix = 0;
-    t_diag->emitted++;
+    t->tmix = g->tmix;
+    E->diag->emitted++;
 }
 
 /** @brief Build one output corner of a moby near clip.
@@ -5487,12 +5537,13 @@ static int mnear_tri_visible(const proj_xy* const t[3]) {
 }
 
 /** @brief Count one near-clipped face into the census: cut, wholly behind, or screen winding flipped against the pinned winding.
+ * @param moby The moby of the record being walked.
  * @param p The face's input vertices, at their pinned positions.
  * @param q The clip's output vertices.
  * @param n The output count, 0 when the face lies behind the plane.
  * @param clipped Nonzero when a corner was cut. */
-static void mnear_clip(const proj_xy* const p[3], const proj_xy* q, int n, int clipped) {
-    mnear_row_t* r = mnear_row();
+static void mnear_clip(uint32_t moby, const proj_xy* const p[3], const proj_xy* q, int n, int clipped) {
+    mnear_row_t* r = mnear_row(moby);
     if (!r) return;
     if (n < 3) { r->behind++; return; }
     r->cut += clipped != 0;
@@ -5528,7 +5579,7 @@ static void mnear_sel_count(mnear_row_t* r, const proj_xy* const v[4], unsigned 
         if (lost) { r->lost++; r->lostvis += vis; } else { r->back++; r->backvis += vis; }
         if (s_mnear_at < 2 || (unsigned long)s_mnear_at != s_mnear_key || !vis) continue;
         fprintf(stderr, "[mnear-sel key=%u] kind=%s moby=%08X ext=%d view=(%.3f,%.3f,%.3f) n=%d",
-                s_mnear_key, lost ? "lost" : "back", s_cur_moby_key,
+                s_mnear_key, lost ? "lost" : "back", r->moby,
                 moby_pinned_extent(t), s_view.xlo, s_view.xhi, 2.0 * s_view.ofy, n);
         for (int k = 0; k < n; k++) fprintf(stderr, " (%.2f,%.2f)", xy[k][0], xy[k][1]);
         fputc('\n', stderr);
@@ -5542,12 +5593,13 @@ static void mnear_sel_count(mnear_row_t* r, const proj_xy* const v[4], unsigned 
  * facing (moby_true_nclip), the test the walk applies to a regime face
  * (face_nclips). A triangle the pinned test keeps and the true test drops
  * counts as back, the reverse as lost (mnear_sel_count).
+ * @param moby The moby of the record being walked.
  * @param v The face's four vertices, v[3] NULL without a fourth.
  * @param fsign The record's face sign.
  * @param fresh The face's fresh flag.
  * @param bit0 The face's bit 0. */
-static void mnear_select(const proj_xy* const v[4], int fsign, int fresh, int bit0) {
-    mnear_row_t* r = mnear_row();
+static void mnear_select(uint32_t moby, const proj_xy* const v[4], int fsign, int fresh, int bit0) {
+    mnear_row_t* r = mnear_row(moby);
     if (!r) return;
     const proj_xy* p3 = v[3];
     const double pn1 = fsign * tri_nclip(v[0]->sx, v[0]->sy, v[1]->sx, v[1]->sy, v[2]->sx, v[2]->sy);
@@ -5576,17 +5628,19 @@ static void mnear_select(const proj_xy* const v[4], int fsign, int fresh, int bi
  * (moby_pinned_extent) is not emitted: the GPU draws no such primitive, so
  * the game never shows that face, and a moby passing the camera (a collected
  * gem) would otherwise cover the view.
+ * @param E The emit context.
+ * @param g The triangle's tags, which every part keeps.
  * @param p The three vertices.
  * @param uv Their texture coordinates.
  * @param col Their colour words.
  * @param m The material. */
-static void emit_wtri_near(const proj_xy* const p[3], const float uv[3][2],
-                           const uint32_t col[3], const mn_mat* m) {
-    if (s_mnear_at) mnear_face(p);
+static void emit_wtri_near(mn_emit* E, const mn_tag* g, const proj_xy* const p[3],
+                           const float uv[3][2], const uint32_t col[3], const mn_mat* m) {
+    if (s_mnear_at) mnear_face(E->moby, p);
     if (moby_pinned_extent(p)) return;
     if (p[0]->tvz < MOBY_NEAR_W && p[1]->tvz < MOBY_NEAR_W && p[2]->tvz < MOBY_NEAR_W) {
-        if (s_mnear_at) mnear_clip(p, NULL, 0, 0);
-        t_diag->nearbehind++;
+        if (s_mnear_at) mnear_clip(E->moby, p, NULL, 0, 0);
+        E->diag->nearbehind++;
         return;
     }
     const double z[3] = { p[0]->tvz, p[1]->tvz, p[2]->tvz };
@@ -5597,34 +5651,32 @@ static void emit_wtri_near(const proj_xy* const p[3], const float uv[3][2],
     float quv[4][2];
     uint32_t qc[4];
     for (int k = 0; k < n; k++) moby_clip_vertex(p, uv, col, &ref[k], &q[k], quv[k], &qc[k]);
-    if (s_mnear_at) mnear_clip(p, q, n, clipped);
-    if (n < 3) { t_diag->nearbehind++; return; }
-    const int32_t otk = s_emit_otk;
-    const uint8_t tmix = s_emit_tmix;
+    if (s_mnear_at) mnear_clip(E->moby, p, q, n, clipped);
+    if (n < 3) { E->diag->nearbehind++; return; }
     /* A cut triangle's parts take the near-cut bit on top of the face word,
      * restored after them: the face's other triangles may be uncut. */
-    uint8_t* const fw = clipped ? &t_out->cb_face : NULL;
-    const uint8_t fbits = fw ? *fw : 0u;
-    if (fw) *fw = (uint8_t)(fbits | OPENPETE_CB_MOBY_NEARCUT);
+    const uint8_t fbits = E->cb_face;
+    if (clipped) E->cb_face = (uint8_t)(fbits | OPENPETE_CB_MOBY_NEARCUT);
     for (int k = 2; k < n; k++) {
         const proj_xy* const T[3] = { &q[0], &q[k - 1], &q[k] };
         const float tuv[3][2] = { { quv[0][0], quv[0][1] }, { quv[k - 1][0], quv[k - 1][1] },
                                   { quv[k][0], quv[k][1] } };
         const uint32_t tc[3] = { qc[0], qc[k - 1], qc[k] };
-        s_emit_otk = otk; s_emit_tmix = tmix;
-        emit_wtri_store(T, tuv, tc, m);
+        emit_wtri_store(E, g, T, tuv, tc, m);
     }
-    if (fw) *fw = fbits;
+    E->cb_face = fbits;
 }
 
-/** @brief Append one float triangle to the current emit target, through the water-plane split and the near clip.
+/** @brief Append one float triangle to an emit context's target, through the water-plane split and the near clip.
  *
- * A face its record's water plane splits (t_emit_wp) is cut there first
+ * A face its record's water plane splits (the context's wp) is cut there first
  * (emit_wtri_wplane), each part re-entering here. A triangle with a vertex
  * flagged unr (in the GTE divide-overflow regime: its screen position is
  * pinned by moby_gte_near_fixup, and its view Z may be at or behind the eye)
  * goes through the near clip (emit_wtri_near); any other triangle has every
  * view Z above H/2 and is stored as it stands (emit_wtri_store).
+ * @param E The emit context.
+ * @param g The triangle's tags.
  * @param a The first projected vertex.
  * @param b The second projected vertex.
  * @param c The third projected vertex.
@@ -5637,32 +5689,23 @@ static void emit_wtri_near(const proj_xy* const p[3], const float uv[3][2],
  * @param vb The second vertex's V.
  * @param uc The third vertex's U.
  * @param vc The third vertex's V.
- * @param tex Nonzero for a textured triangle.
- * @param tpx The texture page X origin.
- * @param tpy The texture page Y origin.
- * @param clx The CLUT X origin.
- * @param cly The CLUT Y origin.
- * @param bpp The texel depth in bits.
- * @param blend The blend code, 0 for opaque, else the moby_abr_blend result of
- *              a semi-transparent face. */
-static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
+ * @param m The material; its blend code is 0 for opaque, else the
+ *          moby_abr_blend result of a semi-transparent face. */
+static void emit_wtri(mn_emit* E, const mn_tag* g, proj_xy* a, proj_xy* b, proj_xy* c,
                       uint32_t ca, uint32_t cb, uint32_t cc,
-                      float ua,float va,float ub,float vb,float uc,float vc,
-                      int tex,int tpx,int tpy,int clx,int cly,int bpp,int blend) {
-    if (t_emit_wp) {
-        const moby_wplane_t* wp = t_emit_wp;
-        t_emit_wp = NULL;
-        emit_wtri_wplane(wp, a, b, c, ca, cb, cc, ua, va, ub, vb, uc, vc,
-                         tex, tpx, tpy, clx, cly, bpp, blend);
-        t_emit_wp = wp;
+                      float ua,float va,float ub,float vb,float uc,float vc, const mn_mat* m) {
+    if (E->wp) {
+        const moby_wplane_t* wp = E->wp;
+        E->wp = NULL;
+        emit_wtri_wplane(E, g, wp, a, b, c, ca, cb, cc, ua, va, ub, vb, uc, vc, m);
+        E->wp = wp;
         return;
     }
     const proj_xy* const p[3] = { a, b, c };
     const float uv[3][2] = { { ua, va }, { ub, vb }, { uc, vc } };
     const uint32_t col[3] = { ca, cb, cc };
-    const mn_mat m = { tex, tpx, tpy, clx, cly, bpp, blend };
-    if (a->unr || b->unr || c->unr) emit_wtri_near(p, uv, col, &m);
-    else emit_wtri_store(p, uv, col, &m);
+    if (a->unr || b->unr || c->unr) emit_wtri_near(E, g, p, uv, col, m);
+    else emit_wtri_store(E, g, p, uv, col, m);
 }
 
 /** @brief A projected vertex's signed distance to its record's water plane.
@@ -5698,7 +5741,7 @@ static const moby_wplane_t* moby_record_wplane(CPUState* cpu, uint32_t mat, uint
  * face wholly on the positive side is left alone; one wholly on the negative
  * side is dropped under drop_below (both emit flags cleared), else its four
  * colours are depth-cued by wplane_shade; a face with corners on both sides
- * is cut per triangle at emit (emit_wtri_wplane, through t_emit_wp).
+ * is cut per triangle at emit (emit_wtri_wplane, through the emit context's wp).
  * @param wp The record's split, or NULL for a record the draw does not split.
  * @param emit_a The emit tree's first-triangle verdict, cleared on a drop.
  * @param emit_b Its second-triangle verdict, cleared on a drop.
@@ -5737,6 +5780,8 @@ static const moby_wplane_t* moby_wplane_face(const moby_wplane_t* wp, int* emit_
  * position at the perspective-correct crossing and depth, perspective W, key
  * depth and rotated offset at the model-space crossing. The negative part is
  * depth-cued, or dropped under drop_below.
+ * @param E The emit context, its wp cleared for the call.
+ * @param g The triangle's tags, which every part keeps.
  * @param wp The record's split.
  * @param a The first corner.
  * @param b The second corner.
@@ -5750,17 +5795,12 @@ static const moby_wplane_t* moby_wplane_face(const moby_wplane_t* wp, int* emit_
  * @param vb The second corner's V.
  * @param uc The third corner's U.
  * @param vc The third corner's V.
- * @param tex Nonzero for a textured triangle.
- * @param tpx The texture page X origin.
- * @param tpy The texture page Y origin.
- * @param clx The CLUT X origin.
- * @param cly The CLUT Y origin.
- * @param bpp The texel depth in bits.
- * @param blend The blend code. */
-static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, proj_xy* c,
+ * @param m The material. */
+static void emit_wtri_wplane(mn_emit* E, const mn_tag* g, const moby_wplane_t* wp,
+                             proj_xy* a, proj_xy* b, proj_xy* c,
                              uint32_t ca, uint32_t cb, uint32_t cc,
                              float ua, float va, float ub, float vb, float uc, float vc,
-                             int tex, int tpx, int tpy, int clx, int cly, int bpp, int blend) {
+                             const mn_mat* m) {
     enum { AT_VZ, AT_TVZ, AT_KVZ, AT_OKZ, AT_EX, AT_EY, AT_EZ, AT_U, AT_V, AT_HX, AT_HY, AT_N };
     proj_xy* const src[3] = { a, b, c };
     const uint32_t col[3] = { ca, cb, cc };
@@ -5780,16 +5820,14 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
     wplane_cut(in, AT_N, pos, &np, neg, &nn);
     if (wp->drop_below) nn = 0;
     for (int k = 0; k < nn; k++) neg[k].rgb = wplane_shade(wp->fc, wp->ir0, neg[k].rgb);
-    const int32_t otk = s_emit_otk;
-    const uint8_t tmix = s_emit_tmix;
     /* Every part of a face with a pinned corner takes the near clip: a cut
      * point's screen position mixes its edge's pinned corner in. */
     const int unr = a->unr | b->unr | c->unr;
     for (int part = 0; part < 2; part++) {
         const wplane_vert_t* P = part ? neg : pos;
-        const int m = part ? nn : np;
+        const int nq = part ? nn : np;
         proj_xy q[4];
-        for (int k = 0; k < m; k++) {
+        for (int k = 0; k < nq; k++) {
             q[k] = *src[P[k].idx];
             q[k].sx = (float)P[k].sx; q[k].sy = (float)P[k].sy;
             q[k].vz = (float)P[k].at[AT_VZ]; q[k].tvz = (float)P[k].at[AT_TVZ];
@@ -5799,15 +5837,11 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
             q[k].hx = (float)P[k].at[AT_HX]; q[k].hy = (float)P[k].at[AT_HY];
             q[k].unr = unr;
         }
-        for (int k = 2; k < m; k++) {
-            s_emit_otk = otk; s_emit_tmix = tmix;
-            emit_wtri(&q[0], &q[k-1], &q[k], P[0].rgb, P[k-1].rgb, P[k].rgb,
+        for (int k = 2; k < nq; k++)
+            emit_wtri(E, g, &q[0], &q[k-1], &q[k], P[0].rgb, P[k-1].rgb, P[k].rgb,
                       (int)P[0].at[AT_U], (int)P[0].at[AT_V], (int)P[k-1].at[AT_U],
-                      (int)P[k-1].at[AT_V], (int)P[k].at[AT_U], (int)P[k].at[AT_V],
-                      tex, tpx, tpy, clx, cly, bpp, blend);
-        }
+                      (int)P[k-1].at[AT_V], (int)P[k].at[AT_U], (int)P[k].at[AT_V], m);
     }
-    s_emit_otk = -1; s_emit_tmix = 0;
 }
 
 /* ---- second model kind: the shared half of moby_game.simple_pass ---------
@@ -5823,7 +5857,9 @@ static const float MOBY_IDENT_F[3][3] = { {1.0f,0.0f,0.0f}, {0.0f,1.0f,0.0f}, {0
 
 /* The projection origin of the record being decoded, and the view it projects
  * through. A record whose model is placed in screen space names its own origin
- * in PSX pixels; every other record takes the origin of its own view. */
+ * in PSX pixels; every other record takes the origin of its own view. The
+ * simple models run on the sim thread alone: their record and triangle state is
+ * file-scope, and it emits through the sim thread's context s_esim. */
 static int    s_cur_screen;
 static double s_cur_screen_ofx, s_cur_screen_ofy;
 
@@ -5848,25 +5884,16 @@ static void moby_simple_occl_audit(uint32_t moby, const proj_xy* p, int n);
  *         the view moby_record_view gives the current moby. */
 static const ngte_view* moby_simple_view(double* ofx, double* ofy) {
     const ngte_view* view = s_cur_screen ? &s_view_canon
-                                         : moby_record_view(s_cur_moby_key);
+                                         : moby_record_view(s_esim.moby);
     *ofx = s_cur_screen ? s_cur_screen_ofx : view->ofx;
     *ofy = s_cur_screen ? s_cur_screen_ofy : view->ofy;
     return view;
 }
 
 void moby_simple_record(CPUState* cpu, uint32_t moby) {
-    s_cur_moby_key  = moby;
-    s_cur_moby_cls  = moby ? (uint16_t)cpu->read_half(moby + game_layout.moby.class_off) : 0;
-    t_out->cb_rec   = OPENPETE_CB_MOBY_SIMPLE;
-    t_out->cb_face  = 0u;
-    s_cur_moby_dofs = moby ? (int8_t)cpu->read_byte(moby + game_layout.moby.angle_off + 3u) : 0;
-    s_cur_ui    = moby_hud_tag(moby);
-    s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, moby);
+    mn_emit_record(&s_esim, cpu, moby, 0u, OPENPETE_CB_MOBY_SIMPLE);
+    mn_emit_ui(&s_esim, cpu, moby_hud_tag(moby));
     s_cur_screen = 0;
-    s_cur_single = 0;
-    s_cur_wbk = -1;
-    s_emit_fkey = 0u;
-    s_emit_special = 0u;
 }
 
 void moby_simple_screen_origin(double ofx, double ofy) {
@@ -5877,8 +5904,8 @@ void moby_simple_screen_origin(double ofx, double ofy) {
      * carries: its own faces Z-sort against each other and the whole record
      * paints over the world. The canonical view keeps the game's projection
      * distance, so the origin the record names is the pixel it means. */
-    s_cur_ui = 2;
-    s_cur_front = 0;
+    s_esim.ui = 2;
+    s_esim.front = 0;
 }
 
 /** @brief Take the slots of the current second-kind record: the store's next free run, or the scratch array once the region cannot hold the record.
@@ -5890,7 +5917,7 @@ static proj_xy* moby_simple_slots(int n) {
     if (s_proj_sim_n + n > MOBY_SIM_PROJ_CAP) return s_sim_scratch;
     proj_xy* out = s_proj_sim + s_proj_sim_n;
     if (s_nsimrecs < MOBY_SIM_RECS) {
-        s_simrecs[s_nsimrecs].moby = s_cur_moby_key;
+        s_simrecs[s_nsimrecs].moby = s_esim.moby;
         s_simrecs[s_nsimrecs].off = s_proj_sim_n;
         s_simrecs[s_nsimrecs].n = n;
         s_nsimrecs++;
@@ -5914,7 +5941,7 @@ void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)
                         x->otk, x->itr, ofx, ofy, NULL, 0.0 };
     openpete_gsab_inst* gsab = moby_proj_open(&P, out, OPENPETE_GSAB_F_SIMPLE
                                               | (s_cur_screen ? OPENPETE_GSAB_F_SCREEN : 0u), 1.0, n);
-    t_out->cb_rec = (uint8_t)(OPENPETE_CB_MOBY_SIMPLE | (uint32_t)(s_cur_screen != 0) * OPENPETE_CB_MOBY_SCREEN);
+    s_esim.cb_rec = (uint8_t)(OPENPETE_CB_MOBY_SIMPLE | (uint32_t)(s_cur_screen != 0) * OPENPETE_CB_MOBY_SCREEN);
     for (int i = 0; i < n; i++) {
         moby_project_vertex(&P, i, vm[i], vm[i], vm[i][0], vm[i][1], vm[i][2], &out[i]);
         out[i].rec = -1;
@@ -5923,15 +5950,15 @@ void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)
     }
     moby_proj_close(&P, gsab, out, n);
     s_sim_cur = out;
-    moby_simple_occl_audit(s_cur_moby_key, out, n);
+    moby_simple_occl_audit(s_esim.moby, out, n);
 }
 
 void moby_simple_world_bucket(int w) {
-    s_cur_wbk = (int16_t)(w < 0 ? -1 : (w > INT16_MAX ? INT16_MAX : w));
+    s_esim.wbk = (int16_t)(w < 0 ? -1 : (w > INT16_MAX ? INT16_MAX : w));
 }
 
 void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out) {
-    s_cur_single = (uint8_t)moby_otk_row_single_bucket(row);
+    s_esim.single = (uint8_t)moby_otk_row_single_bucket(row);
     moby_otk_record(moby_otkey_wanted() ? row : MOBY_OTK_NONE, 0, trz, out);
 }
 
@@ -5941,12 +5968,10 @@ void moby_simple_tri(const int vi[3], const uint32_t rgb[3],
                      int clut_x, int clut_y, int bpp, int blend,
                      uint32_t fkey, int32_t otk) {
     proj_xy* const p = s_sim_cur;
-    s_emit_fkey = fkey;
-    s_emit_special = 0u;
-    s_emit_otk = otk;
-    emit_wtri(&p[vi[0]], &p[vi[1]], &p[vi[2]], rgb[0], rgb[1], rgb[2],
-              u[0], v[0], u[1], v[1], u[2], v[2],
-              textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend);
+    const mn_tag g = { fkey, otk, 0u, 0u };
+    const mn_mat m = { textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend };
+    emit_wtri(&s_esim, &g, &p[vi[0]], &p[vi[1]], &p[vi[2]], rgb[0], rgb[1], rgb[2],
+              u[0], v[0], u[1], v[1], u[2], v[2], &m);
 }
 
 void moby_simple_face_nclips(const int idx[4], int tri, double* ncl1, double* ncl2) {
@@ -5958,7 +5983,7 @@ void moby_simple_face_nclips(const int idx[4], int tri, double* ncl1, double* nc
  * declared so the walk can derive metal-face UVs natively. s_env_* = the static
  * metal Tiledef (D_800756F0, level-load asset), decoded to VRAM px by _load. */
 static void specular_env_load(CPUState* cpu);
-static void specular_env_uv(float ex, float ey, float ez, float* pu, float* pv);
+static void specular_env_uv(float env_az, float ex, float ey, float ez, float* pu, float* pv);
 static int  s_env_tpx, s_env_tpy, s_env_clx, s_env_cly, s_env_bpp;
 static float s_specL[3], s_specLlen;   /* D_800770C8+0xC specular light dir (highlight) */
 
@@ -6890,16 +6915,16 @@ static struct { int worker, start, count; } s_pre_rec[MAX_RECORDS];
  * @param R The record.
  * @param otk The record's paint key.
  * @param ltop The highest local bucket array entry any face of the record fills, -1 for none.
- * @param tri0 The record's first triangle in the current emit target. */
+ * @param O The emit target the record was walked into.
+ * @param tri0 The record's first triangle in O. */
 static void moby_record_world_buckets(CPUState* cpu, const rec_meta* R,
-                                      const moby_otk_rec_t* otk, int ltop, int tri0) {
+                                      const moby_otk_rec_t* otk, int ltop, mn_out* O, int tri0) {
     int wbase = 0, n = 0;
     if (ltop < 0 || ltop >= MOBY_OTK_ARRAY_LIMIT || otk->row == MOBY_OTK_NONE ||
         !moby_game.otkey_splice || !moby_game.otkey_splice(cpu, R->addr, &wbase, &n))
         return;
     if (R->wbase_p1 > 0) wbase = R->wbase_p1 - 1;
     wbase = moby_otk_depth_bucket(wbase);
-    mn_out* O = t_out;
     for (int i = tri0; i < O->n; i++) {
         int l = moby_otk_array_entry(otk, O->otk[i]);
         if (l < 0) continue;
@@ -6960,12 +6985,6 @@ static int moby_face_otkey(const proj_xy* rec0, const wface_t* F, const proj_xy*
  * pass below finds such pairs per record and gives the game's last-painted
  * member the coplanar-decal pull (vz * 0.998) the special-face path uses. */
 
-/* One coincident-face class: its vertex key, the member the draw paints
- * last, and the member count. */
-typedef struct { uint32_t key[12]; int top, n; } coinc_slot;
-static _Thread_local coinc_slot* t_coinc;   /* open-addressed table, per worker */
-static _Thread_local int t_coinc_cap;
-
 /** @brief Write a walk triangle's order-free vertex key: (vz, tvz, sx, sy) bit patterns per vertex, sorted.
  *
  * Two triangles get equal keys exactly when their three vertices match as a
@@ -7007,21 +7026,23 @@ static int coinc_paints_after(int32_t oi, int32_t oj) {
 /** @brief Enter emitted triangle i into the coincidence table, updating its class's last-painted member.
  *
  * Under OPENPETE_MOBY_VERIFY each match prints one line on its VBL.
- * @param O The emit target.
- * @param i The triangle's index in O.
+ * @param E The emit context: its target holds the triangle, its table the classes.
+ * @param i The triangle's index in the target.
  * @param mask The table size less one. */
-static void coinc_insert(mn_out* O, int i, int mask) {
+static void coinc_insert(mn_emit* E, int i, int mask) {
+    const mn_out* O = E->out;
+    coinc_slot* const tab = E->coinc;
     uint32_t key[12];
     coinc_key_of(&O->tri[i], key);
     uint32_t h = 2166136261u;
     for (int k = 0; k < 12; k++) h = (h ^ key[k]) * 16777619u;
-    coinc_slot* s = &t_coinc[h & (uint32_t)mask];
+    coinc_slot* s = &tab[h & (uint32_t)mask];
     while (s->n && memcmp(s->key, key, sizeof key) != 0) {
         h++;
-        s = &t_coinc[h & (uint32_t)mask];
+        s = &tab[h & (uint32_t)mask];
     }
     if (!s->n) { memcpy(s->key, key, sizeof key); s->top = i; s->n = 1; return; }
-    t_diag->coinc_pairs++;
+    E->diag->coinc_pairs++;
     int j = s->top;
     if (coinc_paints_after(O->otk[i], O->otk[j])) s->top = i;
     s->n++;
@@ -7035,32 +7056,34 @@ static void coinc_insert(mn_out* O, int i, int mask) {
 
 /** @brief Pull toward the camera the last-painted member of every set of exactly coincident triangles one moby record emitted.
  *
- * The triangles [start, O->n) are one record's. Keys are hashed into a
- * thread-local open-addressed table sized to twice the triangle count
- * (cleared per record); each class keeps the member the game's draw paints
- * last (coinc_paints_after), and that member alone takes vz * 0.998 on its
- * three vertices, so the depth test keeps the game's paint order for exactly
- * coincident faces. Non-coincident triangles are untouched. Matches and
- * pulls count into t_diag.
- * @param O The emit target.
- * @param start The record's first triangle in O. */
-static void moby_coincident_pull(mn_out* O, int start) {
+ * The triangles [start, n) of the target, n its cursor, are one record's. Keys are hashed into the
+ * context's open-addressed table sized to twice the triangle count (cleared
+ * per record, grown on demand); each class keeps the member the game's draw
+ * paints last (coinc_paints_after), and that member alone takes vz * 0.998 on
+ * its three vertices, so the depth test keeps the game's paint order for
+ * exactly coincident faces. Non-coincident triangles are untouched. Matches
+ * and pulls count into the context's diagnostics.
+ * @param E The emit context the record was walked through.
+ * @param start The record's first triangle in the context's target. */
+static void moby_coincident_pull(mn_emit* E, int start) {
+    mn_out* const O = E->out;
     int n = O->n - start;
     if (n < 2) return;
     int cap = 16;
     while (cap < 2 * n) cap <<= 1;
-    if (cap > t_coinc_cap) {
-        coinc_slot* nt = (coinc_slot*)realloc(t_coinc, sizeof(coinc_slot) * (size_t)cap);
+    if (cap > E->coinc_cap) {
+        coinc_slot* nt = (coinc_slot*)realloc(E->coinc, sizeof(coinc_slot) * (size_t)cap);
         if (!nt) return;
-        t_coinc = nt; t_coinc_cap = cap;
+        E->coinc = nt; E->coinc_cap = cap;
     }
-    for (int s = 0; s < cap; s++) t_coinc[s].n = 0;
-    for (int i = start; i < O->n; i++) coinc_insert(O, i, cap - 1);
+    coinc_slot* const tab = E->coinc;
+    for (int s = 0; s < cap; s++) tab[s].n = 0;
+    for (int i = start; i < O->n; i++) coinc_insert(E, i, cap - 1);
     for (int s = 0; s < cap; s++) {
-        if (t_coinc[s].n < 2) continue;
-        ntri_t* t = &O->tri[t_coinc[s].top];
+        if (tab[s].n < 2) continue;
+        ntri_t* t = &O->tri[tab[s].top];
         t->v[0].vz *= 0.998f; t->v[1].vz *= 0.998f; t->v[2].vz *= 0.998f;
-        t_diag->coinc_pulls++;
+        E->diag->coinc_pulls++;
     }
 }
 
@@ -7175,7 +7198,32 @@ static int moby_record_face_sign(CPUState* cpu, const rec_meta* R) {
     return sign;
 }
 
-/** @brief Walk the records [r0, r1) of s_recs into the calling worker's emit target.
+/** @brief The HUD tag of a walked record: moby_hud_tag, a flat HUD record whose projected view-Z extent is 96 or more promoted to 2.
+ *
+ * Regular-walk twin of the shaded pass's HUD3D promotion: a UI-range moby
+ * that is a real 3D model self-occludes and needs its own Z pass, which the
+ * flat HUD layer's per-triangle painter cannot give interpenetrating faces (a
+ * fly-in body model shows its interior through its far side). The extent is
+ * taken over the record's projected vertices with view Z above 0, in
+ * full-world units: a text glyph spans a few, a body model hundreds, so thin
+ * glyphs stay flat HUD, under the player, as in the shaded walk.
+ * @param R The record.
+ * @param mob Its moby's address.
+ * @return 0 actor, 1 flat HUD, 2 depth-tested HUD. */
+static int walk_record_ui(const rec_meta* R, uint32_t mob) {
+    const int ui = moby_hud_tag(mob);
+    if (ui != 1 || R->proj_n <= 1) return ui;
+    float lo = 1e30f, hi = -1e30f;
+    for (int pv = 0; pv < R->proj_n; pv++) {
+        const float pz = s_proj[R->proj_off + pv].vz;
+        if (pz <= 0.0f) continue;
+        lo = pz < lo ? pz : lo;
+        hi = pz > hi ? pz : hi;
+    }
+    return (hi > lo && hi - lo >= 96.0f) ? 2 : 1;
+}
+
+/** @brief Walk the records [r0, r1) of s_recs through an emit context.
  *
  * Per record: the specular pass skips a moby the regular pass already fed
  * (s_reg_moby), since the specular cull has advanced its pose; a run-once
@@ -7184,12 +7232,15 @@ static int moby_record_face_sign(CPUState* cpu, const rec_meta* R) {
  * then each face of the record's resolved face cache runs the dual-NCLIP
  * emit tree on the float screen coordinates. A record with no faceblock, no
  * projected vertices or no resolved face cache emits nothing.
+ * @param E The emit context: the sim thread's for a serial walk, the
+ *        worker's for a parallel one.
  * @param cpu The guest CPU state, read only.
  * @param is_spec Nonzero for the specular pass.
  * @param r0 The first record index.
  * @param r1 One past the last record index. */
-static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
-    mn_out* const O = t_out;   /* the target, fixed for the walk */
+static void walk_records(mn_emit* E, CPUState* cpu, int is_spec, int r0, int r1) {
+    mn_out* const O = E->out;   /* the target, fixed for the walk */
+    mn_walkdiag* const D = E->diag;
     for (int r = r0; r < r1; r++) {
         rec_meta* R = &s_recs[r];
         uint32_t mob = R->moby;   /* set in all paths (==rec+0x34 for .s recs); host-built reveal/re-extract records have addr=0 so reading R->addr+0x34 would miss the dedup */
@@ -7200,48 +7251,24 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == mob) { dup = 1; break; }
             if (dup) continue;
         }
-        s_cur_moby_key = mob;     /* face identity for this record's tris */
-        s_cur_wbk = -1;
-        s_cur_single = rec_single_bucket(R);
-        s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + game_layout.moby.class_off) : 0; /* m_Class */
-        O->cb_rec = (uint8_t)((uint32_t)(moby_rec_gpf(R->w0) != 0) * OPENPETE_CB_MOBY_GPF);
-        s_cur_moby_dofs = mob ? (int8_t)cpu->read_byte(mob + game_layout.moby.angle_off + 3u) : 0; /* og OT bias */
+        mn_emit_record(E, cpu, mob, rec_single_bucket(R),
+                       (uint8_t)((uint32_t)(moby_rec_gpf(R->w0) != 0) * OPENPETE_CB_MOBY_GPF));
         /* Run-once mobys emit nothing. The record stays in s_recs (the .s cull
          * queued it, and s_reg_moby membership is what the reveal builder and
          * the occlusion/hold bookkeeping dedup against) - only its triangles
          * are dropped, so this is display-side alone: the .s pass still sets
          * m_WasDrawn @8001F4CC, the moby still auto-includes into the next
          * tick's update list, and its one-shot job still runs on schedule. */
-        if (mob && moby_run_once_hidden(cpu, mob, s_cur_moby_cls)) continue;
-        moby_classdbg_line(cpu, mob, s_cur_moby_cls);
-        s_cur_env_az = R->env_az; /* per-moby env-UV bias input (SPEC metal) */
-        { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
-          s_cur_ui = moby_hud_tag(mob);
-          /* Regular-walk twin of the shaded HUD3D promotion: a UI-range moby
-           * that is a real 3D MODEL self-occludes and needs its own Z pass -
-           * the flat HUD layer's per-tri painter can't sort interpenetrating
-           * faces (a fly-in body model shows its interior through its far
-           * side). Promote by PROJECTED view-Z extent of this
-           * record's verts (full-world units; a text glyph spans a few units,
-           * a body model hundreds). Thin glyphs stay flat HUD, under the
-           * player, as in the shaded walk. */
-          if (s_cur_ui == 1 && R->proj_n > 1) {
-              float lo = 1e30f, hi = -1e30f;
-              for (int pv = 0; pv < R->proj_n; pv++) {
-                  float pz = s_proj[R->proj_off + pv].vz;
-                  if (pz <= 0.0f) continue;
-                  if (pz < lo) lo = pz;
-                  if (pz > hi) hi = pz;
-              }
-              if (hi > lo && hi - lo >= 96.0f) s_cur_ui = 2;
-          } }
-        /* Front-pass eligibility: this moby is one of the dragon-rescue cutscene
-         * actors. Only for real actors (ui==0). */
-        s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, mob);
+        if (mob && moby_run_once_hidden(cpu, mob, E->cls)) continue;
+        moby_classdbg_line(cpu, mob, E->cls);
+        E->env_az = R->env_az; /* per-moby env-UV bias input (SPEC metal) */
+        /* HUD tag (2 HUD3D, 1 HUD flat, 0 actor) and front-pass eligibility:
+         * a dragon-rescue cutscene actor, only for real actors (ui 0). */
+        mn_emit_ui(E, cpu, walk_record_ui(R, mob));
         uint32_t fb = R->faceblock;
         if (fb < 0x80000000u || R->proj_n <= 0) continue;
         const fcache_t* FC = s_pre_FC[r];   /* Tier-1 decode, resolved by the prologue */
-        if (!FC) { t_diag->desync++; continue; }
+        if (!FC) { D->desync++; continue; }
         int base = R->proj_off, vcount = R->proj_n;
         /* per-vertex colour base + fade by the record's LOD tier and the
          * present's ZSF4 (moby_record_fade) */
@@ -7267,12 +7294,12 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
          * SAME alpha that lerps the vertex streams - endpoints are exactly the
          * two states the game drew. Only fetched when a patch list is in play
          * (prev==curr faces otherwise makes it a no-op). */
-        t_diag->faces  += FC->raw;
-        t_diag->sprite += FC->sprites;
-        t_diag->skip   += FC->skips;
-        if      (FC->align == 0) t_diag->align_lo++;
-        else if (FC->align == 1) t_diag->align_hi++;
-        else                     t_diag->desync++;
+        D->faces  += FC->raw;
+        D->sprite += FC->sprites;
+        D->skip   += FC->skips;
+        if      (FC->align == 0) D->align_lo++;
+        else if (FC->align == 1) D->align_hi++;
+        else                     D->desync++;
         const int rec_tri0 = O->n;   /* this record's first emitted triangle */
         int ltop = -1;                   /* highest local bucket array entry the draw fills */
         moby_wplane_t wp;
@@ -7280,14 +7307,14 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         const int fsign = moby_record_face_sign(cpu, R);
         for (int fi = 0; fi < FC->nfaces; fi++) {
             const wface_t* F = &FC->f[fi];
-            O->cb_face = 0u;   /* the previous face's end */
+            E->cb_face = 0u;   /* the previous face's end */
             int fresh = F->fresh, textured = F->textured;
-            if (!fresh)        t_diag->strip++;
-            else if (textured) t_diag->fresh_t++;
-            else               t_diag->fresh_g++;
+            if (!fresh)        D->strip++;
+            else if (textured) D->fresh_t++;
+            else               D->fresh_g++;
             int i0 = F->i0, i1 = F->i1, i2 = F->i2;
             int i3 = F->i3;   /* 4th-vertex SXY index (raw; strips never consume it) */
-            if (i0 >= vcount || i1 >= vcount || i2 >= vcount) { t_diag->oor++; continue; }
+            if (i0 >= vcount || i1 >= vcount || i2 >= vcount) { D->oor++; continue; }
             proj_xy* p0 = &s_proj[base+i0]; proj_xy* p1 = &s_proj[base+i1]; proj_xy* p2 = &s_proj[base+i2];
 
             /* FRESH faces run the .s's dual-NCLIP (block_8002008C): NCLIP1=(v0,v1,v2),
@@ -7322,7 +7349,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                  *   t6a<0  && t6b>0  -> .L80020158:        0x38 QUAD (v0,v1,v2)+(v1,v3,v2)
                  *   t6a<0  && t6b<=0 -> .L800203F4 (+8=v0): single 0x30 TRI (v0,v1,v2) */
                 if (t6a >= 0.0) { if (t6b > 0.0 && p3) { emit_b = b_is_v3tri = 1; } }   /* tri (v3,v1,v2) */
-                else if (t6b > 0.0 && p3) { emit_a = emit_b = 1; t_diag->quad++; }   /* QUAD */
+                else if (t6b > 0.0 && p3) { emit_a = emit_b = 1; D->quad++; }   /* QUAD */
                 else emit_a = 1;                                                        /* tri (v0,v1,v2) */
             } else {
                 /* strip: single tri. bit0=0 keep NCLIP>0; bit0=1 keep NCLIP!=0
@@ -7339,7 +7366,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             ltop = moby_otk_top_entry(&s_proj[base].otk, ot_bk, ltop);
             if (s_mnear_at && (p0->unr || p1->unr || p2->unr || (p3 && p3->unr))) {
                 const proj_xy* const fv[4] = { p0, p1, p2, p3 };
-                mnear_select(fv, fsign, fresh, (int)F->bit0);
+                mnear_select(E->moby, fv, fsign, fresh, (int)F->bit0);
             }
             if (!emit_a && !emit_b) continue;
 
@@ -7467,11 +7494,11 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
               if (R->metal) {
                 /* ENV REFLECTION -- view-dependent spherical UV (byte-exact <=1
                  * texel vs prims); tpage/clut from the static metal Tiledef. */
-                O->cb_face |= OPENPETE_CB_MOBY_ENV;
-                specular_env_uv(p0->ex,p0->ey,p0->ez, &u[0],&v[0]);
-                specular_env_uv(p1->ex,p1->ey,p1->ez, &u[1],&v[1]);
-                specular_env_uv(p2->ex,p2->ey,p2->ez, &u[2],&v[2]);
-                if (p3) specular_env_uv(p3->ex,p3->ey,p3->ez, &u[3],&v[3]);
+                E->cb_face |= OPENPETE_CB_MOBY_ENV;
+                specular_env_uv(E->env_az, p0->ex,p0->ey,p0->ez, &u[0],&v[0]);
+                specular_env_uv(E->env_az, p1->ex,p1->ey,p1->ez, &u[1],&v[1]);
+                specular_env_uv(E->env_az, p2->ex,p2->ey,p2->ez, &u[2],&v[2]);
+                if (p3) specular_env_uv(E->env_az, p3->ex,p3->ey,p3->ez, &u[3],&v[3]);
                 /* SEAM UNWRAP: u is azimuth mod 128; pull u[1..3] within +-64 of
                  * u[0] (then keep >=0) so a seam face isn't interpolated backwards
                  * (mirrors the .s shifting a whole face by +-128). */
@@ -7545,12 +7572,12 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * which this walk does not carry: the face keeps the ordinary
              * emit, and the tag lets a material or colour compare separate
              * those faces from the ones the walk computes. */
-            s_emit_special = (uint8_t)(F->hl == 2u ? 4u : 0u);
-            t_diag->bit4_faces += (F->hl == 2u);
-            special_census_face(F, R->mscol, s_cur_moby_key, p0, p1, p2);
+            uint8_t special = (uint8_t)(F->hl == 2u ? 4u : 0u);
+            D->bit4_faces += (F->hl == 2u);
+            special_census_face(F, R->mscol, E->moby, p0, p1, p2);
             int special_tex = 0;
             /* A split record draws in place of the special material. */
-            t_emit_wp = moby_wplane_face(wpr, &emit_a, &emit_b, p0, p1, p2, p3,
+            E->wp = moby_wplane_face(wpr, &emit_a, &emit_b, p0, p1, p2, p3,
                                          &c0, &c1, &c2, &c3);
             if (moby_game.special_face && F->hl && !wpr) {
                 uint32_t cc[4] = { c0, c1, c2, c3 };
@@ -7573,13 +7600,13 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                     bpp = stex.bpp; abr = stex.abr;
                     special_tex = 1;
                     /* Generated environment-map coordinates mark the face. */
-                    O->cb_face |= (uint8_t)((uint32_t)stex.uv_set * OPENPETE_CB_MOBY_ENV);
+                    E->cb_face |= (uint8_t)((uint32_t)stex.uv_set * OPENPETE_CB_MOBY_ENV);
                     if (stex.uv_set)
                         for (int q = 0; q < 4; q++) { u[q] = stex.u[q]; v[q] = stex.v[q]; }
                 }
                 if (applied) {
-                    t_diag->special_faces[applied - 1]++;
-                    s_emit_special = (uint8_t)applied;
+                    D->special_faces[applied - 1]++;
+                    special = (uint8_t)applied;
                     c0 = cc[0]; c1 = cc[1]; c2 = cc[2]; c3 = cc[3];
                     textured = tex2;
                     hlq[0] = *p0; hlq[1] = *p1; hlq[2] = *p2;
@@ -7609,42 +7636,34 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 static long s_fd = -1;
                 if (s_fd < 0) { const char* e = getenv("OPENPETE_MOBY_FACEDUMP");
                     s_fd = e ? strtol(e, NULL, 16) : 0; }
-                if (s_fd && (uint32_t)s_fd == s_cur_moby_key)
+                if (s_fd && (uint32_t)s_fd == E->moby)
                     fprintf(stderr, "  [fdump vbl=%u] m=%08X mat=%08X i=%u,%u,%u,%u fresh=%d hl=%d "
                             "tex=%d tp=(%d,%d) clut=(%d,%d) bpp=%d abr=%d abe=%d\n",
-                            openpete_frame, s_cur_moby_key, R->mscol, i0, i1, i2, i3,
+                            openpete_frame, E->moby, R->mscol, i0, i1, i2, i3,
                             (int)F->fresh, (int)F->hl, textured, tpx, tpy, clx, cly,
                             bpp, (int)abr, (int)F->blendbit);
             }
 
+            const mn_mat mat = { textured, tpx, tpy, clx, cly, bpp, blend };
             if (emit_a) {
-                s_emit_otk = moby_otk_tri(ot_bk, MOBY_OTK_TRI_A);
-                s_emit_fkey = PACK_FKEY(i0,i1,i2);
-                s_emit_tmix = tmix;
-                emit_wtri(p0,p1,p2, c0,c1,c2, u[0],v[0],u[1],v[1],u[2],v[2],
-                          textured,tpx,tpy,clx,cly,bpp,blend);
+                const mn_tag g = { PACK_FKEY(i0,i1,i2), moby_otk_tri(ot_bk, MOBY_OTK_TRI_A), tmix, special };
+                emit_wtri(E, &g, p0,p1,p2, c0,c1,c2, u[0],v[0],u[1],v[1],u[2],v[2], &mat);
             }
             if (emit_b) {
                 int32_t otk_b = moby_otk_second(ot_bk, emit_a);
                 if (b_is_v3tri) {        /* tri-2nd (v3,v1,v2) */
-                    s_emit_otk = moby_otk_tri(otk_b, MOBY_OTK_TRI_V3);
-                    s_emit_fkey = PACK_FKEY(i3,i1,i2);
-                    s_emit_tmix = tmix;
-                    emit_wtri(p3,p1,p2, c3,c1,c2, u[3],v[3],u[1],v[1],u[2],v[2],
-                              textured,tpx,tpy,clx,cly,bpp,blend);
+                    const mn_tag g = { PACK_FKEY(i3,i1,i2), moby_otk_tri(otk_b, MOBY_OTK_TRI_V3), tmix, special };
+                    emit_wtri(E, &g, p3,p1,p2, c3,c1,c2, u[3],v[3],u[1],v[1],u[2],v[2], &mat);
                 } else {                 /* quad 2nd half (v1,v3,v2) */
-                    s_emit_otk = moby_otk_tri(otk_b, MOBY_OTK_TRI_QUAD_B);
-                    s_emit_fkey = PACK_FKEY(i1,i3,i2);
-                    s_emit_tmix = tmix;
-                    emit_wtri(p1,p3,p2, c1,c3,c2, u[1],v[1],u[3],v[3],u[2],v[2],
-                              textured,tpx,tpy,clx,cly,bpp,blend);
+                    const mn_tag g = { PACK_FKEY(i1,i3,i2), moby_otk_tri(otk_b, MOBY_OTK_TRI_QUAD_B), tmix, special };
+                    emit_wtri(E, &g, p1,p3,p2, c1,c3,c2, u[1],v[1],u[3],v[3],u[2],v[2], &mat);
                 }
             }
         }
-        t_emit_wp = NULL;
-        O->cb_face = 0u;   /* the last face's end */
-        moby_record_world_buckets(cpu, R, &s_proj[base].otk, ltop, rec_tri0);
-        moby_coincident_pull(O, rec_tri0);
+        E->wp = NULL;
+        E->cb_face = 0u;   /* the last face's end */
+        moby_record_world_buckets(cpu, R, &s_proj[base].otk, ltop, O, rec_tri0);
+        moby_coincident_pull(E, rec_tri0);
     }
 }
 
@@ -7766,20 +7785,19 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
     return 0;
 }
 
-/* Per-worker emit slabs, allocated on first parallel use. A single worker can
- * legitimately draw every triangle of a scene, so each slab carries the full
- * global capacity. */
-static mn_out s_wout[MN_MAX_WORKERS];
-
-/** @brief Allocate the first nw workers' emit slabs on first use.
+/** @brief Point the first nw workers' emit contexts at their slabs and allocate each slab on first use.
  *
- * A slab that already has its triangle array is taken as complete. Each new
- * slab holds MAX_NTRI entries of every parallel array.
+ * Context w takes slab w (s_wout) and diagnostics slot w. A single worker can
+ * legitimately draw every triangle of a scene, so each slab carries the full
+ * global capacity, MAX_NTRI entries of every parallel array; a slab that
+ * already has its triangle array is taken as complete.
  * @param nw The worker count.
  * @return 1 when every slab exists, 0 when an allocation failed. */
 static int walk_slabs_ready(int nw) {
     for (int w = 0; w < nw; w++) {
         mn_out* O = &s_wout[w];
+        s_ework[w].out = O;
+        s_ework[w].diag = &s_wdiag[w];
         if (O->tri) continue;
         O->tri    = (ntri_t*)  malloc(sizeof(ntri_t)  * MAX_NTRI);
         O->fkey   = (uint32_t*)malloc(sizeof(uint32_t)* MAX_NTRI);
@@ -7805,21 +7823,20 @@ static int walk_slabs_ready(int nw) {
 
 typedef struct { CPUState* cpu; int is_spec; } mn_job;
 
-/** @brief Work-pool job: walk one record into the worker's slab and note its run.
+/** @brief Work-pool job: walk one record through the worker's emit context and note its run.
  *
- * Points the thread's t_out and t_diag at the worker's slab and diagnostics,
- * runs walk_records for the record, and stores the worker, the slab offset
- * and the emitted count in s_pre_rec[item].
+ * Runs walk_records for the record through s_ework[worker], whose target is
+ * the worker's slab, and stores the worker, the slab offset and the emitted
+ * count in s_pre_rec[item].
  * @param item The record index.
  * @param worker The pool worker, 0 for the calling thread.
  * @param arg The mn_job. */
 static void walk_record_job(int item, int worker, void* arg) {
     mn_job* J = (mn_job*)arg;
-    mn_out* O = &s_wout[worker];
-    t_out  = O;
-    t_diag = &s_wdiag[worker];
+    mn_emit* E = &s_ework[worker];
+    const mn_out* O = E->out;
     int start = O->n;
-    walk_records(J->cpu, J->is_spec, item, item + 1);
+    walk_records(E, J->cpu, J->is_spec, item, item + 1);
     s_pre_rec[item].worker = worker;
     s_pre_rec[item].start  = start;
     s_pre_rec[item].count  = O->n - start;
@@ -7838,14 +7855,13 @@ static void walk_record_job(int item, int worker, void* arg) {
 static void walk_parallel(CPUState* cpu, int is_spec) {
     int nw = openpete_workpool_threads();
     if (nw > MN_MAX_WORKERS) nw = MN_MAX_WORKERS;
-    if (!walk_slabs_ready(nw)) { walk_records(cpu, is_spec, 0, s_nrecs); return; }
+    if (!walk_slabs_ready(nw)) { walk_records(&s_esim, cpu, is_spec, 0, s_nrecs); return; }
     for (int w = 0; w < nw; w++) s_wout[w].n = 0;
     mn_job J = { cpu, is_spec };
     uint64_t t_disp = tier_dbg_on() ? openpete_phase_now_us() : 0;
     openpete_workpool_run(s_nrecs, walk_record_job, &J);
     if (t_disp) s_us_fanout += (long)(openpete_phase_now_us() - t_disp);
     uint64_t t_mrg = tier_dbg_on() ? openpete_phase_now_us() : 0;
-    t_out = &s_gout; t_diag = &s_wdiag[0];   /* worker 0 is this thread */
     /* Ordered merge: worker runs land in s_wtri in RECORD order, so the stream
      * and every consumer downstream of it match the serial walk. */
     s_gout.n = 0;
@@ -7906,7 +7922,7 @@ static int build_walk_tris_inner(CPUState* cpu) {
     const uint64_t t_pro = mst_now();
     int serial = walk_prologue(cpu, is_spec);
     mst_add(MST_PRO, t_pro);
-    if (serial) { s_walk_serial++; walk_records(cpu, is_spec, 0, s_nrecs); }
+    if (serial) { s_walk_serial++; walk_records(&s_esim, cpu, is_spec, 0, s_nrecs); }
     else { s_walk_par++; walk_parallel(cpu, is_spec); }
     moby_fade_census_print();
     return s_gout.n;
@@ -8704,7 +8720,7 @@ static float env_c2(void) {   /* calibration constant (temp env override) */
 /** @brief The sign on the record azimuth in the environment-reflection U term, latched on first use.
  *
  * 1.0 by default; OPENPETE_ENV_AZSIGN overrides it. specular_env_uv multiplies
- * s_cur_env_az by it.
+ * the record's view azimuth by it.
  * @return The factor. */
 static float env_azsign(void) {
     static float c = -1e9f;
@@ -8714,18 +8730,19 @@ static float env_azsign(void) {
 /** @brief The environment-reflection texture coordinate of a vertex, in float texels.
  *
  * Reflects the offset (specular_env_refl), then u follows env_c2, the
- * reflection azimuth plus env_azsign times the record's view azimuth
- * (s_cur_env_az), and the camera heading (s_envHead / 32), modulo 128; v is
+ * reflection azimuth plus env_azsign times the record's view azimuth, and
+ * the camera heading (s_envHead / 32), modulo 128; v is
  * 64 plus the elevation scaled to 128 per half turn, 0 elevation when the
  * reflection is shorter than 0.001. The .s builds the same terms at
  * .L800226F8 from the octant-table atan of the record's view position. Both
  * stay unrounded, so u lies in [0, 128) and v in [0, 128].
+ * @param env_az The record's view azimuth (rec_meta.env_az).
  * @param ex The rotated vertex offset X.
  * @param ey The rotated vertex offset Y.
  * @param ez The rotated vertex offset Z.
  * @param pu Receives U.
  * @param pv Receives V. */
-static void specular_env_uv(float ex, float ey, float ez, float* pu, float* pv) {
+static void specular_env_uv(float env_az, float ex, float ey, float ez, float* pu, float* pv) {
     float r[3]; specular_env_refl(ex, ey, ez, r);
     float len = sqrtf(r[0]*r[0] + r[1]*r[1] + r[2]*r[2]);
     float az = atan2f(r[0], r[1]);
@@ -8734,7 +8751,7 @@ static void specular_env_uv(float ex, float ey, float ez, float* pu, float* pv) 
      * view-space position azimuth atan2(TR.z, TR.x) (octant-table atan in the
      * .s) + camHead>>3, folded into the per-vertex azimuth at (camHead/32 -
      * az_TR/2)*4 texel scale. */
-    *pu = wrap128(env_c2() - (128.0f / (2.0f*PI_F)) * (az + env_azsign()*s_cur_env_az) + s_envHead / 32.0f);
+    *pu = wrap128(env_c2() - (128.0f / (2.0f*PI_F)) * (az + env_azsign()*env_az) + s_envHead / 32.0f);
     *pv = 64.0f + (128.0f / PI_F) * el;
 }
 
@@ -8778,7 +8795,7 @@ static void specular_env_calibrate(CPUState* cpu) {
             for (int j=0;j<3;j++){ double dx=w->v[k].sx-P->x[j], dy=w->v[k].sy-P->y[j];
                 double d=dx*dx+dy*dy; if(d<bd){bd=d;bj=j;} }
             float r[3]; specular_env_refl(w->v[k].ex,w->v[k].ey,w->v[k].ez,r);
-            float fu, fv; specular_env_uv(w->v[k].ex,w->v[k].ey,w->v[k].ez, &fu, &fv);
+            float fu, fv; specular_env_uv(s_esim.env_az, w->v[k].ex,w->v[k].ey,w->v[k].ez, &fu, &fv);
             int nu = (int)lrintf(fu), nv2 = (int)lrintf(fv);   /* the prim's UV is whole texels */
             int pu = P->u[bj], pv = P->v[bj];
             int du = nu - (pu & 127); if (du > 64) du -= 128; if (du < -64) du += 128;
@@ -14278,10 +14295,11 @@ static void shaded_face_colors(CPUState* cpu, const shaded_rec* R, uint32_t w0, 
  * @param p2 The third projected vertex.
  * @param ncl1 The float NCLIP of (v0,v1,v2).
  * @param ncl2 The float NCLIP of (v3,v1,v2), 0 on a triangle.
- * @param emitted The triangles the face emitted. */
+ * @param emitted The triangles the face emitted.
+ * @param cls The record's moby class. */
 static void shaded_face_dbg(const shaded_rec* R, int f, int i0, int i1, int i2, int i3, int tri,
                             const proj_xy* p0, const proj_xy* p1, const proj_xy* p2,
-                            double ncl1, double ncl2, int emitted) {
+                            double ncl1, double ncl2, int emitted, uint16_t cls) {
     static long s_fd_cls = -2, s_fd_f0 = -1;
     if (s_fd_cls == -2) {
         const char* e = getenv("OPENPETE_SHADED_FACEDBG");
@@ -14289,13 +14307,13 @@ static void shaded_face_dbg(const shaded_rec* R, int f, int i0, int i1, int i2, 
         if (e && *e) { char* c = NULL; s_fd_cls = strtol(e, &c, 0);
                        if (c && *c == ',') s_fd_f0 = strtol(c+1, NULL, 0); }
     }
-    if (s_fd_cls < 0 || (int)s_cur_moby_cls != (int)s_fd_cls ||
+    if (s_fd_cls < 0 || (int)cls != (int)s_fd_cls ||
         (int)openpete_frame < s_fd_f0 || (int)openpete_frame >= s_fd_f0 + 2) return;
     long i0i = (long)((int)p1->sx - (int)p0->sx) * ((int)p2->sy - (int)p0->sy)
              - (long)((int)p2->sx - (int)p0->sx) * ((int)p1->sy - (int)p0->sy);
     fprintf(stderr, "[shface vbl=%u] moby=%08x cls=%03x face=%d idx=%d,%d,%d,%d "
             "p0=(%.2f,%.2f) p1=(%.2f,%.2f) p2=(%.2f,%.2f)%s ncl1=%.3f ncl2=%.3f int1=%ld emit=%d\n",
-            openpete_frame, R->moby, s_cur_moby_cls, f, i0, i1, i2, i3,
+            openpete_frame, R->moby, cls, f, i0, i1, i2, i3,
             (double)p0->sx, (double)p0->sy, (double)p1->sx, (double)p1->sy,
             (double)p2->sx, (double)p2->sy, tri ? " TRI" : " QUAD",
             ncl1, ncl2, i0i, emitted);
@@ -14484,11 +14502,12 @@ static void metal_hold(int back, const proj_xy* a, const proj_xy* b, const proj_
  * result needs nothing behind it to survive depth or the paint-key contest.
  * Otherwise, or on a mangled vertex, the triangle is emitted semi-transparent
  * as it stands.
+ * @param E The emit context, the sim thread's.
  * @param t The front triangle.
  * @param abr The ABR in force.
  * @param blend_class The blend code the fallback triangle carries.
  * @return The triangles emitted. */
-static int metal_front_emit(const metal_tri* t, int abr, int blend_class) {
+static int metal_front_emit(mn_emit* E, const metal_tri* t, int abr, int blend_class) {
     int n0 = s_gout.n;
     mclip_pt f[3];
     int mangled = 0;
@@ -14505,26 +14524,24 @@ static int metal_front_emit(const metal_tri* t, int abr, int blend_class) {
         pn[j] = mclip_tri(f, b, pc[j]);
         if (pn[j] >= 3) sum += mclip_area(pc[j], pn[j]);
     }
-    s_emit_fkey = t->fkey;
+    const mn_tag g = { t->fkey, t->otk, 0u, 0u };
     if (mangled || fa <= 0.0 || fabs(sum - fa) > fa * 1e-3) {
         s_metal_cnt[8]++;
-        s_emit_otk = t->otk;
-        emit_wtri((proj_xy*)t->v[0], (proj_xy*)t->v[1], (proj_xy*)t->v[2],
-                  t->col, t->col, t->col, 0,0,0,0,0,0, 0,0,0,0,0,16, blend_class);
+        const mn_mat m = { 0, 0, 0, 0, 0, 16, blend_class };
+        emit_wtri(E, &g, (proj_xy*)t->v[0], (proj_xy*)t->v[1], (proj_xy*)t->v[2],
+                  t->col, t->col, t->col, 0,0,0,0,0,0, &m);
         return s_gout.n - n0;
     }
+    const mn_mat m = { 0, 0, 0, 0, 0, 16, 0 };
     s_metal_cnt[7]++;
     for (int j = 0; j < s_metal_back_n && s_gout.n < MAX_NTRI; j++) {
         if (pn[j] < 3) continue;
         uint32_t c = metal_abr_compose(abr, s_metal_back[j].col, t->col);
         proj_xy v[MCLIP_MAX];
         for (int k = 0; k < pn[j]; k++) v[k] = metal_plane_vertex(t, pc[j][k]);
-        for (int k = 1; k + 1 < pn[j] && s_gout.n < MAX_NTRI; k++) {
-            s_emit_otk = t->otk;
-            emit_wtri(&v[0], &v[k], &v[k + 1], c, c, c, 0,0,0,0,0,0, 0,0,0,0,0,16, 0);
-        }
+        for (int k = 1; k + 1 < pn[j] && s_gout.n < MAX_NTRI; k++)
+            emit_wtri(E, &g, &v[0], &v[k], &v[k + 1], c, c, c, 0,0,0,0,0,0, &m);
     }
-    s_emit_otk = -1;
     return s_gout.n - n0;
 }
 
@@ -14534,6 +14551,7 @@ static int metal_front_emit(const metal_tri* t, int abr, int blend_class) {
  * its front side is emitted later by metal_moby_finish. Every other face
  * emits (v0,v1,v2) and, on a quad, (v1,v3,v2) with the second half's
  * bucket word, the face identity carrying bit 0 on that half.
+ * @param E The emit context, the sim thread's.
  * @param p0 The first vertex.
  * @param p1 The second vertex.
  * @param p2 The third vertex.
@@ -14545,7 +14563,7 @@ static int metal_front_emit(const metal_tri* t, int abr, int blend_class) {
  * @param metal_band Nonzero for a metal face of a moby in the near band.
  * @param back Nonzero for a back-facing face.
  * @param blend The blend code. */
-static void shaded_face_emit(proj_xy* p0, proj_xy* p1, proj_xy* p2, proj_xy* p3, int tri,
+static void shaded_face_emit(mn_emit* E, proj_xy* p0, proj_xy* p1, proj_xy* p2, proj_xy* p3, int tri,
                              const uint32_t c[4], int ot_bk, uint32_t fkey, int metal_band,
                              int back, int blend) {
     if (metal_band) {
@@ -14553,15 +14571,13 @@ static void shaded_face_emit(proj_xy* p0, proj_xy* p1, proj_xy* p2, proj_xy* p3,
         if (!tri) metal_hold(back, p1, p3, p2, c[0], moby_otk_second(ot_bk, 1), fkey | 1u);
         if (!back) return;
     }
-    s_emit_fkey = fkey;
-    s_emit_otk = ot_bk;
-    emit_wtri(p0,p1,p2, c[0],c[1],c[2], 0,0,0,0,0,0, 0,0,0,0,0,16, blend);
+    const mn_mat m = { 0, 0, 0, 0, 0, 16, blend };
+    const mn_tag ga = { fkey, ot_bk, 0u, 0u };
+    emit_wtri(E, &ga, p0,p1,p2, c[0],c[1],c[2], 0,0,0,0,0,0, &m);
     if (!tri && s_gout.n < MAX_NTRI) {
-        s_emit_fkey = fkey | 1u;
-        s_emit_otk = moby_otk_second(ot_bk, 1);
-        emit_wtri(p1,p3,p2, c[1],c[3],c[2], 0,0,0,0,0,0, 0,0,0,0,0,16, blend);
+        const mn_tag gb = { fkey | 1u, moby_otk_second(ot_bk, 1), 0u, 0u };
+        emit_wtri(E, &gb, p1,p3,p2, c[1],c[3],c[2], 0,0,0,0,0,0, &m);
     }
-    s_emit_otk = -1;
 }
 
 /** @brief Count one kept metal face into the shaded metal census.
@@ -14585,12 +14601,13 @@ static void metal_count_face(int drawn, int back, int in_band, int blended) {
  * every semi-transparent face of the moby. The held front triangles emit
  * through metal_front_emit at that ABR, then every semi-transparent
  * triangle of the moby takes the ABR's blend code.
+ * @param E The emit context, the sim thread's.
  * @param rt0 The moby's first triangle in s_wtri.
  * @param abe_flags The moby's s7 flags: 1 flat ABE, 2 metal. */
-static void metal_moby_finish(int rt0, unsigned abe_flags) {
+static void metal_moby_finish(mn_emit* E, int rt0, unsigned abe_flags) {
     for (int k = 0; k < s_metal_front_n && s_gout.n < MAX_NTRI; k++) {
         int e0 = s_gout.n;
-        metal_front_emit(&s_metal_front[k], (int)abe_flags - 1, 1);
+        metal_front_emit(E, &s_metal_front[k], (int)abe_flags - 1, 1);
         for (int t = e0; t < s_gout.n; t++) s_wtri_mode[t] = 2;
     }
     if (!abe_flags) return;
@@ -14620,8 +14637,9 @@ static void metal_moby_finish(int rt0, unsigned abe_flags) {
  * 2 for any kept metal face. OPENPETE_SHADED_NOHL drops the highlight term
  * of the gouraud colours.
  *
- * Per record it sets the HUD tag s_cur_ui (0 actor, 1 flat HUD, 2 depth-tested
- * HUD), the cutscene-front flag, class and OT bias. Each face's paint bucket
+ * Per record it sets the record scope of the sim thread's emit context
+ * (s_esim): the HUD tag (0 actor, 1 flat HUD, 2 depth-tested HUD), the
+ * cutscene-front flag, class and OT bias. Each face's paint bucket
  * comes from shaded_face_otkey, and its identity key is 0x80000000 | (face <<
  * 1), bit 0 marking a quad's second half. Stops at MAX_NTRI. Reads no guest
  * prim output.
@@ -14635,6 +14653,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
     s_shmode[0]=s_shmode[1]=s_shmode[2]=0;
     memset(s_metal_cnt, 0, sizeof s_metal_cnt);
     s_gout.n = 0;
+    mn_emit* const E = &s_esim;
     for (int r = 0; r < s_nshrecs; r++) {
         shaded_rec* R = &s_shrecs[r];
         /* HUD/overlay tag (0=ACTOR, 1=HUD flat, 2=HUD3D depth-sorted). Two kinds of
@@ -14670,16 +14689,12 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                         : !(openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? "ACTOR"
                         : model_3d ? "HUD3D" : "HUDflat");
         }
-        s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* face identity (shaded tris carry no topology key) */
-        s_cur_single = (uint8_t)moby_otk_row_single_bucket(moby_game.shaded_otkey_row);
-        s_cur_moby_cls = R->moby ? (uint16_t)cpu->read_half(R->moby + game_layout.moby.class_off) : 0;
-        t_out->cb_rec = 0u; t_out->cb_face = 0u;
-        moby_classdbg_line(cpu, R->moby, s_cur_moby_cls);
-        s_cur_moby_dofs = R->moby ? (int8_t)cpu->read_byte(R->moby + game_layout.moby.angle_off + 3u) : 0; /* og OT bias (rot>>24) */
-        s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
-                 : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)
-                 : 0;
-        s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, R->moby);
+        mn_emit_record(E, cpu, R->moby,
+                       (uint8_t)moby_otk_row_single_bucket(moby_game.shaded_otkey_row), 0u);
+        moby_classdbg_line(cpu, R->moby, E->cls);
+        mn_emit_ui(E, cpu, openpete_ui_moby_is_addr_static(R->moby) ? 2
+                         : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)
+                         : 0);
         proj_xy* base = sv + R->sv_off;
         int vc = R->vcount;
         /* Per-vertex gouraud lit colours from the inline normal stream
@@ -14742,13 +14757,13 @@ static int build_shaded_walk_tris(CPUState* cpu) {
             /* Face identity for the paint-verdict carry and the rank
              * calibration: the face's stream index, bit 0 the quad's half. */
             const uint32_t cq[4] = { c0, c1, c2, c3 };
-            shaded_face_emit(p0, p1, p2, p3, tri, cq, ot_bk, 0x80000000u | ((uint32_t)f << 1),
+            shaded_face_emit(E, p0, p1, p2, p3, tri, cq, ot_bk, 0x80000000u | ((uint32_t)f << 1),
                              mode == 2 && in_band, back, sh_blend);
-            shaded_face_dbg(R, f, i0, i1, i2, i3, tri, p0, p1, p2, ncl1, ncl2, s_gout.n - mt0);
+            shaded_face_dbg(R, f, i0, i1, i2, i3, tri, p0, p1, p2, ncl1, ncl2, s_gout.n - mt0, E->cls);
             if (mode == 2) metal_count_face(s_gout.n > mt0 || sh_blend, back, in_band, sh_blend);
             for (int t = mt0; t < s_gout.n; t++) s_wtri_mode[t] = mode;
         }
-        metal_moby_finish(rt0, abe_flags);
+        metal_moby_finish(E, rt0, abe_flags);
     }
     if (moby_verify_vbl() && s_metal_cnt[0] + s_metal_cnt[1])
         fprintf(stderr, "[moby-shaded-metal vbl=%u] front=%ld back=%ld in_band=%ld blended=%ld "
@@ -14935,7 +14950,7 @@ static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
     OP_ROLE_ASSERT(sim);
     (void)addr;
     s_simple_ntri = moby_game.simple_pass(cpu);
-    s_cur_wbk = -1;
+    s_esim.wbk = -1;
     extern int openpete_speculative;
     if (!openpete_speculative) {
         s_canon_simple_valid = 1;
@@ -17841,7 +17856,7 @@ static void moby_reextract_body(CPUState* cpu) {
     if (sim_fresh) {
         moby_simple_begin(cpu);
         moby_game.simple_replay(cpu);
-        s_cur_wbk = -1;
+        s_esim.wbk = -1;
         sim_walk = s_gout.n;
         push_scene_moby(cpu);
     }
