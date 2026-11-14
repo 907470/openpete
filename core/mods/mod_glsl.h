@@ -37,11 +37,26 @@ extern "C" {
  * export). */
 #define OPENPETE_MOD_GLSL_ACTOR_PREAMBLE "#define OP_PROFILE_ACTOR 1\n"
 
+/* The files one compile's include resolution probed: each path it read,
+ * and each SDK path it found absent before falling back to the shader's
+ * own directory (a file appearing there would change what the include
+ * resolves to). A compile cache keys on these files (mod_shader_stamp.h).
+ * Paths are listed once, in first-probe order; a compile probing more
+ * than OPENPETE_MOD_GLSL_DEPS_MAX distinct paths sets overflow. */
+#define OPENPETE_MOD_GLSL_DEPS_MAX 64
+typedef struct {
+    char          path[OPENPETE_MOD_GLSL_DEPS_MAX][OPENPETE_MOD_GLSL_PATH_MAX * 2];
+    unsigned char present[OPENPETE_MOD_GLSL_DEPS_MAX];  /* 1 read, 0 probed absent */
+    int           n;
+    int           overflow;
+} openpete_mod_glsl_deps_t;
+
 /* Include resolution: a name resolves in the staged SDK shader dir
  * (<sdk>/shaders) first, then in the including shader's own dir. */
 typedef struct {
     char shader_dir[OPENPETE_MOD_GLSL_PATH_MAX];      /* dir of the shader */
     char sdk_shader_dir[OPENPETE_MOD_GLSL_PATH_MAX];  /* <sdk>/shaders     */
+    openpete_mod_glsl_deps_t* deps;  /* receives the probed files, or NULL */
 } openpete_mod_glsl_include_t;
 
 /** @brief Map a shader path's extension to its stage.
@@ -65,7 +80,8 @@ char* openpete_mod_glsl_read_file(const char* path, size_t* len_out);
  *
  * shader_dir is shader_path cut at its last '/' (the whole path when it
  * holds none); sdk_shader_dir is `<sdk_dir>/shaders`. Both truncate at
- * OPENPETE_MOD_GLSL_PATH_MAX.
+ * OPENPETE_MOD_GLSL_PATH_MAX. deps is NULL; a caller that keys a cache on
+ * the files a compile reads points it at a list for that compile.
  * @param inc the context to fill.
  * @param shader_path the shader's file path.
  * @param sdk_dir the staged SDK root. */

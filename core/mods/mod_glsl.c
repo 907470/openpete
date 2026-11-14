@@ -47,6 +47,7 @@ void openpete_mod_glsl_include_init(openpete_mod_glsl_include_t* inc,
     if (slash) *slash = '\0';
     snprintf(inc->sdk_shader_dir, sizeof inc->sdk_shader_dir, "%s/shaders",
              sdk_dir);
+    inc->deps = NULL;
 }
 
 int openpete_mod_glsl_has_terrain_profile(const char* src, int stage) {
@@ -113,8 +114,28 @@ static glsl_include_result_t* include_load(const char* dir, const char* name) {
     return r;
 }
 
+/** @brief Record one probed include path in a dependency list, once.
+ *
+ * @param d the list; NULL records nothing.
+ * @param dir the directory probed.
+ * @param name the include name.
+ * @param present 1 when the file was read, 0 when it was absent. */
+static void deps_record(openpete_mod_glsl_deps_t* d, const char* dir, const char* name,
+                        int present) {
+    if (!d) return;
+    char p[sizeof d->path[0]];
+    snprintf(p, sizeof p, "%s/%s", dir, name);
+    for (int i = 0; i < d->n; i++)
+        if (strcmp(d->path[i], p) == 0) return;
+    if (d->n >= OPENPETE_MOD_GLSL_DEPS_MAX) { d->overflow = 1; return; }
+    memcpy(d->path[d->n], p, sizeof p);
+    d->present[d->n++] = (unsigned char)(present != 0);
+}
+
 /** @brief Resolve an include against the SDK shader directory first, then the including shader's directory.
  *
+ * Each probe is recorded in the context's dependency list: the SDK path
+ * read, or found absent and then the shader-directory path read.
  * @param ctx_v the openpete_mod_glsl_include_t for the shader.
  * @param name the include name.
  * @param includer_name the including file, unused.
@@ -129,7 +150,11 @@ static glsl_include_result_t* include_resolve(void* ctx_v, const char* name,
     (void)includer_name;
     if (depth > 8) return NULL;                       /* cycle guard */
     glsl_include_result_t* r = include_load(inc->sdk_shader_dir, name);
-    if (!r) r = include_load(inc->shader_dir, name);
+    deps_record(inc->deps, inc->sdk_shader_dir, name, r != NULL);
+    if (!r) {
+        r = include_load(inc->shader_dir, name);
+        if (r) deps_record(inc->deps, inc->shader_dir, name, 1);
+    }
     return r;
 }
 

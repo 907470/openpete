@@ -221,6 +221,7 @@ add_library(openpete_core STATIC
     mods/mod_spv_reflect.c
     mods/mod_mat_link.c
     mods/mod_shader.c
+    mods/mod_shader_stamp.c
     mods/mod_material_resolve.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c
 

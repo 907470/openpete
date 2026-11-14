@@ -2,9 +2,10 @@
  *
  * Mods ship GLSL source; the ENGINE compiles it to SPIR-V at load through
  * mod_glsl.c (in-process glslang, the dialect of the engine's own
- * shaders). Compiles are content-hash cached under <mod>/.build/shaders/
- * with the same stamp mechanics as the C compile-on-boot cache
- * (mod_loader.c mod_compute_key): stamp removed on failure, object kept.
+ * shaders). Compiles are content-hash cached under <mod>/.build/shaders/;
+ * a stamp names the build key and every file the compile included with
+ * its hash (mod_shader_stamp.h), is removed on failure, and the object is
+ * kept.
  * A prebuilt "<path>.spv" beside a MISSING source loads instead
  * (binary-mod parity) but only with a "<path>.spv.ihash" sidecar
  * matching the current interface hash - a stale prebuilt refuses
@@ -28,6 +29,7 @@
 #include "openpete_native_render.h"   /* set_tag_split arming (material selectors) */
 #include "../host/sha256.h"
 #include "mod_glsl.h"
+#include "mod_shader_stamp.h"
 #include "mod_spv_cdata.h"
 #include "mod_spv_reflect.h"
 #include "mod_mat_link.h"
@@ -224,46 +226,6 @@ static void shader_move_tables(mod_shader_t* sh, const char* id) {
 /* ------------------------------------------------------------------ */
 /* small file helpers                                                  */
 
-/** @brief List the files in a directory whose extension is in a `;`-separated list, sorted by strcmp.
- *
- * The extension is the name from its last `.`; a name with no `.` or of
- * 128 bytes or more is skipped, and the scan stops at `cap` entries. The
- * strcmp order makes the build and watch hashes that consume the list
- * independent of readdir order.
- * @param dir Directory to scan; a missing one lists nothing.
- * @param exts Extensions with their dots, such as `.vert;.frag`.
- * @param names Receives the names.
- * @param cap Capacity of @p names.
- * @return The number of names written. */
-static int list_dir_sorted(const char* dir, const char* exts,
-                           char names[][128], int cap) {
-    DIR* d = opendir(dir);
-    if (!d) return 0;
-    int n = 0;
-    struct dirent* de;
-    while ((de = readdir(d)) != NULL && n < cap) {
-        const char* name = de->d_name;
-        const char* dot = strrchr(name, '.');
-        if (!dot) continue;
-        char pat[16];
-        snprintf(pat, sizeof pat, "%s;", dot);
-        char hay[256];
-        snprintf(hay, sizeof hay, "%s;", exts);
-        if (!strstr(hay, pat)) continue;
-        if (strlen(name) >= 128) continue;
-        snprintf(names[n++], 128, "%.127s", name);
-    }
-    closedir(d);
-    for (int i = 1; i < n; i++)          /* insertion sort, tiny n */
-        for (int j = i; j > 0 && strcmp(names[j - 1], names[j]) > 0; j--) {
-            char tmp[128];
-            memcpy(tmp, names[j - 1], 128);
-            memcpy(names[j - 1], names[j], 128);
-            memcpy(names[j], tmp, 128);
-        }
-    return n;
-}
-
 /** @brief Flatten a mod-relative shader path into a cache file name.
  *
  * Replaces each `/` and `\\` with `_`, so `shaders/crt.frag` becomes
@@ -300,57 +262,20 @@ static int key_update_file(openpete_sha256_ctx* hc, const char* path) {
     return 0;
 }
 
-/* Every staged file a mod's shader can compile against: the tier contracts
- * and everything they include. All of it keys the build, because a change to
- * any of it changes the SPIR-V a source produces - a cached .spv that
- * outlives an edit to one of these is a shader lying about its interface. */
-static const char* const k_iface_files[] = {
-    "openpete_shader_api.glsl",     /* postfx tier                        */
-    "openpete_psx_material.glsl",   /* material tier: both engine halves  */
-    "openpete_psx_decal.glsl",      /* decal draw path                    */
-    "psx_key_contest.glsl",         /* og painter verdicts (both halves)  */
-    "psx_clut.glsl",                /* texel decode, fogged-CLUT row mix  */
-    "psx_texel.glsl",               /* integer texel of a texel coordinate */
-    "terrain_shade.glsl",           /* retained-terrain engine half       */
-    "portal_cover.glsl",            /* portal plane-cover test            */
-    "portal_cover_scene.glsl",      /* the scene half's portal profile    */
-    "psx_moby_snap.glsl",           /* the scene half's actor profile     */
-    "psx_src_tint.glsl",            /* terrain source tint (both halves)  */
-};
-
-/** @brief Feed every staged shader interface file under the SDK directory to a SHA-256 context.
- *
- * The files are the k_iface_files entries under `<sdk>/shaders/`, in table
- * order; a missing file contributes nothing, so the hash is stable without
- * the SDK staged. */
-static void key_update_interface(openpete_sha256_ctx* hc) {
-    for (size_t i = 0; i < sizeof k_iface_files / sizeof *k_iface_files; i++) {
-        char p[MOD_SHADER_PATH_MAX * 2];
-        snprintf(p, sizeof p, "%s/shaders/%s", openpete_mods_sdk_dir(),
-                 k_iface_files[i]);
-        (void)key_update_file(hc, p);   /* absent = stable no-op */
-    }
-}
-
-/** @brief Hash the shader interface: the mod API version and the staged interface files.
+/** @brief Hash the shader interface a prebuilt module must match: the mod API version and every `.glsl` staged under `<sdk>/shaders` (openpete_mod_shader_interface_hash).
  *
  * A prebuilt `.spv` loads only when its `.spv.ihash` sidecar holds this
  * hash. The glslang version is excluded, since a prebuilt module does not
  * depend on the engine's compiler.
  * @param out_hex Receives the 64-character hex digest and a NUL. */
 static void interface_hash(char out_hex[65]) {
-    openpete_sha256_ctx hc;
-    openpete_sha256_init(&hc);
-    const unsigned api_ver = OPENPETE_MOD_API_VERSION;
-    openpete_sha256_update(&hc, &api_ver, sizeof api_ver);
-    key_update_interface(&hc);
-    uint8_t digest[32];
-    openpete_sha256_final(&hc, digest);
-    openpete_sha256_hex(digest, out_hex);
+    openpete_mod_shader_interface_hash(openpete_mods_sdk_dir(), OPENPETE_MOD_API_VERSION, out_hex);
 }
 
-/** @brief Start a build key: the mod API version, the glslang version and the staged interface files.
+/** @brief Start a build key: the mod API version and the glslang version.
  *
+ * The files a compile includes are not part of the key: the stamp records
+ * them as the compile read them (compile_profile).
  * @param hc The hash context to initialise and feed. */
 static void key_init_compiler(openpete_sha256_ctx* hc) {
     openpete_sha256_init(hc);
@@ -365,16 +290,13 @@ static void key_init_compiler(openpete_sha256_ctx* hc) {
     snprintf(glslang_ver, sizeof glslang_ver, "glslang none");
 #endif
     key_update_str(hc, glslang_ver);
-    key_update_interface(hc);
 }
 
-/** @brief Compute a shader source's build key.
+/** @brief Compute a shader source's build key: SHA-256 over the mod API version, the glslang version and the source.
  *
- * SHA-256 over the mod API version, the glslang version, the staged
- * interface files, the source, and then every `.vert`, `.frag` and `.glsl`
- * file in the source's directory in strcmp order. The sibling files make
- * an edit to a mod-local include invalidate its includers; every other
- * shader in that directory recompiles with them.
+ * Every file the source includes, in the SDK or elsewhere, is checked
+ * against the stamp instead (openpete_mod_shader_stamp_current), so an
+ * edit to one recompiles exactly the modules that read it.
  * @return 0, or -1 when the source cannot be read. */
 static int shader_compute_key(const char* mod_dir, const char* rel_path,
                               char key_out[65]) {
@@ -384,21 +306,6 @@ static int shader_compute_key(const char* mod_dir, const char* rel_path,
     openpete_sha256_ctx hc;
     key_init_compiler(&hc);
     if (key_update_file(&hc, src_path) != 0) return -1;
-    /* Siblings: the mod's whole shader dir keys every shader in it, so
-     * a mod-local include edit invalidates its includers. */
-    {
-        char dir[MOD_SHADER_PATH_MAX * 2];
-        snprintf(dir, sizeof dir, "%s/%s", mod_dir, rel_path);
-        char* slash = strrchr(dir, '/');
-        if (slash) *slash = '\0';
-        char names[64][128];
-        int n = list_dir_sorted(dir, ".vert;.frag;.glsl", names, 64);
-        for (int i = 0; i < n; i++) {
-            char p[MOD_SHADER_PATH_MAX * 2 + 128];
-            snprintf(p, sizeof p, "%s/%.*s", dir, (int)sizeof names[i] - 1, names[i]);
-            (void)key_update_file(&hc, p);
-        }
-    }
     uint8_t digest[32];
     openpete_sha256_final(&hc, digest);
     openpete_sha256_hex(digest, key_out);
@@ -408,10 +315,12 @@ static int shader_compute_key(const char* mod_dir, const char* rel_path,
 /* ------------------------------------------------------------------ */
 /* compile                                                             */
 
-/** @brief Load one profile's cached SPIR-V when its `.hash` stamp equals a build key.
+/** @brief Load one profile's cached SPIR-V when its `.hash` stamp is current for a build key.
  *
  * The cache files are `<build_dir>/<flat><suffix>.spv` and its `.hash`
- * stamp; the SPIR-V must be a nonempty whole number of words.
+ * stamp; the stamp must name the key and every file the compile that wrote
+ * it probed must be unchanged (openpete_mod_shader_stamp_current), and the
+ * SPIR-V must be a nonempty whole number of words.
  * @param build_dir The cache directory.
  * @param flat The flattened name of the cache files.
  * @param suffix The profile's cache-file suffix.
@@ -423,15 +332,7 @@ static size_t cache_load(const char* build_dir, const char* flat, const char* su
     char spv_path[MOD_SHADER_PATH_MAX * 3], stamp_path[MOD_SHADER_PATH_MAX * 3];
     snprintf(spv_path, sizeof spv_path, "%s/%s%s.spv", build_dir, flat, suffix);
     snprintf(stamp_path, sizeof stamp_path, "%s/%s%s.hash", build_dir, flat, suffix);
-    char stamped[65] = "";
-    FILE* f = fopen(stamp_path, "rb");
-    if (f) {
-        size_t got = fread(stamped, 1, 64, f);
-        stamped[got] = '\0';
-        if (got && stamped[got - 1] == '\n') stamped[got - 1] = '\0';
-        fclose(f);
-    }
-    if (strcmp(stamped, key) != 0) return 0;
+    if (!openpete_mod_shader_stamp_current(stamp_path, key)) return 0;
     size_t len = 0;
     char* cached = openpete_mod_glsl_read_file(spv_path, &len);
     if (cached && len >= 4 && (len & 3u) == 0) {
@@ -469,9 +370,10 @@ static int shader_refuse_float64(const char* id, const char* path, const char* w
 /** @brief Produce one profile of one shader source, from the cache when its build key matches, else by compiling it.
  *
  * The cache files are `<build_dir>/<flat><suffix>.spv` and its `.hash`
- * stamp. A stamp equal to `key` loads the cached SPIR-V, provided it is a
- * nonempty whole number of words; otherwise the source compiles, and
- * success writes the `.spv` and then the stamp. A failed compile removes
+ * stamp. A stamp current for `key` (cache_load) loads the cached SPIR-V,
+ * provided it is a nonempty whole number of words; otherwise the source
+ * compiles with every include it probes recorded, and success writes the
+ * `.spv` and then the stamp naming the key and those files. A failed compile removes
  * only the stamp and leaves any older `.spv` file in place, unused until a
  * compile rewrites both. A module, cached or compiled, that declares the
  * Float64 capability is refused (shader_refuse_float64).
@@ -491,21 +393,25 @@ static size_t compile_profile(const char* src, int stage,
     snprintf(stamp_path, sizeof stamp_path, "%s/%s%s.hash", build_dir, flat, suffix);
     const size_t hit = cache_load(build_dir, flat, suffix, key, out_words);
     if (hit) return shader_refuse_float64(id, path, suffix, out_words, hit) ? 0 : hit;
-    size_t n = openpete_mod_glsl_compile(src, stage, ctx, preamble, log_path,
+    /* The compile resolves includes through a copy of the context that
+     * records every file it probes; the stamp keys on those files. */
+    openpete_mod_glsl_deps_t* deps = (openpete_mod_glsl_deps_t*)calloc(1, sizeof *deps);
+    openpete_mod_glsl_include_t inc = *ctx;
+    inc.deps = deps;
+    size_t n = openpete_mod_glsl_compile(src, stage, &inc, preamble, log_path,
                                          out_words);
     if (n == 0) {
+        free(deps);
         remove(stamp_path);          /* stamp only; a cached .spv survives */
         return 0;
     }
     /* The stamp marks the .spv current, so it is written only after the
-     * .spv landed whole; a failed .spv write leaves no stamp and the next
-     * boot compiles again. */
-    char stamp_line[80];
-    int stamp_len = snprintf(stamp_line, sizeof stamp_line, "%s\n", key);
-    if (op_atomic_write_file(spv_path, *out_words, n * 4) != 0 ||
-        stamp_len <= 0 || (size_t)stamp_len >= sizeof stamp_line ||
-        op_atomic_write_file(stamp_path, stamp_line, (size_t)stamp_len) != 0)
+     * .spv landed whole; a failed .spv write, a lost dependency list or a
+     * failed stamp write leaves no stamp and the next boot compiles again. */
+    if (!deps || op_atomic_write_file(spv_path, *out_words, n * 4) != 0 ||
+        openpete_mod_shader_stamp_write(stamp_path, key, deps) != 0)
         remove(stamp_path);
+    free(deps);
     OPL_INFO_F("mods", "%s: shader %s%s compiled (%zu words)", id, path,
                suffix, n);
     return shader_refuse_float64(id, path, suffix, out_words, n) ? 0 : n;
@@ -593,7 +499,8 @@ typedef struct {
  *
  * The cache files are `<flat><suffix>.spv` and `.hash`; the stamp is
  * SHA-256 over the shader's build key, the preamble and the module text,
- * so an edit to the source, the interface files, the compiler or the
+ * and the stamp records the files the compile included, so an edit to
+ * the source, an included file, the compiler or the
  * generated text recompiles.
  * @param user The link_cache_t.
  * @param text The module text.
@@ -1052,7 +959,7 @@ int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]) {
     char dir[MOD_SHADER_PATH_MAX * 2];
     snprintf(dir, sizeof dir, "%s/shaders", mod_dir);
     char names[64][128];
-    int n = list_dir_sorted(dir, ".vert;.frag;.glsl;.spv;.ihash", names, 64);
+    int n = openpete_mod_shader_list_dir_sorted(dir, ".vert;.frag;.glsl;.spv;.ihash", names, 64);
     if (n <= 0) { snprintf(key_out, 65, "-"); return 0; }
     openpete_sha256_ctx hc;
     openpete_sha256_init(&hc);

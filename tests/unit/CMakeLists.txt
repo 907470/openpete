@@ -702,6 +702,35 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
              COMMAND mod_shader_compile_test ${CMAKE_SOURCE_DIR}/mods
                      ${_shader_dir}/sdk "${_spirv_val}")
     set_tests_properties(mod_shader_compile PROPERTIES LABELS "mods")
+    # mod_shader_stamp_test - the mod shader compile cache's stamp
+    # (core/mods/mod_shader_stamp.c): it records every file a compile
+    # includes (nested SDK includes, mod-local and subdirectory includes,
+    # absent SDK probes), so an edit to any of them makes the cached SPIR-V
+    # stale; the prebuilt interface hash covers every staged SDK shader.
+    # POSIX only (mkdtemp, mkdir with a mode).
+    if(NOT WIN32)
+        add_executable(mod_shader_stamp_test
+            mod_shader_stamp_test.c
+            ${CMAKE_SOURCE_DIR}/core/mods/mod_shader_stamp.c
+            ${CMAKE_SOURCE_DIR}/core/mods/mod_glsl.c
+            ${CMAKE_SOURCE_DIR}/core/host/sha256.c
+            ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c
+            ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+        target_include_directories(mod_shader_stamp_test PRIVATE
+            ${CMAKE_SOURCE_DIR}/core/include
+            ${CMAKE_SOURCE_DIR}/core/mods
+            ${CMAKE_SOURCE_DIR}/third_party)
+        target_include_directories(mod_shader_stamp_test SYSTEM PRIVATE
+            ${CMAKE_BINARY_DIR}/third_party/glslang/include)
+        target_link_libraries(mod_shader_stamp_test PRIVATE
+            glslang glslang-default-resource-limits)
+        set_target_properties(mod_shader_stamp_test PROPERTIES C_STANDARD 99)
+        add_dependencies(mod_shader_stamp_test spyro1_sdk_stage)
+        add_test(NAME mod_shader_stamp
+                 COMMAND mod_shader_stamp_test ${_shader_dir}/sdk
+                         ${CMAKE_SOURCE_DIR}/mods/declarative-reshade/shaders/tint.frag)
+        set_tests_properties(mod_shader_stamp PROPERTIES LABELS "mods")
+    endif()
     add_test(NAME mod_shader_table_move
              COMMAND mod_shader_compile_test
                      ${CMAKE_CURRENT_SOURCE_DIR}/data/spv-cdata-mods
@@ -1044,6 +1073,7 @@ add_test(NAME sfx_name_parse_test COMMAND sfx_name_parse_test)
 set(RHI_STRESS_SOURCES
     rhi_compile_stress.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_shader.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_shader_stamp.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_material_resolve.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_spv_cdata.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_spv_reflect.c

@@ -50,15 +50,18 @@ Every shader includes the binding contract:
 #include "openpete_shader_api.glsl"
 ```
 
-The include resolves to `<exe>/sdk/shaders/openpete_shader_api.glsl`,
-and its bytes are hashed into every shader's build key, so an interface
-change invalidates the cache. Material shaders include
-`openpete_psx_material.glsl` or `openpete_psx_decal.glsl` instead; never
-both, since each claims the same descriptor set.
+The include resolves to `<exe>/sdk/shaders/openpete_shader_api.glsl`.
+The cache stamp beside each compiled module records every file the
+compile included, in the SDK or beside the shader, with its hash, so an
+edit to any of them recompiles the modules that read it. Material
+shaders include `openpete_psx_material.glsl` or
+`openpete_psx_decal.glsl` instead; never both, since each claims the same
+descriptor set.
 
 To ship without source, place `<path>.spv` where no source sits beside
 it, with a `<path>.spv.ihash` sidecar matching the current interface
-hash. A stale sidecar refuses the shader.
+hash, which covers the mod API version and every `.glsl` file under
+`<exe>/sdk/shaders/`. A stale sidecar refuses the shader.
 
 ## Post-process passes
 
