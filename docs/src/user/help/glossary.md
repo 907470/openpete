@@ -139,7 +139,7 @@ one entry per VBL, that replays the same game.
 ### Library
 
 Codebase term: disc library. Where OpenPete keeps its copy of your disc
-image and the game code compiled from it.
+image and the game code compiled from it, one disc per game.
 
 ### Game page
 

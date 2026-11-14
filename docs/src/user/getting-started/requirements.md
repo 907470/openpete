@@ -2,10 +2,19 @@
 
 ## The disc
 
-Your own copy of Spyro the Dragon, NTSC-U release (serial SCUS-94228), dumped
-to a `.bin`/`.cue` pair. The Original, Greatest Hits and Collectors' Edition
-pressings share one image. [Dumping your disc](dumping-your-disc.md) lists
-the exact image OpenPete expects and how to check a dump against it.
+Your own copy of the game, NTSC-U (North American) release, dumped to a
+`.bin`/`.cue` pair:
+
+| Game | Serial |
+| --- | --- |
+| Spyro the Dragon | SCUS-94228 |
+| Spyro 2: Ripto's Rage! | SCUS-94425 |
+| Spyro: Year of the Dragon | SCUS-94467 |
+
+OpenPete reads the serial from the disc image and refuses any other: PAL
+and NTSC-J releases have other serials and are not accepted.
+[Dumping your disc](dumping-your-disc.md) lists the exact images OpenPete
+expects and how to check a dump against them.
 
 OpenPete downloads nothing and ships no game content.
 
@@ -15,7 +24,7 @@ OpenPete downloads nothing and ships no game content.
 | --- | --- |
 | CPU | 64-bit x86-64 |
 | GPU | A driver supporting Vulkan 1.2 |
-| Disk | About 700 MB: the library keeps its own copy of the disc image (about 640 MB, one copy per distinct disc) plus about 26 MB per compiled build |
+| Disk | About 700 MB per game: the library keeps its own copy of each game's disc image (565 to 662 MB; one disc per game) plus about 26 MB per compiled build |
 | Linux | glibc 2.31 or newer (Debian 11, Ubuntu 20.04, or later) |
 
 The retained terrain cache, which draws static level geometry from GPU

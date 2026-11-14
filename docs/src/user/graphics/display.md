@@ -7,7 +7,7 @@ the flag without the leading dashes, with `-` as `_`.
 ## Window
 
 The window opens at the game's drawn picture at twice its size: 640x448
-<!-- id: knob:window --> for Spyro 1. `--window WxH`
+<!-- id: knob:window --> for Spyro 1, 640x432 for Spyro 2 and Spyro 3. `--window WxH`
 <!-- id: knob:window --> sets another starting size, for example
 `--window 1920x1080`, and `--window maximized` opens the window maximized.
 Drag the window's edges to resize it at any time.
@@ -31,7 +31,7 @@ Fullscreen is borderless, at the desktop's resolution.
 | --- | --- |
 | Toggle | ++alt+enter++, a double-click in the window, the settings menu's **DISPLAY** row, the dev overlay's **Fullscreen** row |
 | Start fullscreen | `--fullscreen 1` <!-- id: knob:fullscreen home --> |
-| Default | windowed <!-- id: knob:fullscreen -->; the Spyro 1 package's `openpete.toml` sets `fullscreen = true` <!-- id: knob:fullscreen @spyro-1 home --> |
+| Default | windowed <!-- id: knob:fullscreen -->; the `openpete.toml` every package ships sets `fullscreen = true` <!-- id: knob:fullscreen @spyro-1 home -->, so each game starts fullscreen ([Config file](../customizing/config-file.md#the-shipped-file)) |
 
 ## Launcher window
 

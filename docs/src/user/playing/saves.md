@@ -12,6 +12,14 @@ Two formatted memory cards are inserted at every start, as `card1.mcr` and
 Every write the game makes goes to the file at once. The files are standard
 128 KiB PlayStation card images.
 
+The cards are shared by the three games, as on a console: each game's save
+takes blocks on the same `card1.mcr`, and a card holds 15 blocks in all. To
+use saves from another emulator, copy its raw 128 KiB card image (`.mcr`,
+`.mcd` or `.srm`) into the cards folder as `card1.mcr` or `card2.mcr`
+while OpenPete is closed, or name it with `--card1`. A DexDrive `.gme`, VGS
+`.mem` or PSP/PS3 `.vmp` image loads read-only
+([OP-E-CARD-READONLY](../help/troubleshooting.md#op-e-card-readonly)).
+
 | Setting | Effect |
 | --- | --- |
 | `--card-dir PATH` <!-- id: knob:card_dir --> | Use another folder for both cards |

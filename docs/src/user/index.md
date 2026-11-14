@@ -1,8 +1,9 @@
 # OpenPete user guide
 
-OpenPete plays Spyro the Dragon (PlayStation, 1998) natively on a PC. The game
-code on your disc is recompiled for your machine on first run; OpenPete ships
-no game content. Gameplay state matches original PlayStation hardware
+OpenPete plays the three PlayStation Spyro games natively on a PC: Spyro the
+Dragon (1998), Spyro 2: Ripto's Rage! (1999) and Spyro: Year of the Dragon
+(2000). The game code on your disc is recompiled for your machine on first
+run; OpenPete ships no game content. Gameplay state matches original PlayStation hardware
 [tick](help/glossary.md#tick) for tick, whatever the display settings: widescreen, high
 [frame rate](help/glossary.md#frame-rate), supersampling, texture packs and
 mods change the picture, not the game.
@@ -30,4 +31,5 @@ mods change the picture, not the game.
    shows a box per game, and choosing a box with a disc starts its game.
 
 OpenPete is not affiliated with Sony, Insomniac Games, or Activision. Spyro
-the Dragon is a trademark of its respective owners.
+the Dragon, Spyro 2: Ripto's Rage! and Spyro: Year of the Dragon are
+trademarks of their respective owners.

@@ -1,9 +1,11 @@
 # Dumping your disc
 
-OpenPete reads a raw image of your own Spyro the Dragon disc as a `.bin`/`.cue`
-pair. It does not read the disc drive directly.
+OpenPete reads a raw image of your own disc of Spyro the Dragon, Spyro 2:
+Ripto's Rage! or Spyro: Year of the Dragon as a `.bin`/`.cue` pair. It does
+not read the disc drive directly. This page gives the Spyro 1 image; the
+other two games are dumped the same way.
 
-## The image OpenPete expects
+## The image OpenPete expects (Spyro 1)
 
 | | |
 | --- | --- |
@@ -25,7 +27,9 @@ images and hashes are on [Spyro 2](../games/spyro-2.md#disc) and
 Use a disc-imaging program that writes raw 2352-byte sectors to a `.bin` with
 a `.cue` sheet. A dump in 2048-byte sectors (a plain `.iso`) drops the
 sector headers and does not match. Compressed formats (`.chd`, `.pbp`) are
-not ingested; convert them back to `.bin`/`.cue` first.
+not ingested; convert them back to `.bin`/`.cue` first. Given a `.cue`, OpenPete reads the `.bin` of the same name beside it,
+or else a `.bin` in the same folder, so keep each disc's pair in a folder of
+its own.
 
 ## Checking the dump
 
@@ -50,9 +54,15 @@ Compare the `.bin` file's SHA-256 with the table above.
     ```
 
 When the hash matches, the library labels the entry "Spyro the Dragon
-(NTSC-U)" at ingest. An image with another hash is labelled with its file
-name instead.
+(NTSC-U)" at ingest. An image with another hash but the same serial is
+added and labelled with its file name instead; if the game cannot be built
+from it, it is removed again with an
+[OP-E-MODULE](../help/troubleshooting.md#op-e-module) message.
 
 !!! warning
-    Other regions (PAL, NTSC-J), demo discs and modified images are not the
-    image OpenPete's port is built and tested against.
+    OpenPete identifies a disc by the serial in its `SYSTEM.CNF`. Other
+    regions (PAL, NTSC-J) and demo discs have other serials and are
+    refused before anything is copied
+    ([OP-E-WRONG-DISC](../help/troubleshooting.md#op-e-wrong-disc)).
+    Modified images with the right serial are not the image OpenPete's port
+    is built and tested against.

@@ -11,7 +11,8 @@ every location below as this install resolves it, then exits.
 | `gamecontrollerdb.txt` | your controller mappings ([Controllers](../customizing/controllers.md)) |
 | `cards/` | memory cards `card1.mcr` and `card2.mcr`: the game's own saves |
 | `states/` | [savestate](glossary.md#savestate) slots, one folder per game (`states/spyro-1/`) |
-| `logs/` | `openpete.log` for the current run, `openpete.log.1` for the one before, up to `openpete.log.15` for the oldest kept |
+| `logs/` | `openpete.log` for the current run, `openpete.log.1` for the one before, up to `openpete.log.15` for the oldest kept; `hang-trace.bin` and `hang-ram.bin` after the game stopped responding; `openpete-crash.dmp` after a crash on Windows |
+| `cache/` | the graphics pipeline cache and the game page's pictures, one folder per game; safe to delete, rebuilt on the next start |
 | `library/` | your ingested disc image and the game code compiled from it |
 | `mods/` | installed mods ([Mods](../customizing/mods.md)) |
 | `assets/` | your texture, music and sound packs |
@@ -33,7 +34,7 @@ program's folder is not writable, per-user is used and the log says so.
 
     ```
     openpete.toml  gamecontrollerdb.txt
-    cards\  states\  logs\  library\  mods\  assets\  bk2\  screenshots\  bugreports\
+    cards\  states\  logs\  cache\  library\  mods\  assets\  bk2\  screenshots\  bugreports\
     ```
 
     Two per-user files are also read in this layout, and nothing writes
@@ -45,7 +46,7 @@ program's folder is not writable, per-user is used and the log says so.
 
     ```
     %APPDATA%\openpete\                     openpete.toml, gamecontrollerdb.txt
-    %LOCALAPPDATA%\openpete\cards\  states\  logs\
+    %LOCALAPPDATA%\openpete\cards\  states\  logs\  cache\
     %LOCALAPPDATA%\openpete\library\  mods\  assets\  bk2\  screenshots\  bugreports\
     ```
 
@@ -55,7 +56,7 @@ program's folder is not writable, per-user is used and the log says so.
 
     ```
     ~/.config/openpete/         openpete.toml, gamecontrollerdb.txt
-    ~/.local/state/openpete/    cards/  states/  logs/
+    ~/.local/state/openpete/    cards/  states/  logs/  cache/
     ~/.local/share/openpete/    library/  mods/  assets/  bk2/  screenshots/  bugreports/
     ```
 
@@ -111,8 +112,8 @@ reason.
 
 - `openpete-devui.ini`: the [dev overlay](../playing/dev-overlay.md)'s
   window positions, next to the program, one file shared by every game.
-- `hang-trace.bin`: written into the folder the program was started from
-  when the game stops responding and the program exits
+- `hang-trace.bin` and `hang-ram.bin`: written into the `logs` folder, beside
+  `openpete.log`, when the game stops responding and the program exits
   ([Reporting a bug](reporting-a-bug.md)).
 - `--card-dir PATH`<!-- id: flag:--card-dir -->,
   `--card1 PATH`<!-- id: flag:--card1 --> and

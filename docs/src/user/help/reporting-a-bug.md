@@ -112,8 +112,8 @@ following instead.
 
 When the game hangs (its code runs on without waiting for the next
 [VBL](glossary.md#vbl)), OpenPete exits with status 2 and writes
-`hang-trace.bin` into the folder it was started from; attach that file
-too, or the `-hang` zip, which holds it.
+`hang-trace.bin` and `hang-ram.bin` into the `logs` folder, beside
+`openpete.log`; attach both too, or the `-hang` zip, which holds them.
 
 A problem that appears only with mods installed should say which mods:
 retry with `--mods ""`<!-- id: flag:--mods --> (no mods) and report both

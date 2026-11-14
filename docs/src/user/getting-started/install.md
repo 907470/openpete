@@ -92,12 +92,32 @@ it, the program shows the library's games on the game page; see
 [First run](first-run.md#the-game-page).
 
 `--game ID` <!-- id: flag:--game --> names the game to run: `spyro-1`,
-`spyro-2` or `spyro-3`. Without `--disc`, it starts that game's most
-recently played disc in the library without the game page, or opens the
+`spyro-2` or `spyro-3`. Without `--disc`, it starts that game's disc in
+the library without the game page, or opens the
 game page with that game's box focused
 ([First run](first-run.md#adding-a-disc)) when the library holds none. Without `--game` the game is read from the disc. A disc of
 another game, or a game this program does not run, stops the launch with a
 message.
+
+## Steam Deck
+
+Use the Linux AppImage.
+
+1. In Desktop Mode, download the AppImage, open its **Properties** in the
+   file manager and allow it to run as a program (or run
+   `chmod +x OpenPete-*.AppImage` in a terminal).
+2. In Steam, choose **Add a Non-Steam Game to My Library** and pick the
+   AppImage.
+3. Put the disc images where the Deck can read them, such as your home
+   folder or an SD card.
+
+Started from Gaming Mode, the launcher fills the screen and, in place of a
+file dialog, draws its own file list, which opens at your home folder and
+the SD card or USB drive under `/run/media`
+([First run](first-run.md#the-drawn-file-list-steam-deck-gaming-mode)).
+The Deck's controls act as a gamepad through Steam Input. To save a
+[bug report](../help/reporting-a-bug.md#steam-deck), bind a back button to
+++f9++ in Steam's controller settings for OpenPete.
 
 ## Uninstalling
 

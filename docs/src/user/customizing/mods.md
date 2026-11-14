@@ -67,7 +67,8 @@ changed, against the SDK in the `sdk` folder next to the program. The
 compiler is the one bundled in `recomp/tools/` next to the program; a Linux
 install without one uses the system `cc` (the variable `OPENPETE_CC` names
 another). The launcher's progress screen shows
-**COMPILING MODS** meanwhile. An unchanged mod is not compiled again.
+**Compiling mods (1/2)** meanwhile, counting the mods compiled and the mods
+to compile. An unchanged mod is not compiled again.
 
 A mod that fails to compile or load is switched off and the game starts
 without it. The compiler's output is in

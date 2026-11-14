@@ -4,6 +4,11 @@ Spyro the Dragon has its own **SOUND EFFECTS** and **MUSIC** sliders in its
 options menu, stored in the game's save. OpenPete can preset them at launch
 and mute everything.
 
+!!! note "Spyro 2 and Spyro 3"
+    `--sfx` and `--music` preset only Spyro the Dragon's sliders. On Spyro 2
+    and Spyro 3 they are accepted and have no effect; set the volume in the
+    game's own options menu. `--mute` works on every game.
+
 | Flag | Config key | Values | Default |
 | --- | --- | --- | --- |
 | `--sfx N`<!-- id: flag:--sfx --> | `sfx` | `0` (off) to `10` (max), `on` (= 10), `off` (= 0), `-1` | `{{ default("knob:sfx") }}`<!-- id: knob:sfx -->: the slider stays as the game has it |

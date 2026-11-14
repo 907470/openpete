@@ -29,6 +29,23 @@ without it:
 ./OpenPete-*.AppImage --appimage-extract-and-run
 ```
 
+### OpenPete finds no graphics device
+
+The message is [OP-E-VULKAN](#op-e-vulkan). The log lists every Vulkan
+device found at start; an empty list means the driver offers none.
+
+- Install the current driver from the graphics card's maker. A system with
+  only a software renderer runs, without the
+  [retained terrain cache](../graphics/performance.md#engine-settings).
+- On a Windows laptop with AMD integrated graphics and an NVIDIA card, an
+  outdated AMD driver layer can hide every device. OpenPete switches that
+  layer off by setting `DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1` for
+  itself, and chooses the graphics card on its own. A value of the
+  variable set in the system environment, or in `[env]` of `openpete.toml`,
+  is used instead; `0` keeps the layer on.
+- With several devices, `--gpu` picks one by index or name
+  ([Display](../graphics/display.md#graphics-device)).
+
 ### The tar.xz reports "no compiler for the first-boot module build"
 
 A `.tar.xz` without a bundled compiler uses the system `cc`. Install one
@@ -129,8 +146,9 @@ The save was made with a different set of mods. See
 
 ### The game hangs and exits
 
-See [Reporting a bug](reporting-a-bug.md): attach `openpete.log` and the
-`hang-trace.bin` written next to where the program was started.
+See [Reporting a bug](reporting-a-bug.md): send the `-hang` bug report zip
+it wrote, or else `openpete.log` and the `hang-trace.bin` written beside it
+in the `logs` folder.
 
 ## By error id
 

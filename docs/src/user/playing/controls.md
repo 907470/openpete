@@ -53,6 +53,13 @@ Only the first pad has default bindings. Pads 2 to 4 (`[keys.pad2]` to
 | Toggle interpolation | {{ key("key:host.interp_toggle") }} <!-- id: key:host.interp_toggle --> | [Smoothness](../graphics/smoothness.md#interpolation) |
 | Toggle LOD original / extended | {{ key("key:host.lod_toggle") }} <!-- id: key:host.lod_toggle --> | [Quality](../graphics/quality.md#level-of-detail) |
 
+On a controller, hold Start for half a second to open the settings menu,
+and hold Back (View on Xbox, Select on PlayStation) for half a second to
+open the dev overlay. A tap of either still reaches the game as the
+PlayStation pad's Start or Select. The other OpenPete actions have no
+controller binding by default; [Key bindings](../customizing/key-bindings.md)
+adds one, for example `savestate_save = ["1", "hold:pad:r3"]`.
+
 ++alt+enter++ is fixed. The rebindable `fullscreen` action is a second,
 single-key route to the same toggle and is unbound by default
 <!-- id: key:host.fullscreen home -->.
