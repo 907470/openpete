@@ -79,14 +79,21 @@ enum {
     /* CPU time per tick, written after each drawing VBL's fiber run for the
      * interval since the previous one. Slots carry two u32 microsecond values
      * each (low word first): a = sim (every fiber run in the interval),
-     * extract (re-extracts, PRESENT_SPAN extract_ns); b = terrain (canonical
-     * terrain build and scene feed), moby (canonical moby native pass after
-     * the game's own draw); c = snap in sub-tick re-extracts, snap in the
-     * canonical feed (moby contact resolve with its carry); d = render
-     * (scene render and submit on the presenting thread), present (staged
-     * present: acquire, blit, queue present); e = u16 counts: extracts,
-     * renders, presents, snap resolves; f = the drawing VBL's own fiber run
-     * (low word). index = openpete_frame of the drawing VBL. */
+     * extract (re-extracts, PRESENT_SPAN extract_ns); b = terrain, moby; c =
+     * snap in sub-tick re-extracts, snap in the canonical feed (moby contact
+     * resolve with its carry); d = render (scene render and submit on the
+     * presenting thread), present (staged present: acquire, blit, queue
+     * present); e = u16 counts: extracts, renders, presents, snap resolves;
+     * f = the drawing VBL's own fiber run (low word), host other (high
+     * word). index = openpete_frame of the drawing VBL. With flags
+     * OP_PACE_TS_EXCLUSIVE the split scopes nest: each charges its slot its
+     * time less the scopes inside it, a guest call inside a hook charges no
+     * slot, so terrain (the terrain hook and the terrain build and feed
+     * wherever it runs), moby (the moby hook), snap canonical and host other
+     * (every other hook) are disjoint, host = their sum and guest = sim -
+     * host. Without the flag (logs written before) terrain is the build and
+     * feed alone, moby the native pass alone, snap canonical overlaps
+     * whichever of the two ran it, and f's high word is 0. */
     OP_PACE_TICK_SPLIT = 15,
     /* The eager planner's span plan, one per canonical tick while eager
      * production runs (the fields of the OPENPETE_EAGER_DBG plan line):
@@ -126,7 +133,14 @@ enum {
     OP_PACE_SPLIT_SNAP_CANON,
     OP_PACE_SPLIT_RENDER,
     OP_PACE_SPLIT_PRESENT,
+    OP_PACE_SPLIT_HOST,       /* every feature hook but terrain's and moby's (f high word) */
+    OP_PACE_SPLIT_GUEST,      /* a guest call inside a hook: subtracted from its hook, not written */
     OP_PACE_SPLIT_COUNT
+};
+
+/* TICK_SPLIT flags. */
+enum {
+    OP_PACE_TS_EXCLUSIVE = 1u << 0   /* the duration slots are exclusive; f's high word is host other */
 };
 
 /* PRESENT_DETAIL flags: the interpolation mode the present ran under. */
@@ -688,17 +702,33 @@ void openpete_pace_gpu_frame(uint64_t token, int64_t frame_ns, int64_t busy_ns, 
 int  openpete_pace_gpu_records_wanted(void);
 
 #if defined(__GNUC__) || defined(__clang__)
-typedef struct { int which; int64_t t0; } op_pace_split_guard;
-/** @brief Cleanup handler of OP_PACE_SPLIT_SCOPE: add the scope's elapsed time to its accumulator.
+typedef struct op_pace_split_guard {
+    int which;
+    int64_t t0;                          /* 0 when no sink was on at entry */
+    int64_t child_ns;                    /* time of the scopes closed inside this one */
+    struct op_pace_split_guard* parent;  /* the enclosing open scope on this thread */
+} op_pace_split_guard;
+/** @brief Open a split scope: stamp its start and make it the thread's innermost open scope.
+ *
+ * Without a sink the guard stays unlinked with t0 0, and its cleanup adds
+ * nothing.
+ * @param g The scope's guard, on the caller's stack.
+ * @param which OP_PACE_SPLIT_* slot. */
+void op_pace_split__enter(op_pace_split_guard* g, int which);
+/** @brief Cleanup handler of OP_PACE_SPLIT_SCOPE: add the scope's time less its nested scopes' to its accumulator.
+ *
+ * Charges the scope's whole time to the enclosing scope's child time and
+ * makes the enclosing scope innermost again.
  * @param g The scope's guard; t0 is 0 when no sink was on at entry. */
 void op_pace_split__cleanup(op_pace_split_guard* g);
 #define OP_PACE_SPLIT__CAT2(a, b) a##b
 #define OP_PACE_SPLIT__CAT(a, b)  OP_PACE_SPLIT__CAT2(a, b)
-/* Times the rest of the enclosing block into the OP_PACE_SPLIT_* slot. */
+/* Times the rest of the enclosing block, less the split scopes nested in it,
+ * into the OP_PACE_SPLIT_* slot. */
 #define OP_PACE_SPLIT_SCOPE(slot) \
     op_pace_split_guard OP_PACE_SPLIT__CAT(op_pace_sg_, __LINE__) \
-        __attribute__((cleanup(op_pace_split__cleanup))) = \
-        { (slot), openpete_pace_split_on() ? op_pace_split_now() : 0 }
+        __attribute__((cleanup(op_pace_split__cleanup))); \
+    op_pace_split__enter(&OP_PACE_SPLIT__CAT(op_pace_sg_, __LINE__), (slot))
 #else
 #define OP_PACE_SPLIT_SCOPE(slot) ((void)0)
 #endif
@@ -744,7 +774,7 @@ enum {
     OP_PACE_CR_GPU_US_SUM,
     OP_PACE_CR_GPU_US_MAX,
     OP_PACE_CR_SLIPS,
-    OP_PACE_CR_RESERVED0,
+    OP_PACE_CR_HOST_US_SUM,   /* host other (TICK_SPLIT f high word); 0 before the exclusive split */
     OP_PACE_CR_RESERVED1,
     OP_PACE_CR_RESERVED2,
     OP_PACE_CR_FIELDS         /* 32 u32 per row, 128 B */

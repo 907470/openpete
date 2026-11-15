@@ -72,6 +72,7 @@
 #include <string.h>
 #include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "game_layout.h"
+#include "openpete_pace_log.h"   /* OP_PACE_SPLIT_SCOPE - the guest call's split */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "openpete_thread_roles.h"
 
@@ -3339,7 +3340,7 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     s_dome_curr_valid = 0;
     static int s_reports = 0;
     if (s_want_dump_this_frame() && s_reports < 8) { ngte_view_build(cpu, &s_view); dump_portal_table(cpu); s_reports++; }
-    { OP_PROF_ACCUM_SCOPE("portal.srend");
+    { OP_PROF_FLAGS_ACCUM_SCOPE("portal.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
       func_80050BE0(cpu); }                    /* real RenderPortals: on-4:3 portals fed via leaves */
     if (feed) feed_revealed_portals(cpu);     /* widescreen: off-4:3 portals the .s culled */
     /* The leaves + reveal have populated s_pcap[] this canonical frame; mark it

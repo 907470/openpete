@@ -3,18 +3,20 @@
 #include "feature_registry.h"
 
 #include "openpete_game_runtime.h"
+#include "openpete_pace_log.h"
 #include "openpete_profile.h"
 
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
-/* Per-module "hook.<name>" trace bucket (--profile-out only). The dispatch fns
- * are the fiber hooks: they run on the game fiber inside the sim tick, and each
- * one is a capture/native-feed wrapper around a call back into the guest
- * renderer - so this bucket is INCLUSIVE of the guest work. The feeders name a
- * matching "<feature>.srend" bucket around that inner call; the difference is
- * openpete's own extraction cost. Ids are interned on first dispatch of each
- * module and cached by module index. */
+/* Per-module "hook.<name>" profiler region (--profile-out only). The dispatch
+ * fns are the fiber hooks: they run on the game fiber inside the sim tick, and
+ * each one is a capture/native-feed wrapper around a call back into the guest
+ * renderer, which the feeders time as a guest region "<feature>.srend" nested
+ * in this one; the hook's self time is openpete's own work outside its nested
+ * regions. Ids are interned on first dispatch of each module and cached by
+ * module index. */
 #define FR_PROF_MAX 64
 static int s_hook_id[FR_PROF_MAX];
 static int s_hook_id_init = 0;
@@ -39,6 +41,56 @@ static int hook_prof_id(size_t i, const char* name) {
         s_hook_id[i] = op_prof_intern(buf);
     }
     return s_hook_id[i];
+}
+
+/* Per-module pace-split slot (OP_PACE_SPLIT_*), cached by module index; -1
+ * until resolved. */
+static signed char s_hook_slot[FR_PROF_MAX];
+static int s_hook_slot_init = 0;
+
+/** @brief Return the OP_PACE_SPLIT_* slot module i's hook time is charged to, resolving it from the name on first use.
+ *
+ * Not safe to call concurrently, as hook_prof_id.
+ * @param i Module index in the registered feature list.
+ * @param name The module's name.
+ * @return TERRAIN for terrain_native, MOBY for moby_native, else HOST. */
+static int hook_split_slot(size_t i, const char* name) {
+    if (i >= FR_PROF_MAX) return OP_PACE_SPLIT_HOST;
+    if (!s_hook_slot_init) {
+        for (int k = 0; k < FR_PROF_MAX; k++) s_hook_slot[k] = -1;
+        s_hook_slot_init = 1;
+    }
+    if (s_hook_slot[i] < 0) {
+        const char* n = name ? name : "";
+        s_hook_slot[i] = (signed char)(strcmp(n, "terrain_native") == 0 ? OP_PACE_SPLIT_TERRAIN
+                                     : strcmp(n, "moby_native") == 0    ? OP_PACE_SPLIT_MOBY
+                                                                        : OP_PACE_SPLIT_HOST);
+    }
+    return s_hook_slot[i];
+}
+
+/** @brief Run one dispatch entry inside its module's profiler region and pace-split scope.
+ *
+ * The profiler region is "hook.<name>" (open only while a trace is open).
+ * The pace split charges the hook's time, less the scopes nested in it, to
+ * the module's slot: terrain_native to TERRAIN, moby_native to MOBY, every
+ * other module to HOST.
+ * @param cpu Guest CPU state.
+ * @param addr The dispatched guest address.
+ * @param e The matched entry.
+ * @param i The module's index in the feature list.
+ * @param name The module's name.
+ * @return The entry's return value. */
+static int fr_dispatch_timed(CPUState* cpu, uint32_t addr, const feature_dispatch_entry_t* e,
+                             size_t i, const char* name) {
+    OP_PACE_SPLIT_SCOPE(hook_split_slot(i, name));
+    if (!op_prof_on()) return e->fn(cpu, addr);
+    const int id = hook_prof_id(i, name);
+    const int tok = op_prof_enter(id, 0u);
+    const uint64_t t0 = op_prof_now_us();
+    const int rc = e->fn(cpu, addr);
+    op_prof_exit(tok, id, op_prof_now_us() - t0);
+    return rc;
 }
 
 /* Resident-overlay probe (feature_registry.h). Registered by a game whose
@@ -125,14 +177,7 @@ int feature_registry_dispatch(CPUState* cpu, uint32_t addr) {
                 if (e->overlay &&
                     (!s_overlay_probe || s_overlay_probe() != e->overlay))
                     continue;
-                if (op_prof_on()) {
-                    uint64_t t0 = op_prof_now_us();
-                    rc = e->fn(cpu, addr);
-                    op_prof_accum(hook_prof_id(i, m->name),
-                                  op_prof_now_us() - t0);
-                } else {
-                    rc = e->fn(cpu, addr);
-                }
+                rc = fr_dispatch_timed(cpu, addr, e, i, m->name);
                 if (rc) return 1;
                 /* fn returned 0 = "saw it but want the recompiled body
                  * to run too" (titlescreen-pre-shift pattern). Keep

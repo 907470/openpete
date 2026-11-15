@@ -8,7 +8,8 @@
 
 #include "game_layout.h"                 /* polybuf.cursor */
 #include "openpete_native_render.h"      /* openpete_native_scene_enabled */
-#include "openpete_profile.h"            /* op_prof_*: the guest draw's bucket */
+#include "openpete_pace_log.h"           /* OP_PACE_SPLIT_SCOPE: the guest draw's split */
+#include "openpete_profile.h"            /* op_prof_*: the guest draw's region */
 #include "openpete_recomp_module.h"      /* the default guest draw: module dispatch */
 
 int hook_bracket_run(CPUState* cpu, uint32_t addr, const hook_bracket_desc* d,
@@ -31,23 +32,25 @@ int hook_bracket_run(CPUState* cpu, uint32_t addr, const hook_bracket_desc* d,
 
     uint32_t s = cpu->read_word(game_layout.polybuf.cursor);
 
-    /* The accumulating profile bucket, opened by hand because the scope macro
+    /* The guest draw's profiler region, opened by hand because the scope macro
      * interns a string literal per source line and the tag here is per
      * descriptor. Interned once per latch; op_prof_intern yields -1 while the
-     * profiler is off, which leaves the bucket closed. The bucket spans the
-     * guest draw alone, not the cursor reads that bracket it. */
-    int prof_id = -1;
+     * profiler is off, which leaves the region closed. The region spans the
+     * guest draw alone, not the cursor reads that bracket it, and is marked
+     * guest: host work a runner adds around the draw opens its own region. */
+    int prof_id = -1, prof_tok = 0;
     uint64_t t0 = 0;
     if (op_prof_on()) {
         if (!st->prof_id_plus1) st->prof_id_plus1 = op_prof_intern(d->prof_tag) + 1;
         prof_id = st->prof_id_plus1 - 1;
-        if (prof_id >= 0) t0 = op_prof_now_us();
+        if (prof_id >= 0) { prof_tok = op_prof_enter(prof_id, OP_PROF_F_GUEST); t0 = op_prof_now_us(); }
     }
 
-    if (d->run) d->run(cpu, addr);
-    else        openpete_recomp_module_get()->dispatch(cpu, addr);
+    { OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
+      if (d->run) d->run(cpu, addr);
+      else        openpete_recomp_module_get()->dispatch(cpu, addr); }
 
-    if (prof_id >= 0) op_prof_accum(prof_id, op_prof_now_us() - t0);
+    if (prof_id >= 0) op_prof_exit(prof_tok, prof_id, op_prof_now_us() - t0);
 
     uint32_t e = cpu->read_word(game_layout.polybuf.cursor);
 

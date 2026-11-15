@@ -2771,13 +2771,13 @@ void psyq_SetDrawMode(CPUState* cpu) {
  * the C++ equivalent. Inert (one load) unless a trace is open. */
 namespace {
 struct op_accum_scope {
-    int id; uint64_t t0;
-    /// @brief Start timing under name when a trace is open; the destructor adds the elapsed microseconds.
-    explicit op_accum_scope(const char* name) : id(-1), t0(0) {
-        if (op_prof_on()) { id = op_prof_intern(name); t0 = op_prof_now_us(); }
+    int id; int tok; uint64_t t0;
+    /// @brief Open the region name when a trace is open; the destructor closes it with the elapsed microseconds.
+    explicit op_accum_scope(const char* name) : id(-1), tok(0), t0(0) {
+        if (op_prof_on()) { id = op_prof_intern(name); tok = op_prof_enter(id, 0u); t0 = op_prof_now_us(); }
     }
-    /// @brief Add the microseconds since construction to the trace entry, when a trace was open at construction.
-    ~op_accum_scope() { if (id >= 0) op_prof_accum(id, op_prof_now_us() - t0); }
+    /// @brief Close the region with the microseconds since construction, when a trace was open at construction.
+    ~op_accum_scope() { if (id >= 0) op_prof_exit(tok, id, op_prof_now_us() - t0); }
 };
 }
 

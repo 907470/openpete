@@ -34,6 +34,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "openpete_pace_log.h"      /* OP_PACE_SPLIT_SCOPE: the guest call's split */
+#include "openpete_profile.h"       /* the guest call's profiler region */
 #include "openpete_thread_roles.h"
 
 /* Chains walked and glyphs fed since boot: the engagement counters a capture
@@ -119,7 +121,8 @@ static int on_text_emitter(CPUState* cpu, uint32_t addr) {
 
     uint32_t start = cpu->read_word(game_layout.polybuf.cursor);
     const uint64_t links = ui_sprite_link_count();
-    openpete_recomp_module_get()->dispatch(cpu, addr); /* the real emitter (ref unchanged) */
+    { OP_PROF_FLAGS_ACCUM_SCOPE("text.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
+      openpete_recomp_module_get()->dispatch(cpu, addr); } /* the real emitter (ref unchanged) */
     uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
     /* No hooked insert ran: the emitter linked its chain into the 2D entry
      * itself (the loading picture's chain goes through the slotted insert). */

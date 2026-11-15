@@ -216,6 +216,15 @@ static void tick_latch_order_check(const host_iter_t* it)
     }
 }
 
+/** @brief Return the profiler name id of the fiber run's region "sim_tick", interning it on first use.
+ * @return The id; -1 while the profiler is off. */
+static int sim_tick_prof_id(void)
+{
+    static int s_id = -1;
+    if (s_id < 0) s_id = op_prof_intern("sim_tick");
+    return s_id;
+}
+
 /** @brief Run one VBL in the game fiber inside the pace-log bracket, then the step, present-owed, rumble and eager bookkeeping it settles.
  * @param S The session: the pause and step flags.
  * @param it The iteration: sets the VBL bracket and ticked. */
@@ -242,6 +251,11 @@ static void tick_run_vbl(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
                              it->vbl.latch_ns);
     {
         uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
+        /* The fiber run is the profiler's root region "sim_tick", marked
+         * guest: the regions the hooks open inside it are charged to it, so
+         * its self time is the game's own code. */
+        const int prof = op_prof_on();
+        if (prof) op_prof_begin_flags(sim_tick_prof_id(), OP_PROF_F_GUEST);
         /* The guest touches neither the device nor device-visible
          * memory while it runs (core/rhi/rhi_gpu_audit.h measures
          * this); under eager production the present thread keeps
@@ -249,6 +263,7 @@ static void tick_run_vbl(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
         g_openpete_guest_running = 1;
         openpete_fiber_switch(openpete_game_fiber);
         g_openpete_guest_running = 0;
+        if (prof) op_prof_end();
         if (pt0) openpete_phase_add(OPPT_SIM_TICK, openpete_phase_now_us() - pt0);
     }
     it->vbl.exec_end_ns = op_now();

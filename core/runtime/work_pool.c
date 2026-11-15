@@ -10,6 +10,7 @@
 
 #include "openpete_workpool.h"
 #include "openpete_crash.h"
+#include "openpete_profile.h"       /* the join's wait region */
 
 #include <SDL3/SDL.h>
 #include "openpete_thread_roles.h"
@@ -174,5 +175,9 @@ void openpete_workpool_run(int nitems, openpete_work_fn fn, void* arg) {
     SDL_SetAtomicInt(&s_job.next, 0);
     for (int w = 1; w < wake; w++) SDL_SignalSemaphore(s_start[w]);
     wp_work(0);
-    for (int w = 1; w < wake; w++) SDL_WaitSemaphore(s_done);
+    /* The join: the caller has run out of items and waits for the helpers.
+     * A wait region, so a profile shows the fan-out's wall time on the
+     * caller as the items the caller ran plus this wait. */
+    { OP_PROF_FLAGS_ACCUM_SCOPE("pool.wait", OP_PROF_F_WAIT);
+      for (int w = 1; w < wake; w++) SDL_WaitSemaphore(s_done); }
 }

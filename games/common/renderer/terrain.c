@@ -22215,7 +22215,7 @@ static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
     }
     uint32_t startp = cpu->read_word(game_layout.polybuf.cursor);
     terrain_visibility_capture_arm();
-    { OP_PROF_ACCUM_SCOPE("terrain.srend");
+    { OP_PROF_FLAGS_ACCUM_SCOPE("terrain.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
       /* The game's own world draw, by address through the module's dispatch
        * table (the raw recompiled entry, not the override chain), so the
        * verdicts it writes are intact. */
@@ -22490,7 +22490,8 @@ static int on_visibility_terrain(CPUState* cpu, uint32_t addr) {
     OP_ROLE_ASSERT(sim);
     if (!s_vis_arm || cpu->a0 != 0u) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
-    openpete_recomp_module_get()->dispatch(cpu, addr);
+    { OP_PROF_FLAGS_ACCUM_SCOPE("terrain.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
+      openpete_recomp_module_get()->dispatch(cpu, addr); }
     s_in = 0;
     uint32_t n = cpu->read_word(game_layout.env.sector_count);
     if (n > TVIS_MAX) n = TVIS_MAX;

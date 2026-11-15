@@ -12661,16 +12661,18 @@ static void push_scene_moby_tris(CPUState* cpu) {
      * range) go to HUD3D so their own faces Z-sort (depth-off paints them
      * inside-out); the flat near-OT text/2D billboards stay HUD. */
     mst_add(MST_PPRE, t_pre);
-    { const uint64_t t_rk = mst_now();
+    { OP_PROF_ACCUM_SCOPE("moby.rank");
+      const uint64_t t_rk = mst_now();
       moby_rank_prepare(cpu);
       mst_add(MST_RANK, t_rk); }
     moby_tri_debug();
     moby_rank_ordinals_t rord;  /* this walk's ranked-moby ordinals */
     moby_rank_ordinals_begin(&rord);
     const moby_emit_env_t env = { stbit, moby_heavy_fog_target() };
-    const uint64_t t_em = mst_now();
-    moby_emit(cpu, &env, &rord);
-    mst_add(MST_EMIT, t_em);
+    { OP_PROF_ACCUM_SCOPE("moby.emit");
+      const uint64_t t_em = mst_now();
+      moby_emit(cpu, &env, &rord);
+      mst_add(MST_EMIT, t_em); }
     const uint64_t t_post = mst_fine_now();
     moby_td_census(-1, 0, stbit);
     openpete_native_scene_set_hq_fog(0u, 0u);
@@ -12678,7 +12680,8 @@ static void push_scene_moby_tris(CPUState* cpu) {
     openpete_native_scene_set_host_added(0);
     moby_rank_ordinals_end(&rord);
     mst_add(MST_PPOST, t_post);
-    { const uint64_t t_sn = mst_now();
+    { OP_PROF_ACCUM_SCOPE("moby.snap_collect");
+      const uint64_t t_sn = mst_now();
       moby_snap_collect(&rord);
       mst_add(MST_SNAP, t_sn); }
     const uint64_t t_rs = mst_fine_now();
@@ -12693,6 +12696,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
  * @param cpu Guest CPU state. */
 static void push_scene_moby(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
+    OP_PROF_ACCUM_SCOPE("moby.push");
     const uint64_t t_ps = mst_fine_now();
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
@@ -13210,7 +13214,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
     moby_view_build(cpu);
 
     uint32_t start = cpu->read_word(game_layout.polybuf.cursor);
-    { OP_PROF_ACCUM_SCOPE("moby.srend");
+    { OP_PROF_FLAGS_ACCUM_SCOPE("moby.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
       moby_run_draw(cpu, draw_addr); }         /* run the real renderer */
     uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
     OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_MOBY);    /* the native pass after the game's draw */
@@ -13301,7 +13305,8 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
              * fn actually ran this tick (this is its hook), so a load screen -
              * where only the SHADED/text producer runs - still cannot mark it. */
             const unsigned pub = s_rev_pub_gen;
-            if (append_revealed_regular(cpu) > 0) render_path_mark_drawn(RP_MOBY);
+            { OP_PROF_ACCUM_SCOPE("moby.reveal");
+              if (append_revealed_regular(cpu) > 0) render_path_mark_drawn(RP_MOBY); }
             view_rev_latch(pub != s_rev_pub_gen);
         }
         { OP_PROF_ACCUM_SCOPE("moby.build");
@@ -15897,9 +15902,11 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
 
     if (feed) {                                 /* feed shaded mobys to the scene - fully native */
         s_cur_mat = "SHD";
-        const uint64_t t_sw = mst_now();
-        int shd_n = build_shaded_walk_tris(cpu); /* native topology (#2a) + native lighting (#2b) */
-        mst_add(MST_SHD, t_sw); msc_add(MSC_TRIS, shd_n);
+        int shd_n;
+        { OP_PROF_ACCUM_SCOPE("moby.shaded_walk");
+          const uint64_t t_sw = mst_now();
+          shd_n = build_shaded_walk_tris(cpu); /* native topology (#2a) + native lighting (#2b) */
+          mst_add(MST_SHD, t_sw); msc_add(MSC_TRIS, shd_n); }
         /* Twin of the REG reveal mark: past the canonical band the .s shaded
          * walk emits nothing (its own 3-axis cull, which extended LOD drops on
          * the native mirror), so the interval above is empty and the gems/props

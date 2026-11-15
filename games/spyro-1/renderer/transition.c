@@ -43,6 +43,7 @@
 #include <string.h>
 #include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "game_layout.h"
+#include "openpete_pace_log.h"   /* OP_PACE_SPLIT_SCOPE - the guest call's split */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "openpete_thread_roles.h"
 
@@ -219,7 +220,7 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     s_in = 1;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    { OP_PROF_ACCUM_SCOPE("transition.srend");
+    { OP_PROF_FLAGS_ACCUM_SCOPE("transition.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
       func_8004F000(cpu); }                               /* real renderer (verdict + g_SonyImage) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
@@ -319,7 +320,7 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
         openpete_native_scene_set_freeze_backdrop(0x4C, 0x80, 0x40, fade);
     }
 
-    { OP_PROF_ACCUM_SCOPE("transition.srend");
+    { OP_PROF_FLAGS_ACCUM_SCOPE("transition.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
       func_8001C694(cpu); }                               /* real renderer (case 1 nests func_8004F000) */
     s_in = 0;
     return 1;

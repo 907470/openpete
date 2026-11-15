@@ -20966,7 +20966,9 @@ static int s_oppc_id[OPPC_COUNT] = { -1, -1, -1, -1 };
 void openpete_phase_add(int phase, uint64_t us) {
     if ((unsigned)phase >= OPPT_COUNT) return;
     s_pt_cur[phase] += (uint32_t)us;
-    if (op_prof_on()) {
+    /* The sim tick's span is the region host_loop.c opens around the fiber
+     * run, so the profiler sees it with the regions nested in it. */
+    if (op_prof_on() && phase != OPPT_SIM_TICK) {
         if (s_oppt_id[phase] < 0) s_oppt_id[phase] = op_prof_intern(s_oppt_names[phase]);
         op_prof_add_span(s_oppt_id[phase], us);
     }

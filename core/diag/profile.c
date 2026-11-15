@@ -60,11 +60,30 @@ static int   s_name_count = 0;
 #define OPP_STACK_MAX 32
 struct opp_span_frame { int name_id; uint64_t t0_us; };
 
-/* One bucket per interned name that has been accumulated since this thread's
- * last flush. Linear scan: the table holds a handful of names and the lookup
- * runs once per entry, which is cheap next to the two clock reads around it. */
-#define OPP_ACCUM_MAX 64
-struct opp_accum { int name_id; uint64_t first_t0_us, sum_us; uint32_t calls; };
+/* The region tree. Every timed region (op_prof_begin/end, op_prof_enter/exit)
+ * pushes one frame on the thread's nest stack; on close the region's time is
+ * added to the enclosing frame's child time and its own self time is its
+ * duration less its children's. A record of a region carries its parent's
+ * name, the outermost open region's name (its root) and its self time, so a
+ * consumer reads exclusive times off the records without re-deriving the
+ * nesting from timestamps (accumulated buckets carry none). Spans from
+ * op_prof_add_span and op_prof_accum are measured elsewhere: they carry no
+ * nesting and touch no frame. */
+enum { OPP_NEST_SPAN = 1, OPP_NEST_ACCUM = 2 };
+struct opp_nest { int name_id; int root_id; uint8_t flags, kind; uint64_t child_us; };
+
+/* One bucket per (name, parent, root, flags) accumulated since this thread's
+ * last flush, open-addressed by a hash of the key; `order` lists the used
+ * slots in first-use order for the flush. A region bucket keys on its parent
+ * and root so one name entered under two parents stays two records. */
+#define OPP_ACCUM_MAX  256              /* a power of two */
+#define OPP_ACCUM_FILL (OPP_ACCUM_MAX * 3 / 4)
+struct opp_accum {
+    int name_id, parent_id, root_id;   /* parent and root -1 for a bare accum */
+    uint8_t used, flags, nested;
+    uint64_t first_t0_us, sum_us, self_us;
+    uint32_t calls;
+};
 
 /* Per-thread producer state. Sized so a busy frame's records fit without a
  * mid-frame flush; a full chunk flushes early and costs only one extra mutex
@@ -78,10 +97,13 @@ struct opp_tls {
     uint8_t  buf[OPP_CHUNK_CAP];
     struct opp_span_frame stack[OPP_STACK_MAX];
     int      sp;
+    struct opp_nest nest[OPP_STACK_MAX];
+    int      np;
     struct opp_accum accum[OPP_ACCUM_MAX];
+    uint16_t order[OPP_ACCUM_MAX];
     int      accum_count;
     uint32_t spans_since_flush;
-    int      warned_overflow, warned_underflow, warned_accum_full;
+    int      warned_overflow, warned_underflow, warned_accum_full, warned_nest;
 };
 
 /* Spelled `_Thread_local`: third_party/libco/settings.h defines `thread_local`
@@ -201,7 +223,9 @@ int op_prof_open(const char* path) {
     SDL_LockMutex(s_mu);
     for (int i = 0; i < s_thread_count; i++) {
         struct opp_tls* t = s_threads[i];
-        t->len = 0; t->sp = 0; t->accum_count = 0; t->spans_since_flush = 0;
+        t->len = 0; t->sp = 0; t->np = 0; t->spans_since_flush = 0;
+        for (int k = 0; k < t->accum_count; k++) t->accum[t->order[k]].used = 0;
+        t->accum_count = 0;
     }
     SDL_UnlockMutex(s_mu);
     s_on = 1;
@@ -259,7 +283,88 @@ int op_prof_intern(const char* name) {
 }
 
 /* ---- CPU spans ------------------------------------------------------------- */
-void op_prof_begin(int name_id) {
+/* Region fields of a SPAN record, in bytes the format 3 layout leaves zero:
+ * u16 at 4 = OPP_SPAN_NESTED | (parent name id + 1, 0 at a root), u16 at 6 =
+ * root name id, u32 at 24 = self microseconds, u8 at 29 = OP_PROF_F_* flags.
+ * A record without OPP_SPAN_NESTED carries none of them, as format 3 traces
+ * written before the region tree do. */
+#define OPP_SPAN_NESTED 0x8000u
+
+/** @brief A region record's nesting: its parent, root, self time and flags. */
+struct opp_region { int parent_id, root_id; uint64_t self_us; uint8_t flags; };
+
+/** @brief Append one span record to the thread's chunk.
+ *
+ * The record carries the depth byte, the name id truncated to 16 bits, the
+ * start time, the duration truncated to 32 bits, aux, the thread index at
+ * OPP_REC_TID and, for a region (rg not NULL), its parent, root, self time
+ * and flags, and counts toward the thread's spans since the last flush
+ * marker. */
+static void emit_span(struct opp_tls* t, int depth, int name_id,
+                      uint64_t t0_us, uint32_t dur_us, uint32_t aux,
+                      const struct opp_region* rg) {
+    uint8_t r[OPP_REC_SIZE];
+    memset(r, 0, sizeof(r));
+    r[0] = OPP_REC_SPAN;
+    r[1] = (uint8_t)depth;
+    le_u16(r + 2, (uint16_t)name_id);
+    le_u64(r + 8, t0_us);
+    le_u32(r + 16, dur_us);
+    le_u32(r + 20, aux);
+    if (rg) {
+        le_u16(r + 4, (uint16_t)(OPP_SPAN_NESTED | (uint32_t)(rg->parent_id + 1)));
+        le_u16(r + 6, (uint16_t)rg->root_id);
+        le_u32(r + 24, (uint32_t)(rg->self_us > 0xFFFFFFFFu ? 0xFFFFFFFFu : rg->self_us));
+        r[29] = rg->flags;
+    }
+    r[OPP_REC_TID] = (uint8_t)t->tid;
+    chunk_put(t, r, sizeof(r));
+    t->spans_since_flush++;
+}
+
+/** @brief Push a region frame on the thread's nest stack.
+ * @param t The thread's block.
+ * @param name_id The region's name.
+ * @param flags OP_PROF_F_* bits.
+ * @param kind OPP_NEST_SPAN or OPP_NEST_ACCUM.
+ * @return The stack depth after the push (1 for a root), or 0 when the stack is full. */
+static int nest_push(struct opp_tls* t, int name_id, unsigned flags, uint8_t kind) {
+    if (t->np >= OPP_STACK_MAX) return 0;
+    struct opp_nest* f = &t->nest[t->np];
+    f->name_id  = name_id;
+    f->root_id  = t->np ? t->nest[0].name_id : name_id;
+    f->flags    = (uint8_t)flags;
+    f->kind     = kind;
+    f->child_us = 0;
+    return ++t->np;
+}
+
+/** @brief Pop the top region frame, charge its duration to the enclosing frame, and fill its record fields.
+ * @param t The thread's block.
+ * @param dur_us The region's duration.
+ * @param rg Receives the parent (-1 at a root), root, self time and flags.
+ * @return 1. */
+static int nest_pop(struct opp_tls* t, uint64_t dur_us, struct opp_region* rg) {
+    const struct opp_nest* f = &t->nest[--t->np];
+    rg->self_us   = dur_us > f->child_us ? dur_us - f->child_us : 0;
+    rg->root_id   = f->root_id;
+    rg->flags     = f->flags;
+    rg->parent_id = t->np ? t->nest[t->np - 1].name_id : -1;
+    if (t->np) t->nest[t->np - 1].child_us += dur_us;
+    return 1;
+}
+
+/** @brief Warn once per thread that a region closed out of order, leaving it without nesting. */
+static void nest_warn(struct opp_tls* t) {
+    if (t->warned_nest) return;
+    t->warned_nest = 1;
+    fprintf(stderr, "[profile] region closed out of order on tid %d; its records carry no nesting\n",
+            t->tid);
+}
+
+void op_prof_begin(int name_id) { op_prof_begin_flags(name_id, 0u); }
+
+void op_prof_begin_flags(int name_id, unsigned flags) {
     if (!s_on) return;
     struct opp_tls* t = tls_get();
     if (!t) return;
@@ -269,30 +374,10 @@ void op_prof_begin(int name_id) {
                     t->tid, OPP_STACK_MAX); }
         return;
     }
+    (void)nest_push(t, name_id, flags, OPP_NEST_SPAN);
     t->stack[t->sp].name_id = name_id;
     t->stack[t->sp].t0_us   = op_prof_now_us();
     t->sp++;
-}
-
-/** @brief Append one span record to the thread's chunk.
- *
- * The record carries the depth byte, the name id truncated to 16 bits, the
- * start time, the duration truncated to 32 bits, aux, and the thread index
- * at OPP_REC_TID, and counts toward the thread's spans since the last flush
- * marker. */
-static void emit_span(struct opp_tls* t, int depth, int name_id,
-                      uint64_t t0_us, uint32_t dur_us, uint32_t aux) {
-    uint8_t r[OPP_REC_SIZE];
-    memset(r, 0, sizeof(r));
-    r[0] = OPP_REC_SPAN;
-    r[1] = (uint8_t)depth;
-    le_u16(r + 2, (uint16_t)name_id);
-    le_u64(r + 8, t0_us);
-    le_u32(r + 16, dur_us);
-    le_u32(r + 20, aux);
-    r[OPP_REC_TID] = (uint8_t)t->tid;
-    chunk_put(t, r, sizeof(r));
-    t->spans_since_flush++;
 }
 
 void op_prof_end(void) {
@@ -307,7 +392,12 @@ void op_prof_end(void) {
     t->sp--;
     uint64_t now = op_prof_now_us();
     uint64_t t0  = t->stack[t->sp].t0_us;
-    emit_span(t, t->sp, t->stack[t->sp].name_id, t0, (uint32_t)(now - t0), 0);
+    const int name_id = t->stack[t->sp].name_id;
+    struct opp_region rg;
+    const int nested = t->np && t->nest[t->np - 1].kind == OPP_NEST_SPAN &&
+                       t->nest[t->np - 1].name_id == name_id && nest_pop(t, now - t0, &rg);
+    if (!nested) nest_warn(t);
+    emit_span(t, t->sp, name_id, t0, (uint32_t)(now - t0), 0, nested ? &rg : NULL);
 }
 
 void op_prof_add_span(int name_id, uint64_t dur_us) {
@@ -318,44 +408,89 @@ void op_prof_add_span(int name_id, uint64_t dur_us) {
     uint64_t t0  = (dur_us <= now) ? (now - dur_us) : now;
     /* depth = current stack depth so a phase span forwarded mid-scope nests
      * correctly under whatever is open (normally depth 0). */
-    emit_span(t, t->sp, name_id, t0, (uint32_t)dur_us, 0);
+    emit_span(t, t->sp, name_id, t0, (uint32_t)dur_us, 0, NULL);
 }
 
 /* ---- accumulating scopes --------------------------------------------------- */
+/** @brief Find or create the thread's bucket for one key.
+ *
+ * A bucket created by this call is anchored at now - us, the first entry of
+ * the flush interval, so the emitted interval lands inside the region the
+ * entries ran in.
+ * @return The bucket, or NULL when the table is full (warned once). */
+static struct opp_accum* accum_slot(struct opp_tls* t, int name_id, const struct opp_region* rg,
+                                    uint64_t us) {
+    const int parent = rg ? rg->parent_id : -1, root = rg ? rg->root_id : -1;
+    const uint8_t flags = rg ? rg->flags : 0u, nested = rg != NULL;
+    uint32_t h = ((uint32_t)name_id * 0x9E3779B1u) ^ ((uint32_t)(parent + 1) * 0x85EBCA77u) ^
+                 ((uint32_t)(root + 1) * 0xC2B2AE3Du) ^ flags ^ ((uint32_t)nested << 8);
+    for (int probe = 0; probe < OPP_ACCUM_MAX; probe++) {
+        struct opp_accum* a = &t->accum[(h + (uint32_t)probe) & (OPP_ACCUM_MAX - 1)];
+        if (!a->used) {
+            if (t->accum_count >= OPP_ACCUM_FILL) break;
+            a->used = 1; a->name_id = name_id; a->parent_id = parent; a->root_id = root;
+            a->flags = flags; a->nested = nested;
+            a->sum_us = 0; a->self_us = 0; a->calls = 0;
+            a->first_t0_us = op_prof_now_us() - us;
+            t->order[t->accum_count++] = (uint16_t)(a - t->accum);
+            return a;
+        }
+        if (a->name_id == name_id && a->parent_id == parent && a->root_id == root &&
+            a->flags == flags && a->nested == nested)
+            return a;
+    }
+    if (!t->warned_accum_full) { t->warned_accum_full = 1;
+        fprintf(stderr, "[profile] accum table full on tid %d (>%d keys); dropping\n",
+                t->tid, OPP_ACCUM_FILL); }
+    return NULL;
+}
+
 void op_prof_accum(int name_id, uint64_t us) {
     if (!s_on || name_id < 0) return;
     struct opp_tls* t = tls_get();
     if (!t) return;
-    struct opp_accum* a = NULL;
-    for (int i = 0; i < t->accum_count; i++)
-        if (t->accum[i].name_id == name_id) { a = &t->accum[i]; break; }
-    if (!a) {
-        if (t->accum_count >= OPP_ACCUM_MAX) {
-            if (!t->warned_accum_full) { t->warned_accum_full = 1;
-                fprintf(stderr, "[profile] accum table full on tid %d (>%d names); dropping\n",
-                        t->tid, OPP_ACCUM_MAX); }
-            return;
-        }
-        a = &t->accum[t->accum_count++];
-        a->name_id = name_id; a->sum_us = 0; a->calls = 0;
-        /* Anchor at this flush interval's first entry, not at flush time: the
-         * emitted interval then lands inside the region the entries ran in. */
-        a->first_t0_us = op_prof_now_us() - us;
-    }
+    struct opp_accum* a = accum_slot(t, name_id, NULL, us);
+    if (!a) return;
     a->sum_us += us;
+    a->calls++;
+}
+
+int op_prof_enter(int name_id, unsigned flags) {
+    if (!s_on || name_id < 0) return 0;
+    struct opp_tls* t = tls_get();
+    return t ? nest_push(t, name_id, flags, OPP_NEST_ACCUM) : 0;
+}
+
+void op_prof_exit(int token, int name_id, uint64_t us) {
+    if (!s_on || name_id < 0) return;
+    struct opp_tls* t = tls_get();
+    if (!t) return;
+    struct opp_region rg;
+    const int nested = token > 0 && token == t->np && t->nest[t->np - 1].kind == OPP_NEST_ACCUM &&
+                       t->nest[t->np - 1].name_id == name_id && nest_pop(t, us, &rg);
+    if (token > 0 && !nested) nest_warn(t);
+    struct opp_accum* a = accum_slot(t, name_id, nested ? &rg : NULL, us);
+    if (!a) return;
+    a->sum_us += us;
+    if (nested) a->self_us += rg.self_us;
     a->calls++;
 }
 
 /** @brief Emit one depth-0 span per bucket with a nonzero sum and empty the bucket table.
  *
  * Each span starts at the bucket's first entry, lasts the summed time, and
- * carries the call count in aux. Called at the thread's marker (a present,
- * a published scene, the end of a rendered frame) and at close. */
+ * carries the call count in aux and, for a region bucket, its parent, root,
+ * summed self time and flags. Called at the thread's marker (a present, a
+ * published scene, the end of a rendered frame) and at close. */
 static void accum_flush(struct opp_tls* t) {
     for (int i = 0; i < t->accum_count; i++) {
-        struct opp_accum* a = &t->accum[i];
-        if (a->sum_us) emit_span(t, 0, a->name_id, a->first_t0_us,
-                                 (uint32_t)a->sum_us, a->calls);
+        struct opp_accum* a = &t->accum[t->order[i]];
+        if (a->sum_us) {
+            const struct opp_region rg = { a->parent_id, a->root_id, a->self_us, a->flags };
+            emit_span(t, 0, a->name_id, a->first_t0_us, (uint32_t)a->sum_us, a->calls,
+                      a->nested ? &rg : NULL);
+        }
+        a->used = 0;
     }
     t->accum_count = 0;
 }

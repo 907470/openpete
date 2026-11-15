@@ -762,6 +762,12 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME bugreport_reader_selftest
              COMMAND python3 -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/test_bugreport.py)
 
+    # Profile summary's sim-tick split on synthetic .opp traces: the region
+    # records (guest, host by subsystem, pool waits, the leaves summing to
+    # sim_tick) and a trace written before them (the inclusive hook table).
+    add_test(NAME profile_summary_selftest
+             COMMAND python3 -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/test_profile_summary.py)
+
     # Bug-report replay's bundle unpack and scratch reset on synthetic
     # bundles: the member, total and entry-count bounds, duplicate names,
     # links in a directory bundle, a member under the replay's own

@@ -92,18 +92,35 @@ int  op_prof_intern(const char* name);
  * No-op while the profiler is off.
  * @param name_id Id from op_prof_intern. */
 void op_prof_begin(int name_id);
+/* Region flags, carried by a region's records (OP_PROF_F_*). */
+enum {
+    OP_PROF_F_GUEST = 1u,   /* the region runs recompiled game code (the sim tick, a guest renderer call) */
+    OP_PROF_F_WAIT  = 2u    /* the thread waits in the region (a worker-pool join) */
+};
+
+/** @brief Push a scope carrying OP_PROF_F_* flags onto the calling thread's span stack.
+ *
+ * op_prof_begin with flags: the scope's SPAN record carries them with its
+ * parent, root and self time.
+ * @param name_id Id from op_prof_intern.
+ * @param flags OP_PROF_F_* bits. */
+void op_prof_begin_flags(int name_id, unsigned flags);
+
 /** @brief Pop the calling thread's innermost scope and emit its SPAN record.
  *
  * The record carries the scope's name, start time, duration and nesting
- * depth. An end with an empty stack is ignored with one warning per
+ * depth, and its region fields: the enclosing region's name, the outermost
+ * open region's name and the scope's self time (duration less the regions
+ * it enclosed). An end with an empty stack is ignored with one warning per
  * thread. */
 void op_prof_end(void);
 
 /** @brief Emit an already-measured span ending now on the calling thread.
  *
- * Used by the OPPT phase-add shim. The start is inferred as now - dur_us
- * (now when dur_us exceeds the clock), and the depth is the thread's current
- * span-stack depth, so a span forwarded inside an open scope nests under it.
+ * Used by the OPPT phase-add shim and the stage timers. The start is
+ * inferred as now - dur_us (now when dur_us exceeds the clock), and the
+ * depth is the thread's current span-stack depth. The span is not a region:
+ * it carries no parent or self time and is not charged to the open region.
  * @param name_id Id from op_prof_intern; negative is ignored.
  * @param dur_us Measured duration in microseconds. */
 void op_prof_add_span(int name_id, uint64_t dur_us);
@@ -130,9 +147,12 @@ void op_prof_count(int name_id, uint64_t value);
  * whatever real scope contained the entries and present_busy_us() - a union of
  * span intervals - is not inflated by the synthetic timestamp.
  *
- * Buckets are FLAT, not nested: a bucket that measures a region inside another
- * bucket's region (e.g. "terrain.srend", the guest renderer call inside
- * "hook.terrain_native") is a subset, and the consumer subtracts. */
+ * A region bucket (op_prof_enter/op_prof_exit, OP_PROF_ACCUM_SCOPE) is keyed
+ * by its name, its parent region and its root region, and carries its summed
+ * self time: a region inside another (e.g. "terrain.srend", the guest
+ * renderer call inside "hook.terrain_native") is charged to its parent, so
+ * the self times of a root's regions sum to the root. A bare op_prof_accum
+ * adds time measured elsewhere and is not a region. */
 /** @brief Add us to the calling thread's bucket for name_id and count one call.
  *
  * A bucket created by this call is anchored at now - us, the first entry of
@@ -143,6 +163,26 @@ void op_prof_count(int name_id, uint64_t value);
  * @param name_id Id from op_prof_intern; negative is ignored.
  * @param us Time measured for this entry, in microseconds. */
 void op_prof_accum(int name_id, uint64_t us);
+
+/** @brief Open an accumulating region: push its frame on the calling thread's region stack.
+ *
+ * Pair with op_prof_exit, in LIFO order with every other region of the
+ * thread. No-op while the profiler is off.
+ * @param name_id Id from op_prof_intern; negative opens nothing.
+ * @param flags OP_PROF_F_* bits.
+ * @return The token op_prof_exit takes: the stack depth, 0 when nothing was pushed. */
+int op_prof_enter(int name_id, unsigned flags);
+
+/** @brief Close the region op_prof_enter opened and add its time to its bucket.
+ *
+ * The bucket is keyed by name, parent region, root region and flags, and
+ * sums the time and the self time (us less the regions closed inside). A
+ * token of 0, or one that is not the top of the stack (warned once), adds us
+ * as a bare op_prof_accum.
+ * @param token op_prof_enter's return value.
+ * @param name_id The name given to op_prof_enter.
+ * @param us The region's measured duration in microseconds. */
+void op_prof_exit(int token, int name_id, uint64_t us);
 
 /** @brief Record a present to the display: flush the calling thread's buckets, emit a PRESENT record, and flush its chunk.
  *
@@ -214,15 +254,15 @@ void op_prof_func(int name_id, uint32_t addr, uint64_t calls,
  * Runs when the scope's block exits, through the cleanup attribute.
  * @param began Points to the scope's flag, nonzero once op_prof_begin ran. */
 static inline void op_prof__scope_cleanup(int* began) { if (*began) op_prof_end(); }
-typedef struct { int name_id; uint64_t t0_us; } op_prof_accum_guard;
-/** @brief Cleanup handler of OP_PROF_ACCUM_SCOPE: add the elapsed time to the scope's bucket.
+typedef struct { int name_id; int token; uint64_t t0_us; } op_prof_accum_guard;
+/** @brief Cleanup handler of OP_PROF_ACCUM_SCOPE: close the region and add the elapsed time to its bucket.
  *
  * Runs when the scope's block exits, through the cleanup attribute. Adds
- * the microseconds since g->t0_us to bucket g->name_id with op_prof_accum;
+ * the microseconds since g->t0_us to region g->name_id with op_prof_exit;
  * a negative name_id, the value while the profiler is off, adds nothing.
  * @param g Points to the scope's guard. */
 static inline void op_prof__accum_cleanup(op_prof_accum_guard* g) {
-    if (g->name_id >= 0) op_prof_accum(g->name_id, op_prof_now_us() - g->t0_us);
+    if (g->name_id >= 0) op_prof_exit(g->token, g->name_id, op_prof_now_us() - g->t0_us);
 }
 #define OP_PROF__CAT2(a, b) a##b
 #define OP_PROF__CAT(a, b)  OP_PROF__CAT2(a, b)
@@ -239,23 +279,29 @@ static inline void op_prof__accum_cleanup(op_prof_accum_guard* g) {
         OP_PROF__CAT(op_prof_began_, __LINE__) = 1; \
     }
 /* Accumulating variant: same block-scoped usage, but the measured time is
- * summed into a per-name bucket and emitted once per marker (see
- * op_prof_accum). Use for hooks that fire many times per tick. */
-#define OP_PROF_ACCUM_SCOPE(lit) \
+ * summed into a bucket keyed by name and enclosing regions and emitted once
+ * per marker (see op_prof_enter). Use for hooks that fire many times per
+ * tick. OP_PROF_FLAGS_ACCUM_SCOPE carries OP_PROF_F_* flags: OP_PROF_F_GUEST
+ * on a call into the recompiled game (a guest renderer), OP_PROF_F_WAIT on a
+ * wait. */
+#define OP_PROF_FLAGS_ACCUM_SCOPE(lit, flags) \
     static OP_ONCE_INT OP_PROF__CAT(op_prof_aid_, __LINE__) = -1; \
     op_prof_accum_guard OP_PROF__CAT(op_prof_ag_, __LINE__) \
-        __attribute__((cleanup(op_prof__accum_cleanup))) = { -1, 0 }; \
+        __attribute__((cleanup(op_prof__accum_cleanup))) = { -1, 0, 0 }; \
     if (op_prof_on()) { \
         int op_prof_v_ = op_once_int_get(&OP_PROF__CAT(op_prof_aid_, __LINE__)); \
         if (op_prof_v_ < 0) \
             op_prof_v_ = op_once_int_fill(&OP_PROF__CAT(op_prof_aid_, __LINE__), \
                                           op_prof_intern(lit)); \
         OP_PROF__CAT(op_prof_ag_, __LINE__).name_id = op_prof_v_; \
+        OP_PROF__CAT(op_prof_ag_, __LINE__).token = op_prof_enter(op_prof_v_, (flags)); \
         OP_PROF__CAT(op_prof_ag_, __LINE__).t0_us = op_prof_now_us(); \
     }
+#define OP_PROF_ACCUM_SCOPE(lit) OP_PROF_FLAGS_ACCUM_SCOPE(lit, 0u)
 #else
 #define OP_PROF_SCOPE(lit) ((void)0)
 #define OP_PROF_ACCUM_SCOPE(lit) ((void)0)
+#define OP_PROF_FLAGS_ACCUM_SCOPE(lit, flags) ((void)0)
 #endif
 
 #ifdef __cplusplus

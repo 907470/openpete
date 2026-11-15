@@ -29,6 +29,16 @@ Binning:
     binning thread also binds to that marker (the inline render path), so an
     eager-off trace keeps its per-present GPU view.
 
+Regions:
+  * A SPAN record with bit 15 of its u16 at byte 4 set is a region of the
+    thread's region tree (core/diag/profile.c): the low bits are the parent
+    region's name id + 1 (0 at a root), the u16 at byte 6 the root region's
+    name id, the u32 at byte 24 the self time (the duration less the regions
+    closed inside it) and the byte at 29 the OP_PROF_F_* flags (1 guest, 2
+    wait). Marker.regions lists them; Marker.spans lists every span,
+    regions included, as before. A trace written before the tree has no
+    region records and an empty Marker.regions.
+
 A trace this reader cannot bin is refused (OppTraceError), never read as a
 partial one.
 """
@@ -42,6 +52,9 @@ REC_NAME, REC_PRESENT, REC_SPAN, REC_GPUZ, REC_COUNT, REC_FUNC, REC_SCENE = \
     1, 2, 3, 4, 5, 6, 7
 REC_TID_OFF = 28
 
+SPAN_NESTED = 0x8000
+REGION_GUEST, REGION_WAIT = 1, 2
+
 KIND_CANONICAL, KIND_INTERMEDIATE, KIND_REPEAT = 0, 1, 2
 KIND_NAME = {KIND_CANONICAL: "canonical", KIND_INTERMEDIATE: "intermediate",
              KIND_REPEAT: "repeat"}
@@ -51,11 +64,28 @@ class OppTraceError(Exception):
     """The trace cannot be read or binned. Callers print and exit nonzero."""
 
 
+class Region:
+    """One region record: its name, parent name (None at a root), root name,
+    self and total microseconds, OP_PROF_F_* flags, call count (aux) and
+    thread."""
+    __slots__ = ("name", "parent", "root", "self_us", "dur_us", "flags", "calls", "tid")
+
+    def __init__(self, name, parent, root, self_us, dur_us, flags, calls, tid):
+        self.name = name
+        self.parent = parent
+        self.root = root
+        self.self_us = self_us
+        self.dur_us = dur_us
+        self.flags = flags
+        self.calls = calls
+        self.tid = tid
+
+
 class Marker:
     """One PRESENT or SCENE record (`rec` is REC_PRESENT or REC_SCENE) and,
     when it is a marker, the spans, counts and GPU zones binned to it."""
     __slots__ = ("rec", "index", "canon_tick", "kind", "t_now_us", "tid",
-                 "spans", "counts", "gpuz")
+                 "spans", "counts", "gpuz", "regions")
 
     def __init__(self, rec, index, canon_tick, kind, t_now_us, tid):
         self.rec = rec
@@ -67,6 +97,8 @@ class Marker:
         self.spans = []    # list of (depth, name, t0_us, dur_us, aux, tid)
         self.counts = {}   # name -> value (last wins)
         self.gpuz = []     # list of (depth, name, t0_rel_us, dur_us)
+        # list of Region: the spans that carry region fields
+        self.regions = []
 
 
     @property
@@ -197,7 +229,12 @@ def read_opp(path):
             nid = struct.unpack_from("<H", data, off + 2)[0]
             t0 = struct.unpack_from("<Q", data, off + 8)[0]
             dur, aux = struct.unpack_from("<II", data, off + 16)
-            push(tid, ("span", (depth, nid, t0, dur, aux, tid)))
+            nest, root = struct.unpack_from("<HH", data, off + 4)
+            rg = None
+            if nest & SPAN_NESTED:
+                rg = ((nest & 0x7FFF) - 1, root,
+                      struct.unpack_from("<I", data, off + 24)[0], data[off + 29])
+            push(tid, ("span", (depth, nid, t0, dur, aux, tid, rg)))
         elif t == REC_COUNT:
             nid = struct.unpack_from("<H", data, off + 2)[0]
             val = struct.unpack_from("<Q", data, off + 8)[0]
@@ -254,6 +291,14 @@ def read_opp(path):
     for fn in tr.funcs:
         fn["name"] = nm(fn["name"])
 
+    def bind(p, payload):
+        (d, nid, t0, dur, aux, sid, rg) = payload
+        p.spans.append((d, nm(nid), t0, dur, aux, sid))
+        if rg is not None:
+            par, root, self_us, flags = rg
+            p.regions.append(Region(nm(nid), nm(par) if par >= 0 else None, nm(root),
+                                    self_us, dur, flags, aux, sid))
+
     tr.markers.sort(key=lambda p: p.t_now_us)
     tr.presents.sort(key=lambda p: p.t_now_us)
     tr.scenes.sort(key=lambda p: p.t_now_us)
@@ -274,8 +319,8 @@ def read_opp(path):
                     pend_gpuz.append(payload)
                 else:
                     p = payload
-                    for (d, nid, t0, dur, aux, sid) in pend_spans:
-                        p.spans.append((d, nm(nid), t0, dur, aux, sid))
+                    for sp in pend_spans:
+                        bind(p, sp)
                     for (nid, val) in pend_counts:
                         p.counts[nm(nid)] = val
                     for (_s, d, nid, t0r, dur, _t) in pend_gpuz:
@@ -284,8 +329,8 @@ def read_opp(path):
             # Tail after the last marker: the close-time flush. Bind to the last
             # marker rather than drop it.
             last = tr.markers[-1]
-            for (d, nid, t0, dur, aux, sid) in pend_spans:
-                last.spans.append((d, nm(nid), t0, dur, aux, sid))
+            for sp in pend_spans:
+                bind(last, sp)
             for (nid, val) in pend_counts:
                 last.counts[nm(nid)] = val
             for (_s, d, nid, t0r, dur, _t) in pend_gpuz:
@@ -293,12 +338,11 @@ def read_opp(path):
         else:
             for kind, payload in items:
                 if kind == "span":
-                    (d, nid, t0, dur, aux, sid) = payload
-                    p = _bin_by_containment(tr.markers, t0)
+                    p = _bin_by_containment(tr.markers, payload[2])
                     if p is None:
                         unbinned += 1
                         continue
-                    p.spans.append((d, nm(nid), t0, dur, aux, sid))
+                    bind(p, payload)
                 elif kind == "count":
                     unbinned += 0   # counts without a timestamp: see below
                 elif kind == "gpuz":

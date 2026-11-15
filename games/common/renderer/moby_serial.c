@@ -17,6 +17,8 @@
 #include "openpete_recomp_module.h"
 
 #include <string.h>
+#include "openpete_pace_log.h"      /* OP_PACE_SPLIT_SCOPE: the guest call's split */
+#include "openpete_profile.h"       /* the guest call's profiler region */
 #include "openpete_thread_roles.h"
 
 #define MOBY_SLOTS_MAX 4096u
@@ -61,7 +63,8 @@ int moby_serial_on_alloc(CPUState* cpu, uint32_t addr) {
     OP_ROLE_ASSERT(sim);
     if (s_alloc_in) return 0;
     s_alloc_in = 1;
-    openpete_recomp_module_get()->dispatch(cpu, addr);
+    { OP_PROF_FLAGS_ACCUM_SCOPE("moby.alloc", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
+      openpete_recomp_module_get()->dispatch(cpu, addr); }
     s_alloc_in = 0;
     const uint32_t base = moby_array_base(cpu);
     if (base != s_slot_base) {

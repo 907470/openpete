@@ -25,7 +25,10 @@ and a coarse image of three rows, decode to the values packed (split
 microseconds and counts, plan level, standing level, slots, afford, planned
 scenes and period, GPU frame span and busy time, coarse fields); the rollup
 gives the present rate, the sim tick from the TICK_SPLIT records, sheds and
-scenes per tick; `perf` prints every record kind; `corpus` over a directory
+scenes per tick; TICK_SPLIT records of the exclusive layout decode to guest =
+sim - host and host = terrain + moby + snap canonical + host other, and
+`perf` prints that line, while a record of the earlier layout decodes with no
+guest or host and `perf` names it; `perf` prints every record kind; `corpus` over a directory
 holding a new bundle, a bundle with neither new member and a non-zip writes
 one TSV row each, the old bundle with its pace rollups and empty record
 columns, the non-zip with an error; a coarse image with a bad magic is
@@ -569,9 +572,10 @@ def u32pair(lo, hi):
     return lo | (hi << 32)
 
 
-def perf_ring(ticks=60):
+def perf_ring(ticks=60, exclusive=False):
     """A pace image of `ticks` ticks at 30 Hz: two VBLs (0.2 and 4.0 ms runs), four presents (one canonical),
-    one shed, one TICK_SPLIT, one EAGER_PLAN and one GPU_FRAME per tick."""
+    one shed, one TICK_SPLIT, one EAGER_PLAN and one GPU_FRAME per tick. With `exclusive` the TICK_SPLIT
+    records carry the exclusive layout's flag and 0.25 ms of host other in f's high word."""
     env = b"build=test\ngpu=Test GPU\nrefresh_mhz=120000\npresent_mode=fifo\nrender_fps=120\neager=1\nplatform=Linux\n"
     hdr = struct.pack("<IIIIIIqqqqq", br.OPPL_MAGIC, 2, 64 + len(env), 64, len(env), 0, 0, 0, 2250000, 37609, 2)
     out, t = [], 10**9
@@ -580,7 +584,9 @@ def perf_ring(ticks=60):
         out.append(rec(br.PACE_VBL, t, v0, c=t, d=t + 200000))
         out.append(rec(br.PACE_VBL, t + 16_700_000, v0 + 1, c=t + 16_700_000, d=t + 20_700_000))
         out.append(rec(br.PACE_TICK_SPLIT, t + 20_800_000, v0 + 1, a=u32pair(4200, 1500), b=u32pair(900, 400),
-                       c=u32pair(120, 60), d=u32pair(2000, 300), e=3 | 4 << 16 | 4 << 32 | 5 << 48, f=4000))
+                       c=u32pair(120, 60), d=u32pair(2000, 300), e=3 | 4 << 16 | 4 << 32 | 5 << 48,
+                       flags=br.PACE_TS_EXCLUSIVE if exclusive else 0,
+                       f=u32pair(4000, 250) if exclusive else 4000))
         out.append(rec(br.PACE_EAGER_PLAN, t + 20_900_000, v0 + 1,
                        flags=(br.PACE_EP_CUT if k % 10 == 0 else 0) | (br.PACE_EP_FILL if k % 2 else 0),
                        aux=2 | 1 << 8, a=20_000_000 | 2 << 32, b=1_500_000, c=5_000_000, d=200_000, e=0,
@@ -613,6 +619,8 @@ class PerfRecords(Base):
         self.assertEqual((sp["sim"], sp["extract"], sp["terrain"], sp["moby"]), (4.2, 1.5, 0.9, 0.4))
         self.assertEqual((sp["snap_rex"], sp["snap_canon"], sp["render"], sp["present"]), (0.12, 0.06, 2.0, 0.3))
         self.assertEqual((sp["n_extract"], sp["n_render"], sp["n_present"], sp["n_snap"], sp["tick"]), (3, 4, 4, 5, 4.0))
+        self.assertEqual((sp["exclusive"], sp["host_other"]), (False, 0.0))
+        self.assertNotIn("guest", sp)
         pl = [br.plan_decode(r) for r in recs if r[0] == br.PACE_EAGER_PLAN][0]
         self.assertEqual((pl["level"], pl["std"], pl["slots"], pl["afford"], pl["planned"]), (2, 1, 4, 3, 2))
         self.assertTrue(pl["cut"])
@@ -621,6 +629,18 @@ class PerfRecords(Base):
         self.assertEqual((pl["made"], pl["fill"]), (2, False))
         g = [br.gpu_decode(r) for r in recs if r[0] == br.PACE_GPU_FRAME][1]
         self.assertEqual((g["token"], g["zones"], g["frame_ms"], g["busy_ms"]), (1, 12, 3.0, 2.5))
+
+    def test_exclusive_split(self):
+        _h, recs = br.pace_records(perf_ring(2, exclusive=True))
+        sp = [br.split_decode(r) for r in recs if r[0] == br.PACE_TICK_SPLIT][0]
+        self.assertTrue(sp["exclusive"])
+        self.assertEqual((sp["tick"], sp["host_other"]), (4.0, 0.25))
+        self.assertAlmostEqual(sp["host"], 0.9 + 0.4 + 0.06 + 0.25)
+        self.assertAlmostEqual(sp["guest"], 4.2 - sp["host"])
+        r = br.perf_rollup(perf_ring(60, exclusive=True))
+        self.assertEqual(r["split_exclusive_ticks"], 60)
+        self.assertAlmostEqual(r["split_mean_guest"] + r["split_mean_host"], r["split_mean_sim"])
+        self.assertNotIn("split_exclusive_ticks", br.perf_rollup(perf_ring(60)))
 
     def test_rollup(self):
         r = br.perf_rollup(perf_ring(60))
@@ -659,8 +679,17 @@ class PerfRecords(Base):
         (corp / "bug-spyro-1-junk.zip").write_bytes(b"not a zip")
         rc, out, _err = run("perf", corp / "bug-spyro-1-new.zip")
         self.assertEqual(rc, 0)
-        for want in ("split (60 ticks)", "planner (60 spans, fill cadence 50.0%)", "gpu (60 frames)", "coarse: 3 rows"):
+        for want in ("split (60 ticks)", "planner (60 spans, fill cadence 50.0%)", "gpu (60 frames)", "coarse: 3 rows",
+                     "sim tick: a log written before the exclusive split"):
             self.assertIn(want, out)
+        ex = members()
+        ex["pace.oppl"] = perf_ring(60, exclusive=True)
+        write_bundle(self.d / "bug-spyro-1-ex.zip", ex,
+                     manifest(ex, records={"pace": {"member": "pace.oppl", "types": list(range(1, 18))}}))
+        rc, out, _err = run("perf", self.d / "bug-spyro-1-ex.zip")
+        self.assertEqual(rc, 0)
+        self.assertIn("sim tick (60 ticks), mean ms per tick: sim 4.20 = guest 2.59 + host 1.61 (terrain 0.90, "
+                      "moby 0.40, snap 0.06, other 0.25)", out)
         tsv = self.d / "c.tsv"
         rc, out, _err = run("corpus", corp, "--tsv", tsv)
         self.assertEqual(rc, 0)

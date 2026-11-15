@@ -38,6 +38,7 @@
 #include "renderer/orchestrator.h"     /* the canonical-render epoch */
 #include "renderer/cut_guard.h"        /* cut_census_on */
 #include "renderer/credits_key.h"      /* game_credits_letter_key */
+#include "openpete_pace_log.h"         /* OP_PACE_SPLIT_SCOPE: the simple pass's host split */
 #include "openpete_profile.h"          /* OP_PROF_ACCUM_SCOPE: the simple pass's cost split */
 
 #include <math.h>
@@ -2964,22 +2965,28 @@ static int s23_simple_pass(CPUState* cpu) {
     s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
     s_simple_lp = s_simple_fade = s_simple_occl = 0;
     s_flat_zero_colour = s_flat_back_emitted = s_flat_back_dropped = s_flat_front_blended = 0;
-    s23_simple_capture(cpu);
-    /* Extended LOD: the cull's distance box is what keeps a distant moby out
-     * of the queue, so the records it rejected are rebuilt here and decoded
-     * with the rest. The queue this appends to is the host copy above; the
-     * game's own draw below still reads its own, unchanged. */
-    int revealed = moby_reveal_candidates(cpu, MOBY_REVEAL_SIMPLE);
-    for (int i = 0; i < 4; i++)
-        s_sq->flat[i] = cpu->read_word(S23_FLAT_SCRATCH + (uint32_t)i * 4u);
+    /* The pass runs inside the bracket's guest region; the host work around
+     * the game's draw opens its own regions (msim.capture, msim.decode). */
+    int revealed;
+    { OP_PROF_ACCUM_SCOPE("msim.capture"); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_MOBY);
+      s23_simple_capture(cpu);
+      /* Extended LOD: the cull's distance box is what keeps a distant moby out
+       * of the queue, so the records it rejected are rebuilt here and decoded
+       * with the rest. The queue this appends to is the host copy above; the
+       * game's own draw below still reads its own, unchanged. */
+      revealed = moby_reveal_candidates(cpu, MOBY_REVEAL_SIMPLE);
+      for (int i = 0; i < 4; i++)
+          s_sq->flat[i] = cpu->read_word(S23_FLAT_SCRATCH + (uint32_t)i * 4u); }
     openpete_recomp_module_get()->dispatch(cpu, game_layout.moby.hook_draw_simple);
-    /* The records as the decode below reads them, after the draw's own stores
-     * (byte +0x4D) and before any later routine of the tick writes a queued
-     * moby (the HUD update advances a HUD moby's angle after this draw), so
-     * the object ring's pair takes the drawn records, not the tick-end ones. */
-    game_interp_moby_stash_begin();
-    for (int i = 0; i < s_sq->qn; i++) game_interp_moby_stash_put(s_sq->q[i][0]);
-    int n = s23_simple_decode(cpu);
+    int n;
+    { OP_PROF_ACCUM_SCOPE("msim.decode"); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_MOBY);
+      /* The records as the decode below reads them, after the draw's own stores
+       * (byte +0x4D) and before any later routine of the tick writes a queued
+       * moby (the HUD update advances a HUD moby's angle after this draw), so
+       * the object ring's pair takes the drawn records, not the tick-end ones. */
+      game_interp_moby_stash_begin();
+      for (int i = 0; i < s_sq->qn; i++) game_interp_moby_stash_put(s_sq->q[i][0]);
+      n = s23_simple_decode(cpu); }
     if (moby_verify_vbl())
         fprintf(stderr, "[moby-simple vbl=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
                         "screendrawn=%ld "

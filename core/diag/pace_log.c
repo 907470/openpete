@@ -254,6 +254,7 @@ static void coarse_fold_locked(const pace_rec_t* r)
         cr_add(&row[OP_PACE_CR_RENDER_US_SUM], split_word(r->d, 0));
         cr_add(&row[OP_PACE_CR_PRESENT_US_SUM], split_word(r->d, 1));
         cr_add(&row[OP_PACE_CR_EXTRACTS], (uint64_t)r->e & 0xFFFFu);
+        cr_add(&row[OP_PACE_CR_HOST_US_SUM], split_word(r->f, 1));
         break;
     case OP_PACE_EAGER_PLAN:
         cr_add(&row[OP_PACE_CR_PLANS], 1);
@@ -1548,9 +1549,29 @@ int openpete_pace_split_on(void) { return pace_sink_on(); }
 
 int64_t op_pace_split_now(void) { return (int64_t)op_now(); }
 
+/* The calling thread's innermost open split scope. A guard lives on its
+ * scope's stack frame and the scopes close in LIFO order, so the chain
+ * through parent is the thread's open scopes. */
+static _Thread_local op_pace_split_guard* s_split_top;
+
+void op_pace_split__enter(op_pace_split_guard* g, int which)
+{
+    g->which = which;
+    g->child_ns = 0;
+    g->parent = NULL;
+    g->t0 = pace_sink_on() ? (int64_t)op_now() : 0;
+    if (!g->t0) return;
+    g->parent = s_split_top;
+    s_split_top = g;
+}
+
 void op_pace_split__cleanup(op_pace_split_guard* g)
 {
-    if (g->t0) openpete_pace_split_add(g->which, (int64_t)op_now() - g->t0);
+    if (!g->t0) return;
+    const int64_t dur = (int64_t)op_now() - g->t0;
+    openpete_pace_split_add(g->which, dur - g->child_ns);
+    if (g->parent) g->parent->child_ns += dur;
+    s_split_top = g->parent;
 }
 
 void openpete_pace_split_add(int which, int64_t ns)
@@ -1589,6 +1610,7 @@ void openpete_pace_tick_split(uint32_t vbl_index, int64_t tick_ns)
     for (int k = 0; k < OP_PACE_SPLIT_COUNT; k++) (void)atomic_exchange_explicit(&s_split_n[k], 0u, memory_order_relaxed);
     pace_rec_t r = {0};
     r.type  = OP_PACE_TICK_SPLIT;
+    r.flags = OP_PACE_TS_EXCLUSIVE;
     r.index = vbl_index;
     r.t_ns  = (int64_t)op_now();
     r.a = (int64_t)(us[OP_PACE_SPLIT_SIM] | us[OP_PACE_SPLIT_EXTRACT] << 32);
@@ -1597,7 +1619,8 @@ void openpete_pace_tick_split(uint32_t vbl_index, int64_t tick_ns)
     r.d = (int64_t)(us[OP_PACE_SPLIT_RENDER] | us[OP_PACE_SPLIT_PRESENT] << 32);
     r.e = (int64_t)(n_ex | n_rd << 16 | n_pr << 32 | (n_sn > 0xFFFFu ? 0xFFFFu : n_sn) << 48);
     const int64_t t_us = tick_ns > 0 ? tick_ns / 1000 : 0;
-    r.f = t_us > (int64_t)UINT32_MAX ? (int64_t)UINT32_MAX : t_us;
+    r.f = (int64_t)((uint64_t)(t_us > (int64_t)UINT32_MAX ? (int64_t)UINT32_MAX : t_us) |
+                    us[OP_PACE_SPLIT_HOST] << 32);
     pace_emit(&r);
 }
 

@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "openpete_pace_log.h"   /* OP_PACE_SPLIT_SCOPE - the guest call's split */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "renderer/env_knob.h"
 #include "openpete_thread_roles.h"
@@ -2173,7 +2174,7 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
 
     claim_linked(cpu, prim);
 
-    { OP_PROF_ACCUM_SCOPE("ui_sprite.srend");
+    { OP_PROF_FLAGS_ACCUM_SCOPE("ui_sprite.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
       openpete_recomp_module_get()->dispatch(cpu, addr); }  /* the real OT insert (ref unchanged) */
 
     /* OPENPETE_UISPRITE_CENSUS: the per-class engagement counters, once per
@@ -2282,7 +2283,7 @@ static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
      * the chokepoint hook treats that F4 as the fade (already handled) and NOT
      * a dark panel (also a 0x2A F4). */
     s_in_fade = 1;
-    { OP_PROF_ACCUM_SCOPE("ui_sprite.srend");
+    { OP_PROF_FLAGS_ACCUM_SCOPE("ui_sprite.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
       openpete_recomp_module_get()->dispatch(cpu, addr); }  /* the real fade emit (ref unchanged) */
     s_in_fade = 0;
     s_in = 0;
@@ -2303,7 +2304,8 @@ static int on_fb_grid_emitter(CPUState* cpu, uint32_t addr) {
     if (!openpete_native_scene_enabled() || s_in_grid) return 0;
     s_in_grid = 1;
     s_grid_ord = 0;
-    openpete_recomp_module_get()->dispatch(cpu, addr);   /* the real emitter (ref unchanged) */
+    { OP_PROF_FLAGS_ACCUM_SCOPE("ui_sprite.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
+      openpete_recomp_module_get()->dispatch(cpu, addr); }  /* the real emitter (ref unchanged) */
     s_in_grid = 0;
     return 1;
 }
@@ -2329,7 +2331,8 @@ static int on_letterbox_emitter(CPUState* cpu, uint32_t addr) {
     if (!openpete_native_scene_enabled() || s_in_letterbox) return 0;
     openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
     s_in_letterbox = 1;
-    openpete_recomp_module_get()->dispatch(cpu, addr);   /* the real emitter (ref unchanged) */
+    { OP_PROF_FLAGS_ACCUM_SCOPE("ui_sprite.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
+      openpete_recomp_module_get()->dispatch(cpu, addr); }  /* the real emitter (ref unchanged) */
     s_in_letterbox = 0;
     const int over_fade = s_fade_ran_frame == openpete_frame;
     s_fade_ran_frame = ~0u;

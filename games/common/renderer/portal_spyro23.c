@@ -64,6 +64,7 @@
 #include "renderer/portal_spyro23.h"
 #include "renderer/portal_plane.h"     /* openpete_portal_plane_margin */
 #include "renderer/terrain.h"          /* terrain_native_flush_deferred */
+#include "openpete_pace_log.h"         /* OP_PACE_SPLIT_SCOPE: the guest calls' split */
 #include "openpete_profile.h"          /* OP_PROF_ACCUM_SCOPE */
 #include "renderer/portal_sky_s23.h"   /* portal_sky_s23_extension */
 #include "no_lod.h"                    /* openpete_no_lod */
@@ -1811,7 +1812,8 @@ static int on_portal_leaf(CPUState* cpu, uint32_t addr) {
     p3_capture(cpu, arg);
     s_leaf_calls++;
     uint32_t start = cpu->read_word(game_layout.polybuf.cursor);
-    openpete_recomp_module_get()->dispatch(cpu, addr);
+    { OP_PROF_FLAGS_ACCUM_SCOPE("portal.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
+      openpete_recomp_module_get()->dispatch(cpu, addr); }
     uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
     if (p3_dbg()) {
         /* The leaf's prims, for the census: F3 0x14 bytes, G3 0x1C, the size
@@ -1915,7 +1917,8 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
     s_rec_next = 0;
     s_in_pass = 1;
     s_pass_start = cpu->read_word(game_layout.polybuf.cursor);
-    openpete_recomp_module_get()->dispatch(cpu, addr);
+    { OP_PROF_FLAGS_ACCUM_SCOPE("portal.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
+      openpete_recomp_module_get()->dispatch(cpu, addr); }
     uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
     s_in_pass = 0;
     render_path_record(RP_PORTAL, s_pass_start, end);

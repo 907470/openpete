@@ -45,7 +45,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _opp_reader import (read_opp, present_busy_us, partition_transients,  # noqa: E402
-                         OppTraceError, KIND_CANONICAL, KIND_INTERMEDIATE)
+                         OppTraceError, KIND_CANONICAL, KIND_INTERMEDIATE,
+                         REGION_GUEST, REGION_WAIT)
 
 
 def pct(sorted_vals, q):
@@ -193,6 +194,342 @@ def present_source(tr):
     if tr.present_tids.isdisjoint(tr.scene_tids):
         return "present-thread"
     return "mixed"
+
+
+# ---- the sim tick's region tree ---------------------------------------------
+# Subsystems of the host tree, in print order.
+SUBSYSTEMS = ("terrain", "moby", "snap", "cyclorama", "portal", "effects", "player",
+              "2d", "textures", "other")
+
+# Region name -> (subsystem, what it does). A name not listed takes its
+# subsystem from its prefix (SUBSYSTEM_PREFIX), else from its parent region.
+REGION_WORDS = {
+    "sim_tick": ("guest", "game logic: recompiled game code outside the renderer calls"),
+    "hook.terrain_native": ("terrain", "terrain hook glue outside its named regions"),
+    "terrain.capture": ("terrain", "terrain prim capture: walk the world draw's polybuf output"),
+    "terrain.build": ("terrain", "terrain build setup outside its named regions"),
+    "terrain.feed": ("terrain", "terrain feed wrapper"),
+    "portal.defer.terrain": ("terrain", "deferred terrain build+feed wrapper (run at the portal draw)"),
+    "ter.feed": ("terrain", "terrain triangle feed into the scene (materials, depth, fog, portal planes)"),
+    "ter.prepass": ("terrain", "terrain sector visibility prepass outside its named regions"),
+    "ter.tsc_get": ("terrain", "terrain sector decode-cache lookup"),
+    "ter.occl": ("terrain", "terrain sector frustum and occlusion test"),
+    "ter.verdicts": ("terrain", "terrain sector visibility verdicts"),
+    "ter.retag": ("terrain", "terrain coverage re-tag of moved sectors"),
+    "ter.ensure": ("terrain", "terrain GPU-cache sector claim"),
+    "ter.bake.static": ("terrain", "terrain GPU-cache bake, static sectors"),
+    "ter.bake.polyanim": ("terrain", "terrain GPU-cache bake, animated sectors"),
+    "ter.walk": ("terrain", "terrain sector face walk (fans out to the worker pool)"),
+    "ter.merge": ("terrain", "terrain face-walk merge of the per-worker outputs"),
+    "hook.moby_native": ("moby", "moby hook glue outside its named regions"),
+    "moby.capture": ("moby", "moby prim capture (GTE readback of the guest draw)"),
+    "moby.project": ("moby", "moby keyframe decode and vertex projection"),
+    "moby.build": ("moby", "moby face-stream walk: triangles and shading (fans out)"),
+    "moby.feed": ("moby", "moby scene feed wrapper"),
+    "moby.push": ("moby", "moby scene push outside its named regions"),
+    "moby.rank": ("moby", "moby paint-rank contest and ordinals"),
+    "moby.emit": ("moby", "moby triangle emit into the scene (fans out)"),
+    "moby.snap_collect": ("moby", "moby snap source collect (feeds the snap resolve)"),
+    "moby.shaded_walk": ("moby", "shaded moby (gems, props, HUD icons) walk"),
+    "moby.reveal": ("moby", "extended-LOD reveal of mobys the game culled"),
+    "mcan.reveal_confirm": ("moby", "extended-LOD reveal occlusion confirm (decode + test)"),
+    "msim.capture": ("moby", "simple-moby queue capture and reveal"),
+    "msim.decode": ("moby", "simple-moby decode outside its named regions"),
+    "msim.project": ("moby", "simple-moby vertex projection"),
+    "msim.fanout": ("moby", "simple-moby face fan-out (worker pool)"),
+    "msim.replay": ("moby", "simple-moby replay"),
+    "msim.push": ("moby", "simple-moby scene push"),
+    "mcan.resolve": ("snap", "snap contact resolve: moby-on-terrain contact and carry"),
+    "hook.cyclorama_native": ("cyclorama", "cyclorama hook glue outside its named regions"),
+    "cyclorama.extract": ("cyclorama", "cyclorama (sky) extraction"),
+    "hook.portal_native": ("portal", "portal hook glue outside its named regions"),
+    "flame.capture": ("effects", "flame capture"),
+    "shadow.capture": ("effects", "shadow capture"),
+    "particle.capture": ("effects", "particle capture"),
+    "spyro.capture": ("player", "player capture"),
+    "pool.wait": (None, "worker-pool join wait"),
+}
+SUBSYSTEM_PREFIX = (
+    ("mcan.resolve", "snap"), ("portal.defer.terrain", "terrain"),
+    ("hook.terrain", "terrain"), ("terrain.", "terrain"), ("ter.", "terrain"), ("tc.", "terrain"),
+    ("hook.moby", "moby"), ("moby.", "moby"), ("msim.", "moby"), ("mcan.", "moby"),
+    ("hook.cyclorama", "cyclorama"), ("cyclorama.", "cyclorama"),
+    ("hook.portal", "portal"), ("portal.", "portal"),
+    ("hook.player", "player"), ("player.", "player"), ("spyro.", "player"),
+    ("hook.ui_sprite", "2d"), ("ui_sprite.", "2d"), ("hook.transition", "2d"), ("transition.", "2d"),
+    ("tex.", "textures"),
+)
+EFFECT_STEMS = ("particle", "glint", "glow", "zap", "tracer", "flame", "shadow")
+
+# Guest regions: what each no-op would save (the region's self time).
+GUEST_WORDS = {
+    "sim_tick": "game logic (everything outside the renderer calls)",
+    "terrain.srend": "original world (terrain) renderer",
+    "moby.srend": "original moby renderers (regular, specular, shaded, simple)",
+    "cyclorama.srend": "original sky (cyclorama) renderer",
+    "portal.srend": "original portal renderer",
+    "player.draw": "original player (Spyro) renderer",
+    "shadow.srend": "original shadow renderers",
+    "particles.srend": "original particle renderer",
+    "particle.srend": "original particle renderer",
+    "glint.srend": "original glint (sparkle) renderer",
+    "glow.srend": "original glow renderer",
+    "zap.srend": "original zap renderer",
+    "tracer.srend": "original tracer renderer",
+    "tracer3.srend": "original tracer renderer",
+    "flame.srend": "original flame renderer",
+    "ui_sprite.srend": "original 2D sprite OT inserts",
+    "transition.srend": "original level-transition renderer",
+    "text.srend": "original text emitter",
+    "moby.alloc": "game logic: moby allocator, run through a hook",
+    "particles.alloc": "game logic: particle allocator, run through a hook",
+}
+# Guest regions that are game logic rather than a renderer.
+GUEST_LOGIC = ("sim_tick", "moby.alloc", "particles.alloc")
+
+
+def region_subsystem(name):
+    """The host subsystem a region name belongs to from its name alone, or None."""
+    w = REGION_WORDS.get(name)
+    if w and w[0]:
+        return w[0]
+    for pre, sub in SUBSYSTEM_PREFIX:
+        if name.startswith(pre):
+            return sub
+    stem = name[len("hook."):] if name.startswith("hook.") else name
+    if stem.startswith(EFFECT_STEMS):
+        return "effects"
+    return "other" if name.startswith("hook.") else None
+
+
+def region_words(name):
+    """Plain words for a region name; a hook without an entry reads as its glue."""
+    w = REGION_WORDS.get(name)
+    if w:
+        return w[1]
+    if name.startswith("hook."):
+        return "%s hook glue outside its named regions" % name[len("hook."):]
+    return name
+
+
+def sim_split_regions(presents, nc):
+    """The sim tick's exclusive split from the region records.
+
+    Every region whose root is sim_tick is a leaf here with its self time; the
+    self times sum to sim_tick (each region's self is its duration less the
+    regions closed inside it). Leaves are grouped as guest (OP_PROF_F_GUEST:
+    the fiber run's own code and the guest renderer calls), psyq (the scoped
+    PsyQ thunks: host models of library calls the guest makes) and host (the
+    rest, by subsystem; OP_PROF_F_WAIT leaves are worker-pool joins). Values
+    are per canonical tick (nc). None when the trace has no region records."""
+    leaves = {}      # (name, parent if wait) -> dict
+    parents = collections.defaultdict(lambda: collections.Counter())
+    nested_hooks = collections.Counter()   # guest region -> hook time reached through it
+    any_region = False
+    sim_total = 0.0
+    for p in presents:
+        for r in p.regions:
+            any_region = True
+            if r.root != "sim_tick":
+                continue
+            if r.name == "sim_tick" and r.parent is None:
+                sim_total += r.dur_us
+            key = (r.name, r.parent if r.flags & REGION_WAIT else None)
+            e = leaves.setdefault(key, {"self": 0.0, "dur": 0.0, "calls": 0, "flags": 0})
+            e["self"] += r.self_us
+            e["dur"] += r.dur_us
+            e["calls"] += r.calls
+            e["flags"] |= r.flags
+            if r.parent is not None:
+                parents[r.name][r.parent] += r.dur_us
+            if r.parent is not None and r.name.startswith("hook.") and r.parent != "sim_tick":
+                nested_hooks[r.parent] += r.dur_us
+    if not any_region:
+        return None
+
+    def pt(v):
+        return round(v / nc, 1)
+
+    def subsystem_of(name, seen=()):
+        s = region_subsystem(name)
+        if s or name in seen:
+            return s
+        par = parents.get(name)
+        if par:
+            return subsystem_of(par.most_common(1)[0][0], seen + (name,))
+        return None
+
+    guest_rows, psyq_rows = [], []
+    host = {s: [] for s in SUBSYSTEMS}
+    for (name, wait_parent), e in leaves.items():
+        par = parents.get(name, collections.Counter())
+        where = [k for k, _v in par.most_common()]
+        if e["flags"] & REGION_GUEST:
+            guest_rows.append({"scope": name, "us": pt(e["self"]),
+                               "words": GUEST_WORDS.get(name, "original renderer " + name),
+                               "nested_host_us": pt(nested_hooks.get(name, 0.0)),
+                               "calls": pt(e["calls"])})
+        elif name.startswith("psyq."):
+            psyq_rows.append({"scope": name, "us": pt(e["self"]),
+                              "words": "PsyQ %s model" % name[len("psyq."):]})
+        else:
+            if wait_parent is not None:
+                sub = subsystem_of(wait_parent) or "other"
+                words = "worker-pool join wait in " + wait_parent
+                scope = "%s<%s" % (name, wait_parent)
+                where = [wait_parent]
+            else:
+                sub = subsystem_of(name) or "other"
+                words = region_words(name)
+                scope = name
+            home = (region_subsystem(where[0])
+                    if where and where[0] != "sim_tick" and wait_parent is None else None)
+            host[sub].append({"scope": scope, "us": pt(e["self"]), "words": words,
+                              "kind": "wait" if e["flags"] & REGION_WAIT else "sim",
+                              "in": where, "elsewhere": bool(home and home != sub),
+                              "calls": pt(e["calls"])})
+    for rows in [guest_rows, psyq_rows] + list(host.values()):
+        rows.sort(key=lambda r: -r["us"])
+    guest = sum(r["us"] for r in guest_rows)
+    psyq = sum(r["us"] for r in psyq_rows)
+    host_list = [{"subsystem": s, "us": round(sum(r["us"] for r in host[s]), 1),
+                  "wait_us": round(sum(r["us"] for r in host[s] if r["kind"] == "wait"), 1),
+                  "leaves": host[s]} for s in SUBSYSTEMS if host[s]]
+    host_list.sort(key=lambda h: -h["us"])
+    host_us = sum(h["us"] for h in host_list)
+    wait_us = sum(h["wait_us"] for h in host_list)
+    logic = round(sum(r["us"] for r in guest_rows if r["scope"] in GUEST_LOGIC), 1)
+    return {
+        "format": "regions",
+        "canonical_ticks": nc,
+        "sim_tick_us_per_tick": pt(sim_total),
+        "leaves_sum_us": round(guest + psyq + host_us, 1),
+        "guest_us": round(guest, 1),
+        "guest_logic_us": logic,
+        "guest_renderers_us": round(guest - logic, 1),
+        "psyq_us": round(psyq, 1),
+        "host_us": round(host_us, 1),
+        "host_wait_us": round(wait_us, 1),
+        "guest": guest_rows,
+        "psyq": psyq_rows,
+        "host": host_list,
+    }
+
+
+def render_sim_split(ss, L, fold_us=2.0):
+    """Append the region split's text: the guest/host/psyq lines, the guest
+    renderers, the host tree by subsystem. Leaves under fold_us fold into one
+    line per subsystem."""
+    sim = ss["sim_tick_us_per_tick"] or 1.0
+
+    def pc(v):
+        return 100.0 * v / sim
+
+    L.append("[sim.split]           per canonical tick (%d ticks), us; exclusive (self) times, "
+             "the rows sum to sim_tick" % ss["canonical_ticks"])
+    L.append("  %-12s%9.1f %6.1f%%" % ("sim_tick", ss["sim_tick_us_per_tick"], 100.0))
+    L.append("  %-12s%9.1f %6.1f%%   game logic %.1f + original renderers %.1f"
+             % ("guest", ss["guest_us"], pc(ss["guest_us"]), ss["guest_logic_us"],
+                ss["guest_renderers_us"]))
+    L.append("  %-12s%9.1f %6.1f%%   on the sim thread %.1f + waiting on the worker pool %.1f"
+             % ("host", ss["host_us"], pc(ss["host_us"]), ss["host_us"] - ss["host_wait_us"],
+                ss["host_wait_us"]))
+    if ss["psyq_us"]:
+        L.append("  %-12s%9.1f %6.1f%%   %s; the unscoped PsyQ/BIOS models sit in guest game logic"
+                 % ("psyq", ss["psyq_us"], pc(ss["psyq_us"]),
+                    ", ".join("%s %.1f" % (r["scope"], r["us"]) for r in ss["psyq"])))
+    else:
+        L.append("  %-12s%9s %7s   no scoped PsyQ model ran; the PsyQ/BIOS models sit in guest "
+                 "game logic" % ("psyq", "0.0", ""))
+    L.append("  leaves sum %.1f (%+.2f%% of sim_tick)"
+             % (ss["leaves_sum_us"], pc(ss["leaves_sum_us"]) - 100.0))
+    L.append("[sim.split.guest]     us/tick  share  - what a no-op of each saves (its self time)")
+    for r in ss["guest"]:
+        extra = ""
+        if r["nested_host_us"] >= 1.0:
+            extra = "  (+%.1f host hooks the guest calls from inside it)" % r["nested_host_us"]
+        L.append("  %9.1f %6.1f%%  %-16s %s%s" % (r["us"], pc(r["us"]), r["scope"], r["words"], extra))
+    L.append("[sim.split.host]      us/tick  share  - by subsystem; sim = on the sim thread, "
+             "wait = the sim thread blocked on the worker pool")
+    for h in ss["host"]:
+        wait = "  (wait %.1f)" % h["wait_us"] if h["wait_us"] else ""
+        L.append("  %-10s%9.1f %6.1f%%%s" % (h["subsystem"], h["us"], pc(h["us"]), wait))
+        small = [r for r in h["leaves"] if r["us"] < fold_us]
+        for r in h["leaves"]:
+            if r["us"] < fold_us:
+                continue
+            where = "  (runs in %s)" % r["in"][0] if r["elsewhere"] else ""
+            L.append("    %9.1f %6.1f%%  %-4s  %-22s %s%s"
+                     % (r["us"], pc(r["us"]), r["kind"], r["scope"], r["words"], where))
+        if small:
+            us = sum(r["us"] for r in small)
+            L.append("    %9.1f %6.1f%%  %-4s  %-22s %d leaves under %.0f us each"
+                     % (us, pc(us), "", "", len(small), fold_us))
+
+
+def sim_split_legacy(canon):
+    """The inclusive hook split of a trace with no region records: each fiber
+    hook's inclusive cost, the guest renderer it calls (<feature>.srend), the
+    remainder, and sim_tick minus every hook as "unattributed". Canonical
+    markers only. A scope "<a>.defer.<b>" moves from hook <a>'s total to <b>'s."""
+    tot = {}
+    for p in canon:
+        for (_d, name, _t0, dur, _a, _tid) in p.spans:
+            tot[name] = tot.get(name, 0) + dur
+    nc = len(canon) or 1
+
+    def per_tick(name):
+        return tot.get(name, 0) / nc
+
+    hooks = sorted(n for n in tot if n.startswith("hook."))
+    # "<a>.defer.<b>" times work hook <a> runs on behalf of hook <b> (a held
+    # build flushed at the end of another hook): moved from <a>'s total to <b>'s.
+    moved = {}
+    for n in tot:
+        parts = n.split(".")
+        if len(parts) == 3 and parts[1] == "defer":
+            moved[parts[0]] = moved.get(parts[0], 0.0) - per_tick(n)
+            moved[parts[2]] = moved.get(parts[2], 0.0) + per_tick(n)
+    rows = []
+    accounted = 0.0
+    for h in hooks:
+        feat = h[len("hook."):]
+        prefix = feat[:-len("_native")] if feat.endswith("_native") else feat
+        subs = {n: tot[n] / nc for n in tot
+                if n.startswith(prefix + ".") and not n.startswith(prefix + ".defer.")}
+        for n in tot:
+            p = n.split(".")
+            if len(p) == 3 and p[1] == "defer" and p[2] == prefix:
+                subs[prefix + ".deferred_from_" + p[0]] = per_tick(n)
+        total = per_tick(h) + moved.pop(prefix, 0.0)
+        accounted += total
+        rows.append({
+            "hook": feat,
+            "total_us": round(total, 1),
+            "srend_us": round(subs.get(prefix + ".srend", 0.0), 1),
+            # Everything the hook spent outside the guest renderer call: capture,
+            # native walk, scene feed, and any unscoped remainder.
+            "openpete_us": round(total - subs.get(prefix + ".srend", 0.0), 1),
+            "parts": {k.split(".", 1)[1]: round(v, 1) for k, v in sorted(subs.items())},
+        })
+    # Fiber-side openpete work that is not a feature hook (PSYQ thunk scopes).
+    for n in sorted(tot):
+        if n.startswith("psyq."):
+            accounted += per_tick(n)
+            rows.append({"hook": n, "total_us": round(per_tick(n), 1),
+                         "srend_us": 0.0, "openpete_us": round(per_tick(n), 1),
+                         "parts": {}})
+    if any(abs(v) >= 0.05 for v in moved.values()):
+        sys.stderr.write("profile-summary: defer scope with no matching hook: %r\n" % moved)
+    rows.sort(key=lambda r: -r["total_us"])
+    sim = per_tick("sim_tick")
+    return {
+        "format": "legacy",
+        "sim_tick_us_per_tick": round(sim, 1),
+        "rows": rows,
+        "unattributed_us": round(sim - accounted, 1),
+        "canonical_presents": nc,
+    }
 
 
 def summarize(path, skip_ticks=0, label=None, transient_ms=40):
@@ -369,68 +706,14 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
         "zones_per_frame_min": min(zpf) if zpf else 0,
     }
 
-    # ---- sim-tick split (fiber hooks) ---------------------------------------
-    # Canonical markers only: the hooks run on the game fiber, which only the
-    # canonical scene or present yields to. Sums are per-canonical-tick averages so the
-    # rows compare directly against sim_tick's p50.
+    # ---- sim-tick split ------------------------------------------------------
+    # Per canonical tick. From the region records when the trace has them
+    # (every marker's regions rooted at sim_tick, so the fiber runs of the
+    # VBLs between ticks count too); else the inclusive hook split of a trace
+    # written before the region tree.
     canon = [p for p in presents if p.kind == KIND_CANONICAL]
-    tot = {}
-    for p in canon:
-        for (_d, name, _t0, dur, _a, _tid) in p.spans:
-            tot[name] = tot.get(name, 0) + dur
     nc = len(canon) or 1
-
-    def per_tick(name):
-        return tot.get(name, 0) / nc
-
-    hooks = sorted(n for n in tot if n.startswith("hook."))
-    # "<a>.defer.<b>" times work hook <a> runs on behalf of hook <b> (a held
-    # build flushed at the end of another hook): moved from <a>'s total to <b>'s.
-    moved = {}
-    for n in tot:
-        parts = n.split(".")
-        if len(parts) == 3 and parts[1] == "defer":
-            moved[parts[0]] = moved.get(parts[0], 0.0) - per_tick(n)
-            moved[parts[2]] = moved.get(parts[2], 0.0) + per_tick(n)
-    rows = []
-    accounted = 0.0
-    for h in hooks:
-        feat = h[len("hook."):]
-        prefix = feat[:-len("_native")] if feat.endswith("_native") else feat
-        subs = {n: tot[n] / nc for n in tot
-                if n.startswith(prefix + ".") and not n.startswith(prefix + ".defer.")}
-        for n in tot:
-            p = n.split(".")
-            if len(p) == 3 and p[1] == "defer" and p[2] == prefix:
-                subs[prefix + ".deferred_from_" + p[0]] = per_tick(n)
-        total = per_tick(h) + moved.pop(prefix, 0.0)
-        accounted += total
-        rows.append({
-            "hook": feat,
-            "total_us": round(total, 1),
-            "srend_us": round(subs.get(prefix + ".srend", 0.0), 1),
-            # Everything the hook spent outside the guest renderer call: capture,
-            # native walk, scene feed, and any unscoped remainder.
-            "openpete_us": round(total - subs.get(prefix + ".srend", 0.0), 1),
-            "parts": {k.split(".", 1)[1]: round(v, 1) for k, v in sorted(subs.items())},
-        })
-    # Fiber-side openpete work that is not a feature hook (PSYQ thunk scopes).
-    for n in sorted(tot):
-        if n.startswith("psyq."):
-            accounted += per_tick(n)
-            rows.append({"hook": n, "total_us": round(per_tick(n), 1),
-                         "srend_us": 0.0, "openpete_us": round(per_tick(n), 1),
-                         "parts": {}})
-    if any(abs(v) >= 0.05 for v in moved.values()):
-        sys.stderr.write("profile-summary: defer scope with no matching hook: %r\n" % moved)
-    rows.sort(key=lambda r: -r["total_us"])
-    sim = per_tick("sim_tick")
-    out["sim_split"] = {
-        "sim_tick_us_per_tick": round(sim, 1),
-        "rows": rows,
-        "unattributed_us": round(sim - accounted, 1),
-        "canonical_presents": nc,
-    }
+    out["sim_split"] = sim_split_regions(presents, nc) or sim_split_legacy(canon)
 
     # ---- census -----------------------------------------------------------
     cen = {}
@@ -530,9 +813,11 @@ def render_text(s):
                         r["max_us"], r["sum_ms"], r["share_pct"]))
 
     ss = s.get("sim_split")
-    if ss and ss["rows"]:
+    if ss and ss.get("format") == "regions":
+        render_sim_split(ss, L)
+    elif ss and ss["rows"]:
         L.append("[sim.split]           per canonical tick, us   "
-                 "(hook = inclusive; srend = the guest renderer it calls)")
+                 "(trace without region records: hook = inclusive; srend = the guest renderer it calls)")
         L.append("%-22s%10s%10s%10s  %s" % ("scope", "total", "srend", "openpete", "parts"))
         for r in ss["rows"]:
             parts = " ".join("%s=%.0f" % (k, v) for k, v in r["parts"].items()

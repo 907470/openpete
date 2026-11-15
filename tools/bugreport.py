@@ -121,9 +121,13 @@ PACE_F_NOT_LIVE = 64
 PACE_EP_CUT, PACE_EP_LATE, PACE_EP_PINNED, PACE_EP_GREEDY = 1, 2, 4, 8
 PACE_EP_RING, PACE_EP_WITHHELD, PACE_EP_FILL = 16, 32, 64
 PACE_WINDOW_S = 30.0
-# TICK_SPLIT slots in record order: (slot, high word) per duration (core/include/openpete_pace_log.h).
+# TICK_SPLIT slots in record order: (slot, high word) per duration (core/include/openpete_pace_log.h);
+# slot 4 is the record's f. host_other is 0 in a log written before the exclusive layout.
 SPLIT_FIELDS = (("sim", 0, 0), ("extract", 0, 1), ("terrain", 1, 0), ("moby", 1, 1),
-                ("snap_rex", 2, 0), ("snap_canon", 2, 1), ("render", 3, 0), ("present", 3, 1))
+                ("snap_rex", 2, 0), ("snap_canon", 2, 1), ("render", 3, 0), ("present", 3, 1),
+                ("host_other", 4, 1))
+# TICK_SPLIT flags: the duration slots are exclusive and f's high word is host other.
+PACE_TS_EXCLUSIVE = 1
 # Coarse session ring (pace-coarse.bin): header and the 32 u32 fields of a row.
 COARSE_MAGIC = b"OPPCRS01"
 COARSE_HEADER = struct.Struct("<8sIIIIqq")
@@ -131,7 +135,7 @@ COARSE_FIELDS = ("t0_s", "span_s", "vbls", "vbls_not_live", "presents", "repeats
                  "iv_long", "ticks", "tick_us_sum", "tick_us_max", "sim_us_sum", "extract_us_sum",
                  "terrain_us_sum", "moby_us_sum", "snap_us_sum", "render_us_sum", "present_us_sum",
                  "extracts", "plans", "plan_slots", "plan_scenes", "plan_cuts", "level_max", "gpu_frames",
-                 "gpu_us_sum", "gpu_us_max", "slips", "reserved0", "reserved1", "reserved2")
+                 "gpu_us_sum", "gpu_us_max", "slips", "host_us_sum", "reserved1", "reserved2")
 COARSE_MAX_FIELDS = {"iv_max_us", "tick_us_max", "level_max", "gpu_us_max"}
 
 # The tarfile extraction filter refusing links out of the tree, where the runtime has one.
@@ -420,11 +424,18 @@ def u32w(v, hi):
 
 
 def split_decode(r):
-    """A TICK_SPLIT record as a dict: index, t_ns, durations in ms, counts, the drawing VBL's own run in ms."""
-    slots = (r[5], r[6], r[7], r[8])
-    d = {"index": r[3], "t_ns": r[4]}
+    """A TICK_SPLIT record as a dict: index, t_ns, durations in ms, counts, the drawing VBL's own run in ms.
+
+    `exclusive` is set on a record of the exclusive layout: terrain, moby, snap_canon and host_other are
+    disjoint host time inside the fiber runs, `host` their sum and `guest` sim - host. A record written
+    before it has inclusive, overlapping terrain/moby/snap_canon and no host or guest."""
+    slots = (r[5], r[6], r[7], r[8], r[10])
+    d = {"index": r[3], "t_ns": r[4], "exclusive": bool((r[1] or 0) & PACE_TS_EXCLUSIVE)}
     for name, slot, hi in SPLIT_FIELDS:
         d[name] = u32w(slots[slot], hi) / 1000.0
+    if d["exclusive"]:
+        d["host"] = d["terrain"] + d["moby"] + d["snap_canon"] + d["host_other"]
+        d["guest"] = max(0.0, d["sim"] - d["host"])
     e = r[9] or 0
     d["n_extract"], d["n_render"] = e & 0xFFFF, (e >> 16) & 0xFFFF
     d["n_present"], d["n_snap"] = (e >> 32) & 0xFFFF, (e >> 48) & 0xFFFF
@@ -527,6 +538,12 @@ def perf_rollup(data, tail_s=10.0):
         out["split_ticks"] = len(splits)
         for name, _s, _h in SPLIT_FIELDS:
             out["split_" + name] = pct([d[name] for d in splits], 50)
+        ex = [d for d in splits if d["exclusive"]]
+        if ex:
+            # Means, not p50s: the partition's parts sum to its total only as means.
+            out["split_exclusive_ticks"] = len(ex)
+            for name in ("sim", "guest", "host", "terrain", "moby", "snap_canon", "host_other"):
+                out["split_mean_" + name] = sum(d[name] for d in ex) / len(ex)
     plans = [plan_decode(r) for r in recs if r[0] == PACE_EAGER_PLAN]
     if plans:
         n = len(plans)
@@ -1629,7 +1646,17 @@ def perf_lines(pace, coarse, manifest):
               f"{r['not_live']} of {r['vbls']} VBLs not live")
         if "split_ticks" in r:
             w(f"  split ({r['split_ticks']} ticks), p50 ms per tick: " +
-              " ".join(f"{n} {fmt_ms(r['split_' + n])}" for n, _s, _h in SPLIT_FIELDS))
+              " ".join(f"{n} {fmt_ms(r['split_' + n])}" for n, _s, _h in SPLIT_FIELDS
+                       if n != "host_other" or "split_exclusive_ticks" in r))
+            if "split_exclusive_ticks" in r:
+                m = {k[len("split_mean_"):]: v for k, v in r.items() if k.startswith("split_mean_")}
+                w(f"  sim tick ({r['split_exclusive_ticks']} ticks), mean ms per tick: sim {fmt_ms(m['sim'])} = "
+                  f"guest {fmt_ms(m['guest'])} + host {fmt_ms(m['host'])} (terrain {fmt_ms(m['terrain'])}, "
+                  f"moby {fmt_ms(m['moby'])}, snap {fmt_ms(m['snap_canon'])}, other {fmt_ms(m['host_other'])}); "
+                  f"guest = game logic, the original renderers and the PsyQ models")
+            else:
+                w("  sim tick: a log written before the exclusive split (terrain, moby and snap overlap; "
+                  "no guest/host)")
         elif PACE_TICK_SPLIT not in r["types"]:
             w("  split: no TICK_SPLIT record")
         if "plans" in r:
@@ -1676,6 +1703,7 @@ CORPUS_COLS = ("bundle", "error", "build", "commit", "game", "level", "trigger",
                "records", "window_s", "pres_s", "pres_s_tail", "iv_p50", "iv_p99", "iv_max", "sim_p50", "sim_p90",
                "sheds_tick", "scenes_tick", "not_live", "split_ticks") + tuple(
                    "split_" + n for n, _s, _h in SPLIT_FIELDS) + (
+               "split_mean_guest", "split_mean_host") + (
                "plans", "plan_slots", "plan_afford", "plan_scenes", "plan_level_p50", "plan_level_max",
                "plan_cut_frac", "gpu_frames", "gpu_p50", "gpu_p99", "coarse_s", "coarse_span_s",
                "coarse_pres_p10", "coarse_pres_p50", "coarse_pres_p90", "coarse_pres_first", "coarse_pres_last",
