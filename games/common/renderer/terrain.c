@@ -176,6 +176,20 @@ static inline int thdr_flags(uint32_t w1)  { return (int)(w1 & game_layout.terra
  * @param w1 The sector header's word 1.
  * @return Nonzero when the layout defines terrain.flat_flag and w1 carries it. */
 static inline int thdr_flat(uint32_t w1)   { return game_layout.terrain.flat_flag && (w1 & game_layout.terrain.flat_flag); }
+/** @brief Returns a sector header half-word as the signed 16-bit coordinate the world draw computes with.
+ *
+ * The bounding centre (words 0 and 1) and the origin (words 2 and 3) reach the
+ * GTE only through 16-bit registers: the draw subtracts them from the camera
+ * and moves the result into IR1-IR3 (the sphere test) or VXY0/VZ0 (the vertex
+ * walk), which keep the low 16 bits as a signed value, so a field of 0xFF9A
+ * is -102, not 65434 (Spyro 1 r_environment.s
+ * 0x80025A3C-0x80025A5C and 0x80026814-0x8002682C, 0x800268F4; Spyro 2
+ * environment.s 0x80023CC4-0x80023CE4 and 0x800245F8-0x80024614; Spyro 3
+ * environment.s 0x80022488-0x800224A8, 0x80022DBC-0x80022DD8 and
+ * 0x80022E50).
+ * @param half The half-word, in the low 16 bits.
+ * @return The value sign-extended from bit 15. */
+static inline int thdr_s16(uint32_t half) { return (int)(int16_t)(uint16_t)half; }
 
 /* The visibility verdict. A game whose draw leaves the table in RAM is read
  * there (0xFF = visible); a game whose draw computes it in the scratchpad and
@@ -371,9 +385,9 @@ static void terrain_dump(CPUState* cpu) {
         uint32_t og = rd(cpu, s + 0x08);     /* originX<<16 | originY */
         uint32_t oz = rd(cpu, s + 0x0C);     /* originZ<<16 | flistId */
         uint32_t lpw = rd(cpu, s + 0x10), hpw = rd(cpu, s + 0x14);
-        int centreX = (int)(w0 >> 16), centreY = (int)(w0 & 0xFFFF), centreZ = (int)(w1 >> 16);
+        int centreX = thdr_s16(w0 >> 16), centreY = thdr_s16(w0), centreZ = thdr_s16(w1 >> 16);
         int radius  = thdr_radius(w1), flags = thdr_flags(w1), flat = thdr_flat(w1);
-        int originX = (int)(og >> 16), originY = (int)(og & 0xFFFF), originZ = (int)(oz >> 16);
+        int originX = thdr_s16(og >> 16), originY = thdr_s16(og), originZ = thdr_s16(oz >> 16);
         int nLpV = lpw & 0xFF, nLpC = (lpw >> 8) & 0xFF, nLpF = (lpw >> 16) & 0xFF;
         int nHpV = hpw & 0xFF, nHpC = (hpw >> 8) & 0xFF, nHpF = (hpw >> 16) & 0xFF;
         int hpVertsOff = (int)((hpw >> 24) & 0xFF);   /* ×4 = byte offset to HP verts */
@@ -6152,10 +6166,10 @@ static void tsc_decode_body(const twsrc_t* src, uint32_t s, uint32_t w0, const u
     C->flat  = thdr_flat(g[0]);
     /* Bounding sphere (header w0/w1) - the .s LP/HP binning inputs. w0 is
      * not in the signature (it never changes independently of w1..w4). */
-    C->centreX = (int)(w0 >> 16); C->centreY = (int)(w0 & 0xFFFF);
-    C->centreZ = (int)(g[0] >> 16); C->radius = thdr_radius(g[0]);
-    C->originX = (int)(g[1] >> 16); C->originY = (int)(g[1] & 0xFFFF);
-    C->originZ = (int)(g[2] >> 16);
+    C->centreX = thdr_s16(w0 >> 16); C->centreY = thdr_s16(w0);
+    C->centreZ = thdr_s16(g[0] >> 16); C->radius = thdr_radius(g[0]);
+    C->originX = thdr_s16(g[1] >> 16); C->originY = thdr_s16(g[1]);
+    C->originZ = thdr_s16(g[2] >> 16);
     C->nLpV = g[3] & 0xFF; C->nLpF = (g[3] >> 16) & 0xFF;
     int nLpC = (g[3] >> 8) & 0xFF;
     C->nHpV = g[4] & 0xFF; C->nHpF = (g[4] >> 16) & 0xFF;
@@ -9252,7 +9266,7 @@ static int tvis_sphere_in(CPUState* cpu, const tvis_sphere* S, uint32_t i) {
     if (!sp) return 0;
     uint32_t w0 = rd(cpu, sp + 0x00), w1 = rd(cpu, sp + 0x04);
     const double cam[3] = { S->camx, S->camy, S->camz };
-    const int c[3] = { (int)(w0 >> 16), (int)(w0 & 0xFFFFu), (int)(w1 >> 16) };
+    const int c[3] = { thdr_s16(w0 >> 16), thdr_s16(w0), thdr_s16(w1 >> 16) };
     return !tsec_sphere_cull(S->M, cam, c, thdr_radius(w1), S->wx, S->wy);
 }
 
@@ -9272,7 +9286,7 @@ static int tvis_cone_game(CPUState* cpu, const tvis_sphere* S, uint32_t i) {
     if (!sp) return 0;
     uint32_t w0 = rd(cpu, sp + 0x00), w1 = rd(cpu, sp + 0x04);
     const double cam[3] = { S->camx, S->camy, S->camz };
-    const int c[3] = { (int)(w0 >> 16), (int)(w0 & 0xFFFFu), (int)(w1 >> 16) };
+    const int c[3] = { thdr_s16(w0 >> 16), thdr_s16(w0), thdr_s16(w1 >> 16) };
     int32_t ir[3];
     tsec_game_ir(S->M, cam, c, ir);
     const int32_t r = thdr_radius(w1);
@@ -22379,7 +22393,7 @@ int terrain_native_sweep_pose(CPUState* cpu, int corner, int32_t v[5]) {
         uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
         uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
         int flat = thdr_flat(rd(cpu, s + 0x04));
-        int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
+        int ox = thdr_s16(g1 >> 16), oy = thdr_s16(g1), oz = thdr_s16(g2 >> 16);
         int nLpV = (int)(g3 & 0xFF), nHpV = (int)(g4 & 0xFF);
         uint32_t hpOff = (g4 >> 24) & 0xFF;
         td_scan_verts(cpu, s + 0x1C, nLpV, flat, ox, oy, oz, mm, NULL);
@@ -22431,7 +22445,7 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
         uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
         uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
         int flat = thdr_flat(rd(cpu, s + 0x04));
-        int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
+        int ox = thdr_s16(g1 >> 16), oy = thdr_s16(g1), oz = thdr_s16(g2 >> 16);
         int nLpV = (int)(g3 & 0xFF), nHpV = (int)(g4 & 0xFF);
         uint32_t hpOff = (g4 >> 24) & 0xFF;
         td_scan_verts(cpu, s + 0x1C, nLpV, flat, ox, oy, oz, mm, NULL);
@@ -22447,7 +22461,7 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
         uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
         uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
         int flat = thdr_flat(rd(cpu, s + 0x04));
-        int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
+        int ox = thdr_s16(g1 >> 16), oy = thdr_s16(g1), oz = thdr_s16(g2 >> 16);
         int nLpV = (int)(g3 & 0xFF), nHpV = (int)(g4 & 0xFF);
         uint32_t hpOff = (g4 >> 24) & 0xFF;
         td_scan_verts(cpu, s + 0x1C, nLpV, flat, ox, oy, oz, NULL, &acc);
