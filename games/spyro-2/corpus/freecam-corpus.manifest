@@ -271,3 +271,7 @@ metropolis | pos=(92800, 73185, 40800) yaw=2048 pitch=250
 # --lod extended: the water loses its texture as it nears the boundary between
 # the high-poly and low-poly terrain tiers
 ocean_speedway | pos=(51802, 81753, 36334) yaw=-160 pitch=356
+# water follows the fog setting (second-walk faces under each fog form)
+ocean_speedway@fogorig | pos=(51802, 81753, 36334) yaw=-160 pitch=356 | | --fog original
+ocean_speedway@fogpp | pos=(51802, 81753, 36334) yaw=-160 pitch=356 | | --fog per-pixel
+ocean_speedway@fogoff | pos=(51802, 81753, 36334) yaw=-160 pitch=356 | | --fog off

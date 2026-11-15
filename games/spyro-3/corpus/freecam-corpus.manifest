@@ -183,3 +183,7 @@ spooky_swamp | pos=(35818, 17779, 16172) yaw=1021 pitch=297
 # The movie pages through Byrd's dialogue (the level is not live until it
 # ends); the freecam engages at 2500. Blessed pre-fix.
 charmed_ridge:1 | pos=(43481, 38847, 12900) yaw=1024 pitch=0 | 2700 | OPENPETE_FREECAM_AT_VBL=2500 --bk2 games/spyro-3/bk2/charmed-ridge-byrd-dismiss.bk2
+# water follows the fog setting (second-walk faces under each fog form)
+spooky_swamp@fogorig | pos=(35818, 17779, 16172) yaw=1021 pitch=297 | | --fog original
+spooky_swamp@fogpp | pos=(35818, 17779, 16172) yaw=1021 pitch=297 | | --fog per-pixel
+spooky_swamp@fogoff | pos=(35818, 17779, 16172) yaw=1021 pitch=297 | | --fog off
