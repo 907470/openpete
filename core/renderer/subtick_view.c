@@ -15,6 +15,7 @@
 
 #include "openpete_subtick_view.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -104,7 +105,8 @@ static int       s_active;
 
 /* Engagement counters, reported per present. */
 static uint32_t s_stat_spans;
-static uint32_t s_stat_served;
+/* Atomic: the walk workers serve staged reads concurrently. */
+static _Atomic uint32_t s_stat_served;
 static uint32_t s_stat_writes;
 
 /* The CPU callbacks displaced for the duration of the view. */
