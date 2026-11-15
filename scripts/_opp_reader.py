@@ -35,8 +35,8 @@ Regions:
     region's name id + 1 (0 at a root), the u16 at byte 6 the root region's
     name id, the u32 at byte 24 the self time (the duration less the regions
     closed inside it) and the byte at 29 the OP_PROF_F_* flags (1 guest, 2
-    wait). Marker.regions lists them; Marker.spans lists every span,
-    regions included, as before. A trace written before the tree has no
+    wait, 4 under an in-between scene's root). Marker.regions lists them;
+    Marker.spans lists every span, regions included, as before. A trace written before the tree has no
     region records and an empty Marker.regions.
 
 A trace this reader cannot bin is refused (OppTraceError), never read as a
@@ -53,7 +53,7 @@ REC_NAME, REC_PRESENT, REC_SPAN, REC_GPUZ, REC_COUNT, REC_FUNC, REC_SCENE = \
 REC_TID_OFF = 28
 
 SPAN_NESTED = 0x8000
-REGION_GUEST, REGION_WAIT = 1, 2
+REGION_GUEST, REGION_WAIT, REGION_INTERMEDIATE = 1, 2, 4
 
 KIND_CANONICAL, KIND_INTERMEDIATE, KIND_REPEAT = 0, 1, 2
 KIND_NAME = {KIND_CANONICAL: "canonical", KIND_INTERMEDIATE: "intermediate",

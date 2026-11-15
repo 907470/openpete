@@ -18530,6 +18530,27 @@ static void occl_pass_culled(uint32_t moby, int is_spec, uint32_t* list, int* n)
     if (!is_spec && *n < MAX_RECORDS) list[(*n)++] = moby;
 }
 
+static int s_mrex_records_pid = -1;   /* the profiler name id of "mrex.records" */
+
+/** @brief Open the sub-tick record loop's profiler region "mrex.records" while a trace is open.
+ * @param t0 Receives the start in profiler microseconds, 0 while no trace is open.
+ * @return The region's token for mrex_records_exit. */
+static int mrex_records_enter(uint64_t* t0) {
+    *t0 = 0;
+    if (!op_prof_on()) return 0;
+    if (s_mrex_records_pid < 0) s_mrex_records_pid = op_prof_intern("mrex.records");
+    const int tok = op_prof_enter(s_mrex_records_pid, 0u);
+    *t0 = op_prof_now_us();
+    return tok;
+}
+
+/** @brief Close the region mrex_records_enter opened; nothing when it opened none.
+ * @param tok The token mrex_records_enter returned.
+ * @param t0 The start it wrote. */
+static void mrex_records_exit(int tok, uint64_t t0) {
+    if (t0) op_prof_exit(tok, s_mrex_records_pid, op_prof_now_us() - t0);
+}
+
 /** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or "SP").
  *
  * The pass rebuilds each record's fields from gamestate under the present's
@@ -18544,10 +18565,15 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     static uint32_t mobys[MAX_RECORDS], recs[MAX_RECORDS]; int nm = 0;
     s_rec_base = game_layout.moby.rec_base ? game_layout.moby.rec_base : s_rec_base_canon;
     if (!s_rec_base) { s_walk_in_rex = 0; s_pass_overlay = 0; return 0; }
-    nm = reextract_record_list(cpu, is_spec, recs, mobys);
+    { OP_PROF_ACCUM_SCOPE("mrex.record_list");
+      nm = reextract_record_list(cpu, is_spec, recs, mobys); }
     s_cur_mat = mat;
     s_proj_n = 0; s_nrecs = 0;
     static uint32_t culled_moby[MAX_RECORDS]; int culled_n = 0;
+    /* The record loop's profiler region, opened by hand: the loop's state
+     * outlives a block around it. The loop leaves by break or continue only. */
+    uint64_t rec_t0;
+    const int rec_tok = mrex_records_enter(&rec_t0);
     const uint64_t t_rec = mst_now();
     /* The record-loop split: the part open since tr, closed at the next
      * boundary or, after a skip, at the next record's start. */
@@ -18753,9 +18779,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     }
     msp_mark(tr_part, tr, MSP_RSTRIDE);
     mst_add(MST_REC, t_rec);
+    mrex_records_exit(rec_tok, rec_t0);
     const int n_loop = s_nrecs;
     if (!is_spec) rex_regular_tail(cpu, culled_moby, culled_n);
-    build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
+    { OP_PROF_ACCUM_SCOPE("moby.build");
+      build_walk_tris(cpu); }                   /* SPEC: build_walk_tris dedups vs s_reg_moby */
     rex_bug_record(cpu, is_spec, n_loop);
     push_scene_moby(cpu);
     occl_pass_census(mat, 1);
@@ -18799,7 +18827,8 @@ static int moby_census_on(void) {
 static void moby_reextract_body(CPUState* cpu);
 void moby_reextract(CPUState* cpu) {
     s_in_reextract = 1;
-    moby_snap_present(1, s_rc_alpha);
+    { OP_PROF_ACCUM_SCOPE("mrex.snap_present");
+      moby_snap_present(1, s_rc_alpha); }
     msc_reset(1);
     moby_reextract_body(cpu);
     mst_flush(1);
@@ -18853,7 +18882,8 @@ static void moby_reextract_body(CPUState* cpu) {
      * verbatim when the tick ended under a different one, else the
      * interpolated bracket). */
     spyro_native_prod_camera_enter(SPYRO_PROD_MOBYREG);
-    moby_view_build(cpu);
+    { OP_PROF_ACCUM_SCOPE("mrex.view");
+      moby_view_build(cpu); }
     if (reg_fresh) {
         nm = reextract_record_pass(cpu, "REG");
         reg_walk = s_gout.n;
@@ -18898,7 +18928,7 @@ static void moby_reextract_body(CPUState* cpu) {
         sim_walk = s_gout.n;
         { OP_PROF_ACCUM_SCOPE("msim.push"); push_scene_moby(cpu); }
     }
-    if (reg_fresh) moby_ovl_reextract(cpu);
+    if (reg_fresh) { OP_PROF_ACCUM_SCOPE("mrex.overlay"); moby_ovl_reextract(cpu); }
     spyro_native_prod_camera_leave();
 
     /* Shaded mobys (gems/props/HUD icons/text) - already re-derive from g_Camera. */
@@ -18906,7 +18936,8 @@ static void moby_reextract_body(CPUState* cpu) {
         s_cur_mat = "SHD";
         spyro_native_prod_camera_enter(SPYRO_PROD_SHADED);
         moby_view_shd_build(cpu);
-        { const uint64_t t_sw = mst_now();
+        { OP_PROF_ACCUM_SCOPE("moby.shaded_walk");
+          const uint64_t t_sw = mst_now();
           const int shd_n = build_shaded_walk_tris(cpu);
           mst_add(MST_SHD, t_sw); msc_add(MSC_TRIS, shd_n); }
         spyro_native_prod_camera_leave();

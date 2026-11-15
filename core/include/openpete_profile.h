@@ -95,7 +95,9 @@ void op_prof_begin(int name_id);
 /* Region flags, carried by a region's records (OP_PROF_F_*). */
 enum {
     OP_PROF_F_GUEST = 1u,   /* the region runs recompiled game code (the sim tick, a guest renderer call) */
-    OP_PROF_F_WAIT  = 2u    /* the thread waits in the region (a worker-pool join) */
+    OP_PROF_F_WAIT  = 2u,   /* the thread waits in the region (a worker-pool join) */
+    OP_PROF_F_INTERMEDIATE = 4u  /* the region produces or renders an in-between (interpolated) scene;
+                                  * every region under such a root carries it too */
 };
 
 /** @brief Push a scope carrying OP_PROF_F_* flags onto the calling thread's span stack.
@@ -266,7 +268,8 @@ static inline void op_prof__accum_cleanup(op_prof_accum_guard* g) {
 }
 #define OP_PROF__CAT2(a, b) a##b
 #define OP_PROF__CAT(a, b)  OP_PROF__CAT2(a, b)
-#define OP_PROF_SCOPE(lit) \
+/* OP_PROF_FLAGS_SCOPE carries OP_PROF_F_* flags on the scope's record. */
+#define OP_PROF_FLAGS_SCOPE(lit, flags) \
     static OP_ONCE_INT OP_PROF__CAT(op_prof_id_, __LINE__) = -1; \
     int OP_PROF__CAT(op_prof_began_, __LINE__) \
         __attribute__((cleanup(op_prof__scope_cleanup))) = 0; \
@@ -275,9 +278,10 @@ static inline void op_prof__accum_cleanup(op_prof_accum_guard* g) {
         if (op_prof_v_ < 0) \
             op_prof_v_ = op_once_int_fill(&OP_PROF__CAT(op_prof_id_, __LINE__), \
                                           op_prof_intern(lit)); \
-        op_prof_begin(op_prof_v_); \
+        op_prof_begin_flags(op_prof_v_, (flags)); \
         OP_PROF__CAT(op_prof_began_, __LINE__) = 1; \
     }
+#define OP_PROF_SCOPE(lit) OP_PROF_FLAGS_SCOPE(lit, 0u)
 /* Accumulating variant: same block-scoped usage, but the measured time is
  * summed into a bucket keyed by name and enclosing regions and emitted once
  * per marker (see op_prof_enter). Use for hooks that fire many times per
@@ -300,6 +304,7 @@ static inline void op_prof__accum_cleanup(op_prof_accum_guard* g) {
 #define OP_PROF_ACCUM_SCOPE(lit) OP_PROF_FLAGS_ACCUM_SCOPE(lit, 0u)
 #else
 #define OP_PROF_SCOPE(lit) ((void)0)
+#define OP_PROF_FLAGS_SCOPE(lit, flags) ((void)0)
 #define OP_PROF_ACCUM_SCOPE(lit) ((void)0)
 #define OP_PROF_FLAGS_ACCUM_SCOPE(lit, flags) ((void)0)
 #endif

@@ -325,7 +325,7 @@ static void emit_span(struct opp_tls* t, int depth, int name_id,
 /** @brief Push a region frame on the thread's nest stack.
  * @param t The thread's block.
  * @param name_id The region's name.
- * @param flags OP_PROF_F_* bits.
+ * @param flags OP_PROF_F_* bits; the root's OP_PROF_F_INTERMEDIATE is added.
  * @param kind OPP_NEST_SPAN or OPP_NEST_ACCUM.
  * @return The stack depth after the push (1 for a root), or 0 when the stack is full. */
 static int nest_push(struct opp_tls* t, int name_id, unsigned flags, uint8_t kind) {
@@ -333,7 +333,10 @@ static int nest_push(struct opp_tls* t, int name_id, unsigned flags, uint8_t kin
     struct opp_nest* f = &t->nest[t->np];
     f->name_id  = name_id;
     f->root_id  = t->np ? t->nest[0].name_id : name_id;
-    f->flags    = (uint8_t)flags;
+    /* A region under an in-between scene's root carries the root's
+     * OP_PROF_F_INTERMEDIATE, so a reader sorts it by scene kind wherever
+     * its record binds. */
+    f->flags    = (uint8_t)(flags | (t->np ? t->nest[0].flags & OP_PROF_F_INTERMEDIATE : 0u));
     f->kind     = kind;
     f->child_us = 0;
     return ++t->np;

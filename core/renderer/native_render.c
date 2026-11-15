@@ -22816,6 +22816,7 @@ static void record_extent_pin(void)
  * @param have_ref Whether PsyCross produced a reference image this present; without one the estimated reference extent is used only for the native-only layout. */
 static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 {
+    NR_PROF_BEGIN("render.setup");   /* layout, resize debounce, target allocation */
     s_last_frame_presented = 0;
     scene_faceid_debug(0);   /* an inline present composes the open scene in place */
     ps_apply_geometry();
@@ -22912,6 +22913,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     ensure_version_ss();       /* version-line buffers + SS target (lazy, once it is up) */
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
     ensure_terrain_key_targets(); /* key-contest images: bound by every scene-pipe draw, chrome first */
+    NR_PROF_END();   /* render.setup */
 
     /* Present-path step trace (OPENPETE_LOAD_CENSUS=1): bisects a present that
      * never returns (the freeze-point hang) to the exact call. Terse; one
@@ -22943,8 +22945,10 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
      * whole present (the present thread while eager production is active,
      * the host loop otherwise), which is what makes buffer creation and
      * destruction legal here and illegal on the builder's thread. */
+    NR_PROF_BEGIN("render.tercache");
     openpete_tercache_present_service();
     openpete_tercache_frame_select(scene_present_stamp());
+    NR_PROF_END();   /* render.tercache */
     /* Tag this frame's GPU work with its RHI frame serial, so the frame-lagged
      * harvest (next few frames) binds each zone set back to the frame that
      * submitted it. */
@@ -22961,11 +22965,13 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
     /* Shared WORLD-opaque depth pre-pass (its own render pass) - must record
      * before every consumer pass; one raster serves rtt/SSAA/offscreen alike. */
+    NR_PROF_BEGIN("render.prepass");
     native_depth_prepass();   /* GPU zones "prepass" + "prepass_depth" */
     /* Moby occlusion grid: reduce + ring-readback (live presents only). */
     rhi_gpu_zone_begin(s_nr.dev, "occl");
     native_occl_downsample();
     rhi_gpu_zone_end(s_nr.dev);
+    NR_PROF_END();   /* render.prepass */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_PREPASS, pt_t1 - pt_t0); pt_t0 = pt_t1; }
 
     s_overlay_live = 1;                       /* this is the live present -> allow the stats overlay */
@@ -22986,9 +22992,11 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     prepare_version_ss();      /* version line at OVL_SS_FACTOR× (own pass) */
     rhi_gpu_zone_end(s_nr.dev);
     NR_PROF_END();   /* cmp.ss */
+    NR_PROF_BEGIN("render.compose");
     rhi_gpu_zone_begin(s_nr.dev, "compose");
     compose_variant();
     rhi_gpu_zone_end(s_nr.dev);
+    NR_PROF_END();   /* render.compose */
     const int overlay_was_live = s_overlay_live;
     s_overlay_live = 0;                       /* screenshot/dump composes must not draw it */
 
@@ -23020,6 +23028,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
                  openpete_phase_set_count(OPPC_TRIS, s_ps_slot ? s_ps_slot->n : s_scene_n); }
     if (s_ptrace) { fprintf(stderr, "C"); fflush(stderr); }
 
+    NR_PROF_BEGIN("render.tail");   /* blit, recording, thumbnails */
     if (s_stage_target < 0) {
         rhi_gpu_zone_begin(s_nr.dev, "blit");
         rhi_blit_to_swapchain(s_nr.dev);
@@ -23043,6 +23052,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 
     /* Bug-report thumbnails: the offscreen as presented, downscaled. */
     thumb_cycle();
+    NR_PROF_END();   /* render.tail */
 
     s_late_async = false;
     openpete_mods_hold_owners(NULL, 0);

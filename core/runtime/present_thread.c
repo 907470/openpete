@@ -47,6 +47,7 @@
 #include "openpete_native_render.h"
 #include "openpete_native_vram.h"
 #include "openpete_pace_log.h"
+#include "openpete_profile.h"
 #include "openpete_eager_ladder.h"  /* op_eager_cost_ema */
 #include "openpete_log.h"
 
@@ -564,11 +565,15 @@ static int present_thread_main(void *unused)
             const op_time_t c0 = op_now();
             const uint32_t gen = openpete_native_stage_gen();
             int did;
-            if (stage >= 0) did = openpete_native_render_scene_to_stage(slot_idx, stage, (uint64_t)(c0 / 1000));
-            else {
+            if (stage >= 0) {
+                /* One scene's render: the profiler's root region "render". */
+                OP_PROF_FLAGS_SCOPE("render", kind == OP_PACE_INTERMEDIATE ? OP_PROF_F_INTERMEDIATE : 0u);
+                did = openpete_native_render_scene_to_stage(slot_idx, stage, (uint64_t)(c0 / 1000));
+            } else {
                 /* Unstaged: wait for the instant here, then render and present in one. */
                 const op_time_t at1 = compose_at_locked(t_ns, slot);
                 if (op_now() < at1) op_sleep_until(at1);
+                OP_PROF_FLAGS_SCOPE("render", kind == OP_PACE_INTERMEDIATE ? OP_PROF_F_INTERMEDIATE : 0u);
                 did = openpete_native_render_scene(slot_idx, (uint64_t)(op_now() / 1000));
             }
             const op_time_t c = op_now() - c0;
@@ -672,7 +677,9 @@ static int present_thread_main(void *unused)
         s_pt.busy = 1;
         SDL_UnlockMutex(s_pt.mx);
         const op_time_t c0 = op_now();
-        const int did = openpete_native_present_stage(stage);
+        int did;
+        { OP_PROF_FLAGS_SCOPE("present", kind == OP_PACE_INTERMEDIATE ? OP_PROF_F_INTERMEDIATE : 0u);
+          did = openpete_native_present_stage(stage); }
         const op_time_t c = op_now() - c0;
         openpete_pace_split_add(OP_PACE_SPLIT_PRESENT, c);
         /* The refusal ledger is what turns a declined swapchain into SHED

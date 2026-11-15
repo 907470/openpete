@@ -24,6 +24,7 @@
 #include "renderer/portal_spyro23.h" /* portal_s23_reextract */
 #include "openpete_psx.h"          /* openpete_psx_to_host_span */
 #include "openpete_interp.h"
+#include "openpete_profile.h"          /* the re-extract's per-producer regions */
 #include "renderer/flame.h"          /* the shared fire-breath producer */
 #include "renderer/tracers.h"
 #include "renderer/glow.h"
@@ -613,20 +614,24 @@ static void game_reextract_body(void* cpu_v) {
                           (const int16_t*)(cam + CAM_OFF_SKY), alpha, cam_cut);
     openpete_native_scene_begin();
     RX_CENSUS_BEGIN();
-    cyclorama_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* sky dome + background */
+    { OP_PROF_ACCUM_SCOPE("rex.cyclorama");
+      cyclorama_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* sky dome + background */ }
     RX_CENSUS_STEP("cyclorama");
     /* A held cut shows tick N-1's portal set: terrain reads its opening
      * planes and the portal feeder draws its previews. */
     portal_s23_reextract_enter(hold);
-    terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed, 0);
+    { OP_PROF_ACCUM_SCOPE("rex.terrain");
+      terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed, 0); }
     RX_CENSUS_STEP("terrain");
-    portal_s23_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
+    { OP_PROF_ACCUM_SCOPE("rex.portal");
+      portal_s23_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */ }
     portal_s23_reextract_leave();
     RX_CENSUS_STEP("portal");
     /* The two model kinds are queued and replayed apart: the animated queue is
      * a staged view of the tick's draw scratch, the simple models' queue a host
      * copy. A state whose tick ran one draw and not the other replays the one
      * it ran, and the passes inside skip on their own producer's freshness. */
+    { OP_PROF_ACCUM_SCOPE("rex.moby");
     const int moby_staged = stage_moby_records();
     if (moby_staged || moby_native_simple_fresh()) {
         /* The cull stores each animated record already composed against the
@@ -653,35 +658,44 @@ static void game_reextract_body(void* cpu_v) {
         moby_native_replay_prev_queue(0);
         moby_native_set_tick_camera(NULL, NULL);
     }
+    }   /* rex.moby */
     RX_CENSUS_STEP("moby");
     /* The same hold for the player, the moby drop-shadows, the particles and
      * every producer after them: the set tick N-1 drew is the set its camera
      * sees. */
     player_records_set_hold(hold);
     if (player_ranges_stage(hold))
-        player_records_replay(cpu, bracketed, alpha);   /* every player call the tick drew */
+        { OP_PROF_ACCUM_SCOPE("rex.player");
+          player_records_replay(cpu, bracketed, alpha);   /* every player call the tick drew */ }
     player_records_set_hold(0);
     RX_CENSUS_STEP("player");
     shadow_replay_prev_list(hold);
-    shadow_reextract(cpu);          /* drop-shadows under mobys */
+    { OP_PROF_ACCUM_SCOPE("rex.shadow");
+      shadow_reextract(cpu);          /* drop-shadows under mobys */ }
     shadow_replay_prev_list(0);
     RX_CENSUS_STEP("shadow");
     particles_replay_prev(hold || late);
-    particles_reextract(cpu, bracketed, alpha);   /* the particle primitives the tick captured */
+    { OP_PROF_ACCUM_SCOPE("rex.particles");
+      particles_reextract(cpu, bracketed, alpha);   /* the particle primitives the tick captured */ }
     particles_replay_prev(0);
     RX_CENSUS_STEP("particles");
     /* The flame records are the player's, so the player hold picks them. */
     player_records_set_hold(hold);
-    flame_records_present(cpu, bracketed, 0, bracketed ? alpha : 0.0, NULL);
+    { OP_PROF_ACCUM_SCOPE("rex.flame");
+      flame_records_present(cpu, bracketed, 0, bracketed ? alpha : 0.0, NULL); }
     player_records_set_hold(0);
     RX_CENSUS_STEP("flame");
-    tracers_reextract(cpu, bracketed, alpha, hold);   /* the tracer primitives the tick captured */
+    { OP_PROF_ACCUM_SCOPE("rex.tracers");
+      tracers_reextract(cpu, bracketed, alpha, hold);   /* the tracer primitives the tick captured */ }
     RX_CENSUS_STEP("tracers");
-    glow_reextract(cpu, bracketed, alpha, hold);      /* the glow fans the tick captured */
+    { OP_PROF_ACCUM_SCOPE("rex.glow");
+      glow_reextract(cpu, bracketed, alpha, hold);      /* the glow fans the tick captured */ }
     RX_CENSUS_STEP("glow");
-    glint_reextract(cpu, bracketed, alpha, hold);     /* the gem-glint stars the tick captured */
+    { OP_PROF_ACCUM_SCOPE("rex.glint");
+      glint_reextract(cpu, bracketed, alpha, hold);     /* the gem-glint stars the tick captured */ }
     RX_CENSUS_STEP("glint");
-    zap_reextract(cpu, bracketed, alpha, hold);       /* Zoe's zap, the ribbons the tick captured */
+    { OP_PROF_ACCUM_SCOPE("rex.zap");
+      zap_reextract(cpu, bracketed, alpha, hold);       /* Zoe's zap, the ribbons the tick captured */ }
     RX_CENSUS_STEP("zap");
     /* The HUD, dialog boxes, text and screen fades are produced during the
      * game's own render and cannot be re-derived here, so the canonical present
@@ -689,7 +703,8 @@ static void game_reextract_body(void* cpu_v) {
      * re-derived 3D scene (fade interpolated by the alpha, held panels
      * re-emitted as captured). Without it a sub-tick present draws the world
      * with no 2D layer at all. */
-    openpete_native_scene_apply_overlay(bracketed ? alpha : 0.0);
+    { OP_PROF_ACCUM_SCOPE("rex.overlay");
+      openpete_native_scene_apply_overlay(bracketed ? alpha : 0.0); }
     RX_CENSUS_END(bracketed, alpha);
     s_fpos_active = 0;
     cut_obj_present_end();

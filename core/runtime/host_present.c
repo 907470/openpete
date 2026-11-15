@@ -526,14 +526,17 @@ static void subtick_end_inline(void) OP_REQUIRES(sim)
 static op_time_t inline_canonical_extract(openpete_native_reextract_fn lag_re) OP_REQUIRES(sim)
 {
     host_trace_present(HT_P_CANON_LAG);
+    OP_PROF_SCOPE("scene");      /* the scene's production: the profiler's root region */
     uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
     g_openpete_canon_lag_leg = 1;
     vp_set_present_target();     /* even display-slot time for this present */
     const op_time_t rex_t0 = op_now();
     openpete_bugrec_subtick_begin(OP_PACE_CANONICAL, BUGREC_SUB_INLINE);
-    lag_re(&g_game.cpu);
+    { OP_PROF_SCOPE("scene.rex");
+      lag_re(&g_game.cpu); }
     subtick_end_inline();
-    openpete_native_scene_sig_report(1);
+    { OP_PROF_SCOPE("scene.sig_report");
+      openpete_native_scene_sig_report(1); }
     const op_time_t extract_ns = op_now() - rex_t0;
     g_openpete_canon_lag_leg = 0;
     if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
@@ -576,7 +579,7 @@ static void inline_canonical_render(void) OP_REQUIRES(sim)
     openpete_mods_present_flush(&g_game.cpu, 1);
     const int audit_arm = gpu_audit_selftest_arm();
     if (audit_arm) g_openpete_guest_running = 1;
-    { OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_RENDER);
+    { OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_RENDER); OP_PROF_SCOPE("render");
       openpete_native_render_frame((uint64_t)(op_now() / 1000)); }
     if (audit_arm) g_openpete_guest_running = 0;
 }
@@ -716,14 +719,18 @@ static void present_inline_intermediate(host_session_t* S, const host_iter_t* it
     openpete_pace_inject_present();   /* fault injection, off by default */
     if (host_world_live(S, it, op_now())) {
         host_trace_bit(HT_F_INTER_REX, 1);
+        /* The in-between scene's production: the profiler's root region. */
+        OP_PROF_FLAGS_SCOPE("scene", OP_PROF_F_INTERMEDIATE);
         uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
         vp_set_present_target();      /* even display-slot time for this present */
         const op_time_t ex0 = op_now();
         openpete_bugrec_subtick_begin(OP_PACE_INTERMEDIATE, BUGREC_SUB_INLINE);
-        native_re(&g_game.cpu);       /* rebuild s_scene @ interpolated gamestate */
+        { OP_PROF_SCOPE("scene.rex");
+          native_re(&g_game.cpu); }   /* rebuild s_scene @ interpolated gamestate */
         subtick_end_inline();
         s_inline_rex++;
-        openpete_native_scene_sig_report(0);
+        { OP_PROF_SCOPE("scene.sig_report");
+          openpete_native_scene_sig_report(0); }
         pace_extract_ns = op_now() - ex0;
         if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
     } else {
@@ -732,7 +739,7 @@ static void present_inline_intermediate(host_session_t* S, const host_iter_t* it
     }
     /* Mod draw service: present hooks at sub-tick alpha (no commit). */
     openpete_mods_present_flush(&g_game.cpu, 0);
-    { OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_RENDER);
+    { OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_RENDER); OP_PROF_FLAGS_SCOPE("render", OP_PROF_F_INTERMEDIATE);
       openpete_native_render_frame((uint64_t)(op_now() / 1000)); }
     present_record_shown(&S->out.ftl, OP_PROF_INTERMEDIATE);
     pace_record_present(OP_PACE_INTERMEDIATE);

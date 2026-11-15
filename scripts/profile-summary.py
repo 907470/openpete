@@ -46,7 +46,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _opp_reader import (read_opp, present_busy_us, partition_transients,  # noqa: E402
                          OppTraceError, KIND_CANONICAL, KIND_INTERMEDIATE,
-                         REGION_GUEST, REGION_WAIT)
+                         REGION_GUEST, REGION_WAIT, REGION_INTERMEDIATE)
 
 
 def pct(sorted_vals, q):
@@ -199,7 +199,7 @@ def present_source(tr):
 # ---- the sim tick's region tree ---------------------------------------------
 # Subsystems of the host tree, in print order.
 SUBSYSTEMS = ("terrain", "moby", "snap", "cyclorama", "portal", "effects", "player",
-              "2d", "textures", "other")
+              "2d", "textures", "scene", "compose", "render", "upload", "gpu", "other")
 
 # Region name -> (subsystem, what it does). A name not listed takes its
 # subsystem from its prefix (SUBSYSTEM_PREFIX), else from its parent region.
@@ -248,9 +248,73 @@ REGION_WORDS = {
     "particle.capture": ("effects", "particle capture"),
     "spyro.capture": ("player", "player capture"),
     "pool.wait": (None, "worker-pool join wait"),
+    # One scene's production (eager_produce_one, or the inline sub-tick present).
+    "scene": ("scene", "scene production glue outside its named regions"),
+    "scene.vram_sync": ("scene", "VRAM mirror sync before the re-extract"),
+    "scene.open": ("scene", "scene open (eager scene begin, bug-report present record)"),
+    "scene.rex": ("scene", "re-extract body outside its producer regions (camera bracket, record staging)"),
+    "scene.sig_report": ("scene", "scene signature report"),
+    "scene.mods": ("scene", "mods' present work"),
+    "scene.publish": ("scene", "scene publish into the ring and present-thread kick"),
+    "rex.view_begin": ("scene", "sub-tick view begin"),
+    "rex.view_end": ("scene", "sub-tick view end"),
+    "rex.overlay": ("2d", "2D overlay carry re-applied (HUD, text, fades)"),
+    "rex.transition": ("2d", "level-transition backdrop re-extract"),
+    "rex.terrain": ("terrain", "terrain re-extract outside its named regions"),
+    "rex.moby": ("moby", "moby re-extract outside its named regions: record staging, replay, walk"),
+    "rex.cyclorama": ("cyclorama", "cyclorama re-extract outside its named regions"),
+    "cyclorama.rex": ("cyclorama", "cyclorama (sky) re-extraction"),
+    "rex.portal": ("portal", "portal preview re-extract"),
+    "rex.player": ("player", "player records replay"),
+    "rex.shadow": ("effects", "drop-shadow re-extract"),
+    "rex.particles": ("effects", "particle re-extract"),
+    "rex.flame": ("effects", "flame records replay"),
+    "rex.tracers": ("effects", "tracer re-extract"),
+    "rex.glow": ("effects", "glow re-extract"),
+    "rex.glint": ("effects", "glint re-extract"),
+    "rex.zap": ("effects", "zap re-extract"),
+    "mrex.records": ("moby", "moby sub-tick record pass: previous pose, keyframe decode, projection"),
+    "mrex.record_list": ("moby", "moby sub-tick record list"),
+    "mrex.snap_present": ("moby", "moby snap state for the present (sub-tick leg)"),
+    "mrex.view": ("moby", "moby view build (camera matrices for the pass)"),
+    "mrex.overlay": ("moby", "moby overlay pass replay"),
+    "mrex.resolve": ("snap", "snap contact resolve, sub-tick leg (carry and contact)"),
+    # One scene's render (present thread under eager, sim thread inline).
+    "render": ("render", "render glue outside its named regions"),
+    "render.setup": ("render", "render setup: layout, resize debounce, target allocation"),
+    "render.tercache": ("render", "terrain GPU-cache service and frame select"),
+    "render.prepass": ("render", "depth pre-pass and moby occlusion grid record"),
+    "render.compose": ("compose", "compose outside its named regions"),
+    "render.tail": ("render", "swapchain blit, recording and thumbnails"),
+    "cmp.key": ("compose", "terrain key pass outside its named regions"),
+    "key.drain": ("compose", "terrain key pass: drain"),
+    "key.pack": ("compose", "terrain key pass: pack key runs"),
+    "key.sort": ("compose", "terrain key pass: sort key runs"),
+    "key.rec": ("compose", "terrain key pass: record"),
+    "key.shell": ("compose", "terrain key pass: shell geometry"),
+    "cmp.sort": ("compose", "compose: bucket sort"),
+    "cmp.build_tex": ("compose", "compose: build textured batches"),
+    "cmp.vb_tex": ("compose", "compose: textured vertex buffers"),
+    "cmp.classify": ("compose", "compose: classify triangles"),
+    "cmp.scatter": ("compose", "compose: scatter into buckets"),
+    "cmp.build_ut": ("compose", "compose: build untextured batches"),
+    "cmp.upload": ("compose", "compose: vertex upload"),
+    "cmp.record": ("compose", "compose: draw recording"),
+    "cmp.pre": ("compose", "compose: scene draw setup"),
+    "cmp.chrome": ("compose", "compose: chrome (overlay, letterbox)"),
+    "cmp.ss": ("compose", "overlay, menu and toast glyph passes"),
+    "cmp.postfx": ("compose", "mod post-processing chain"),
+    "gpu.beginframe": ("gpu", "frame begin: fence wait and swapchain acquire"),
+    "gpu.endframe": ("gpu", "frame end: submit and present (or submit into a stage)"),
+    "present": ("gpu", "staged present: queue present of a rendered stage"),
+    "upl.synced": ("upload", "texture upload: synced VRAM"),
+    "upl.hd": ("upload", "texture upload: HD replacements"),
+    "upl.hdfold": ("upload", "texture upload: HD fold"),
 }
 SUBSYSTEM_PREFIX = (
-    ("mcan.resolve", "snap"), ("portal.defer.terrain", "terrain"),
+    ("mcan.resolve", "snap"), ("mrex.resolve", "snap"), ("portal.defer.terrain", "terrain"),
+    ("mrex.", "moby"), ("scene", "scene"), ("cmp.", "compose"), ("key.", "compose"),
+    ("render", "render"), ("gpu.", "gpu"), ("upl.", "upload"),
     ("hook.terrain", "terrain"), ("terrain.", "terrain"), ("ter.", "terrain"), ("tc.", "terrain"),
     ("hook.moby", "moby"), ("moby.", "moby"), ("msim.", "moby"), ("mcan.", "moby"),
     ("hook.cyclorama", "cyclorama"), ("cyclorama.", "cyclorama"),
@@ -313,42 +377,78 @@ def region_words(name):
 
 
 def sim_split_regions(presents, nc):
-    """The sim tick's exclusive split from the region records.
+    """The sim tick's exclusive split from the region records: region_tree over
+    every region rooted at sim_tick, per canonical tick (nc). None when the
+    trace has no region records."""
+    regs = [r for p in presents for r in p.regions]
+    if not regs:
+        return None
+    t = region_tree([r for r in regs if r.root == "sim_tick"], "sim_tick", nc)
+    t["canonical_ticks"] = nc
+    t["sim_tick_us_per_tick"] = t["root_us"]
+    return t
 
-    Every region whose root is sim_tick is a leaf here with its self time; the
-    self times sum to sim_tick (each region's self is its duration less the
-    regions closed inside it). Leaves are grouped as guest (OP_PROF_F_GUEST:
-    the fiber run's own code and the guest renderer calls), psyq (the scoped
-    PsyQ thunks: host models of library calls the guest makes) and host (the
-    rest, by subsystem; OP_PROF_F_WAIT leaves are worker-pool joins). Values
-    are per canonical tick (nc). None when the trace has no region records."""
+
+# Roots of one scene's work: its production on the sim thread ("scene"), its
+# render ("render": the present thread under eager, the sim thread inline) and
+# the staged present ("present", the present thread).
+SCENE_ROOTS = (("scene", "production"), ("render", "render"), ("present", "staged present"))
+SCENE_KINDS = (("intermediate", True), ("canonical", False))
+
+
+def scene_split_regions(markers):
+    """The exclusive trees of one scene's production, render and staged present.
+
+    One region_tree per root of SCENE_ROOTS and scene kind: the regions rooted
+    there whose OP_PROF_F_INTERMEDIATE (which every region under an in-between
+    root carries) matches the kind, from every thread, per root instance (the
+    root's own records). A root with no instance is left out. None when the
+    trace has no scene root (written before the scene regions, or headless
+    without sub-tick presents)."""
+    out = {}
+    for kname, inter in SCENE_KINDS:
+        for root, _w in SCENE_ROOTS:
+            regs = [r for p in markers for r in p.regions
+                    if r.root == root and bool(r.flags & REGION_INTERMEDIATE) == inter]
+            n = sum(1 for r in regs if r.name == root and r.parent is None)
+            if n:
+                t = region_tree(regs, root, n)
+                t["threads"] = sorted({r.tid for r in regs if r.name == root and r.parent is None})
+                out["%s.%s" % (root, kname)] = t
+    return out or None
+
+
+def region_tree(regs, root, n):
+    """The exclusive tree of one root region from its regions' records.
+
+    Every region of `regs` (all rooted at `root`) is a leaf with its self time;
+    the self times sum to the root's duration (each region's self is its
+    duration less the regions closed inside it). Leaves are grouped as guest
+    (OP_PROF_F_GUEST: recompiled game code and the guest renderer calls), psyq
+    (the scoped PsyQ thunks: host models of library calls the guest makes) and
+    host (the rest, by subsystem; OP_PROF_F_WAIT leaves are worker-pool
+    joins). Values are per root instance (n)."""
     leaves = {}      # (name, parent if wait) -> dict
     parents = collections.defaultdict(lambda: collections.Counter())
     nested_hooks = collections.Counter()   # guest region -> hook time reached through it
-    any_region = False
     sim_total = 0.0
-    for p in presents:
-        for r in p.regions:
-            any_region = True
-            if r.root != "sim_tick":
-                continue
-            if r.name == "sim_tick" and r.parent is None:
-                sim_total += r.dur_us
-            key = (r.name, r.parent if r.flags & REGION_WAIT else None)
-            e = leaves.setdefault(key, {"self": 0.0, "dur": 0.0, "calls": 0, "flags": 0})
-            e["self"] += r.self_us
-            e["dur"] += r.dur_us
-            e["calls"] += r.calls
-            e["flags"] |= r.flags
-            if r.parent is not None:
-                parents[r.name][r.parent] += r.dur_us
-            if r.parent is not None and r.name.startswith("hook.") and r.parent != "sim_tick":
-                nested_hooks[r.parent] += r.dur_us
-    if not any_region:
-        return None
+    n = n or 1
+    for r in regs:
+        if r.name == root and r.parent is None:
+            sim_total += r.dur_us
+        key = (r.name, r.parent if r.flags & REGION_WAIT else None)
+        e = leaves.setdefault(key, {"self": 0.0, "dur": 0.0, "calls": 0, "flags": 0})
+        e["self"] += r.self_us
+        e["dur"] += r.dur_us
+        e["calls"] += r.calls
+        e["flags"] |= r.flags
+        if r.parent is not None:
+            parents[r.name][r.parent] += r.dur_us
+        if r.parent is not None and r.name.startswith("hook.") and r.parent != root:
+            nested_hooks[r.parent] += r.dur_us
 
     def pt(v):
-        return round(v / nc, 1)
+        return round(v / n, 1)
 
     def subsystem_of(name, seen=()):
         s = region_subsystem(name)
@@ -383,7 +483,7 @@ def sim_split_regions(presents, nc):
                 words = region_words(name)
                 scope = name
             home = (region_subsystem(where[0])
-                    if where and where[0] != "sim_tick" and wait_parent is None else None)
+                    if where and where[0] != root and wait_parent is None else None)
             host[sub].append({"scope": scope, "us": pt(e["self"]), "words": words,
                               "kind": "wait" if e["flags"] & REGION_WAIT else "sim",
                               "in": where, "elsewhere": bool(home and home != sub),
@@ -401,8 +501,9 @@ def sim_split_regions(presents, nc):
     logic = round(sum(r["us"] for r in guest_rows if r["scope"] in GUEST_LOGIC), 1)
     return {
         "format": "regions",
-        "canonical_ticks": nc,
-        "sim_tick_us_per_tick": pt(sim_total),
+        "root": root,
+        "instances": n,
+        "root_us": pt(sim_total),
         "leaves_sum_us": round(guest + psyq + host_us, 1),
         "guest_us": round(guest, 1),
         "guest_logic_us": logic,
@@ -417,40 +518,56 @@ def sim_split_regions(presents, nc):
 
 
 def render_sim_split(ss, L, fold_us=2.0):
-    """Append the region split's text: the guest/host/psyq lines, the guest
-    renderers, the host tree by subsystem. Leaves under fold_us fold into one
-    line per subsystem."""
-    sim = ss["sim_tick_us_per_tick"] or 1.0
+    """Append the sim tick's split: render_region_tree under [sim.split]."""
+    render_region_tree(ss, L, "sim.split", "per canonical tick (%d ticks)" % ss["canonical_ticks"],
+                       "tick", "the sim thread", fold_us)
+
+
+def render_region_tree(ss, L, tag, per, unit, thread, fold_us=2.0):
+    """Append one region tree's text: the root, guest, host and psyq lines,
+    the guest table, the host tree by subsystem. Leaves under fold_us fold
+    into one line per subsystem.
+    @param tag The section tag, e.g. "sim.split".
+    @param per What one row's microseconds are per, e.g. "per canonical tick (N ticks)".
+    @param unit The short unit for the column header, e.g. "tick".
+    @param thread The thread the root runs on, in words."""
+    root = ss["root"]
+    tot = ss["root_us"] or 1.0
 
     def pc(v):
-        return 100.0 * v / sim
+        return 100.0 * v / tot
 
-    L.append("[sim.split]           per canonical tick (%d ticks), us; exclusive (self) times, "
-             "the rows sum to sim_tick" % ss["canonical_ticks"])
-    L.append("  %-12s%9.1f %6.1f%%" % ("sim_tick", ss["sim_tick_us_per_tick"], 100.0))
-    L.append("  %-12s%9.1f %6.1f%%   game logic %.1f + original renderers %.1f"
-             % ("guest", ss["guest_us"], pc(ss["guest_us"]), ss["guest_logic_us"],
-                ss["guest_renderers_us"]))
-    L.append("  %-12s%9.1f %6.1f%%   on the sim thread %.1f + waiting on the worker pool %.1f"
+    L.append("[%s]%s%s, us; exclusive (self) times, the rows sum to %s"
+             % (tag, " " * max(1, 20 - len(tag)), per, root))
+    L.append("  %-12s%9.1f %6.1f%%   on %s" % (root, ss["root_us"], 100.0, thread))
+    if ss["guest_us"] or root == "sim_tick":
+        L.append("  %-12s%9.1f %6.1f%%   game logic %.1f + original renderers %.1f"
+                 % ("guest", ss["guest_us"], pc(ss["guest_us"]), ss["guest_logic_us"],
+                    ss["guest_renderers_us"]))
+    else:
+        L.append("  %-12s%9.1f %6.1f%%   no guest region ran" % ("guest", 0.0, 0.0))
+    L.append("  %-12s%9.1f %6.1f%%   on the thread %.1f + waiting on the worker pool %.1f"
              % ("host", ss["host_us"], pc(ss["host_us"]), ss["host_us"] - ss["host_wait_us"],
                 ss["host_wait_us"]))
     if ss["psyq_us"]:
         L.append("  %-12s%9.1f %6.1f%%   %s; the unscoped PsyQ/BIOS models sit in guest game logic"
                  % ("psyq", ss["psyq_us"], pc(ss["psyq_us"]),
                     ", ".join("%s %.1f" % (r["scope"], r["us"]) for r in ss["psyq"])))
-    else:
+    elif root == "sim_tick":
         L.append("  %-12s%9s %7s   no scoped PsyQ model ran; the PsyQ/BIOS models sit in guest "
                  "game logic" % ("psyq", "0.0", ""))
-    L.append("  leaves sum %.1f (%+.2f%% of sim_tick)"
-             % (ss["leaves_sum_us"], pc(ss["leaves_sum_us"]) - 100.0))
-    L.append("[sim.split.guest]     us/tick  share  - what a no-op of each saves (its self time)")
+    L.append("  leaves sum %.1f (%+.2f%% of %s)"
+             % (ss["leaves_sum_us"], pc(ss["leaves_sum_us"]) - 100.0, root))
+    if ss["guest"]:
+        L.append("[%s.guest]%s us/%s  share  - what a no-op of each saves (its self time)"
+                 % (tag, " " * max(1, 13 - len(tag)), unit))
     for r in ss["guest"]:
         extra = ""
         if r["nested_host_us"] >= 1.0:
             extra = "  (+%.1f host hooks the guest calls from inside it)" % r["nested_host_us"]
         L.append("  %9.1f %6.1f%%  %-16s %s%s" % (r["us"], pc(r["us"]), r["scope"], r["words"], extra))
-    L.append("[sim.split.host]      us/tick  share  - by subsystem; sim = on the sim thread, "
-             "wait = the sim thread blocked on the worker pool")
+    L.append("[%s.host]%s us/%s  share  - by subsystem; sim = on the thread, "
+             "wait = the thread blocked on the worker pool" % (tag, " " * max(1, 14 - len(tag)), unit))
     for h in ss["host"]:
         wait = "  (wait %.1f)" % h["wait_us"] if h["wait_us"] else ""
         L.append("  %-10s%9.1f %6.1f%%%s" % (h["subsystem"], h["us"], pc(h["us"]), wait))
@@ -714,6 +831,7 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
     canon = [p for p in presents if p.kind == KIND_CANONICAL]
     nc = len(canon) or 1
     out["sim_split"] = sim_split_regions(presents, nc) or sim_split_legacy(canon)
+    out["scene_split"] = scene_split_regions(presents)
 
     # ---- census -----------------------------------------------------------
     cen = {}
@@ -830,6 +948,14 @@ def render_text(s):
                     "guest game logic + uninstrumented fiber work"))
         L.append("%-22s%10.1f" % ("= sim_tick", ss["sim_tick_us_per_tick"]))
 
+    for key, t in sorted((s.get("scene_split") or {}).items(), key=lambda kv: (
+            [k for k, _i in SCENE_KINDS].index(kv[0].split(".")[1]),
+            [r for r, _w in SCENE_ROOTS].index(kv[0].split(".")[0]))):
+        root, kind = key.split(".")
+        words = dict(SCENE_ROOTS)[root]
+        render_region_tree(t, L, "%s.%s" % (root, kind[:5]),
+                           "per %s scene %s (%d)" % (kind, words, t["instances"]), root,
+                           "thread %s" % ",".join(str(x) for x in t["threads"]))
     table("cpu.scope", s["cpu_scopes"])
     if s["gpu_zones"]:
         table("gpu.zone", s["gpu_zones"])

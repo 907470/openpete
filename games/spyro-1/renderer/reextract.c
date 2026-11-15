@@ -6,6 +6,7 @@
 #include "reextract.h"
 #include "openpete_camlock.h"       /* render camera lock (G) - bracket override */
 #include "openpete_interp.h"
+#include "openpete_profile.h"          /* the re-extract's per-producer regions */
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/reextract_view.h"
@@ -2672,21 +2673,27 @@ static void game_reextract_body(void* cpu_v) {
      * reproduces tick-N (far backdrop). Every feeder runs -> nothing vanishes. */
     const int pt_on = openpete_phase_timers_on();   /* per-feeder phase timing */
     uint64_t pt_t0 = 0, pt_t1;
-    transition_reextract(cpu, cam_hold);     /* level-transition / balloonist cross-fade backdrop (backmost) */
-    cyclorama_reextract(cpu, alpha, cam_bracketed); /* sky dome + background (transition matrices lerped prev->curr) */
-    portal_reextract(cpu, alpha, cam_bracketed, cam_hold); /* homeworld portal previews (dome matrix lerped prev->curr) */
+    { OP_PROF_ACCUM_SCOPE("rex.transition");
+      transition_reextract(cpu, cam_hold);     /* level-transition / balloonist cross-fade backdrop (backmost) */ }
+    { OP_PROF_ACCUM_SCOPE("rex.cyclorama");
+      cyclorama_reextract(cpu, alpha, cam_bracketed); /* sky dome + background (transition matrices lerped prev->curr) */ }
+    { OP_PROF_ACCUM_SCOPE("rex.portal");
+      portal_reextract(cpu, alpha, cam_bracketed, cam_hold); /* homeworld portal previews (dome matrix lerped prev->curr) */ }
     if (pt_on) pt_t0 = openpete_phase_now_us();
-    terrain_reextract(cpu, alpha, cam_bracketed, cam_hold); /* interpolated camera + poly-anim vert lerp */
+    { OP_PROF_ACCUM_SCOPE("rex.terrain");
+      terrain_reextract(cpu, alpha, cam_bracketed, cam_hold); /* interpolated camera + poly-anim vert lerp */ }
     portal_reextract_leave();      /* terrain read the held set's opening planes */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_TERRAIN, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     moby_native_set_verdict_alpha(alpha, cam_bracketed);
     moby_native_replay_prev_queue(cam_hold);   /* a record staged at tick N-1 shows that tick's state */
-    moby_reextract(cpu);           /* re-derived: interpolated camera + lerped position */
+    { OP_PROF_ACCUM_SCOPE("rex.moby");
+      moby_reextract(cpu);           /* re-derived: interpolated camera + lerped position */ }
     moby_native_replay_prev_queue(0);
     moby_native_set_verdict_alpha(1.0, 1);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_MOBY, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     shadow_replay_prev_list(cam_hold);
-    shadow_reextract(cpu);         /* drop-shadows under mobys (Spyro's: the record loop below) */
+    { OP_PROF_ACCUM_SCOPE("rex.shadow");
+      shadow_reextract(cpu);         /* drop-shadows under mobys (Spyro's: the record loop below) */ }
     shadow_replay_prev_list(0);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SHADOW, pt_t1 - pt_t0); }
     /* The moby + shadow feeders have now consumed the FULL regular cull records;
@@ -2696,17 +2703,21 @@ static void game_reextract_body(void* cpu_v) {
     scratch_bracket_seg_restore(cpu);
     if (pt_on) pt_t0 = openpete_phase_now_us();
     player_records_set_hold(cam_hold);   /* a held cut shows tick N-1's records whole */
-    player_records_loop(cpu, paired, cam_snap, cam_bracketed, alpha, use_herm,
-                       sp, sp_staged, prev ? prev->data + prev->region_offsets[SPYRO_REGION()] : NULL,
-                       sh);
+    { OP_PROF_ACCUM_SCOPE("rex.player");
+      player_records_loop(cpu, paired, cam_snap, cam_bracketed, alpha, use_herm,
+                         sp, sp_staged, prev ? prev->data + prev->region_offsets[SPYRO_REGION()] : NULL,
+                         sh); }
     player_records_set_hold(0);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
     cyclorama_native_hold_background(0);
-    particle_reextract(cpu, cam_hold);   /* particles / glows / sparkles (Sparx) */
+    { OP_PROF_ACCUM_SCOPE("rex.particles");
+      particle_reextract(cpu, cam_hold);   /* particles / glows / sparkles (Sparx) */ }
     player_records_set_hold(cam_hold);   /* the flame records are the player's */
-    flame_records_present(cpu, paired, cam_snap, alpha, fl);   /* fire breath, one ribbon per flame record */
+    { OP_PROF_ACCUM_SCOPE("rex.flame");
+      flame_records_present(cpu, paired, cam_snap, alpha, fl);   /* fire breath, one ribbon per flame record */ }
     player_records_set_hold(0);
-    tracer_reextract(cpu);          /* additive tracer/beam (replay snapshot, interp camera) */
+    { OP_PROF_ACCUM_SCOPE("rex.tracers");
+      tracer_reextract(cpu);          /* additive tracer/beam (replay snapshot, interp camera) */ }
     moby_native_set_rot_interp(0);        /* reset: canonical inline render uses byte-exact rotation */
     player_native_set_rot_interp(NULL, NULL); /* reset: canonical inline render uses byte-exact rotation */
     player_native_set_anim_pair(NULL, NULL);  /* reset: the canonical hook owns the seg rows */
@@ -2714,7 +2725,8 @@ static void game_reextract_body(void* cpu_v) {
 
     /* Re-apply the 2D-UI overlay (letterbox + menu panel held; fade interpolated
      * by the spine alpha) on top of the re-derived 3D scene. */
-    openpete_native_scene_apply_overlay(alpha);
+    { OP_PROF_ACCUM_SCOPE("rex.overlay");
+      openpete_native_scene_apply_overlay(alpha); }
 
     /* The camera this present shows, whatever the guard decided: the bracket
      * writes it, a guard that snaps leaves the canonical tick-N bytes. One line

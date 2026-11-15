@@ -917,35 +917,48 @@ static void eager_produce_one(op_time_t t, int canonical)
     extern int g_openpete_canon_lag_leg;
     openpete_native_reextract_fn re = openpete_native_get_reextract();
     const op_time_t t0 = op_now();
-    if (!canonical) openpete_pace_inject_present();   /* fault injection, off by default */
-    uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
-    openpete_native_vram_sync();                 /* guest idle: the mirror cannot tear */
-    openpete_interp_set_present_target(t - s_eager.lag);   /* the animation instant this display instant shows */
-    if (canonical) g_openpete_canon_lag_leg = 1;
-    openpete_native_scene_eager_begin();
-    openpete_bugrec_subtick_begin(canonical ? OP_PACE_CANONICAL : OP_PACE_INTERMEDIATE, BUGREC_SUB_EAGER);
-    const op_time_t rex0 = op_now();
-    re(&g_game.cpu);
-    const op_time_t rex_ns = op_now() - rex0;
-    openpete_native_scene_sig_report(canonical);
-    g_openpete_canon_lag_leg = 0;
-    openpete_mods_present_flush(&g_game.cpu, canonical);
-    openpete_interp_set_present_target(0);
     const int kind = canonical ? OP_PACE_CANONICAL : OP_PACE_INTERMEDIATE;
-    int paired = 0;
-    const double alpha = openpete_pace_extract_alpha(&paired);
-    const int slot = openpete_native_scene_publish(t, kind, alpha, paired);
-    uint32_t scene_id = 0, stamp = 0;
-    openpete_native_scene_slot_ids(slot, &scene_id, &stamp);
-    openpete_bugrec_subtick_end(alpha, paired, slot, scene_id, stamp, (int64_t)t);
-    if (slot >= 0) {
-        openpete_present_thread_kick();
-        s_eager.produced++;
-        s_eager.span_pub++;
-        if (!canonical) s_eager.produced_inter++;
+    op_time_t rex_ns;
+    /* The scene's production is the profiler's root region "scene" (flagged
+     * intermediate for an in-between scene), closed before the SCENE marker
+     * so its records bind to this scene; its parts are named regions. */
+    {
+      OP_PROF_FLAGS_SCOPE("scene", canonical ? 0u : OP_PROF_F_INTERMEDIATE);
+      if (!canonical) openpete_pace_inject_present();   /* fault injection, off by default */
+      uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
+      { OP_PROF_SCOPE("scene.vram_sync");
+        openpete_native_vram_sync(); }             /* guest idle: the mirror cannot tear */
+      openpete_interp_set_present_target(t - s_eager.lag);   /* the animation instant this display instant shows */
+      if (canonical) g_openpete_canon_lag_leg = 1;
+      { OP_PROF_SCOPE("scene.open");
+        openpete_native_scene_eager_begin();
+        openpete_bugrec_subtick_begin(kind, BUGREC_SUB_EAGER); }
+      const op_time_t rex0 = op_now();
+      { OP_PROF_SCOPE("scene.rex");
+        re(&g_game.cpu); }
+      rex_ns = op_now() - rex0;
+      { OP_PROF_SCOPE("scene.sig_report");
+        openpete_native_scene_sig_report(canonical); }
+      g_openpete_canon_lag_leg = 0;
+      { OP_PROF_SCOPE("scene.mods");
+        openpete_mods_present_flush(&g_game.cpu, canonical); }
+      openpete_interp_set_present_target(0);
+      OP_PROF_SCOPE("scene.publish");
+      int paired = 0;
+      const double alpha = openpete_pace_extract_alpha(&paired);
+      const int slot = openpete_native_scene_publish(t, kind, alpha, paired);
+      uint32_t scene_id = 0, stamp = 0;
+      openpete_native_scene_slot_ids(slot, &scene_id, &stamp);
+      openpete_bugrec_subtick_end(alpha, paired, slot, scene_id, stamp, (int64_t)t);
+      if (slot >= 0) {
+          openpete_present_thread_kick();
+          s_eager.produced++;
+          s_eager.span_pub++;
+          if (!canonical) s_eager.produced_inter++;
+      }
+      else s_eager.refused++;
+      if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
     }
-    else s_eager.refused++;
-    if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
     if (op_prof_on())
         op_prof_scene((uint32_t)openpete_canon_tick,
                       canonical ? OP_PROF_CANONICAL : OP_PROF_INTERMEDIATE);
