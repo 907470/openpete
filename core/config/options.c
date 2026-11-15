@@ -1013,6 +1013,18 @@ void openpete_options_init(openpete_options_t* opts) {
     /* Unset until resolve_env_spellings applies OPENPETE_TERRAIN_VISIBILITY,
      * else frustum. */
     opts->terrain_visibility = OPENPETE_TERRAIN_VIS_UNSET;
+    /* Unset until resolve_env_spellings applies OPENPETE_CADENCE, else even. */
+    opts->cadence = OPENPETE_CADENCE_UNSET;
+}
+
+/** @brief Parse a --cadence value: even or fill.
+ * @param v The value text.
+ * @param out Receives the policy; untouched on failure.
+ * @return 0 on success, -1 for any other text. */
+static int cadence_parse(const char* v, openpete_cadence_t* out) {
+    if (strcmp(v, "even") == 0) { *out = OPENPETE_CADENCE_EVEN; return 0; }
+    if (strcmp(v, "fill") == 0) { *out = OPENPETE_CADENCE_FILL; return 0; }
+    return -1;
 }
 
 /** @brief Parse a --fog value: original, per-pixel or off.
@@ -1380,6 +1392,13 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
             opts->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
         } else {
             fprintf(stderr, "openpete: --terrain-visibility expects game|frustum, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--cadence") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (cadence_parse(v, &opts->cadence) != 0) {
+            fprintf(stderr, "openpete: --cadence expects even|fill, got: %s\n", v);
             return OPENPETE_EXIT_SETUP_ERROR;
         }
         i++;
@@ -2251,6 +2270,9 @@ static void resolve_env_spellings(openpete_options_t* opts) {
         opts->terrain_visibility =
             (env_value("OPENPETE_TERRAIN_VISIBILITY", &e) && strcmp(e, "game") == 0)
                 ? OPENPETE_TERRAIN_VIS_GAME : OPENPETE_TERRAIN_VIS_FRUSTUM;
+    if (opts->cadence == OPENPETE_CADENCE_UNSET &&
+        !(env_value("OPENPETE_CADENCE", &e) && cadence_parse(e, &opts->cadence) == 0))
+        opts->cadence = OPENPETE_CADENCE_EVEN;
     if (env_value("OPENPETE_RUN_RECOMP", &e))
         opts->run_recomp_addr = (uint32_t)strtoul(e, NULL, 0);
 }
@@ -2274,6 +2296,7 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->scan_guard < 0)            out->scan_guard = 1;
     if (out->terrain_visibility == OPENPETE_TERRAIN_VIS_UNSET)
         out->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
+    if (out->cadence == OPENPETE_CADENCE_UNSET) out->cadence = OPENPETE_CADENCE_EVEN;
 }
 
 /** @brief Splice the bk2 sidecar and one config stage into argv, then walk the flags into opts.

@@ -548,6 +548,19 @@ static double launcher_fullscreen_get(const knob_desc_t *k) {
 
 /* ---- Pacing ---- */
 
+static const char *const k_cadence_names[] = { "even", "fill" };
+/** @brief The eager planner's cadence policy: 0 even, 1 fill (openpete_get_cadence). */
+static double cadence_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_get_cadence() == OPENPETE_CADENCE_FILL ? 1.0 : 0.0;
+}
+/** @brief Set the cadence policy: nonzero `v` is fill, zero even; read by the next span plan. */
+static int cadence_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_set_cadence(v != 0.0 ? OPENPETE_CADENCE_FILL : OPENPETE_CADENCE_EVEN);
+    return 0;
+}
+
 /** @brief The pacer's live render-fps target (0 is the match-sim pacer). */
 static double renderfps_get(const knob_desc_t *k) { (void)k; return openpete_get_render_fps(); }
 /** @brief Set the pacer's render-fps target to `v`, truncated to int.
@@ -1473,6 +1486,22 @@ static const knob_desc_t g_builtin[] = {
       .help_arg = "N", .help_order = 220,
       .help_text = "target render Hz (default: the display's refresh rate; 0=match\n"
           "sim/30fps legacy pacer, >0=wall-clock dual-pacer + interpolation)" },
+
+    { "cadence", "Cadence", "Pacing", "--cadence", "OPENPETE_CADENCE",
+      "How in-between pictures sit on the display's refresh grid (VSync on) "
+      "when a tick affords fewer than the grid has refreshes. even shows "
+      "every 2nd, 3rd... refresh so every picture is held equally long; fill "
+      "draws every picture the tick affords and repeats the refreshes it "
+      "misses one at a time, spread apart. Without VSync both are the same. "
+      "Applies from the next tick.",
+      KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_cadence_names), 0, 0,
+      cadence_get, cadence_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "even",
+      .help_arg = "MODE", .help_order = 225,
+      .help_text = "with vsync on, when a tick affords fewer pictures than refreshes:\n"
+          "{def} (default) = every Nth refresh, each picture held equally long |\n"
+          "fill = every affordable picture, the missed refreshes spread apart.\n"
+          "No effect with vsync off (both draw every affordable picture)" },
 
     { "tick_scale", "Tick scale", "Pacing", "--tick-scale", NULL,
       "Engine speed multiplier (slow-mo / speed-up; sim and presents "
@@ -3287,10 +3316,12 @@ void knob_registry_late_stamp(void) {
     knob_desc_t *ks = knob_registry(&n);
     for (size_t i = 0; i < n; i++) {
         if (!strcmp(ks[i].id, "render_fps") ||
+            !strcmp(ks[i].id, "cadence") ||
             !strcmp(ks[i].id, "tick_scale") ||
             !strcmp(ks[i].id, "runahead")) {
             /* The pacer seeds its live state (resolved render-fps target,
-             * tick scale, gated runahead depth) at host-loop start, after
+             * tick scale, gated runahead depth) and the session the cadence
+             * policy at host-loop start, after
              * knob_registry_init ran; adopt the settled value as the boot
              * value so the row doesn't read as "edited" on first open. */
             ks[i].boot_num   = ks[i].get_num(&ks[i]);

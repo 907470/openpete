@@ -12,6 +12,7 @@ static const char *const v_vprec[]    = { "subpixel", "integer", NULL };
 static const char *const v_texmap[]   = { "perspective", "affine", NULL };
 static const char *const v_lod[]      = { "original", "extended", NULL };
 static const char *const v_tervis[]   = { "game", "frustum", NULL };
+static const char *const v_cadence[]  = { "even", "fill", NULL };
 static const char *const v_fog[]      = { "original", "per-pixel", "off", NULL };
 static const char *const v_renderer[] = { "psycross", "vk", NULL };
 static const char *const v_logfmt[]   = { "plain", "json", NULL };
@@ -58,6 +59,7 @@ static const cfg_knob_t g_schema[] = {
 
     /* -------- Pacing -------- */
     { "render_fps",       "--render-fps",       NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
+    { "cadence",          "--cadence",          "OPENPETE_CADENCE",      CFG_ENUM,   v_cadence,  NULL,       NULL,       0 },
     { "tick_scale",       "--tick-scale",       NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
     { "runahead",         "--runahead",         NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "rewind",           "--rewind",           NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },

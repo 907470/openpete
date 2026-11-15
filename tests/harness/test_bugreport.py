@@ -581,8 +581,9 @@ def perf_ring(ticks=60):
         out.append(rec(br.PACE_VBL, t + 16_700_000, v0 + 1, c=t + 16_700_000, d=t + 20_700_000))
         out.append(rec(br.PACE_TICK_SPLIT, t + 20_800_000, v0 + 1, a=u32pair(4200, 1500), b=u32pair(900, 400),
                        c=u32pair(120, 60), d=u32pair(2000, 300), e=3 | 4 << 16 | 4 << 32 | 5 << 48, f=4000))
-        out.append(rec(br.PACE_EAGER_PLAN, t + 20_900_000, v0 + 1, flags=br.PACE_EP_CUT if k % 10 == 0 else 0,
-                       aux=2 | 1 << 8, a=20_000_000, b=1_500_000, c=5_000_000, d=200_000, e=0,
+        out.append(rec(br.PACE_EAGER_PLAN, t + 20_900_000, v0 + 1,
+                       flags=(br.PACE_EP_CUT if k % 10 == 0 else 0) | (br.PACE_EP_FILL if k % 2 else 0),
+                       aux=2 | 1 << 8, a=20_000_000 | 2 << 32, b=1_500_000, c=5_000_000, d=200_000, e=0,
                        f=4 | 3 << 16 | 2 << 32 | 8333 << 48))
         out.append(rec(br.PACE_GPU_FRAME, t + 21_000_000, k, aux=12, a=3_000_000, b=2_500_000, c=k))
         for q in range(4):
@@ -617,6 +618,7 @@ class PerfRecords(Base):
         self.assertTrue(pl["cut"])
         self.assertAlmostEqual(pl["period_ms"], 8.333)
         self.assertAlmostEqual(pl["budget"], 20.0)
+        self.assertEqual((pl["made"], pl["fill"]), (2, False))
         g = [br.gpu_decode(r) for r in recs if r[0] == br.PACE_GPU_FRAME][1]
         self.assertEqual((g["token"], g["zones"], g["frame_ms"], g["busy_ms"]), (1, 12, 3.0, 2.5))
 
@@ -630,6 +632,8 @@ class PerfRecords(Base):
         self.assertAlmostEqual(r["split_render"], 2.0)
         self.assertEqual((r["plans"], r["plan_level_max"]), (60, 2))
         self.assertAlmostEqual(r["plan_cut_frac"], 0.1)
+        self.assertAlmostEqual(r["plan_made"], 2.0)
+        self.assertAlmostEqual(r["plan_fill_frac"], 0.5)
         self.assertAlmostEqual(r["gpu_p50"], 3.0)
 
     def test_coarse(self):
@@ -655,7 +659,7 @@ class PerfRecords(Base):
         (corp / "bug-spyro-1-junk.zip").write_bytes(b"not a zip")
         rc, out, _err = run("perf", corp / "bug-spyro-1-new.zip")
         self.assertEqual(rc, 0)
-        for want in ("split (60 ticks)", "planner (60 spans)", "gpu (60 frames)", "coarse: 3 rows"):
+        for want in ("split (60 ticks)", "planner (60 spans, fill cadence 50.0%)", "gpu (60 frames)", "coarse: 3 rows"):
             self.assertIn(want, out)
         tsv = self.d / "c.tsv"
         rc, out, _err = run("corpus", corp, "--tsv", tsv)

@@ -37,6 +37,13 @@
  * spans of the vsync-on runs with that price that it planned below the
  * slot count, where the sum price stays at or above it.
  *
+ * The spread rows are the fill cadence's slot placement
+ * (op_eager_spread_slot) on the named cases and on every k of every ns up to
+ * the ladder's bound, with the first-k placement as the control; the fill
+ * count rows are its controller (op_eager_fill_step) against a fixed
+ * capacity and through a stall, with the free span's count step as the
+ * control.
+ *
  * `eager_ladder_test replay` prints the per-row table. */
 
 #include "openpete_eager_ladder.h"
@@ -830,6 +837,202 @@ static void test_cost_ema(int print)
     check(op_eager_cost_ema(0, COST_STALL_NS) == COST_STALL_NS, "cost: the first sample seeds the mean whole");
 }
 
+/** @brief Return 0 when slots[0..k) is a spread of k scenes over ns slots, else a code naming the first property it breaks.
+ *
+ * The properties: increasing, the first slot 0, the last ns - 1 when k is
+ * at least 2 and below ns, consecutive differences within one of each
+ * other, and, when 2 * (k - 1) >= ns - 1, no two skipped slots adjacent.
+ * @param slots The chosen slots.
+ * @param k Their count.
+ * @param ns The slot count.
+ * @return 0, or 1 order, 2 first, 3 last, 4 uneven, 5 adjacent skips. */
+static int spread_fault(const int *slots, int k, int ns)
+{
+    if (slots[0] != 0) return 2;
+    if (k >= 2 && k < ns && slots[k - 1] != ns - 1) return 3;
+    int lo = ns, hi = 0;
+    for (int q = 1; q < k; q++) {
+        const int d = slots[q] - slots[q - 1];
+        if (d < 1) return 1;
+        if (d < lo) lo = d;
+        if (d > hi) hi = d;
+    }
+    if (k >= 2 && hi - lo > 1) return 4;
+    if (2 * (k - 1) >= ns - 1)
+        for (int q = 1; q < k; q++)
+            if (slots[q] - slots[q - 1] > 2) return 5;
+    return 0;
+}
+
+/** @brief Fill slots with op_eager_spread_slot for k scenes of ns slots, at most ns of them.
+ * @param slots Receives the slots.
+ * @param k The scenes planned.
+ * @param ns The slot count.
+ * @return The number of slots written, min(k, ns). */
+static int spread(int *slots, int k, int ns)
+{
+    const int n = k < ns ? k : ns;
+    for (int q = 0; q < n; q++) slots[q] = op_eager_spread_slot(q, k, ns);
+    return n;
+}
+
+/** @brief Return the skipped slots of a spread as a bit mask (slots below 64).
+ * @param k The scenes planned.
+ * @param ns The slot count, at most 64.
+ * @return Bit s set for each slot s no scene takes. */
+static unsigned long long skipped_mask(int k, int ns)
+{
+    int slots[OP_EAGER_LADDER_MAX_AFFORD];
+    const int n = spread(slots, k, ns);
+    unsigned long long m = ns >= 64 ? ~0ULL : (1ULL << ns) - 1;
+    for (int q = 0; q < n; q++) m &= ~(1ULL << slots[q]);
+    return m;
+}
+
+/** @brief Check the fill cadence's slot spread on the named cases and on every k of every ns up to the ladder's bound; the first-k placement is the control. */
+static void test_spread(void)
+{
+    char what[160];
+    /* 11 of 13: skips 3 and 9, six apart, and 9 to the next span's 3 is seven. */
+    check(skipped_mask(11, 13) == ((1ULL << 3) | (1ULL << 9)), "spread: 11 of 13 skips slots 3 and 9");
+    /* 13 of 15: skips 3 and 10 (q * 14 / 12, halves up: 3.5 rounds to 4, 10.5 to 11). */
+    check(skipped_mask(13, 15) == ((1ULL << 3) | (1ULL << 10)), "spread: 13 of 15 skips slots 3 and 10");
+    /* 16 of 17: one skip, mid-span. */
+    check(skipped_mask(16, 17) == (1ULL << 8), "spread: 16 of 17 skips slot 8");
+    check(skipped_mask(1, 13) == (((1ULL << 13) - 1) & ~1ULL), "spread: 1 of 13 keeps slot 0 only");
+    check(skipped_mask(13, 13) == 0, "spread: 13 of 13 keeps every slot");
+    check(skipped_mask(20, 13) == 0 && op_eager_spread_slot(12, 20, 13) == 12,
+          "spread: k above ns keeps every slot once");
+    int bad = 0, first_ns = 0, first_k = 0, code = 0;
+    for (int ns = 1; ns <= OP_EAGER_LADDER_MAX_AFFORD; ns++)
+        for (int k = 1; k <= ns + 2; k++) {
+            int slots[OP_EAGER_LADDER_MAX_AFFORD];
+            const int n = spread(slots, k, ns);
+            const int f = spread_fault(slots, n, ns);
+            if (f && !bad++) { first_ns = ns; first_k = k; code = f; }
+        }
+    snprintf(what, sizeof what, "spread: every k of every ns up to %d (%d bad; first ns %d k %d fault %d)",
+             OP_EAGER_LADDER_MAX_AFFORD, bad, first_ns, first_k, code);
+    check(bad == 0, what);
+    /* Control: the first k slots skip the span's tail in one run. */
+    int first[11];
+    for (int q = 0; q < 11; q++) first[q] = q;
+    check(spread_fault(first, 11, 13) != 0, "control: the first 11 of 13 slots are refused");
+}
+
+/** @brief Run a stall through a grid fill controller and return the spans from the stall's end until the plan is full again.
+ *
+ * ns 16 slots. Ten spans of the stall afford 2 and are cut each time; then
+ * every span affords 99 with room. The free span's count step is the
+ * control: the same cuts given back one scene per run.
+ * @param fill Nonzero: op_eager_fill_step with window 8; zero: op_eager_count_step with window 16.
+ * @return The spans until the plan is 16, or -1 within 200 spans. */
+static int fill_stall_recovery(int fill)
+{
+    op_eager_count_t c;
+    memset(&c, 0, sizeof c);
+    for (int i = 0; i < 10; i++) {
+        if (fill) op_eager_fill_step(&c, OP_EAGER_CUT_DEADLINE, 2, 0, WINDOW, 2);
+        else op_eager_count_step(&c, OP_EAGER_CUT_DEADLINE, 2, 0, 0, 0, 16, 2, 0);
+    }
+    for (int span = 0; span < 200; span++) {
+        const int k = op_eager_fill_count(&c, 99, 16);
+        if (k == 16) return span;
+        if (fill) op_eager_fill_step(&c, OP_EAGER_CUT_NONE, 16, 99, WINDOW, 2);
+        else op_eager_count_step(&c, OP_EAGER_CUT_NONE, 16, 99, 0, 0, 16, 2, 0);
+    }
+    return -1;
+}
+
+/** @brief Check the fill count and its controller: a full plan at afford >= ns, one scene fewer per cut, no oscillation at a fixed capacity, the clean run's one-move recovery, ring cuts counted. */
+static void test_fill_count(void)
+{
+    char what[200];
+    op_eager_count_t c;
+    memset(&c, 0, sizeof c);
+    /* At deficit 0 the count is min(afford, ns): the ladder's level-1 plan when afford >= ns. */
+    check(op_eager_fill_count(&c, 20, 13) == 13, "fill: afford 20 of 13 slots plans 13");
+    check(op_eager_fill_count(&c, 13, 13) == 13, "fill: afford 13 of 13 plans 13");
+    check(op_eager_fill_count(&c, 11, 13) == 11, "fill: afford 11 of 13 plans 11");
+    check(op_eager_fill_count(&c, 1, 13) == 1, "fill: afford 1 plans the canonical scene");
+    op_eager_ladder_t l = fresh();
+    check(op_eager_ladder_step(&l, 13, 20, 0, WINDOW) == 1, "fill: the ladder plans level 1 there too");
+    /* Capacity 11 of 13 slots, the estimate affording 13 every span, the guard's room
+     * capacity - planned: two cuts, then 11 for good (no room, so no clean run). */
+    int cuts = 0, above = 0, k = 0;
+    for (int span = 0; span < 400; span++) {
+        k = op_eager_fill_count(&c, 13, 13);
+        const int cut = k > 11;
+        cuts += cut;
+        if (span >= 2 && k > 11) above++;
+        op_eager_fill_step(&c, cut ? OP_EAGER_CUT_DEADLINE : OP_EAGER_CUT_NONE, 13, cut ? 0 : 11 - k, WINDOW, 2);
+    }
+    snprintf(what, sizeof what, "fill: capacity 11 of 13 at afford 13: %d cut(s) in 400 spans, final plan %d, %d plan(s) above", cuts, k, above);
+    check(cuts == 2 && k == 11 && above == 0, what);
+    /* Capacity rises to 15: room 4 at 11; the clean run gives both scenes back in one move. */
+    int n13 = -1;
+    for (int span = 0; span < 64; span++) {
+        k = op_eager_fill_count(&c, 13, 13);
+        if (k == 13 && n13 < 0) n13 = span;
+        op_eager_fill_step(&c, OP_EAGER_CUT_NONE, 13, 15 - k, WINDOW, 2);
+    }
+    snprintf(what, sizeof what, "fill: room gives the slots back, full again after %d spans (window %d)", n13, WINDOW);
+    check(n13 == WINDOW, what);
+    /* Capacity 12 of 13 with an afford of 13: a cut, then 12; room 0 keeps it there. */
+    memset(&c, 0, sizeof c);
+    cuts = 0;
+    for (int span = 0; span < 200; span++) {
+        k = op_eager_fill_count(&c, 13, 13);
+        cuts += k > 12;
+        op_eager_fill_step(&c, k > 12 ? OP_EAGER_CUT_DEADLINE : OP_EAGER_CUT_NONE, 13, k > 12 ? 0 : 12 - k, WINDOW, 2);
+    }
+    snprintf(what, sizeof what, "fill: capacity 12 of 13: %d cut(s) in 200 spans, plan %d", cuts, k);
+    check(cuts == 1 && k == 12, what);
+}
+
+/** @brief The fill count after a stall and under an afford that alternates: one window to recover, and the plan follows the afford. */
+static void test_fill_recovery(void)
+{
+    char what[200];
+    op_eager_count_t c;
+    /* A stall's cuts at afford 2 cost one window once the spans clear; the free step is the control. */
+    const int rec = fill_stall_recovery(1), old = fill_stall_recovery(0);
+    snprintf(what, sizeof what, "fill: full %d spans after a 10-span stall (window %d); the free step takes %d", rec, WINDOW, old);
+    check(rec == WINDOW, what);
+    snprintf(what, sizeof what, "control: the free span's step gives the stall's deficit back after %d spans", old);
+    check(old < 0 || old > 4 * WINDOW, what);
+    /* The span's afford alternating 11 and 13 with room: the plan follows it, no cut, no deficit. */
+    memset(&c, 0, sizeof c);
+    int follow = 1;
+    for (int span = 0; span < 64; span++) {
+        const int a = span % 2 ? 11 : 13;
+        follow &= op_eager_fill_count(&c, a, 13) == a;
+        op_eager_fill_step(&c, OP_EAGER_CUT_NONE, a, 4, WINDOW, 2);
+    }
+    check(follow && c.deficit == 0, "fill: an afford alternating 11 and 13 plans 11 and 13");
+}
+
+/** @brief The fill step per cut cause: a ring cut plans one fewer, withheld and late cuts change nothing, a span without room ends the clean run. */
+static void test_fill_cut_causes(void)
+{
+    op_eager_count_t c;
+    /* A ring cut is a cut on a grid; withheld and late cuts carry no measurement. */
+    memset(&c, 0, sizeof c);
+    op_eager_fill_step(&c, OP_EAGER_CUT_RING, 13, 0, WINDOW, 2);
+    check(op_eager_fill_count(&c, 13, 13) == 12 && c.drain_left == 0, "fill: a ring cut plans one fewer, no drain floor");
+    op_eager_fill_step(&c, OP_EAGER_CUT_WITHHELD, 13, 0, WINDOW, 2);
+    op_eager_fill_step(&c, OP_EAGER_CUT_LATE, 13, 0, WINDOW, 2);
+    check(op_eager_fill_count(&c, 13, 13) == 12, "fill: withheld and late cuts change nothing");
+    /* A span without room ends the clean run. */
+    for (int i = 0; i < WINDOW - 1; i++) op_eager_fill_step(&c, OP_EAGER_CUT_NONE, 13, 2, WINDOW, 2);
+    op_eager_fill_step(&c, OP_EAGER_CUT_NONE, 13, 1, WINDOW, 2);
+    check(op_eager_fill_count(&c, 13, 13) == 12, "fill: a span with room 1 ends the run before the window");
+    /* Control: the free span's step answers a ring cut with a drain floor and no fewer scenes. */
+    memset(&c, 0, sizeof c);
+    op_eager_count_step(&c, OP_EAGER_CUT_RING, 13, 0, 10, 20000000, 16, 2, 32);
+    check(op_eager_fill_count(&c, 13, 13) == 13, "control: op_eager_count_step keeps 13 after a ring cut");
+}
+
 /** @brief Run the checks; `replay` also prints the recorded-row table.
  * @param argc Argument count.
  * @param argv Arguments.
@@ -848,6 +1051,10 @@ int main(int argc, char **argv)
     test_vsync();
     test_stall();
     test_cost_ema(argc > 1 && !strcmp(argv[1], "replay"));
+    test_spread();
+    test_fill_count();
+    test_fill_recovery();
+    test_fill_cut_causes();
     printf("eager_ladder_test: %s\n", g_fail ? "FAIL" : "PASS");
     return g_fail;
 }

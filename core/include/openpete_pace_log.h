@@ -92,8 +92,9 @@ enum {
      * production runs (the fields of the OPENPETE_EAGER_DBG plan line):
      * index = openpete_frame, flags = OP_PACE_EP_*, aux = span level (low
      * byte) and standing level (high byte), t_ns = the plan instant, a =
-     * budget ns, b = per-scene tail cost ns, c = lag ns, d = non-drawing VBL
-     * cost ns, e = tick start lateness ns, f = slots (bits 0-15), afford
+     * budget ns (bits 0-31, saturated) and the scenes the previous span
+     * published into the scene ring (bits 32-47), b = per-scene tail cost
+     * ns, c = lag ns, d = non-drawing VBL cost ns, e = tick start lateness ns, f = slots (bits 0-15), afford
      * (16-31), planned scenes (32-47), planned grid period in us (48-63,
      * saturated). */
     OP_PACE_EAGER_PLAN = 16,
@@ -111,7 +112,8 @@ enum {
     OP_PACE_EP_PINNED = 1u << 2,  /* OPENPETE_EAGER_LEVEL pins the level */
     OP_PACE_EP_GREEDY = 1u << 3,  /* OPENPETE_EAGER_POLICY=greedy */
     OP_PACE_EP_RING   = 1u << 4,  /* with CUT: the scene ring stayed full (the present thread's drain) */
-    OP_PACE_EP_WITHHELD = 1u << 5 /* with CUT: production was withheld (world not live, or not resumed) */
+    OP_PACE_EP_WITHHELD = 1u << 5, /* with CUT: production was withheld (world not live, or not resumed) */
+    OP_PACE_EP_FILL   = 1u << 6   /* the fill cadence planned the span on a display grid */
 };
 
 /* TICK_SPLIT accumulators (the duration slots, in record order). */
@@ -661,6 +663,7 @@ void openpete_pace_tick_split(uint32_t vbl_index, int64_t tick_ns);
  * @param slots The span's slot count.
  * @param afford The scenes the budget affords.
  * @param planned The scenes planned.
+ * @param made The scenes the previous span published into the scene ring.
  * @param period_ns The planned grid period.
  * @param budget_ns The production budget.
  * @param tail_ns The per-scene tail cost.
@@ -669,7 +672,7 @@ void openpete_pace_tick_split(uint32_t vbl_index, int64_t tick_ns);
  * @param late_ns The tick's start lateness. */
 void openpete_pace_eager_plan(uint32_t vbl_index, int64_t t_ns, uint8_t flags,
                               int level, int std_level, int slots, int afford,
-                              int planned, int64_t period_ns, int64_t budget_ns,
+                              int planned, int made, int64_t period_ns, int64_t budget_ns,
                               int64_t tail_ns, int64_t lag_ns, int64_t vbl_ns,
                               int64_t late_ns);
 

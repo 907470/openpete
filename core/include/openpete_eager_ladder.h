@@ -234,6 +234,85 @@ static inline void op_eager_count_step(op_eager_count_t *c, op_eager_cut_t cause
     if (c->deficit < 0) c->deficit = 0;
 }
 
+/** @brief Return the display-grid slot of the q-th of k scenes spread over ns slots, the first and last slot kept.
+ *
+ * The slot is q * (ns - 1) / (k - 1) rounded to nearest, halves up, so the
+ * k slots run from 0 to ns - 1 and consecutive slots differ by the floor or
+ * the ceiling of (ns - 1) / (k - 1): the ns - k skipped slots are spread as
+ * evenly as whole slots allow, and while 2 * (k - 1) >= ns - 1 no two of them
+ * are adjacent. k at or above ns gives slot q (every slot); k of 1 gives slot
+ * 0, the canonical scene's. Keeping the last slot leaves the span's last
+ * target where a plan of every slot puts it, so the next span continues
+ * after it as it does at level 1.
+ * @param q The scene's index, 0 to min(k, ns) - 1.
+ * @param k The scenes planned, at least 1.
+ * @param ns The span's slot count, at least 1.
+ * @return The slot index, 0 to ns - 1. */
+static inline int op_eager_spread_slot(int q, int k, int ns)
+{
+    if (k >= ns) return q;
+    if (k <= 1) return 0;
+    return (int)((2LL * q * (ns - 1) + (k - 1)) / (2LL * (k - 1)));
+}
+
+/** @brief Return the scenes a fill span plans on a display grid of ns slots: the count controller's plan of min(afford, ns), at most ns.
+ *
+ * The controller (op_eager_count_plan) is priced on the slots the span can
+ * show, not on an afford above them, so one deadline cut at a full plan
+ * removes one slot's scene; at deficit 0 a span that affords its slots plans
+ * all of them, the plan of the divisor ladder at level 1.
+ * @param c The grid's count controller.
+ * @param afford The scenes the budget affords, at least 1.
+ * @param ns The span's slot count, at least 1.
+ * @return The scene count, 1 to ns. */
+static inline int op_eager_fill_count(const op_eager_count_t *c, int afford, int ns)
+{
+    const int k = op_eager_count_plan(c, afford < ns ? afford : ns);
+    return k > ns ? ns : k;
+}
+
+/** @brief Move a grid fill span's count controller for the span just closed: one scene fewer per cut, all of them back after a clean run.
+ *
+ * The ladder's hysteresis in count space. A deadline cut, or a ring cut (on
+ * a display grid the slots' spacing is the refresh, so a ring that stays full
+ * says the present thread shows fewer scenes than the plan holds), raises
+ * the deficit by one scene at the span's afford, up to
+ * OP_EAGER_COUNT_MAX_DEFICIT, and ends the clean run. A withheld or late cut
+ * carries no measurement and changes nothing. A produced span with room for
+ * at least need_spare more scenes extends the clean run, and window
+ * consecutive such spans clear the deficit in one move, as the divisor
+ * ladder falls in one move to the level its run measured; with less room it
+ * ends the run. A stall's cuts, priced at the small afford the stall left,
+ * then cost window spans once the spans clear, not window spans per scene.
+ * The ring cut's drain floor (drain_ns, drain_left) is not used.
+ * @param c The grid's count controller.
+ * @param cause Why the span ended with scenes unproduced, or OP_EAGER_CUT_NONE.
+ * @param afford The afford the span's count was planned from (min(afford, ns)).
+ * @param spare The further scenes the guard would have started when the plan finished; read when not cut.
+ * @param window The clean run that clears the deficit, in spans.
+ * @param need_spare The room a span must leave to count as clean, in scenes. */
+static inline void op_eager_fill_step(op_eager_count_t *c, op_eager_cut_t cause, int afford, int spare,
+                                      int window, int need_spare)
+{
+    switch (cause) {
+    case OP_EAGER_CUT_DEADLINE:
+    case OP_EAGER_CUT_RING:
+        c->deficit += op_eager_count_unit(afford);
+        if (c->deficit > OP_EAGER_COUNT_MAX_DEFICIT) c->deficit = OP_EAGER_COUNT_MAX_DEFICIT;
+        c->clean = 0;
+        return;
+    case OP_EAGER_CUT_WITHHELD:
+    case OP_EAGER_CUT_LATE:
+        return;
+    case OP_EAGER_CUT_NONE:
+        break;
+    }
+    if (spare < need_spare) { c->clean = 0; return; }
+    if (++c->clean < window) return;
+    c->clean = 0;
+    c->deficit = 0;
+}
+
 /* A cost sample above this multiple of the running mean enters the mean at
  * the multiple. One stall (a debugger stop, a suspend, a blocked present)
  * then moves the mean by at most (OP_EAGER_COST_SAMPLE_CAP - 1) / 8 of it,

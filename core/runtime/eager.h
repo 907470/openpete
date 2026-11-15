@@ -83,7 +83,8 @@ void eager_note_vbl(op_time_t ex, op_time_t start_late, int drawing);
 
 /** @brief Start eager production and its present thread on a windowed native display, with the run's frame-time log hooked to the present thread's presents.
  *
- * Eager production is on unless OPENPETE_EAGER=0 and needs the native
+ * Seeds the cadence policy from opts->cadence first, in every run. Eager
+ * production is on unless OPENPETE_EAGER=0 and needs the native
  * scene path and a window; otherwise, or when the present thread cannot
  * start, nothing starts. Registers eager's and the scene ring's guest
  * discontinuity handlers.

@@ -140,6 +140,7 @@
 "knob:aspect" = "graphics/display.md#aspect-ratio"
 "knob:background" = "graphics/display.md#window"
 "knob:bk2" = "playing/recording.md#replaying"
+"knob:cadence" = "graphics/smoothness.md#cadence"
 "knob:camlock" = "playing/dev-overlay.md#sections"
 "knob:card_dir" = "playing/saves.md#memory-cards"
 "knob:cheats" = "playing/practice-tools.md#cheats"

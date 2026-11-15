@@ -302,7 +302,8 @@ int knob_registry_settle_ids(const char *const *ids, int n);
 /** @brief Re-stamp the boot values of the rows that settle after knob_registry_init.
  *
  * The pacer resolves the render_fps target, tick_scale and the gated
- * runahead depth at host-loop start. Each of those rows adopts its getter's
+ * runahead depth at host-loop start, and the session seeds the cadence
+ * policy there (host_eager_start). Each of those rows adopts its getter's
  * value as both boot and stored value, so it does not read as edited. The
  * dev UI calls it once, on the overlay's first open. */
 void knob_registry_late_stamp(void);

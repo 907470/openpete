@@ -65,7 +65,7 @@ it.
 | Section | Rows |
 | --- | --- |
 | Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD, Fog |
-| Display, Advanced (collapsed) | Notifications (on, position, timeout), Fog scale, Render mode, Terrain GPU cache, Terrain visibility, Render paths |
+| Display, Advanced (collapsed) | [Cadence](../graphics/smoothness.md#cadence), Notifications (on, position, timeout), Fog scale, Render mode, Terrain GPU cache, Terrain visibility, Render paths |
 | Gameplay | Freecam, [Savestate](saves.md#savestates), Tick scale, Pause sim, Runahead, Rewind, Level warp, Area warp (Spyro 3) |
 | Gameplay, Cheats (collapsed) | one button per cheat, on games that have them |
 | Audio (collapsed) | Mute, SFX volume, Music volume |

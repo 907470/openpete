@@ -27,6 +27,24 @@ as the GPU allows (still capped by VSync when it is on). The dev overlay's
 0, one present per tick, and checked shows the target beside it, 1 to 1000
 <!-- id: knob:render_fps -->, starting at the current one.
 
+## Cadence
+
+With [VSync](display.md#vsync) on, each picture is shown on one of the
+display's refreshes. When there is not time to draw a picture for every
+refresh of a tick, `--cadence MODE` <!-- id: knob:cadence home --> chooses
+which refreshes get a new one:
+
+| Value | Effect |
+| --- | --- |
+| `even` (default <!-- id: knob:cadence -->) | A picture on every 2nd, 3rd, ... refresh, each shown for the same time. A tick one picture short of one per refresh shows half as many. |
+| `fill` | Every picture there is time for. A refresh with no new picture shows the previous one again; those repeats are spread apart. |
+
+A repeated refresh lasts 2.1 ms at 480 Hz and 16.7 ms at 60 Hz, so `fill`
+suits a high refresh rate and `even` a low one. With VSync off both values
+draw every picture there is time for. The dev overlay's **Cadence** row,
+under Display's **Advanced**, switches it while playing; the change applies
+from the next tick <!-- id: knob:cadence -->.
+
 ## Interpolation
 
 Between two ticks, OpenPete draws the scene at in-between positions computed

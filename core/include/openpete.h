@@ -138,6 +138,19 @@ typedef enum {
     OPENPETE_TERRAIN_VIS_FRUSTUM,   /* default: every sector inside the frustum */
 } openpete_terrain_visibility_t;
 
+/* --cadence: how the eager planner places the in-between scenes of a tick's
+ * span on a display grid (vsync on) when the span affords fewer scenes than
+ * the grid has slots. even plans every level-th slot, a whole divisor, so
+ * every scene is held equally long. fill plans as many scenes as the span
+ * affords and spreads them over the slots, so a span one scene short repeats
+ * one refresh instead of halving the rate. Without vsync the spans have no
+ * grid and both values plan the same. Presentation only: no guest state. */
+typedef enum {
+    OPENPETE_CADENCE_UNSET = -1,  /* options only: not yet resolved */
+    OPENPETE_CADENCE_EVEN = 0,    /* default: every level-th slot */
+    OPENPETE_CADENCE_FILL,        /* every affordable scene, spread over the slots */
+} openpete_cadence_t;
+
 /* All command-line options live here. Per-game main.cpp may override
  * `display_name` before passing to `openpete_run`. The struct tag exists so
  * headers can forward-declare it without pulling this whole file in. */
@@ -228,6 +241,11 @@ typedef struct openpete_options {
      * openpete_terrain_visibility_t above). Default FRUSTUM. Set from
      * OPENPETE_TERRAIN_VISIBILITY when no flag is given. */
     openpete_terrain_visibility_t terrain_visibility;
+
+    /* --cadence even|fill (openpete_cadence_t above). Default EVEN. Set from
+     * OPENPETE_CADENCE when no flag is given; live through
+     * openpete_set_cadence. */
+    openpete_cadence_t cadence;
 
     /* Fog-distance multiplier (`--fog-scale N`). Scales every channel of the
      * terrain fog model together (DPCS vertex curve, CLUT-row palette ladder,
@@ -1133,6 +1151,18 @@ void openpete_set_render_fps(int fps);
  * set. The settings menu seeds its FPS row from it.
  * @return Presents per second, or 0 for the match-sim pacer. */
 int openpete_get_render_fps(void);
+
+/** @brief Set the eager planner's cadence policy at runtime.
+ *
+ * Every later span plan reads it (openpete_get_cadence); the span being
+ * produced keeps its plan. Host state only: writes no gameplay-readable
+ * state. Logs a change.
+ * @param cadence OPENPETE_CADENCE_FILL, or anything else for OPENPETE_CADENCE_EVEN. */
+void openpete_set_cadence(int cadence);
+
+/** @brief Return the eager planner's cadence policy, OPENPETE_CADENCE_EVEN or OPENPETE_CADENCE_FILL.
+ * @return The policy the next span plan uses. */
+int openpete_get_cadence(void);
 
 /* The tick scale's range: --tick-scale, the toml tick_scale key, the live
  * knob and openpete_set_tick_scale clamp a positive factor into it. The

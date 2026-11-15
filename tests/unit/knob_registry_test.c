@@ -65,6 +65,9 @@ float  openpete_freecam_mouse_sensitivity(void)     { return 1.0f; }
 void   openpete_freecam_set_mouse_sensitivity(float s) { (void)s; }
 int    openpete_get_render_fps(void)           { return 60; }
 void   openpete_set_render_fps(int fps)        { (void)fps; }
+static int s_cadence_stub;
+int    openpete_get_cadence(void)              { return s_cadence_stub; }
+void   openpete_set_cadence(int c)             { s_cadence_stub = c; }
 double openpete_get_tick_scale(void)           { return 1.0; }
 void   openpete_set_tick_scale(double s)       { (void)s; }
 int    openpete_runahead_get(void)             { return 0; }

@@ -119,7 +119,7 @@ PACE_TICK_SPLIT, PACE_EAGER_PLAN, PACE_GPU_FRAME = 15, 16, 17
 PACE_CANONICAL, PACE_INTERMEDIATE, PACE_REPEAT = 0, 1, 2
 PACE_F_NOT_LIVE = 64
 PACE_EP_CUT, PACE_EP_LATE, PACE_EP_PINNED, PACE_EP_GREEDY = 1, 2, 4, 8
-PACE_EP_RING, PACE_EP_WITHHELD = 16, 32
+PACE_EP_RING, PACE_EP_WITHHELD, PACE_EP_FILL = 16, 32, 64
 PACE_WINDOW_S = 30.0
 # TICK_SPLIT slots in record order: (slot, high word) per duration (core/include/openpete_pace_log.h).
 SPLIT_FIELDS = (("sim", 0, 0), ("extract", 0, 1), ("terrain", 1, 0), ("moby", 1, 1),
@@ -433,12 +433,17 @@ def split_decode(r):
 
 
 def plan_decode(r):
-    """An EAGER_PLAN record as a dict (the fields of the OPENPETE_EAGER_DBG plan line; times in ms)."""
+    """An EAGER_PLAN record as a dict (the fields of the OPENPETE_EAGER_DBG plan line; times in ms).
+
+    `fill` is the fill cadence's flag; `made` is the scenes the previous span published (0 in a log
+    written before the field)."""
     f = r[10] or 0
+    a = r[5] or 0
     return {"index": r[3], "t_ns": r[4], "flags": r[1], "cut": bool(r[1] & PACE_EP_CUT),
             "ring": bool(r[1] & PACE_EP_RING), "withheld": bool(r[1] & PACE_EP_WITHHELD),
-            "late": bool(r[1] & PACE_EP_LATE), "level": r[2] & 0xFF, "std": (r[2] >> 8) & 0xFF,
-            "budget": r[5] / 1e6, "tail": r[6] / 1e6, "lag": r[7] / 1e6, "vbl": r[8] / 1e6,
+            "late": bool(r[1] & PACE_EP_LATE), "fill": bool(r[1] & PACE_EP_FILL),
+            "level": r[2] & 0xFF, "std": (r[2] >> 8) & 0xFF,
+            "budget": (a & 0xFFFFFFFF) / 1e6, "made": (a >> 32) & 0xFFFF, "tail": r[6] / 1e6, "lag": r[7] / 1e6, "vbl": r[8] / 1e6,
             "late_ms": (r[9] or 0) / 1e6, "slots": f & 0xFFFF, "afford": (f >> 16) & 0xFFFF,
             "planned": (f >> 32) & 0xFFFF, "period_ms": ((f >> 48) & 0xFFFF) / 1000.0}
 
@@ -529,6 +534,9 @@ def perf_rollup(data, tail_s=10.0):
         out["plan_slots"] = sum(p["slots"] for p in plans) / n
         out["plan_afford"] = sum(p["afford"] for p in plans) / n
         out["plan_scenes"] = sum(p["planned"] for p in plans) / n
+        # made: the record carries the previous span's published scenes, so it is read one record on.
+        out["plan_made"] = sum(p["made"] for p in plans[1:]) / (n - 1) if n > 1 else 0.0
+        out["plan_fill_frac"] = sum(1 for p in plans if p["fill"]) / n
         out["plan_level_p50"], out["plan_level_max"] = pct([p["level"] for p in plans], 50), max(p["level"] for p in plans)
         out["plan_cut_frac"] = sum(1 for p in plans if p["cut"]) / n
         out["plan_cut_ring_frac"] = sum(1 for p in plans if p["cut"] and p["ring"]) / n
@@ -1625,8 +1633,9 @@ def perf_lines(pace, coarse, manifest):
         elif PACE_TICK_SPLIT not in r["types"]:
             w("  split: no TICK_SPLIT record")
         if "plans" in r:
-            w(f"  planner ({r['plans']} spans): slots {r['plan_slots']:.2f} afford {r['plan_afford']:.2f} "
-              f"planned {r['plan_scenes']:.2f} per span; level p50 {r['plan_level_p50']} max {r['plan_level_max']}; "
+            w(f"  planner ({r['plans']} spans, fill cadence {100 * r['plan_fill_frac']:.1f}%): slots "
+              f"{r['plan_slots']:.2f} afford {r['plan_afford']:.2f} planned {r['plan_scenes']:.2f} "
+              f"published {r['plan_made']:.2f} per span; level p50 {r['plan_level_p50']} max {r['plan_level_max']}; "
               f"cut {100 * r['plan_cut_frac']:.1f}% (ring {100 * r['plan_cut_ring_frac']:.1f}%); "
               f"budget p50 {r['plan_budget_p50']:.2f} ms")
         else:

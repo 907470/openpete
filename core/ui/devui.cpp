@@ -2277,6 +2277,7 @@ static const lay_row k_lay_display[] = {
     { LAY_ROW,    nullptr, { "fog" } },
     { LAY_REST,   "Display" },
     { LAY_SUB,    "Advanced" },
+    { LAY_SEG,    nullptr, { "cadence" } },
     { LAY_INLINE, "Notifications", { "osd", "osd_position", "osd_timeout" } },
     { LAY_ROW,    nullptr, { "fog_scale" } },
     { LAY_DRAWMODE, "Render mode", { "notex", "wireframe" } },
