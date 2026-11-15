@@ -276,8 +276,9 @@ typedef struct moby_game {
      * pass (a static geometry list) feeds it here, on that pass's own draw
      * hook (game_layout.moby.hook_draw_simple). The pass owns the guest
      * dispatch and the decode, and hands the walk each record's transform and
-     * model-space vertices and then its triangles through moby_simple_record,
-     * moby_simple_project_record and moby_simple_tri; it returns the triangle
+     * model-space vertices through moby_simple_record and
+     * moby_simple_project_record, then its triangles through moby_simple_tri
+     * from the per-record job moby_simple_fanout runs; it returns the triangle
      * count. `simple_replay` re-runs the decode alone for a sub-tick present,
      * from the queue the canonical call captured, so the simple mobys survive
      * between ticks. NULL where the game has no such kind, and the walk feeds

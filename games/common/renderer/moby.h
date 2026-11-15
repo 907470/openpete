@@ -413,7 +413,15 @@ int moby_native_simple_fresh(void);
  * tagging and the scene push stay with the shared walk, so the simple mobys
  * land in the same scene category, the same depth space and the same
  * projection store as the animated one. Valid only from inside simple_pass
- * or simple_replay. */
+ * or simple_replay.
+ *
+ * The naming and projection calls run on the sim thread, record by record.
+ * After each record's projection the provider takes its scope
+ * (moby_simple_scope_take); once every record is projected it hands the
+ * scopes to moby_simple_fanout, which runs the provider's per-record job,
+ * possibly on the walk workers, with an emit context bound to that record.
+ * The triangle, facing and world-bucket calls take that context and read no
+ * guest memory. */
 /** @brief Name the moby the following simple-model triangles belong to.
  *
  * Sets the current record's moby, class, HUD tag (static or UI address
@@ -482,10 +490,62 @@ void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)
  *        the origin, full world units.
  * @return 1 when the record is hidden behind nearer world depth, else 0. */
 int moby_simple_occluded(struct CPUState* cpu, uint32_t moby, const double org[3], double radius);
-/** @brief Emit one simple-model triangle over three vertices of the current record's projection.
+/* One simple-model record's emit scope, taken after its projection: where its
+ * projected vertices are and the record tags every triangle carries. Owned by
+ * moby.c; the provider only stores it. */
+typedef struct {
+    void*    proj;     /* the record's vertices in the projection store, or NULL */
+    int      ovf;      /* their run in the overflow copy when the store was full, else -1 */
+    uint32_t moby;
+    uint16_t cls;
+    int8_t   dofs;
+    uint8_t  ui, front, single, cb_rec;
+} moby_simple_scope_t;
+/* An emit context bound to one simple-model record (moby_simple_fanout). */
+typedef struct moby_simple_emit moby_simple_emit;
+/* The walk workers a simple-model job may run on: scratch indices 0 to
+ * MOBY_SIMPLE_WORKERS - 1, plus MOBY_SIMPLE_CHECK_WORKER, the serial run of
+ * the identity check (OPENPETE_MOBY_SIMPLE_FANOUT_CHECK), whose counters the
+ * provider does not sum. */
+#define MOBY_SIMPLE_WORKERS 8
+#define MOBY_SIMPLE_CHECK_WORKER MOBY_SIMPLE_WORKERS
+/* The provider's per-record job: the face walk and emit of record `rec`
+ * through `se`, with scratch index `worker`; it reads no guest memory and
+ * writes only that scratch and what `se` emits. */
+typedef void (*moby_simple_job_fn)(moby_simple_emit* se, int rec, int worker, void* arg);
+/** @brief Take the current simple-model record's emit scope, after its moby_simple_project_record.
+ *
+ * Records the moby, class, OT bias, HUD tag, front flag, single-bucket flag
+ * and class bits the naming and projection set, and where the record's
+ * projected vertices are; a record projected into the scratch array (the
+ * store's region full) is copied out so each keeps its own until its emit.
+ * @param n The record's vertex count, as passed to the projection.
+ * @param sc Receives the scope. */
+void moby_simple_scope_take(int n, moby_simple_scope_t* sc);
+/** @brief Run the provider's job for every record, appending the records' triangles to the walk output in record order.
+ *
+ * Runs serially on the sim thread's emit context for the first decode, under
+ * OPENPETE_MOBY_WALK_SERIAL, below its own fan-out face bound
+ * (OPENPETE_MOBY_SIMPLE_FANOUT_MIN), with one worker or fewer than two records, and
+ * while a walk instrument is on; otherwise one record per work-pool item, each
+ * worker emitting into its slab, merged in record order as the animated walk
+ * merges, its walk diagnostics summed into the serial slot. Either way the
+ * stream is the one the serial run emits. Under
+ * OPENPETE_MOBY_SIMPLE_FANOUT_CHECK a fanned-out decode also runs serially and
+ * compares the two streams' digests, counting the decodes and records
+ * compared and the mismatches per leg (canonical, sub-tick).
+ * @param sc The records' scopes, one per record.
+ * @param nrec The record count.
+ * @param faces The faces the jobs will walk, for the fan-out bound.
+ * @param fn The job.
+ * @param arg Passed to every job. */
+void moby_simple_fanout(const moby_simple_scope_t* sc, int nrec, long faces,
+                        moby_simple_job_fn fn, void* arg);
+/** @brief Emit one simple-model triangle over three vertices of the bound record's projection.
  *
  * The vertices are moby_simple_project_record's; the triangle goes through
  * the shared emit with the animated walk's tagging.
+ * @param se The emit context bound to the record.
  * @param vi The three vertex indices into the record.
  * @param rgb The three vertex colours.
  * @param u The three texel U coordinates.
@@ -501,23 +561,25 @@ int moby_simple_occluded(struct CPUState* cpu, uint32_t moby, const double org[3
  * @param otk The triangle's bucket word in the record's paint order
  *        (moby_rank.h: the face's moby_otk_face_bucket, MOBY_OTK_Q2 set on the
  *        second triangle of one prim), -1 for none. */
-void moby_simple_tri(const int vi[3], const uint32_t rgb[3],
+void moby_simple_tri(moby_simple_emit* se, const int vi[3], const uint32_t rgb[3],
                      const int u[3], const int v[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
                      uint32_t fkey, int32_t otk);
-/** @brief A simple-model face's two facing values over the current record's projection, by the animated walk's rule.
+/** @brief A simple-model face's two facing values over the bound record's projection, by the animated walk's rule.
  *
  * NCLIP1 is (v0, v1, v2) and NCLIP2 is (v3, v1, v2), on the float screen
  * positions; a face with a vertex in the GTE divide-overflow regime takes
  * both from the homogeneous positions instead, the side of the face's plane
  * the eye is on, which is the geometry its near-clipped draw shows. The
  * vertices are moby_simple_project_record's.
+ * @param se The emit context bound to the record.
  * @param idx The face's four vertex indices into the record.
  * @param tri 1 for a triangle, which has no NCLIP2.
  * @param ncl1 Receives NCLIP1.
  * @param ncl2 Receives NCLIP2, -1 on a triangle. */
-void moby_simple_face_nclips(const int idx[4], int tri, double* ncl1, double* ncl2);
+void moby_simple_face_nclips(const moby_simple_emit* se, const int idx[4], int tri,
+                             double* ncl1, double* ncl2);
 /** @brief The paint key of the current record under a row, with the TRZ the draw loaded.
  *
  * The row becomes MOBY_OTK_NONE while the rank is off or the present carries
@@ -526,13 +588,14 @@ void moby_simple_face_nclips(const int idx[4], int tri, double* ncl1, double* nc
  * @param trz The GTE TRZ the draw loaded.
  * @param out Receives the paint key. */
 void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out);
-/** @brief The world ordering-table bucket every prim of the current simple-moby record is linked into.
+/** @brief The world ordering-table bucket the following triangles of the bound simple-moby record are linked into.
  *
  * Each following triangle of the record carries it as its contest key's
- * bucket (moby_record_world_buckets for an animated model); moby_simple_record
- * clears it.
+ * bucket (moby_record_world_buckets for an animated model); binding the
+ * context clears it.
+ * @param se The emit context bound to the record.
  * @param w The bucket, or -1 for none. */
-void moby_simple_world_bucket(int w);
+void moby_simple_world_bucket(moby_simple_emit* se, int w);
 
 /** @brief Offer the mobys the canonical cull rejected to moby_game.reveal_record, which appends records in the game's own encoding.
  *

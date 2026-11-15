@@ -5078,6 +5078,13 @@ int moby_face_emit(int fresh, int bit0, int bit0_unconditional,
 
 #define MN_MAX_WORKERS 8
 #define MN_FANOUT_MIN_FACES 400   /* see walk_prologue: dispatch break-even */
+/* The simple-model fan-out's bound. A decode's fan-out adds the merge and the
+ * per-record bind to the pool's wake and join (moby_simple_fanout), and a
+ * simple model's faces are cheaper to walk than an animated model's, so the
+ * break-even sits higher: a decode of 2391 faces measured 6 us slower fanned
+ * out than serial, one of 4423 faces 78 us faster. Below the bound the jobs
+ * run in order on the sim thread. */
+#define MN_SIMPLE_FANOUT_MIN_FACES 3000
 /* Walk diagnostics (printed by compare_walk_vs_prims), one per worker. Aligned
  * to a cache line: workers bump their own counters throughout the walk, and
  * packed side by side every increment would bounce the line between cores. */
@@ -5099,9 +5106,12 @@ static mn_walkdiag s_wdiag[MN_MAX_WORKERS];
 
 /* Where emitted triangles land: the global s_wtri* arrays for a serial walk, a
  * per-worker slab for a parallel one. Cursor and capacity travel with the
- * arrays so emit_wtri needs no knowledge of which it is filling. */
+ * arrays so emit_wtri needs no knowledge of which it is filling. Aligned to a
+ * cache line: each worker advances its own cursor on every triangle, and two
+ * workers' targets on one line would bounce it between cores. */
 typedef struct {
-    ntri_t*   tri;  uint32_t* fkey; uint32_t* moby; uint16_t* cls;
+    _Alignas(64) ntri_t* tri;
+    uint32_t* fkey; uint32_t* moby; uint16_t* cls;
     uint8_t*  ui;   uint8_t*  front; uint8_t* mangle;
     int8_t*   dofs; uint8_t*  special;
     int32_t*  otk;  int16_t (*isxy)[6];
@@ -5125,9 +5135,10 @@ typedef struct { uint32_t key[12]; int top, n; } coinc_slot;
  * triangle reads no thread-local storage. The sim thread's context (s_esim)
  * serves the serial walk, the shaded pass, the simple models and the
  * instruments, all of which emit into s_gout; each pool worker of a parallel
- * walk has its own (s_ework), emitting into its slab. */
+ * walk has its own (s_ework), emitting into its slab. Aligned to a cache line,
+ * since a worker writes its context's record and face state per face. */
 typedef struct {
-    mn_out*      out;
+    _Alignas(64) mn_out* out;
     mn_walkdiag* diag;
     /* Record scope (mn_emit_record, mn_emit_ui), copied to every triangle. */
     uint32_t moby;     /* face identity: the moby the record draws */
@@ -5859,8 +5870,10 @@ static const float MOBY_IDENT_F[3][3] = { {1.0f,0.0f,0.0f}, {0.0f,1.0f,0.0f}, {0
 /* The projection origin of the record being decoded, and the view it projects
  * through. A record whose model is placed in screen space names its own origin
  * in PSX pixels; every other record takes the origin of its own view. The
- * simple models run on the sim thread alone: their record and triangle state is
- * file-scope, and it emits through the sim thread's context s_esim. */
+ * record naming and projection run on the sim thread alone and stage their
+ * state in s_esim and file-scope variables; moby_simple_scope_take copies a
+ * record's share of it out, and moby_simple_fanout emits each record through
+ * the emit context it binds that copy to. */
 static int    s_cur_screen;
 static double s_cur_screen_ofx, s_cur_screen_ofy;
 
@@ -5873,6 +5886,18 @@ static proj_xy* s_sim_cur;
 static proj_xy s_sim_scratch[MOBY_SIMPLE_MAX_VERTS];
 static struct { uint32_t moby; int off, n; } s_simrecs[MOBY_SIM_RECS];
 static int s_nsimrecs;
+/* The vertices of the records projected into s_sim_scratch, one run per
+ * record (moby_simple_scope_take), so each keeps its own until its emit.
+ * Emptied with the region (moby_simple_begin). */
+static proj_xy* s_sim_ovf;
+static int s_sim_ovf_n, s_sim_ovf_cap;
+
+/* An emit context bound to one simple-model record (moby_simple_fanout): the
+ * context its triangles land through and the record's projected vertices. */
+struct moby_simple_emit {
+    mn_emit* E;
+    proj_xy* p;
+};
 
 static void moby_simple_occl_audit(uint32_t moby, const proj_xy* p, int n);
 
@@ -5954,8 +5979,8 @@ void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)
     moby_simple_occl_audit(s_esim.moby, out, n);
 }
 
-void moby_simple_world_bucket(int w) {
-    s_esim.wbk = (int16_t)(w < 0 ? -1 : (w > INT16_MAX ? INT16_MAX : w));
+void moby_simple_world_bucket(moby_simple_emit* se, int w) {
+    se->E->wbk = (int16_t)(w < 0 ? -1 : (w > INT16_MAX ? INT16_MAX : w));
 }
 
 void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out) {
@@ -5963,21 +5988,63 @@ void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out) {
     moby_otk_record(moby_otkey_wanted() ? row : MOBY_OTK_NONE, 0, trz, out);
 }
 
-void moby_simple_tri(const int vi[3], const uint32_t rgb[3],
+void moby_simple_tri(moby_simple_emit* se, const int vi[3], const uint32_t rgb[3],
                      const int u[3], const int v[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
                      uint32_t fkey, int32_t otk) {
-    proj_xy* const p = s_sim_cur;
+    proj_xy* const p = se->p;
     const mn_tag g = { fkey, otk, 0u, 0u };
     const mn_mat m = { textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend };
-    emit_wtri(&s_esim, &g, &p[vi[0]], &p[vi[1]], &p[vi[2]], rgb[0], rgb[1], rgb[2],
+    emit_wtri(se->E, &g, &p[vi[0]], &p[vi[1]], &p[vi[2]], rgb[0], rgb[1], rgb[2],
               u[0], v[0], u[1], v[1], u[2], v[2], &m);
 }
 
-void moby_simple_face_nclips(const int idx[4], int tri, double* ncl1, double* ncl2) {
-    const proj_xy* const p = s_sim_cur;
+void moby_simple_face_nclips(const moby_simple_emit* se, const int idx[4], int tri,
+                             double* ncl1, double* ncl2) {
+    const proj_xy* const p = se->p;
     face_nclips(1, &p[idx[0]], &p[idx[1]], &p[idx[2]], tri ? NULL : &p[idx[3]], ncl1, ncl2);
+}
+
+void moby_simple_scope_take(int n, moby_simple_scope_t* sc) {
+    if (n > MOBY_SIMPLE_MAX_VERTS) n = MOBY_SIMPLE_MAX_VERTS;
+    sc->moby = s_esim.moby;   sc->cls = s_esim.cls;       sc->dofs = s_esim.dofs;
+    sc->ui = s_esim.ui;       sc->front = s_esim.front;   sc->single = s_esim.single;
+    sc->cb_rec = s_esim.cb_rec;
+    sc->proj = s_sim_cur;
+    sc->ovf = -1;
+    if (s_sim_cur != s_sim_scratch) return;
+    if (s_sim_ovf_n + n > s_sim_ovf_cap) {
+        const int cap = 2 * (s_sim_ovf_n + n);
+        proj_xy* p = (proj_xy*)realloc(s_sim_ovf, sizeof(proj_xy) * (size_t)cap);
+        if (!p) { sc->proj = NULL; return; }
+        s_sim_ovf = p;
+        s_sim_ovf_cap = cap;
+    }
+    memcpy(s_sim_ovf + s_sim_ovf_n, s_sim_scratch, sizeof(proj_xy) * (size_t)n);
+    sc->proj = NULL;
+    sc->ovf = s_sim_ovf_n;
+    s_sim_ovf_n += n;
+}
+
+/** @brief The projected vertices a simple-model scope names: its store run, or its run of the overflow copy.
+ * @param sc The scope.
+ * @return The record's first vertex, NULL when the overflow copy could not be allocated. */
+static proj_xy* moby_simple_scope_proj(const moby_simple_scope_t* sc) {
+    if (sc->ovf >= 0) return s_sim_ovf + sc->ovf;
+    return (proj_xy*)sc->proj;
+}
+
+/** @brief Bind an emit context to a simple-model record: its record scope as moby_simple_record and the projection left it, no world bucket, no face bits, no water-plane split.
+ * @param E The emit context.
+ * @param sc The record's scope (moby_simple_scope_take). */
+static void mn_emit_bind_simple(mn_emit* E, const moby_simple_scope_t* sc) {
+    E->moby = sc->moby;   E->cls = sc->cls;       E->dofs = sc->dofs;
+    E->ui = sc->ui;       E->front = sc->front;   E->single = sc->single;
+    E->cb_rec = sc->cb_rec;
+    E->cb_face = 0u;
+    E->wbk = -1;
+    E->wp = NULL;
 }
 
 /* specular env-reflection UV -- definitions below (near recolor); forward-
@@ -6879,8 +6946,11 @@ static int build_walk_tris(CPUState* cpu) {
 static const fcache_t* s_pre_FC[MAX_RECORDS];
 static const fcache_t* s_pre_FCp[MAX_RECORDS];
 static float           s_pre_clra[MAX_RECORDS];
-/* Where each record's triangles landed, for the ordered merge. */
-static struct { int worker, start, count; } s_pre_rec[MAX_RECORDS];
+/* Where one record's triangles landed in a parallel walk: the worker whose
+ * slab holds them, their first slot there and their count, for the ordered
+ * merge (walk_merge_runs). */
+typedef struct { int worker, start, count; } mn_run;
+static mn_run s_pre_rec[MAX_RECORDS];
 
 /** @brief Give a record's emitted triangles the world ordering-table bucket the draw splices each face into.
  *
@@ -7672,6 +7742,69 @@ static int walk_dbg_env(void) {
     return v;
 }
 
+/** @brief Whether OPENPETE_MOBY_WALK_SERIAL forces every moby walk serial.
+ *
+ * Forces the animated walk and the simple-model fan-out serial while leaving
+ * the worker pool up for every other caller. --extract-threads 1 cannot do
+ * that: it degrades the pool itself, so it retires the terrain sector walk in
+ * the same breath and no A/B built on it can say which fan-out a measurement
+ * belongs to.
+ * @return 1 when forced serial, else 0. */
+static int walk_serial_forced(void) {
+    static int s_ser = -1;
+    if (s_ser < 0) { const char* e = getenv("OPENPETE_MOBY_WALK_SERIAL");
+                     s_ser = (e && *e && *e != '0'); }
+    return s_ser;
+}
+
+/** @brief Whether a walk of this size stays serial: below the fan-out face bound, one worker, fewer than two records, or a walk instrument on (walk_dbg_env).
+ * @param faces The faces the walk will visit.
+ * @param min The face bound below which the walk stays serial.
+ * @param nrecs Its record count.
+ * @param nw The pool's worker count, at most MN_MAX_WORKERS.
+ * @return 1 when the walk stays serial, else 0. */
+static int walk_fanout_small(long faces, long min, int nrecs, int nw) {
+    /* Below a work bound the dispatch costs more than it saves. The pool's
+     * floor is a semaphore wake plus a join that waits for every helper it
+     * signalled - including one that finds no work left - so a run costs on the
+     * order of 20 us however small it is, while the walk itself runs at ~0.1 us
+     * per face (307 faces / 30.6 us and 615 / 66.4 us, two scenes a factor of
+     * two apart). Break-even is therefore a few hundred faces, and below it the
+     * walk measured slower parallel than serial.
+     *
+     * The bound needs no per-machine calibration, because being wrong about it
+     * is wildly asymmetric: fanning out a scene that was too small costs a few
+     * microseconds, while failing to fan out a heavy one costs more than a
+     * millisecond - a whole-level vista walks ~17600 faces, 1852 us serial
+     * against 444 parallel. Only the far side of the bound is expensive, so any
+     * bound in this neighbourhood is safe wherever it runs. */
+    if (faces < min) return 1;
+    if (nw <= 1 || nrecs < 2 || walk_dbg_env()) return 1;
+    return 0;
+}
+
+/** @brief The animated walk's fan-out face bound: OPENPETE_MOBY_FANOUT_MIN, else MN_FANOUT_MIN_FACES.
+ *
+ * The variable is a calibration override: it re-derives the bound on other
+ * hardware without a rebuild (sweep it against the walk cost the tier census
+ * reports).
+ * @return The bound, faces. */
+static long walk_fanout_min(void) {
+    static int s_min = -1;
+    if (s_min < 0) { const char* e = getenv("OPENPETE_MOBY_FANOUT_MIN");
+                     s_min = (e && *e) ? atoi(e) : MN_FANOUT_MIN_FACES; }
+    return s_min;
+}
+
+/** @brief The simple-model fan-out's face bound: OPENPETE_MOBY_SIMPLE_FANOUT_MIN, else MN_SIMPLE_FANOUT_MIN_FACES, a calibration override as walk_fanout_min's.
+ * @return The bound, faces. */
+static long simple_fanout_min(void) {
+    static int s_min = -1;
+    if (s_min < 0) { const char* e = getenv("OPENPETE_MOBY_SIMPLE_FANOUT_MIN");
+                     s_min = (e && *e) ? atoi(e) : MN_SIMPLE_FANOUT_MIN_FACES; }
+    return s_min;
+}
+
 /** @brief Resolve every record's face sets and decide whether the walk may fan out.
  *
  * The face walk writes guest RAM: a keyframe with a patch list has its
@@ -7734,39 +7867,10 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
      * on one thread; every later walk finds them already set. */
     static int first = 1;
     if (first) { first = 0; return 1; }
-    /* OPENPETE_MOBY_WALK_SERIAL=1 forces this walk serial while leaving the
-     * worker pool up for every other caller. --extract-threads 1 cannot do
-     * that: it degrades the pool itself, so it retires the terrain sector walk
-     * in the same breath and no A/B built on it can say which fan-out a
-     * measurement belongs to. */
-    static int s_ser = -1;
-    if (s_ser < 0) { const char* e = getenv("OPENPETE_MOBY_WALK_SERIAL");
-                     s_ser = (e && *e && *e != '0'); }
-    if (s_ser) return 1;
+    if (walk_serial_forced()) return 1;
     if (tier_dbg_on()) { s_walk_faces += faces; s_walk_runs++; }
     msc_add(MSC_FACES, faces);
-    /* Below a work bound the dispatch costs more than it saves. The pool's
-     * floor is a semaphore wake plus a join that waits for every helper it
-     * signalled - including one that finds no work left - so a run costs on the
-     * order of 20 us however small it is, while the walk itself runs at ~0.1 us
-     * per face (307 faces / 30.6 us and 615 / 66.4 us, two scenes a factor of
-     * two apart). Break-even is therefore a few hundred faces, and below it the
-     * walk measured slower parallel than serial.
-     *
-     * The bound needs no per-machine calibration, because being wrong about it
-     * is wildly asymmetric: fanning out a scene that was too small costs a few
-     * microseconds, while failing to fan out a heavy one costs more than a
-     * millisecond - a whole-level vista walks ~17600 faces, 1852 us serial
-     * against 444 parallel. Only the far side of the bound is expensive, so any
-     * bound in this neighbourhood is safe wherever it runs. */
-    /* Calibration override: re-derive the bound on other hardware without a
-     * rebuild (sweep it against the walk cost the tier census reports). */
-    static int s_min = -1;
-    if (s_min < 0) { const char* e = getenv("OPENPETE_MOBY_FANOUT_MIN");
-                     s_min = (e && *e) ? atoi(e) : MN_FANOUT_MIN_FACES; }
-    if (faces < s_min) return 1;
-    if (nw <= 1 || s_nrecs < 2 || walk_dbg_env()) return 1;
-    return 0;
+    return walk_fanout_small(faces, walk_fanout_min(), s_nrecs, nw);
 }
 
 /** @brief Point the first nw workers' emit contexts at their slabs and allocate each slab on first use.
@@ -7826,54 +7930,41 @@ static void walk_record_job(int item, int worker, void* arg) {
     s_pre_rec[item].count  = O->n - start;
 }
 
-/** @brief Walk every record across the worker pool and merge the runs in record order.
+/** @brief Append each run's triangles from its worker's slab to s_gout, in run order, truncating at MAX_NTRI.
  *
- * Falls back to a serial walk when a slab cannot be allocated. Otherwise
- * empties the slabs, runs walk_record_job per record, and copies each
- * record's run into the s_wtri arrays in record order, truncating at
- * MAX_NTRI, so the stream matches the serial walk. Sums the per-worker
- * diagnostics into worker 0's. With OPENPETE_MOBY_TIER_DBG on, the dispatch
- * and merge microseconds go to s_us_fanout and s_us_merge.
- * @param cpu The guest CPU state.
- * @param is_spec Nonzero for the specular pass. */
-static void walk_parallel(CPUState* cpu, int is_spec) {
-    int nw = openpete_workpool_threads();
-    if (nw > MN_MAX_WORKERS) nw = MN_MAX_WORKERS;
-    if (!walk_slabs_ready(nw)) { walk_records(&s_esim, cpu, is_spec, 0, s_nrecs); return; }
-    for (int w = 0; w < nw; w++) s_wout[w].n = 0;
-    mn_job J = { cpu, is_spec };
-    uint64_t t_disp = tier_dbg_on() ? openpete_phase_now_us() : 0;
-    openpete_workpool_run(s_nrecs, walk_record_job, &J);
-    if (t_disp) s_us_fanout += (long)(openpete_phase_now_us() - t_disp);
-    uint64_t t_mrg = tier_dbg_on() ? openpete_phase_now_us() : 0;
-    /* Ordered merge: worker runs land in s_wtri in RECORD order, so the stream
-     * and every consumer downstream of it match the serial walk. */
-    s_gout.n = 0;
-    for (int r = 0; r < s_nrecs; r++) {
-        int n = s_pre_rec[r].count;
-        if (n <= 0) continue;
-        const mn_out* O = &s_wout[s_pre_rec[r].worker];
-        int st = s_pre_rec[r].start;
-        if (s_gout.n + n > MAX_NTRI) n = MAX_NTRI - s_gout.n;
-        if (n <= 0) break;
-        memcpy(&s_wtri[s_gout.n],        &O->tri[st],    (size_t)n * sizeof(ntri_t));
-        memcpy(&s_wtri_fkey[s_gout.n],   &O->fkey[st],   (size_t)n * sizeof(uint32_t));
-        memcpy(&s_wtri_moby[s_gout.n],   &O->moby[st],   (size_t)n * sizeof(uint32_t));
-        memcpy(&s_wtri_cls[s_gout.n],    &O->cls[st],    (size_t)n * sizeof(uint16_t));
-        memcpy(&s_wtri_ui[s_gout.n],     &O->ui[st],     (size_t)n);
-        memcpy(&s_wtri_front[s_gout.n],  &O->front[st],  (size_t)n);
-        memcpy(&s_wtri_mangle[s_gout.n], &O->mangle[st], (size_t)n);
-        memcpy(&s_wtri_dofs[s_gout.n],   &O->dofs[st],   (size_t)n);
-        memcpy(&s_wtri_special[s_gout.n],&O->special[st],(size_t)n);
-        memcpy(&s_wtri_otk[s_gout.n],    &O->otk[st],    (size_t)n * sizeof(int32_t));
-        memcpy(&s_wtri_isxy[s_gout.n],   &O->isxy[st],   (size_t)n * sizeof(int16_t[6]));
-        memcpy(&s_wtri_single[s_gout.n], &O->single[st], (size_t)n);
-        memcpy(&s_wtri_wbk[s_gout.n],    &O->wbk[st],    (size_t)n * sizeof(int16_t));
-        memcpy(&s_wtri_cbits[s_gout.n],  &O->cbits[st],  (size_t)n);
-        s_gout.n += n;
+ * Run order is record order, so the merged stream matches the serial walk's.
+ * @param runs The runs, one per record; a run with no triangles is skipped.
+ * @param n Their count. */
+static void walk_merge_runs(const mn_run* runs, int n) {
+    for (int r = 0; r < n; r++) {
+        int c = runs[r].count;
+        if (c <= 0) continue;
+        const mn_out* O = &s_wout[runs[r].worker];
+        const int st = runs[r].start, d = s_gout.n;
+        if (d + c > MAX_NTRI) c = MAX_NTRI - d;
+        if (c <= 0) break;
+        memcpy(&s_wtri[d],        &O->tri[st],    (size_t)c * sizeof(ntri_t));
+        memcpy(&s_wtri_fkey[d],   &O->fkey[st],   (size_t)c * sizeof(uint32_t));
+        memcpy(&s_wtri_moby[d],   &O->moby[st],   (size_t)c * sizeof(uint32_t));
+        memcpy(&s_wtri_cls[d],    &O->cls[st],    (size_t)c * sizeof(uint16_t));
+        memcpy(&s_wtri_ui[d],     &O->ui[st],     (size_t)c);
+        memcpy(&s_wtri_front[d],  &O->front[st],  (size_t)c);
+        memcpy(&s_wtri_mangle[d], &O->mangle[st], (size_t)c);
+        memcpy(&s_wtri_dofs[d],   &O->dofs[st],   (size_t)c);
+        memcpy(&s_wtri_special[d],&O->special[st],(size_t)c);
+        memcpy(&s_wtri_otk[d],    &O->otk[st],    (size_t)c * sizeof(int32_t));
+        memcpy(&s_wtri_isxy[d],   &O->isxy[st],   (size_t)c * sizeof(int16_t[6]));
+        memcpy(&s_wtri_single[d], &O->single[st], (size_t)c);
+        memcpy(&s_wtri_wbk[d],    &O->wbk[st],    (size_t)c * sizeof(int16_t));
+        memcpy(&s_wtri_cbits[d],  &O->cbits[st],  (size_t)c);
+        s_gout.n = d + c;
     }
-    if (t_mrg) s_us_merge += (long)(openpete_phase_now_us() - t_mrg);
-    for (int w = 1; w < nw; w++) {   /* diagnostics roll-up */
+}
+
+/** @brief Sum the diagnostics of workers 1 to nw - 1 into worker 0's slot, the serial walk's.
+ * @param nw The worker count of the parallel run. */
+static void walk_diag_rollup(int nw) {
+    for (int w = 1; w < nw; w++) {
         const mn_walkdiag* D = &s_wdiag[w];
         s_wdiag[0].faces += D->faces; s_wdiag[0].emitted += D->emitted;
         s_wdiag[0].oor += D->oor;     s_wdiag[0].skip += D->skip;
@@ -7886,6 +7977,192 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         for (int k = 0; k < 3; k++) s_wdiag[0].special_faces[k] += D->special_faces[k];
         s_wdiag[0].bit4_faces += D->bit4_faces;
     }
+}
+
+/** @brief Walk every record across the worker pool and merge the runs in record order.
+ *
+ * Falls back to a serial walk when a slab cannot be allocated. Otherwise
+ * empties the slabs, runs walk_record_job per record, and copies each
+ * record's run into the s_wtri arrays in record order (walk_merge_runs), so
+ * the stream matches the serial walk. Sums the per-worker diagnostics into
+ * worker 0's. With OPENPETE_MOBY_TIER_DBG on, the dispatch and merge
+ * microseconds go to s_us_fanout and s_us_merge.
+ * @param cpu The guest CPU state.
+ * @param is_spec Nonzero for the specular pass. */
+static void walk_parallel(CPUState* cpu, int is_spec) {
+    int nw = openpete_workpool_threads();
+    if (nw > MN_MAX_WORKERS) nw = MN_MAX_WORKERS;
+    if (!walk_slabs_ready(nw)) { walk_records(&s_esim, cpu, is_spec, 0, s_nrecs); return; }
+    for (int w = 0; w < nw; w++) s_wout[w].n = 0;
+    mn_job J = { cpu, is_spec };
+    uint64_t t_disp = tier_dbg_on() ? openpete_phase_now_us() : 0;
+    openpete_workpool_run(s_nrecs, walk_record_job, &J);
+    if (t_disp) s_us_fanout += (long)(openpete_phase_now_us() - t_disp);
+    uint64_t t_mrg = tier_dbg_on() ? openpete_phase_now_us() : 0;
+    s_gout.n = 0;
+    walk_merge_runs(s_pre_rec, s_nrecs);
+    if (t_mrg) s_us_merge += (long)(openpete_phase_now_us() - t_mrg);
+    walk_diag_rollup(nw);
+}
+
+/* ---- simple models: the per-record fan-out ---------------------------------
+ * The provider's serial prefix names, projects and decodes every record and
+ * takes each one's scope; moby_simple_fanout then runs the provider's face
+ * walk and emit per record, on the walk workers when the decode is large
+ * enough, into the same per-worker slabs and through the same ordered merge as
+ * the animated walk. */
+_Static_assert(MOBY_SIMPLE_WORKERS == MN_MAX_WORKERS, "the provider's scratch is indexed by walk worker");
+static mn_run s_sim_runs[MOBY_SIM_RECS];
+
+/* The serial-against-parallel identity check (OPENPETE_MOBY_SIMPLE_FANOUT_CHECK):
+ * fanned-out decodes compared, split by leg (0 the canonical pass, 1 a re-extraction replay),
+ * the records they fanned out, and the decodes whose streams differed. */
+static long s_simchk_decodes[2], s_simchk_recs[2], s_simchk_bad[2];
+
+/** @brief Whether OPENPETE_MOBY_SIMPLE_FANOUT_CHECK is set: every fanned-out decode is also run serially and the two triangle streams compared.
+ * @return 1 when on. */
+static int simple_fanout_check_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_SIMPLE_FANOUT_CHECK"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/** @brief FNV-1a 64 over n bytes, continuing from h.
+ * @param h The running hash.
+ * @param p The bytes.
+ * @param n Their count.
+ * @return The updated hash. */
+static uint64_t simchk_fnv(uint64_t h, const void* p, size_t n) {
+    const uint8_t* b = (const uint8_t*)p;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001B3ull; }
+    return h;
+}
+
+/** @brief A digest of s_gout's triangles [a, b): every field the arrays carry, the triangle's padding excluded.
+ * @param a The first triangle.
+ * @param b One past the last.
+ * @return The digest. */
+static uint64_t simchk_digest(int a, int b) {
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (int i = a; i < b; i++) {
+        const ntri_t* t = &s_wtri[i];
+        h = simchk_fnv(h, t->v, sizeof t->v);
+        const int mat[7] = { t->textured, t->tpage_x, t->tpage_y, t->clut_x, t->clut_y, t->bpp, t->blend };
+        h = simchk_fnv(h, mat, sizeof mat);
+        h = simchk_fnv(h, &t->tmix, 1);
+        h = simchk_fnv(h, &s_wtri_fkey[i], 4);   h = simchk_fnv(h, &s_wtri_moby[i], 4);
+        h = simchk_fnv(h, &s_wtri_cls[i], 2);    h = simchk_fnv(h, &s_wtri_ui[i], 1);
+        h = simchk_fnv(h, &s_wtri_front[i], 1);  h = simchk_fnv(h, &s_wtri_mangle[i], 1);
+        h = simchk_fnv(h, &s_wtri_dofs[i], 1);   h = simchk_fnv(h, &s_wtri_special[i], 1);
+        h = simchk_fnv(h, &s_wtri_otk[i], 4);    h = simchk_fnv(h, s_wtri_isxy[i], 12);
+        h = simchk_fnv(h, &s_wtri_single[i], 1); h = simchk_fnv(h, &s_wtri_wbk[i], 2);
+        h = simchk_fnv(h, &s_wtri_cbits[i], 1);
+    }
+    return h;
+}
+
+/** @brief Print the identity check's running totals.
+ * @param tag Why the line prints. */
+static void simchk_print(const char* tag) {
+    fprintf(stderr, "[simple-fanout-check %s vbl=%u] pass: decodes=%ld recs=%ld mismatches=%ld"
+                    " | replay: decodes=%ld recs=%ld mismatches=%ld\n", tag, openpete_frame,
+            s_simchk_decodes[0], s_simchk_recs[0], s_simchk_bad[0],
+            s_simchk_decodes[1], s_simchk_recs[1], s_simchk_bad[1]);
+}
+
+/** @brief atexit hook: print the identity check's final totals. */
+static void simchk_atexit(void) { simchk_print("final"); }
+
+/** @brief Run the provider's per-record job for every record in order on the sim thread's context, into s_gout.
+ * @param sc The records' scopes.
+ * @param nrec Their count.
+ * @param fn The job.
+ * @param arg Passed to every job.
+ * @param worker The scratch index the job is handed. */
+static void simple_run_serial(const moby_simple_scope_t* sc, int nrec, moby_simple_job_fn fn,
+                              void* arg, int worker) {
+    for (int r = 0; r < nrec; r++) {
+        proj_xy* p = moby_simple_scope_proj(&sc[r]);
+        if (!p) continue;
+        mn_emit_bind_simple(&s_esim, &sc[r]);
+        moby_simple_emit se = { &s_esim, p };
+        fn(&se, r, worker, arg);
+    }
+}
+
+typedef struct { const moby_simple_scope_t* sc; moby_simple_job_fn fn; void* arg; } mn_simple_job;
+
+/** @brief Work-pool job: bind the worker's emit context to one simple-model record, run the provider's job through it and note the record's run.
+ * @param item The record index.
+ * @param worker The pool worker, 0 for the calling thread.
+ * @param arg The mn_simple_job. */
+static void simple_record_job(int item, int worker, void* arg) {
+    const mn_simple_job* J = (const mn_simple_job*)arg;
+    mn_emit* E = &s_ework[worker];
+    const int start = E->out->n;
+    proj_xy* p = moby_simple_scope_proj(&J->sc[item]);
+    if (p) {
+        mn_emit_bind_simple(E, &J->sc[item]);
+        moby_simple_emit se = { E, p };
+        J->fn(&se, item, worker, J->arg);
+    }
+    s_sim_runs[item] = (mn_run){ worker, start, E->out->n - start };
+}
+
+/** @brief Fan the simple-model records out over the walk workers and append their runs to s_gout in record order.
+ * @param sc The records' scopes.
+ * @param nrec Their count, at most MOBY_SIM_RECS.
+ * @param fn The provider's job.
+ * @param arg Passed to every job.
+ * @param nw The worker count. */
+static void simple_run_parallel(const moby_simple_scope_t* sc, int nrec, moby_simple_job_fn fn,
+                                void* arg, int nw) {
+    for (int w = 0; w < nw; w++) {
+        s_wout[w].n = 0;
+        if (w > 0) memset(&s_wdiag[w], 0, sizeof s_wdiag[w]);
+    }
+    mn_simple_job J = { sc, fn, arg };
+    openpete_workpool_run(nrec, simple_record_job, &J);
+    walk_merge_runs(s_sim_runs, nrec);
+    walk_diag_rollup(nw);
+}
+
+void moby_simple_fanout(const moby_simple_scope_t* sc, int nrec, long faces,
+                        moby_simple_job_fn fn, void* arg) {
+    int nw = openpete_workpool_threads();
+    if (nw > MN_MAX_WORKERS) nw = MN_MAX_WORKERS;
+    /* The first decode runs serial so any lazy latch the jobs reach resolves
+     * on one thread. */
+    static int first = 1;
+    const int serial = first || walk_serial_forced() || walk_fanout_small(faces, simple_fanout_min(), nrec, nw) ||
+                       nrec > MOBY_SIM_RECS || !walk_slabs_ready(nw);
+    first = 0;
+    if (serial) { simple_run_serial(sc, nrec, fn, arg, 0); return; }
+    if (!simple_fanout_check_on()) { simple_run_parallel(sc, nrec, fn, arg, nw); return; }
+    /* The check: the serial run into s_gout with the provider's check scratch,
+     * whose counters the provider discards, then the parallel run over the
+     * same slots; the serial run's diagnostics are taken back out. */
+    static int s_atexit;
+    if (!s_atexit) { s_atexit = 1; atexit(simchk_atexit); }
+    const int n0 = s_gout.n;
+    const mn_walkdiag d0 = s_wdiag[0];
+    simple_run_serial(sc, nrec, fn, arg, MOBY_SIMPLE_CHECK_WORKER);
+    const int ns = s_gout.n;
+    const uint64_t hs = simchk_digest(n0, ns);
+    s_gout.n = n0;
+    s_wdiag[0] = d0;
+    simple_run_parallel(sc, nrec, fn, arg, nw);
+    const uint64_t hp = simchk_digest(n0, s_gout.n);
+    const int leg = s_in_reextract ? 1 : 0;
+    s_simchk_decodes[leg]++;
+    s_simchk_recs[leg] += nrec;
+    if (hs != hp || ns != s_gout.n) {
+        s_simchk_bad[leg]++;
+        fprintf(stderr, "[simple-fanout-check MISMATCH vbl=%u leg=%d] recs=%d serial=%d/%016llx"
+                        " parallel=%d/%016llx\n", openpete_frame, leg, nrec, ns - n0,
+                (unsigned long long)hs, s_gout.n - n0, (unsigned long long)hp);
+    }
+    if (((s_simchk_decodes[0] + s_simchk_decodes[1]) & 255) == 0) simchk_print("running");
 }
 
 /** @brief Walk every queued record's faces into s_wtri[], serially or across the worker pool.
@@ -14924,6 +15201,7 @@ static void moby_simple_begin(CPUState* cpu) {
     s_gout.n = 0;
     s_proj_sim_n = 0;
     s_nsimrecs = 0;
+    s_sim_ovf_n = 0;
     s_gsab_armed = MOBY_GSAB_SIMPLE;
 }
 
