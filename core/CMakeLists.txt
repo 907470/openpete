@@ -790,6 +790,17 @@ if(NOT CMAKE_HOST_WIN32)
         COMMENT "tile-census fence: the capture variable selects no code path"
         VERBATIM)
 
+    # Per-worker state fills whole cache lines: an element smaller than a
+    # line, or an array not starting on one, shares a line between workers
+    # depending on where the linker places it. scripts/fences/
+    # worker_line_guard.py refuses a per-worker array whose element type has
+    # no OPENPETE_WORKER_ELEM check (core/include/openpete_workpool.h).
+    add_custom_target(openpete_worker_line_guard ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking per-worker cache lines..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/worker_line_guard.py tree ${CMAKE_SOURCE_DIR}
+        COMMENT "worker-line fence: per-worker arrays fill whole cache lines"
+        VERBATIM)
+
     add_custom_target(openpete_clock_guard ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking scene-producer clocks..."
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/clock_guard.py ${CMAKE_SOURCE_DIR}

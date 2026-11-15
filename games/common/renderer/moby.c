@@ -5089,7 +5089,7 @@ int moby_face_emit(int fresh, int bit0, int bit0_unconditional,
  * to a cache line: workers bump their own counters throughout the walk, and
  * packed side by side every increment would bounce the line between cores. */
 typedef struct {
-    _Alignas(64) int faces;
+    OPENPETE_WORKER_ALIGN int faces;
     int emitted, oor, skip, sprite, strip, fresh_g, fresh_t, quad, nearbehind;
     int align_lo, align_hi, desync;
     int coinc_pairs, coinc_pulls;   /* moby_coincident_pull: matches, faces pulled */
@@ -5101,6 +5101,7 @@ typedef struct {
      * tag a material compare reads. */
     int bit4_faces;
 } mn_walkdiag;
+OPENPETE_WORKER_ELEM(mn_walkdiag);
 /* Slot 0 is the serial walk's, and the slot every parallel run sums into. */
 static mn_walkdiag s_wdiag[MN_MAX_WORKERS];
 
@@ -5110,7 +5111,7 @@ static mn_walkdiag s_wdiag[MN_MAX_WORKERS];
  * cache line: each worker advances its own cursor on every triangle, and two
  * workers' targets on one line would bounce it between cores. */
 typedef struct {
-    _Alignas(64) ntri_t* tri;
+    OPENPETE_WORKER_ALIGN ntri_t* tri;
     uint32_t* fkey; uint32_t* moby; uint16_t* cls;
     uint8_t*  ui;   uint8_t*  front; uint8_t* mangle;
     int8_t*   dofs; uint8_t*  special;
@@ -5120,6 +5121,7 @@ typedef struct {
     uint8_t*  cbits;
     int n, cap;
 } mn_out;
+OPENPETE_WORKER_ELEM(mn_out);
 static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
                          s_wtri_front, s_wtri_mangle, s_wtri_dofs, s_wtri_special,
                          s_wtri_otk, s_wtri_isxy, s_wtri_single, s_wtri_wbk, s_wtri_cbits,
@@ -5138,7 +5140,7 @@ typedef struct { uint32_t key[12]; int top, n; } coinc_slot;
  * walk has its own (s_ework), emitting into its slab. Aligned to a cache line,
  * since a worker writes its context's record and face state per face. */
 typedef struct {
-    _Alignas(64) mn_out* out;
+    OPENPETE_WORKER_ALIGN mn_out* out;
     mn_walkdiag* diag;
     /* Record scope (mn_emit_record, mn_emit_ui), copied to every triangle. */
     uint32_t moby;     /* face identity: the moby the record draws */
@@ -5163,6 +5165,7 @@ typedef struct {
     coinc_slot* coinc;   /* moby_coincident_pull's open-addressed table */
     int coinc_cap;
 } mn_emit;
+OPENPETE_WORKER_ELEM(mn_emit);
 static mn_emit s_esim = { &s_gout, &s_wdiag[0], 0u, 0u, 0, 0u, 0u, 0u, -1, 0.0f, 0u, 0u, NULL, NULL, 0 };
 /* The parallel walk's per-worker slabs and contexts; walk_slabs_ready points
  * context w at slab w and diagnostics slot w. */

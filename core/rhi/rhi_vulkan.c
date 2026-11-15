@@ -9938,9 +9938,9 @@ struct compile_pool {
     SDL_Condition *work;           /* the pool's own workers: signalled on submit outside the low mode, and on stop */
     SDL_Condition *lo_work;        /* the low-priority workers: signalled on submit in the low mode, and on stop */
     SDL_Condition *done;           /* broadcast when a run returns */
-    SDL_Thread    *thr[POOL_MAX_WORKERS];
+    SDL_Thread    *thr[POOL_MAX_WORKERS];   /* worker-line: written at pool start only */
     int            n;              /* worker threads; 0 runs jobs at submit */
-    SDL_Thread    *lo_thr[POOL_MAX_WORKERS]; /* low-priority workers (rhi_compile_pool_low) */
+    SDL_Thread    *lo_thr[POOL_MAX_WORKERS]; /* low-priority workers (rhi_compile_pool_low); worker-line: written at start only */
     int            lo_n;           /* low-priority worker threads started */
     pool_item     *q_head, *q_tail;   /* queued */
     pool_item     *l_head, *l_tail;   /* library parts queued, taken before q_head */
@@ -9951,7 +9951,7 @@ struct compile_pool {
     bool           stop;
     bool           paused;         /* workers take no item (rhi_compile_pool_pause) */
     bool           low;            /* only the low-priority workers take items (rhi_compile_pool_low) */
-    uint64_t       run_keys[POOL_MAX_WORKERS]; /* create-info keys of the jobs running */
+    uint64_t       run_keys[POOL_MAX_WORKERS]; /* create-info keys of the jobs running; worker-line: under mx, per pipeline compile */
     unsigned       run_keys_n;
     rhi_compile_pool_stats st;     /* under mx */
     uint64_t       run_ns;         /* under mx */

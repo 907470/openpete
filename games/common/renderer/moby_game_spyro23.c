@@ -33,6 +33,7 @@
 #include "renderer/interp_regions_gen.h"  /* game_interp_moby_stash_begin/_put */
 #include "openpete_psx.h"               /* openpete_psx_to_host_span */
 #include "openpete_fiber.h"             /* openpete_frame, openpete_feed_key_now */
+#include "openpete_workpool.h"          /* OPENPETE_WORKER_ALIGN: the per-worker scratch */
 #include "spyro_overlay_table.h"       /* the resident overlay, for the cutscene sampler rule */
 #include "renderer/orchestrator.h"     /* the canonical-render epoch */
 #include "renderer/cut_guard.h"        /* cut_census_on */
@@ -1594,7 +1595,7 @@ typedef struct {
  * MOBY_SIMPLE_CHECK_WORKER is the identity check's serial run, whose counters
  * are not summed. */
 typedef struct {
-    _Alignas(64) s23_abr_face face[S23_SIMPLE_FACES];
+    OPENPETE_WORKER_ALIGN s23_abr_face face[S23_SIMPLE_FACES];
     int          face_n;
     s23_held_tri held[2 * S23_SIMPLE_FACES];
     int          held_n;
@@ -1604,6 +1605,7 @@ typedef struct {
     int8_t       abr[S23_SIMPLE_FACES];
     s23_simple_counts n;
 } s23_simple_ws;
+OPENPETE_WORKER_ELEM(s23_simple_ws);
 static s23_simple_ws s_ws[MOBY_SIMPLE_WORKERS + 1];
 
 /** @brief Start a record's semi-transparency resolve with no faces and no held triangles.

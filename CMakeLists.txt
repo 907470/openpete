@@ -886,6 +886,10 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         LABELS "fence"
         ENVIRONMENT "OPENPETE_THREAD_ROLES_DB=${CMAKE_BINARY_DIR}/compile_commands.json"
         SKIP_RETURN_CODE 64)
+    # The per-worker cache-line fence's own tests.
+    add_test(NAME worker_line_guard_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_worker_line_guard.py)
+    set_tests_properties(worker_line_guard_selftest PROPERTIES LABELS "fence")
     # The thread-role fence's own tests: the text scans and rewrites.
     add_test(NAME thread_roles_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_thread_roles.py)

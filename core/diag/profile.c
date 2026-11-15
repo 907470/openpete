@@ -87,7 +87,7 @@ struct opp_tls {
 /* Spelled `_Thread_local`: third_party/libco/settings.h defines `thread_local`
  * away to nothing unless LIBCO_MP is set. */
 static _Thread_local struct opp_tls* s_tls = NULL;
-static struct opp_tls* s_threads[OPP_MAX_THREADS];
+static struct opp_tls* s_threads[OPP_MAX_THREADS];   /* worker-line: written once per thread at registration, under s_mu */
 static int s_thread_count = 0;
 static int s_warned_threads_full = 0;
 

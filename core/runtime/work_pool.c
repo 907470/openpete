@@ -16,16 +16,19 @@
 
 #define WP_MAX_THREADS 8
 
+/* The posted run. Every worker increments next once per item and reads the
+ * rest once per item, so the job sits alone on one cache line: a variable
+ * of another file placed beside it would be invalidated per item. */
 typedef struct {
-    openpete_work_fn fn;
+    _Alignas(64) openpete_work_fn fn;
     void*            arg;
     int              nitems;
     SDL_AtomicInt    next;      /* next item to pull */
 } wp_job;
 
-static SDL_Semaphore* s_start[WP_MAX_THREADS];  /* one per helper: wake for a run */
+static SDL_Semaphore* s_start[WP_MAX_THREADS];  /* one per helper: wake for a run; worker-line: written at spawn, read once per run */
 static SDL_Semaphore* s_done;                    /* helpers post once per run */
-static SDL_Thread*    s_thread[WP_MAX_THREADS];
+static SDL_Thread*    s_thread[WP_MAX_THREADS];  /* worker-line: written at spawn only */
 static wp_job         s_job;
 static int            s_threads   = 0;   /* resolved count, 0 = not yet resolved */
 static int            s_requested = 0;   /* configure() value, 0 = auto */

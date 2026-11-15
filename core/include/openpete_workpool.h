@@ -23,6 +23,26 @@ extern "C" {
 
 typedef void (*openpete_work_fn)(int item, int worker, void* arg);
 
+/* Per-worker state is an array indexed by worker id whose element fills whole
+ * cache lines, so no two workers write one line wherever the linker places
+ * the array. The element type's first member carries OPENPETE_WORKER_ALIGN
+ * (alignment of the type, and with it a size padded to whole lines), and
+ * OPENPETE_WORKER_ELEM(T) beside the type checks both at compile time.
+ * scripts/fences/worker_line_guard.py refuses a per-worker array whose
+ * element type has no OPENPETE_WORKER_ELEM. */
+#define OPENPETE_CACHE_LINE 64
+#ifdef __cplusplus
+#define OPENPETE_WORKER_ALIGN alignas(OPENPETE_CACHE_LINE)
+#define OPENPETE_WORKER_ELEM(T) \
+    static_assert(alignof(T) >= OPENPETE_CACHE_LINE && sizeof(T) % OPENPETE_CACHE_LINE == 0, \
+                  #T " is a per-worker element: OPENPETE_WORKER_ALIGN on its first member")
+#else
+#define OPENPETE_WORKER_ALIGN _Alignas(OPENPETE_CACHE_LINE)
+#define OPENPETE_WORKER_ELEM(T) \
+    _Static_assert(_Alignof(T) >= OPENPETE_CACHE_LINE && sizeof(T) % OPENPETE_CACHE_LINE == 0, \
+                   #T " is a per-worker element: OPENPETE_WORKER_ALIGN on its first member")
+#endif
+
 /** @brief Set the requested pool size, from --extract-threads, before the pool's first use.
  *
  * The size is resolved on the first openpete_workpool_threads() call and

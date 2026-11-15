@@ -1185,9 +1185,12 @@ static int s_dbg_clipped;                          /* faces that hit the near pl
  * state that the build prologue latched (matrices, env toggles, the decoded
  * sector caches - resolved serially in the prepass); everything they WRITE
  * lives here. Per-sector output runs are recorded and merged into s_tri in
- * sector order, so the merged stream is byte-identical to the serial walk. */
+ * sector order, so the merged stream is byte-identical to the serial walk.
+ * Aligned to a cache line: a worker writes its face cursor (the tail) per
+ * face and its triangle cursor (the head) per triangle, and a context
+ * starting mid-line would share a line with its neighbour's. */
 typedef struct {
-    ttri* tri; int tri_n, tri_cap;      /* output: base and capacity of *out */
+    OPENPETE_WORKER_ALIGN ttri* tri; int tri_n, tri_cap;   /* output: base and capacity of *out */
     mod_fvec* out;                       /* the run tri points into (serial: s_tri_v) */
     lvert sv[256];                       /* per-sector projected verts */
     /* ambient per-face emit state (consumed by push_tri) */
@@ -1240,6 +1243,7 @@ typedef struct {
     int envm_n[7];        /* faces walked per ENVM_* bit (4), member, untextured member, non-member */
     int near_q_agree, near_c_only;
     int walk_sectors;
+    unsigned tj_split;   /* base triangles tj_push_split split (summed into s_tj_walk_split) */
     int serial;   /* 1 = single-thread walk: also fills the s_tv/s_cv A/B arrays */
     uint8_t emit_dside;                  /* the face being emitted is double-sided */
     /* Non-NULL on the snap capture's private run: the face walk skips every
@@ -1254,6 +1258,7 @@ typedef struct {
     const struct tsface* face_F;
     const lvert* face_sv;
 } tn_wctx;
+OPENPETE_WORKER_ELEM(tn_wctx);
 
 /* (tn_wcfg - the per-walk shared-input struct - is defined further down,
  * after tscache_t which it references.) */
@@ -1475,7 +1480,7 @@ static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
  * 0-2) or the node at quarter k = 1..3 of base edge e, from corner e toward
  * corner (e + 1) % 3 (descriptor 3 + 3e + k - 1). */
 #define TJ_MAX_TRIS 10
-static uint64_t s_tj_walk_split;   /* base triangles the walk split, all workers (engagement) */
+static uint64_t s_tj_walk_split;   /* base triangles the walk split, summed from the walk contexts (engagement) */
 
 /** @brief Returns the base edge a node descriptor lies on.
  * @param d A node descriptor, 3..11.
@@ -1618,7 +1623,7 @@ static void tj_push_split(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c,
     const ngte_cvert B[3] = { a, b, c };
     uint8_t T[TJ_MAX_TRIS][3];
     const int nt = tj_split_topo(n, T);
-    if (nt > 1) __atomic_fetch_add(&s_tj_walk_split, 1u, __ATOMIC_RELAXED);
+    if (nt > 1) W->tj_split++;
     for (int t = 0; t < nt; t++)
         clip_push_tri(W, tj_member_cv(B, T[t][0]), tj_member_cv(B, T[t][1]), tj_member_cv(B, T[t][2]), m);
 }
@@ -15681,26 +15686,32 @@ static const char* tn_lp_face_near_drop(const tn_secverd* SV, const tsface_t* F,
  * out - see the dispatch break-even derivation at the workpool call site. */
 #define TN_FANOUT_MIN_FACES 400
 static tn_wctx s_wctx[TN_MAX_WORKERS];
+/* One worker's vector, alone on its cache lines: a worker writes its
+ * vector's count per face, and mod_fvec's size is not a multiple of a line. */
+typedef struct { OPENPETE_WORKER_ALIGN mod_fvec v; } tn_wvec;
+OPENPETE_WORKER_ELEM(tn_wvec);
 /* The face-bounds vectors (tn_facerec) of the workers' runs, and at
  * TN_MAX_WORKERS the snap capture's private run's. */
-static mod_fvec s_wfaces[TN_MAX_WORKERS + 1];
+static tn_wvec s_wfaces[TN_MAX_WORKERS + 1];
 
 /** @brief Return run w's face-bounds vector, emptied for a new run.
  * @param w The worker, or TN_MAX_WORKERS for the snap capture's run.
  * @return The vector. */
 static mod_fvec* tn_face_vec(int w) {
-    mod_fvec* v = &s_wfaces[w];
+    mod_fvec* v = &s_wfaces[w].v;
     if (!v->elem_size) mod_fvec_init(v, sizeof(tn_facerec), 1024, "terrain.walk.faces", 1024);
     v->count = 0;
     return v;
 }
-static mod_fvec s_wbuf[TN_MAX_WORKERS];  /* parallel-mode output runs (lazy) */
+static tn_wvec s_wbuf[TN_MAX_WORKERS];  /* parallel-mode output runs (lazy) */
 
 /* Per visible sector of the last walk: its face records' run in its
  * worker's record vector and the union of their bounds, valid while gen
  * equals s_secrec_gen (stepped per terrain build). One worker walks a
- * sector, so each entry has one writer. */
-typedef struct { const mod_fvec* v; int r0, n; unsigned gen; float ub[6]; } tn_secrec;
+ * sector, so each entry has one writer; it writes the entry per face, and
+ * workers walk neighbouring sectors at once, so each entry fills whole cache
+ * lines. */
+typedef struct { _Alignas(64) const mod_fvec* v; int r0, n; unsigned gen; float ub[6]; } tn_secrec;
 static tn_secrec s_secrec[1024];
 static unsigned s_secrec_gen = 1;
 
@@ -17805,12 +17816,14 @@ static void tn_walk_serial(tn_wcfg* G, int vi) {
 static void walk_sector_job(int item, int worker, void* arg) {
     tn_wcfg* G = (tn_wcfg*)arg;
     tn_wctx* W = &s_wctx[worker];
-    s_pre_rec[item].count = 0;
-    if (!G->SC[item]) return;
-    s_pre_rec[item].worker = (uint8_t)worker;
-    s_pre_rec[item].start  = W->tri_n;
+    if (!G->SC[item]) { s_pre_rec[item].count = 0; return; }
+    const int start = W->tri_n;
     walk_sector(W, G, item);
-    s_pre_rec[item].count  = W->tri_n - s_pre_rec[item].start;
+    /* Written once, after the walk: neighbouring items share a cache line
+     * and run on other workers at the same time. */
+    s_pre_rec[item].worker = (uint8_t)worker;
+    s_pre_rec[item].start  = start;
+    s_pre_rec[item].count  = W->tri_n - start;
 }
 
 /* ---- contact candidates for the sunk-pickup snap -------------------------
@@ -18034,9 +18047,11 @@ static void tn_snap_walk_owned(int vi, const uint64_t set[2], terrain_snap_censu
     W->serial = 0;
     W->snapmask = &s_snap_grid;
     W->faces = tn_face_vec(TN_MAX_WORKERS);
+    W->tj_split = 0;
     tn_wcfg G = s_snap_G;
     G.own = NULL;                 /* walk the faces the cache would draw */
     walk_sector(W, &G, vi);
+    s_tj_walk_split += W->tj_split;
     cen->sectors++;
     tn_snap_take(W->tri, W->tri_n, set, tn_snap_vanim(vi), cen);
 }
@@ -19667,7 +19682,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         mod_fvec_init(&s_tri_v, sizeof(ttri), TN_TRI_INIT, "terrain.walk", TN_TRI_INIT);
     for (int w = 0; w < nw_used; w++) {
         tn_wctx* W = &s_wctx[w];
-        W->out = wserial ? &s_tri_v : &s_wbuf[w];
+        W->out = wserial ? &s_tri_v : &s_wbuf[w].v;
         if (!W->out->elem_size)
             mod_fvec_init(W->out, sizeof(ttri), TN_TRI_INIT, "terrain.walk.worker", TN_TRI_INIT);
         W->tri = (ttri*)W->out->data; W->tri_cap = (int)W->out->cap;
@@ -19688,6 +19703,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         memset(W->envm_n, 0, sizeof W->envm_n);
         W->near_q_agree = W->near_c_only = 0;
         W->walk_sectors = 0;
+        W->tj_split = 0;
         W->serial = wserial;
     }
     /* Faces the CPU face walk will actually process this build: sectors the
@@ -19974,7 +19990,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 n = (int)s_tri_v.cap - s_tri_n;   /* merge what fits (logged by the vec) */
             if (n <= 0) break;
             memcpy(&s_tri[s_tri_n],
-                   (const ttri*)s_wbuf[s_pre_rec[vi].worker].data + s_pre_rec[vi].start,
+                   (const ttri*)s_wbuf[s_pre_rec[vi].worker].v.data + s_pre_rec[vi].start,
                    (size_t)n * sizeof(ttri));
             s_vrun0[vi] = s_tri_n; s_vrun_n[vi] = n;
             s_tri_n += n;
@@ -19996,6 +20012,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         tn_envm_rollup(envm_n, W);
         s_near_q_agree += W->near_q_agree; s_near_c_only += W->near_c_only;
         s_walk_sectors += W->walk_sectors;
+        s_tj_walk_split += W->tj_split;
     }
     tn_envm_faces_print(envm_n);
     tn_hqfog_census_print();
