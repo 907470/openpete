@@ -1,0 +1,6 @@
+# Cross held for VBLs v..v+1 at v = 1700, 1740, ..., 2380 from the
+# charmed_ridge sub-area 1 skip, then idle to 3000 VBLs (scripts/make_bk2.py
+# --feed-key vbl --frames 3000 --hold v:v+2:Cross per press). The presses
+# page through Sgt. Byrd's opening dialogue, which never times out and holds
+# the level not live; afterwards Byrd stands under pad control.
+--skip-to-area charmed_ridge:1

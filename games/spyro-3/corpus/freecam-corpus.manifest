@@ -177,3 +177,9 @@ sunny_villa | pos=(76936, 50960, 12313) yaw=867 pitch=197
 # --lod extended: the water loses its texture as it nears the boundary between
 # the high-poly and low-poly terrain tiers
 spooky_swamp | pos=(35818, 17779, 16172) yaw=1021 pitch=297
+# Sgt. Byrd's tower room (charmed_ridge sub-area 1): the stained-glass
+# windows are high-poly terrain of sectors whose origin Z is negative; the
+# native walk misplaces them far off-screen and the openings show the sky.
+# The movie pages through Byrd's dialogue (the level is not live until it
+# ends); the freecam engages at 2500. Blessed pre-fix.
+charmed_ridge:1 | pos=(43481, 38847, 12900) yaw=1024 pitch=0 | 2700 | OPENPETE_FREECAM_AT_VBL=2500 --bk2 games/spyro-3/bk2/charmed-ridge-byrd-dismiss.bk2
