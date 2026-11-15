@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # check_moby_pose_cache.sh - the sub-tick pose cache (games/common/renderer/
-# moby.c, pc_lookup) against a fresh decode of the same records.
+# moby.c, pc_lookup) against a fresh decode of the same records, or with
+# --instrument=push-fanout the moby emit fan-out (moby_emit_fanout) against
+# the serial emit of the same walk.
 #
 # One headless capture per game at extended LOD with sixteen sub-tick
 # re-extracts at each of two VBLs (fifteen uncaptured phases from
@@ -8,13 +10,18 @@
 # OPENPETE_MOBY_POSE_CACHE=2: every sub-tick decode whose key words the guest
 # generation already filed decodes again and compares each vertex's current
 # and previous pose with the filed copy, bit for bit. The game prints the
-# totals at exit ([pose-cache] ... hits= mismatches=).
+# totals at exit ([pose-cache] ... hits= mismatches=). Under push-fanout the
+# same capture runs with OPENPETE_MOBY_PUSH_FANOUT_CHECK=1: every emit that
+# fans out runs serially first, and every stored triangle and the tie,
+# ordinal and scene counts are compared ([push-fanout-check final] emits=
+# mismatched_tris= mismatched_state=).
 #
 # Usage:
 #   tests/harness/check_moby_pose_cache.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
-# Exit 0 PASS: hits above zero and no mismatch. 1 FAIL: a mismatch, a
-# missing capture or a missing total. 2 VACUOUS: no hit. 64 SKIP (no binary
-# or disc).
+#       [--instrument=pose-cache|push-fanout]
+# Exit 0 PASS: engaged above zero (hits, emits compared) and no mismatch.
+# 1 FAIL: a mismatch, a missing capture or a missing total. 2 VACUOUS: no
+# hit or no emit compared. 64 SKIP (no binary or disc).
 set -u
 
 # Unattended launcher: every run this script starts is silenced.
@@ -27,11 +34,13 @@ source scripts/lib/game.sh
 
 BUILD_DIR=build/linux-release
 OUT=""
+INSTR=pose-cache
 prev=""
 for a in "$@"; do
     case "$a" in
         --build-dir=*) BUILD_DIR="${a#*=}";;
         --out=*)       OUT="${a#*=}";;
+        --instrument=*) INSTR="${a#*=}";;
     esac
     [[ "$prev" == --out ]] && OUT="$a"
     prev="$a"
@@ -55,17 +64,35 @@ esac
 
 [[ -n "$OUT" ]] || OUT="$OPENPETE_SANDBOX/pose-cache"
 mkdir -p "$OUT"
-LOG="$OUT/$GAME.log"
-SHOT="$OUT/$GAME"
+LOG="$OUT/$GAME-$INSTR.log"
+SHOT="$OUT/$GAME-$INSTR"
 OUTS="${SHOT}__${VBLS%,*}-vk.png,${SHOT}__${VBLS#*,}-vk.png"
-PG_CAPTURE_ENV=(OPENPETE_MOBY_POSE_CACHE=2 OPENPETE_INTERMEDIATE_ALPHA=0.5
+case "$INSTR" in
+    pose-cache)  KNOB=OPENPETE_MOBY_POSE_CACHE=2;;
+    push-fanout) KNOB=OPENPETE_MOBY_PUSH_FANOUT_CHECK=1;;
+    *) echo "pose-cache: SKIP (no instrument $INSTR)"; exit 64;;
+esac
+PG_CAPTURE_ENV=("$KNOB" OPENPETE_INTERMEDIATE_ALPHA=0.5
     OPENPETE_INTERMEDIATE_PRE_ALPHA=0.06,0.12,0.18,0.25,0.31,0.37,0.43,0.56,0.62,0.68,0.75,0.81,0.87,0.93,0.97)
 PG_CAPTURE_TIMEOUT=600
 pg_capture "$LOG" "$OUTS" -- --renderer vk --aspect 16:9 --lod extended --no-card --mute 1 \
     "${ROW[@]}" --screenshot-native-only --screenshot-intermediate-on-frame "$VBLS" \
     --screenshot-output "${SHOT}__{n}.png" --frame-limit "$(( ${VBLS#*,} + 10 ))" ||
-    { echo "pose-cache: FAIL (capture, see $LOG)"; exit 1; }
+    { echo "$INSTR: FAIL (capture, see $LOG)"; exit 1; }
 
+if [[ "$INSTR" == push-fanout ]]; then
+    line="$(grep -m1 '^\[push-fanout-check final\]' "$LOG")"
+    [[ -n "$line" ]] || { echo "push-fanout: FAIL (no [push-fanout-check final] total in $LOG)"; exit 1; }
+    emits="$(sed -n 's/.* emits=\([0-9]*\).*/\1/p' <<<"$line")"
+    bt="$(sed -n 's/.* mismatched_tris=\([0-9]*\).*/\1/p' <<<"$line")"
+    bs="$(sed -n 's/.* mismatched_state=\([0-9]*\).*/\1/p' <<<"$line")"
+    echo "push-fanout: $GAME $line"
+    [[ "${bt:-1}" == 0 && "${bs:-1}" == 0 ]] ||
+        { echo "push-fanout: FAIL ($bt mismatched triangles, $bs mismatched end states)"; exit 1; }
+    [[ "${emits:-0}" -gt 0 ]] || { echo "push-fanout: VACUOUS (no emit fanned out)"; exit 2; }
+    echo "push-fanout: PASS"
+    exit 0
+fi
 line="$(grep -m1 '^\[pose-cache\]' "$LOG")"
 [[ -n "$line" ]] || { echo "pose-cache: FAIL (no [pose-cache] total in $LOG)"; exit 1; }
 hits="$(sed -n 's/.* hits=\([0-9]*\).*/\1/p' <<<"$line")"

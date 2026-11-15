@@ -109,6 +109,13 @@ int player_hide_is_sparx_class(uint32_t cls);
  * @return 1 when the face is dropped, else 0. */
 int player_hide_moby_face(int actor, uint32_t cls, const void* tri, size_t len);
 
+/** @brief Whether player_hide_moby_face can drop or count any face now: the player is hidden, --hide-classes lists a class, or the census runs.
+ *
+ * While it is 0, player_hide_moby_face keeps every face and counts nothing,
+ * so a feed may skip the call.
+ * @return 1 when a face may be dropped or counted, else 0. */
+int player_hide_moby_any(void);
+
 /** @brief Whether the moby feed drops one face of a class --hide-classes lists.
  *
  * Counts every dropped face as PH_CAT_CLASS for the census and for the

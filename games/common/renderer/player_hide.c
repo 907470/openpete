@@ -176,6 +176,10 @@ int player_hide_moby_face(int actor, uint32_t cls, const void* tri, size_t len) 
     return skip;
 }
 
+int player_hide_moby_any(void) {
+    return player_hide_active() || openpete_native_hide_class_any() || player_hide_census_on();
+}
+
 int player_hide_class_shadow(CPUState* cpu, uint32_t moby) {
     if (!ph_in_ram(moby)) return 0;
     if (!openpete_native_hide_class(cpu->read_half(moby + game_layout.moby.class_off))) return 0;

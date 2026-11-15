@@ -1704,14 +1704,14 @@ static int s_in_reextract;
 enum { MST_DP = 0, MST_REC, MST_FLD, MST_PREV, MST_REVEAL, MST_TRAIL,
        MST_WALK, MST_PRO, MST_PUSH, MST_RANK, MST_SNAP, MST_SHD, MST_EMIT,
        MST_PPRE, MST_PPOST, MST_PRESV, MST_PREG, MST_PSPC, MST_PSIM, MST_PSHD,
-       MST_RKC, MST_RKI, MST_RKB, MST_RKS, MST_WFAN, MST_WMRG, MST_SPRE, MST_SFAN, MST_RKF, MST_N };
+       MST_RKC, MST_RKI, MST_RKB, MST_RKS, MST_WFAN, MST_WMRG, MST_SPRE, MST_SFAN, MST_RKF, MST_EPRE, MST_EFAN, MST_ECOM, MST_N };
 enum { MSC_VERTS = 0, MSC_RECS, MSC_TRIS, MSC_FACES, MSC_N };
 static const char* const k_mst_name[MST_N] = {
     "dp", "rec", "fld", "prev", "reveal", "trail",
     "walk", "prologue", "push", "rank", "snap", "shdwalk", "emit",
     "push.pre", "push.post", "push.resolve", "push.reg", "push.spec", "push.simple", "push.shaded",
     "rank.carry", "rank.isect", "rank.build", "rank.store", "walk.fanout", "walk.merge",
-    "simple.prefix", "simple.fanout", "rank.carry.fresh" };
+    "simple.prefix", "simple.fanout", "rank.carry.fresh", "emit.prefix", "emit.fanout", "emit.commit" };
 static const char* const k_msc_name[MSC_N] = { "verts", "recs", "tris", "faces" };
 static uint64_t s_mst_ns[2][MST_N];
 static uint64_t s_mst_calls[2][MST_N];
@@ -1827,16 +1827,16 @@ void moby_native_stage_add(int which, uint64_t t0) {
 #define MSP_STRIDE 256u   /* vertices and triangles; a power of two */
 #define MSP_OFF 0xFFFFFFFFu   /* a loop base while the split is off */
 #define MSP_RSTRIDE 8u    /* records */
-enum { MSP_E_VTX = 0, MSP_E_ORDER, MSP_E_MAT, MSP_E_FOG, MSP_E_ADD,
+enum { MSP_E_FACE = 0, MSP_E_ORDER, MSP_E_MAT, MSP_E_ADD,
        MSP_R_PRE, MSP_R_PREV, MSP_R_DP, MSP_R_CONF, MSP_R_META,
        MSP_D_SETUP, MSP_D_KF, MSP_D_PV, MSP_D_PROJ, MSP_D_CLOSE, MSP_D_FOGSAT, MSP_N };
 /* Each part's family: its parent stage. */
 static const int k_msp_parent[MSP_N] = {
-    MST_EMIT, MST_EMIT, MST_EMIT, MST_EMIT, MST_EMIT,
+    MST_EMIT, MST_EMIT, MST_EMIT, MST_EMIT,
     MST_REC, MST_REC, MST_REC, MST_REC, MST_REC,
     MST_DP, MST_DP, MST_DP, MST_DP, MST_DP, MST_DP };
 static const char* const k_msp_name[MSP_N] = {
-    "emit.vtx", "emit.order", "emit.mat", "emit.fog", "emit.add",
+    "emit.face", "emit.order", "emit.mat", "emit.add",
     "rec.pre", "rec.prev", "rec.dp", "rec.conf", "rec.meta",
     "dp.setup", "dp.kf", "dp.prevv", "dp.proj", "dp.close", "dp.fogsat" };
 static uint64_t s_msp_cyc[2][MSP_N];
@@ -5422,6 +5422,8 @@ int moby_face_emit(int fresh, int bit0, int bit0_unconditional,
 
 #define MN_MAX_WORKERS 8
 #define MN_FANOUT_MIN_FACES 400   /* see walk_prologue: dispatch break-even */
+#define MN_PUSH_FANOUT_MIN_FACES 4800   /* see moby_emit_fanout_workers */
+#define MN_PUSH_FANOUT_CHUNK 256        /* faces per emit fan-out item (moby_emit_item_t) */
 /* The simple-model fan-out's bound. A decode's fan-out adds the merge and the
  * per-record bind to the pool's wake and join (moby_simple_fanout), and a
  * simple model's faces are cheaper to walk than an animated model's, so the
@@ -11439,6 +11441,15 @@ static int moby_class_draws_by_key(uint16_t cls, uint32_t stbit) {
            moby_cls_state_match(&game_layout.moby.key_order, cls, stbit);
 }
 
+/** @brief The state byte (game_layout.moby.state_off) the terrain-order entry tests, read from guest memory once per moby run of a push.
+ * @param cpu Guest CPU state.
+ * @param mob The moby record address.
+ * @return The byte; 0xFF when the game names no terrain-order entry or mob is 0. */
+static uint8_t moby_terrain_order_state(CPUState* cpu, uint32_t mob) {
+    if (game_layout.moby.terrain_order.cls == 0u || !mob) return 0xFFu;
+    return (uint8_t)(cpu->read_byte(mob + game_layout.moby.state_off) & 0xFFu);
+}
+
 /** @brief Report whether a moby draws under the terrain the game paints after it (the terrain-order entry).
  *
  * The moby's class and game.state match game_layout.moby.terrain_order and
@@ -11447,15 +11458,14 @@ static int moby_class_draws_by_key(uint16_t cls, uint32_t stbit) {
  * swallowed). Its opaque keyed faces then carry OPENPETE_SCENE_RANK_TORDER
  * and lose each pixel to a terrain key in their own ordering-table slot or
  * a nearer one (psx_key_contest.glsl op_terrain_order_loses).
- * @param cpu Guest CPU state, read for the state byte.
  * @param mob The moby record address.
  * @param cls Its m_Class.
  * @param stbit moby_walk_state_bit for this walk.
+ * @param st The moby's state byte (moby_terrain_order_state).
  * @return 1 for a selected moby, 0 otherwise or when the game names none. */
-static int moby_class_terrain_order(CPUState* cpu, uint32_t mob, uint16_t cls, uint32_t stbit) {
+static int moby_class_terrain_order(uint32_t mob, uint16_t cls, uint32_t stbit, uint32_t st) {
     if (game_layout.moby.terrain_order.cls == 0u || !mob ||
         !moby_cls_state_match(&game_layout.moby.terrain_order, cls, stbit)) return 0;
-    const uint32_t st = cpu->read_byte(mob + game_layout.moby.state_off) & 0xFFu;
     return st < 32u && (game_layout.moby.terrain_order_mstates >> st & 1u) != 0u;
 }
 
@@ -11467,22 +11477,6 @@ static int moby_terrain_order_on(void) {
     return s_on;
 }
 
-/** @brief Report whether a walk face carries the terrain-order sentinel, and name its moby to the census.
- *
- * An opaque keyed face (koff set) of a moby moby_class_terrain_order
- * selects is noted for OPENPETE_TORDER_CENSUS on both legs of the
- * OPENPETE_MOBY_TERRAIN_ORDER A/B, and carries the sentinel while the rule
- * is on.
- * @param cpu Guest CPU state.
- * @param i Walk triangle index.
- * @param t The scene triangle, key fields stamped.
- * @param stbit moby_walk_state_bit for this walk.
- * @return 1 when the face takes OPENPETE_SCENE_RANK_TORDER. */
-static int moby_face_terrain_order(CPUState* cpu, int i, const openpete_scene_tri* t, uint32_t stbit) {
-    if (!(t->koff > 0.25f) || !moby_class_terrain_order(cpu, s_wtri_moby[i], s_wtri_cls[i], stbit)) return 0;
-    openpete_native_scene_note_torder(t->mid);
-    return moby_terrain_order_on();
-}
 
 /** @brief Return the rank sentinel an unranked opaque actor face carries into the key contest.
  *
@@ -11663,6 +11657,14 @@ static double moby_tri_contest_key(int i, int true_depth) {
     return moby_tri_true_key(i, 1);
 }
 
+/** @brief Whether OPENPETE_MOBY_TD_CENSUS is set nonzero, read once.
+ * @return 1 when on. */
+static int moby_td_census_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_MOBY_TD_CENSUS"); on = e && *e && *e != '0'; }
+    return on;
+}
+
 /** @brief OPENPETE_MOBY_TD_CENSUS: count keyed walk faces per class and the true-depth ones, one line per class per walk, an instrument.
  *
  * Called per keyed face, and with i < 0 to flush: the flush prints, for each
@@ -11675,9 +11677,7 @@ static double moby_tri_contest_key(int i, int true_depth) {
  * @param td Nonzero when the face keyed by true depth.
  * @param stbit moby_walk_state_bit for this walk (printed on flush). */
 static void moby_td_census(int i, int td, uint32_t stbit) {
-    static int on = -1;
-    if (on < 0) { const char* e = getenv("OPENPETE_MOBY_TD_CENSUS"); on = e && *e && *e != '0'; }
-    if (!on) return;
+    if (!moby_td_census_on()) return;
     static struct { uint16_t cls; int8_t dofs; int n, td; double shift; } row[32];
     static int rn;
     if (i >= 0) {
@@ -11984,6 +11984,14 @@ static int moby_tie_pull(int i) {
     return hit ? ord : 0;
 }
 
+/** @brief A keyed opaque face's moby-against-moby key offset: -128 x m_DepthOffset less the tie step times its pull.
+ * @param i Walk triangle index.
+ * @param pull Its tie pull, in MOBY_TIE_STEP units.
+ * @return The offset. */
+static float moby_face_akc(int i, int pull) {
+    return (float)(-OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i] - MOBY_TIE_STEP * pull);
+}
+
 /** @brief Stamp a walk face's ordering-table key: koff on an opaque ACTOR face, skey on a blended one.
  *
  * A face is keyed while moby_face_key_on and key resolve are on, when it is
@@ -12000,26 +12008,27 @@ static int moby_tie_pull(int i) {
  * the depths they store, tie pull included, and two coincident faces of
  * one world bucket resolve to the record the game splices later; every
  * opaque face but the key-order class rasters it per pixel (akpx).
+ * The tie pull is the commit's (moby_emit_commit_face): this stamps akc
+ * with no pull and reports whether the face takes one.
  * @param i Walk triangle index.
  * @param cat The face's scene category.
  * @param stbit moby_walk_state_bit, for the class lists.
- * @param t The scene triangle, blend and vertices set; its key fields are written. */
-static void moby_face_stamp_key(int i, int cat, uint32_t stbit, openpete_scene_tri* t) {
+ * @param t The scene triangle, blend and vertices set; its key fields are written.
+ * @return 1 when the face is an opaque keyed face outside the true-depth classes, which takes the tie pull. */
+static int moby_face_stamp_key(int i, int cat, uint32_t stbit, openpete_scene_tri* t) {
     if (!moby_face_key_on() || cat != OPENPETE_SCENE_ACTOR || s_wtri_mangle[i] ||
-        !s_wtri_moby[i] || !openpete_native_key_resolve_on()) return;
+        !s_wtri_moby[i] || !openpete_native_key_resolve_on()) return 0;
     const int td = moby_class_true_depth(s_wtri_cls[i], stbit);
     moby_td_census(i, td, stbit);
     const float key = (float)(moby_tri_contest_key(i, td) + 0.5);
-    if (t->blend != 0) { t->skey = key; return; }
+    if (t->blend != 0) { t->skey = key; return 0; }
     t->koff = key;
     /* Embedded-PROP classes: rendered whole from every angle. */
     t->prop = moby_class_is_prop(s_wtri_cls[i]);
     t->key_order = moby_class_draws_by_key(s_wtri_cls[i], stbit);
-    const int pull = td ? 0 : moby_tie_pull(i);   /* advances the bucket's splice state: once */
-    t->akc = td ? 0.0f : (float)(-OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i] -
-                                 MOBY_TIE_STEP * pull);
-    t->cbits |= (uint32_t)(pull != 0) * OPENPETE_CB_MOBY_TIEPULL;
+    t->akc = td ? 0.0f : moby_face_akc(i, 0);
     t->akpx = !t->key_order;
+    return !td;
 }
 
 /* Word b of the heavy-fog texel fade (psx_hq_fog.glsl): bN = 128/256 on every
@@ -12052,10 +12061,12 @@ static int64_t moby_heavy_fog_target(void) {
  * @param t The scene triangle, vertex colours and blend set; colours rewritten.
  * @param w The walk triangle it was built from (its unshifted view-Z).
  * @param cat The triangle's scene category.
- * @param fog The fog colour, 0x00BBGGRR, or -1 when no fade applies. */
-static void moby_tri_heavy_fog(openpete_scene_tri* t, const ntri_t* w, int cat, int64_t fog) {
+ * @param fog The fog colour, 0x00BBGGRR, or -1 when no fade applies.
+ * @param hq Receives the two heavy-fog words the triangle is stored with. */
+static void moby_tri_heavy_fog(openpete_scene_tri* t, const ntri_t* w, int cat, int64_t fog, uint32_t hq[2]) {
     const int world = cat == OPENPETE_SCENE_ACTOR || cat == OPENPETE_SCENE_ACTOR_FRONT;
-    if (fog < 0 || !world) { openpete_native_scene_set_hq_fog(0u, 0u); return; }
+    hq[0] = hq[1] = 0u;
+    if (fog < 0 || !world) return;
     const int vanish = t->blend >= 2;
     const uint32_t target = vanish ? 0u : (uint32_t)fog;
     for (int k = 0; k < 3; k++) {
@@ -12071,50 +12082,530 @@ static void moby_tri_heavy_fog(openpete_scene_tri* t, const ntri_t* w, int cat, 
             const double vz = ((double)w->v[0].tvz + w->v[1].tvz + w->v[2].tvz) / 3.0;
             row = (int)floor(15.0 * (vz * ts + tb));
         }
-        uint32_t fw[2];
-        terrain_fog_step_words(row, fw);
-        openpete_native_scene_set_hq_fog(fw[0], fw[1]);
+        terrain_fog_step_words(row, hq);
         return;
     }
-    openpete_native_scene_set_hq_fog(tex_fade ? OPENPETE_HQFOG_ENABLE : 0u,
-                                     tex_fade ? MOBY_HFOG_WORD_B : 0u);
+    hq[0] = tex_fade ? OPENPETE_HQFOG_ENABLE : 0u;
+    hq[1] = tex_fade ? MOBY_HFOG_WORD_B : 0u;
 }
 
-/** @brief Stamp a walk face's ordering against other surfaces: its ordering-table key and its rank channel.
+/* ---- the scene emit of one walk ----------------------------------------------
+ * Every walk face becomes one scene triangle. All of a face's triangle comes
+ * from the face and its moby run (moby_emit_face) except three steps whose
+ * result depends on the faces before it in the scene's emit order, which the
+ * commit (moby_emit_commit_face) runs face by face in that order: the tie
+ * pull (moby_tie_pull: the world bucket's splice state), the ranked moby's
+ * ordinal (moby_rank_ordinal: first-ranked order) and the terrain-order note
+ * (the census's list). Two more resolve per moby run in run order before any
+ * face: the material slot (moby_matslot_memo, which interns slots in first-use
+ * order) and the host-added mark. The serial emit runs it all face by face;
+ * the fan-out (moby_emit_fanout) runs moby_emit_face on the walk workers,
+ * each storing its faces straight into the scene at their own slots, then
+ * commits on the calling thread. */
+
+/* A face's steps left to the commit. */
+enum { MEF_TIE = 1u, MEF_ORD = 2u, MEF_TORDER = 4u };
+
+/* One walk's constants for the face emit. */
+typedef struct {
+    uint32_t stbit;   /* moby_walk_state_bit */
+    int64_t fog;      /* moby_heavy_fog_target */
+} moby_emit_env_t;
+
+/* A run of walk faces with one moby pointer and what is resolved for it
+ * before its faces: its material slot and host-added mark, and the moby's
+ * state byte the terrain-order entry tests (guest memory, read on the calling
+ * thread). */
+typedef struct {
+    int i0, i1;           /* faces [i0, i1) */
+    uint16_t slot;        /* moby_matslot_memo */
+    uint8_t host_added;   /* moby_walk_tri_host_added */
+    uint8_t st;           /* moby_terrain_order_state */
+} moby_emit_run_t;
+
+/** @brief Build walk face i's scene triangle from the face and its moby run, and name the steps it leaves to the commit.
  *
- * The key is moby_face_stamp_key's. The rank channel carries one of: the
- * terrain-order sentinel, for an opaque keyed face of a moby the
- * terrain-order entry selects (moby_face_terrain_order), whose faces then
- * order against each other by true depth; the face's paint rank and its
- * moby's ordinal, while it intersects another face of its moby
- * (moby_face_rank); or, on an opaque ACTOR face, the actor or prop
- * marker. Mangled faces (near fixup or coordinate saturation) are never
- * ranked, as they are never keyed: their raster is not the true
- * projection, so a rank stamped across one would discard content far
- * outside the real silhouette. The actor marker reads as unranked to every
- * rank consumer: the key contest's prop-embed rule fires on terrain
- * fragments only, so a statue standing on its disc never yields the pixel
- * to it (psx_scene_key.frag), and a prop face's marker also skips the
- * contest's terrain-key arm, since terrain that yields to the prop is not
- * yielded to in turn.
- * @param cpu Guest CPU state, read for the terrain-order state byte.
- * @param i Walk triangle index.
- * @param cat The face's scene category.
- * @param stbit moby_walk_state_bit for this walk.
+ * Fills the vertices (screen position, written and perspective depth, UV,
+ * colour and the fogged-CLUT alpha), the material words, the scene identity
+ * and colour bits, the shell flag, the first ordering-table slot, the key
+ * (moby_face_stamp_key, with no tie pull) and the rank channel: the
+ * terrain-order sentinel for an opaque keyed face of a moby the
+ * terrain-order entry selects while the rule is on, the actor or prop marker
+ * on an unranked opaque ACTOR face. A face with a paint rank takes its rank
+ * and ordinal at the commit. Mangled faces (near fixup or coordinate
+ * saturation) are never ranked, as they are never keyed: their raster is not
+ * the true projection, so a rank stamped across one would discard content
+ * far outside the real silhouette. The actor marker reads as unranked to
+ * every rank consumer: the key contest's prop-embed rule fires on terrain
+ * fragments only, so a statue standing on its disc never yields the pixel to
+ * it (psx_scene_key.frag), and a prop face's marker also skips the contest's
+ * terrain-key arm, since terrain that yields to the prop is not yielded to
+ * in turn. Reads host state only; touches no state another face reads.
+ * @param E The walk's constants.
+ * @param R The face's moby run.
+ * @param i The walk face.
+ * @param shell The shell-run memo of the faces before i in the same run.
+ * @param t Receives the triangle.
+ * @param flags Receives the MEF_* steps left to the commit.
+ * @param rank Receives the paint rank when flags has MEF_ORD.
+ * @return The scene category. */
+static int moby_emit_face(const moby_emit_env_t* E, const moby_emit_run_t* R, int i,
+                          moby_shell_run_t* shell, openpete_scene_tri* t, uint8_t* flags, int* rank) {
+    const int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
+                  : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
+                  : s_wtri_front[i]   ? OPENPETE_SCENE_ACTOR_FRONT
+                                      : OPENPETE_SCENE_ACTOR;
+    memset(t, 0, sizeof *t);
+    const ntri_t* w = &s_wtri[i];
+    for (int k = 0; k < 3; k++) {
+        t->v[k].sx   = w->v[k].sx;
+        t->v[k].sy   = w->v[k].sy;
+        t->v[k].z    = openpete_native_scene_viewz(openpete_worldvz_full(moby_cover_depth(i, k)));
+        /* Perspective W: the vertex's unshifted view-Z (equal to z where
+         * no OT pull moved it). */
+        t->v[k].pvz  = openpete_native_scene_viewz(openpete_worldvz_full(w->v[k].tvz));
+        t->v[k].u    = (float)w->v[k].u;
+        t->v[k].v    = (float)w->v[k].v;
+        t->v[k].rgba = (w->v[k].rgb & 0xFFFFFFu) | moby_tri_alpha(w);
+    }
+    t->textured = w->textured;
+    t->tpage_x  = w->tpage_x; t->tpage_y = w->tpage_y;
+    t->clut_x   = w->clut_x;  t->clut_y  = w->clut_y;
+    t->bpp      = w->bpp;
+    t->blend    = w->blend;
+    t->mid      = moby_scene_identity(s_wtri_moby[i]);
+    t->cbits    = s_wtri_cbits[i];
+    t->shell    = moby_shell_face(i, shell);
+    t->ot_slot1 = moby_face_ot_slot1(s_wtri_wbk[i]);
+    /* og OT key channel, moby twin of the terrain emit: the .s inserts each
+     * moby face at its average-Z slot minus the authored m_DepthOffset (the
+     * angle word's top byte, which the cull packs into record w0 bits 16-23 /
+     * the shaded walk's rot>>24) - an ordering KEY, never stored depth.
+     * Where the scene sorts by one ordering table (S2/S3) the face's key is
+     * the world bucket the draw splices it into (moby_tri_contest_key). The
+     * face's ABSOLUTE key rasters into the actor key image for the glow-fan
+     * aura contest and the key-order class's terrain yield; every other keyed
+     * opaque face rasters its per-pixel moby-against-moby key there instead
+     * (akc, akpx), which decides moby against moby (MOBY_TRUESCOPE,
+     * psx_key_contest.glsl op_key_loses). Terrain does not yield to the key:
+     * the part of a pulled moby sunk into the terrain it intersects is drawn
+     * in front of that terrain by the snap (moby_snap_collect,
+     * psx_moby_snap.glsl), while og's pull+push compound is not mirrored: a
+     * wall in front keeps occluding by TRUE depth. Blend/FRONT/HUD classes
+     * stay unkeyed (a blended ACTOR face carries its key for the snap alone,
+     * skey), and so do MANGLED faces: their screen footprint is not the true
+     * projection. */
+    *flags = moby_face_stamp_key(i, cat, E->stbit, t) ? MEF_TIE : 0u;
+    *rank = 0;
+    if (t->koff > 0.25f && moby_class_terrain_order(s_wtri_moby[i], s_wtri_cls[i], E->stbit, R->st)) {
+        *flags |= MEF_TORDER;
+        if (moby_terrain_order_on()) { t->rank = OPENPETE_SCENE_RANK_TORDER; return cat; }
+    }
+    const int r = moby_face_rank(i);
+    if (r > 0) { *flags |= MEF_ORD; *rank = r; }
+    else if (cat == OPENPETE_SCENE_ACTOR && t->blend == 0) t->rank = moby_actor_rank_marker(t->prop);
+    return cat;
+}
+
+/** @brief Run the order-dependent steps walk face i left to the commit, in the scene's emit order.
+ *
+ * The tie pull advances the face's world bucket's splice state and sets the
+ * face's akc and tie-pull bit; the ranked moby's ordinal (first-ranked
+ * order, at most 255 per scene) gives the face its rank and ordinal; the
+ * terrain-order face names its moby to the census. A face the feed drops
+ * still advances each state, as the game's own walk did when it decided the
+ * face; t is NULL for it.
+ * @param i The walk face.
+ * @param flags Its MEF_* steps.
+ * @param rank Its paint rank (MEF_ORD).
  * @param rord The walk's ranked-moby ordinals.
- * @param t The scene triangle, blend and vertices set; key and rank fields are written. */
-static void moby_face_order(CPUState* cpu, int i, int cat, uint32_t stbit,
-                            moby_rank_ordinals_t* rord, openpete_scene_tri* t) {
-    moby_face_stamp_key(i, cat, stbit, t);
-    if (moby_face_terrain_order(cpu, i, t, stbit)) { t->rank = OPENPETE_SCENE_RANK_TORDER; return; }
-    const int rank = moby_face_rank(i);
-    if (rank > 0) {
+ * @param t The face's triangle, as built or as stored; NULL for a dropped face. */
+static void moby_emit_commit_face(int i, uint8_t flags, int rank, moby_rank_ordinals_t* rord,
+                                  openpete_scene_tri* t) {
+    if (flags & MEF_TIE) {
+        const int pull = moby_tie_pull(i);   /* advances the bucket's splice state: once */
+        if (t) {
+            t->akc = moby_face_akc(i, pull);
+            t->cbits |= (uint32_t)(pull != 0) * OPENPETE_CB_MOBY_TIEPULL;
+        }
+    }
+    if (flags & MEF_TORDER) openpete_native_scene_note_torder(moby_scene_identity(s_wtri_moby[i]));
+    if (flags & MEF_ORD) {
         const int oi = moby_rank_ordinal(rord, s_wtri_moby[i]);
-        if (rord->base + oi < 255) { t->rank = (float)rank; t->mordinal = rord->base + oi + 1; }
-    } else if (cat == OPENPETE_SCENE_ACTOR && t->blend == 0) {
-        t->rank = moby_actor_rank_marker(t->prop);
+        if (t && rord->base + oi < 255) { t->rank = (float)rank; t->mordinal = rord->base + oi + 1; }
     }
 }
+
+/** @brief Resolve one moby run's material slot, host-added mark and terrain-order state byte, in run order.
+ * @param cpu Guest CPU state, read for the state byte.
+ * @param R The run; i0 and i1 set, the rest written.
+ * @param mat The walk's material-slot memo. */
+static void moby_emit_run_open(CPUState* cpu, moby_emit_run_t* R, moby_matslot_memo_t* mat) {
+    const uint32_t mob = s_wtri_moby[R->i0];
+    R->slot = moby_matslot_memo(mat, s_wtri_cls[R->i0], mob);
+    R->host_added = (uint8_t)moby_walk_tri_host_added(mob);
+    R->st = moby_terrain_order_state(cpu, mob);
+}
+
+/** @brief The end of the moby run that starts at walk face i0.
+ * @param i0 The run's first face.
+ * @return One past its last face. */
+static int moby_emit_run_end(int i0) {
+    int i1 = i0 + 1;
+    while (i1 < s_gout.n && s_wtri_moby[i1] == s_wtri_moby[i0]) i1++;
+    return i1;
+}
+
+/** @brief Emit every walk face into the scene, face by face, on the calling thread.
+ *
+ * The census instruments (the player-hide census, OPENPETE_MOBY_TD_CENSUS,
+ * the sampled emit split) run on this path only.
+ * @param cpu Guest CPU state, read for the terrain-order state bytes.
+ * @param E The walk's constants.
+ * @param rord The walk's ranked-moby ordinals. */
+static void moby_emit_serial(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) {
+    moby_matslot_memo_t mat = { 0u, 0u, 0 };  /* the material-slot resolve below */
+    moby_shell_run_t shell = { 0, 0 };
+    moby_emit_run_t R = { 0, 0, 0u, 0u, 0xFFu };
+    const unsigned tbase = msp_loop_base(s_gout.n);
+    for (int i = 0; i < s_gout.n; i++) {
+        uint64_t ts = msp_at(tbase, i);
+        if (i >= R.i1) { R.i0 = i; R.i1 = moby_emit_run_end(i); moby_emit_run_open(cpu, &R, &mat); }
+        openpete_scene_tri t;
+        uint8_t flags;
+        int rank;
+        const int cat = moby_emit_face(E, &R, i, &shell, &t, &flags, &rank);
+        ts = msp_mark(MSP_E_FACE, ts, MSP_STRIDE);
+        moby_emit_commit_face(i, flags, rank, rord, &t);
+        ts = msp_mark(MSP_E_ORDER, ts, MSP_STRIDE);
+        /* --hide-player drops the companion's actor faces and --hide-classes
+         * every face of a listed class here, after every per-moby memo above
+         * has advanced, so every other moby's triangles are submitted as
+         * without the flags. */
+        if (player_hide_moby_face(cat == OPENPETE_SCENE_ACTOR || cat == OPENPETE_SCENE_ACTOR_FRONT,
+                                  s_wtri_cls[i], &t, sizeof t)) {
+            msp_mark(MSP_E_MAT, ts, MSP_STRIDE);
+            continue;
+        }
+        openpete_native_scene_set_tag(OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], R.slot));
+        /* Origin: a record the extended-LOD reveal appended is host-added
+         * geometry, and the scene's content and world-frame verdicts are the
+         * game's own to make. */
+        openpete_native_scene_set_host_added(R.host_added);
+        uint32_t hq[2];
+        moby_tri_heavy_fog(&t, &s_wtri[i], cat, E->fog, hq);
+        openpete_native_scene_set_hq_fog(hq[0], hq[1]);
+        ts = msp_mark(MSP_E_MAT, ts, MSP_STRIDE);
+        openpete_native_scene_add_tri(&t, cat, 0);
+        msp_mark(MSP_E_ADD, ts, MSP_STRIDE);
+    }
+}
+
+/* ---- the emit fan-out -------------------------------------------------------- */
+
+/* Per-worker counts of the fan-out's stores, summed at the commit. */
+typedef struct {
+    OPENPETE_WORKER_ALIGN unsigned pvz_missing;   /* vertices the store repaired */
+} moby_emit_wcount_t;
+OPENPETE_WORKER_ELEM(moby_emit_wcount_t);
+static moby_emit_wcount_t s_mew[MN_MAX_WORKERS];
+
+static moby_emit_run_t s_mruns[MAX_NTRI];   /* the walk's moby runs, in face order */
+/* The fan-out's items: stretches of at most MN_PUSH_FANOUT_CHUNK faces of one
+ * run, so one large moby does not hold the join while the other workers idle. */
+typedef struct { int run, i0, i1; } moby_emit_item_t;
+static moby_emit_item_t s_mitems[MAX_NTRI];
+static uint8_t s_mef_flags[MAX_NTRI];       /* per face: the MEF_* steps it left to the commit */
+static int s_mef_rank[MAX_NTRI];            /* per face: its paint rank (MEF_ORD) */
+
+typedef struct { const moby_emit_env_t* E; int base; } moby_emit_job_t;
+
+/** @brief Work-pool job: build and store every face of one item (a stretch of one moby run) at its scene slot (reservation base plus face index).
+ * @param item The item index.
+ * @param worker The pool worker, 0 for the calling thread.
+ * @param arg The moby_emit_job_t. */
+static void moby_emit_job(int item, int worker, void* arg) {
+    const moby_emit_job_t* J = (const moby_emit_job_t*)arg;
+    const moby_emit_item_t* I = &s_mitems[item];
+    const moby_emit_run_t* R = &s_mruns[I->run];
+    moby_shell_run_t shell = { 0, 0 };
+    /* The shell verdict is the whole run's: resolve it from the run's first face. */
+    if (I->i0 > R->i0) (void)moby_shell_face(R->i0, &shell);
+    for (int i = I->i0; i < I->i1; i++) {
+        openpete_scene_tri t;
+        const int cat = moby_emit_face(J->E, R, i, &shell, &t, &s_mef_flags[i], &s_mef_rank[i]);
+        uint32_t hq[2];
+        moby_tri_heavy_fog(&t, &s_wtri[i], cat, J->E->fog, hq);
+        openpete_native_scene_store_tri(J->base + i, &t, cat, OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], R->slot), hq,
+                                        R->host_added, &s_mew[worker].pvz_missing);
+    }
+}
+
+/** @brief Whether OPENPETE_MOBY_PUSH_FANOUT is not 0: the emit may fan out (default on), read once.
+ * @return 1 when it may. */
+static int push_fanout_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_PUSH_FANOUT"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/** @brief The emit fan-out's face bound: OPENPETE_MOBY_PUSH_FANOUT_MIN, else MN_PUSH_FANOUT_MIN_FACES, a calibration override as walk_fanout_min's.
+ * @return The bound, faces. */
+static long push_fanout_min(void) {
+    static int s_min = -1;
+    if (s_min < 0) { const char* e = getenv("OPENPETE_MOBY_PUSH_FANOUT_MIN");
+                     s_min = (e && *e) ? atoi(e) : MN_PUSH_FANOUT_MIN_FACES; }
+    return s_min;
+}
+
+/** @brief Resolve every lazily read environment switch the face emit reads, so the workers read only settled values. */
+static void moby_emit_latch(void) {
+    (void)moby_face_key_on();
+    (void)moby_world_key_on();
+    (void)moby_terrain_order_on();
+    (void)openpete_mobyrank_on();
+    (void)moby_class_is_prop(0u);
+    (void)moby_td_census_on();
+}
+
+/** @brief Whether this walk's emit fans out: on, not the first emit of the run, no instrument that counts per face in emit order, the face and run bounds met.
+ *
+ * The first emit runs serial so every lazy latch the face emit reaches
+ * resolves on one thread (moby_emit_latch covers the known ones). The face
+ * bound is where the fan-out stops losing: it pays a fixed cost the serial
+ * emit does not (the pool's wake and join, the reservation, the run prefix
+ * and the commit pass), measured at 60 to 180 us whatever the size, against
+ * about 0.037 us per face serial. Measured per emit by
+ * OPENPETE_MOBY_PUSH_FANOUT_CHECK on three scenes of the three games (8
+ * workers): 3,000 to 4,000 faces ran 127 to 135 us serial against 172 to 177
+ * fanned out; 5,000 to 8,000 ran 234 to 249 against 177 to 182; 10,000 ran
+ * 397 against 196. The crossover is near 4,800 faces; OPENPETE_MOBY_PUSH_FANOUT_MIN
+ * re-derives it on another machine.
+ * @return The worker count to fan out over, or 0 for the serial emit. */
+static int moby_emit_fanout_workers(void) {
+    static int first = 1;
+    if (first) { first = 0; moby_emit_latch(); return 0; }
+    if (!push_fanout_on() || player_hide_moby_any() || moby_td_census_on()) return 0;
+    int nw = openpete_workpool_threads();
+    if (nw > MN_MAX_WORKERS) nw = MN_MAX_WORKERS;
+    if (walk_fanout_small(s_gout.n, push_fanout_min(), 2, nw)) return 0;
+    if (s_gout.n < 2 || s_wtri_moby[0] == s_wtri_moby[s_gout.n - 1]) return 0;   /* one moby run */
+    return nw;
+}
+
+/** @brief Add the stored faces' provenance tags to the scene's kind counts, one call per stretch of equal tags.
+ * @param n The face count. */
+static void moby_emit_count_kinds(int n) {
+    const moby_emit_run_t* R = s_mruns;
+    uint32_t tag = 0u;
+    int cnt = 0;
+    for (int i = 0; i < n; i++) {
+        if (i >= R->i1) R++;
+        const uint32_t ti = OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], R->slot);
+        if (cnt && ti != tag) { openpete_native_scene_count_kind(tag, cnt); cnt = 0; }
+        tag = ti; cnt++;
+    }
+    if (cnt) openpete_native_scene_count_kind(tag, cnt);
+}
+
+/** @brief Emit every walk face into the scene over the walk workers, then commit in face order.
+ *
+ * Serial prefix: one scene reservation for every face (a face is never
+ * dropped here: the emit fans out only while player_hide_moby_any is 0) and
+ * the moby runs with their material slots, host-added marks and state bytes,
+ * resolved in run order on this thread. Fan-out: one item per run; each face
+ * is built (moby_emit_face), fogged and stored at the reservation base plus
+ * its face index, so the stored order is the face order. Commit, on this
+ * thread: the order-dependent steps of every face in face order
+ * (moby_emit_commit_face) patching the stored triangle, the kind counts, the
+ * repaired-vertex count, and the scene count. The stream and every state it
+ * advances are the serial emit's (OPENPETE_MOBY_PUSH_FANOUT_CHECK compares
+ * them).
+ * @param cpu Guest CPU state, read for the state bytes.
+ * @param E The walk's constants.
+ * @param rord The walk's ranked-moby ordinals.
+ * @return 1 when the emit ran, 0 when the scene could not grow (nothing changed; emit serially). */
+static int moby_emit_fanout(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) {
+    const int n = s_gout.n;
+    const uint64_t t_pre = mst_fine_now();
+    const int base = openpete_native_scene_reserve(n);
+    if (base < 0) return 0;
+    moby_matslot_memo_t mat = { 0u, 0u, 0 };
+    int nr = 0, ni = 0;
+    for (int i = 0; i < n; nr++) {
+        moby_emit_run_t* R = &s_mruns[nr];
+        R->i0 = i;
+        R->i1 = moby_emit_run_end(i);
+        moby_emit_run_open(cpu, R, &mat);
+        for (int c = R->i0; c < R->i1; c += MN_PUSH_FANOUT_CHUNK)
+            s_mitems[ni++] = (moby_emit_item_t){ nr, c, c + MN_PUSH_FANOUT_CHUNK < R->i1 ? c + MN_PUSH_FANOUT_CHUNK : R->i1 };
+        i = R->i1;
+    }
+    mst_add(MST_EPRE, t_pre);
+    const uint64_t t_fan = mst_fine_now();
+    moby_emit_job_t J = { E, base };
+    openpete_workpool_run(ni, moby_emit_job, &J);
+    mst_add(MST_EFAN, t_fan);
+    const uint64_t t_com = mst_fine_now();
+    unsigned pvz = 0;
+    for (int w = 0; w < MN_MAX_WORKERS; w++) { pvz += s_mew[w].pvz_missing; s_mew[w].pvz_missing = 0; }
+    for (int i = 0; i < n; i++)
+        if (s_mef_flags[i])
+            moby_emit_commit_face(i, s_mef_flags[i], s_mef_rank[i], rord, openpete_native_scene_stored(base + i));
+    moby_emit_count_kinds(n);
+    openpete_native_scene_commit_stored(n, pvz, OPENPETE_SCENE_ACTOR);
+    mst_add(MST_ECOM, t_com);
+    return 1;
+}
+
+/* ---- the fan-out's identity check (OPENPETE_MOBY_PUSH_FANOUT_CHECK) ---------- */
+
+/** @brief Whether OPENPETE_MOBY_PUSH_FANOUT_CHECK is set nonzero: every fanned-out emit runs serially first and the two are compared, read once.
+ * @return 1 when on. */
+static int push_fanout_check_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_PUSH_FANOUT_CHECK"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/* The state one emit advances besides the scene: the tie splice state and
+ * the walk's ordinals. */
+typedef struct {
+    moby_tie_bucket_t bk[MOBY_TIE_BUCKETS];
+    int face_n;
+    unsigned face_stamp;
+    moby_rank_ordinals_t rord;
+} moby_emit_state_t;
+
+/** @brief Record the tie splice state and a walk's ordinals.
+ * @param s Receives them.
+ * @param rord The walk's ordinals. */
+static void moby_emit_state_save(moby_emit_state_t* s, const moby_rank_ordinals_t* rord) {
+    memcpy(s->bk, s_tie_bk, sizeof s->bk);
+    s->face_n = s_tie_face_n;
+    s->face_stamp = s_tie_face_stamp;
+    s->rord = *rord;
+}
+
+/** @brief Restore the tie splice state and a walk's ordinals; the kept faces at or past the saved count are dropped by the count.
+ * @param s The saved state.
+ * @param rord The walk's ordinals, restored. */
+static void moby_emit_state_load(const moby_emit_state_t* s, moby_rank_ordinals_t* rord) {
+    memcpy(s_tie_bk, s->bk, sizeof s_tie_bk);
+    s_tie_face_n = s->face_n;
+    s_tie_face_stamp = s->face_stamp;
+    *rord = s->rord;
+}
+
+/* Check totals: emits compared, faces, mismatched stored triangles, mismatched
+ * end states, and the serial and fanned-out nanoseconds per face-count band. */
+#define PFC_BANDS 7
+static const int k_pfc_band[PFC_BANDS] = { 250, 500, 1000, 2000, 4000, 8000, 1 << 30 };
+static struct { long emits, faces, bad_tris, bad_state, refused; long n[PFC_BANDS]; double ser_ns[PFC_BANDS], par_ns[PFC_BANDS]; } s_pfc;
+
+/** @brief Print the check's totals, with the mean serial and fanned-out microseconds per face-count band.
+ * @param tag Why the line prints. */
+static void pfc_print(const char* tag) {
+    fprintf(stderr, "[push-fanout-check %s] emits=%ld faces=%ld mismatched_tris=%ld mismatched_state=%ld refused=%ld |",
+            tag, s_pfc.emits, s_pfc.faces, s_pfc.bad_tris, s_pfc.bad_state, s_pfc.refused);
+    for (int b = 0; b < PFC_BANDS; b++)
+        if (s_pfc.n[b])
+            fprintf(stderr, " <%d: n=%ld ser=%.1f par=%.1f", k_pfc_band[b], s_pfc.n[b],
+                    s_pfc.ser_ns[b] / s_pfc.n[b] / 1000.0, s_pfc.par_ns[b] / s_pfc.n[b] / 1000.0);
+    fputc('\n', stderr);
+}
+
+/** @brief atexit hook: print the check's final totals. */
+static void pfc_atexit(void) { pfc_print("final"); }
+
+/** @brief A monotonic nanosecond stamp for the check's timings.
+ * @return The stamp. */
+static uint64_t pfc_ns(void) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
+/** @brief Run one emit serially and then fanned out on the same input, and compare every stored triangle and the end states.
+ *
+ * Between the two the scene returns to its mark (count, kind counts,
+ * repaired-vertex count) and the tie state and ordinals to their saved
+ * values. Compared: the scene's mark, each stored triangle byte for byte,
+ * the tie splice state with every face it kept, and the ordinals. The snap
+ * queue that follows reads only the walk and the ordinals. The serial run's
+ * material-slot resolves repeat in the fanned-out run as memo hits of the
+ * same present.
+ * @param cpu Guest CPU state.
+ * @param E The walk's constants.
+ * @param rord The walk's ranked-moby ordinals. */
+static void moby_emit_check(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) {
+    static int s_atexit;
+    if (!s_atexit) { s_atexit = 1; atexit(pfc_atexit); }
+    static moby_emit_state_t pre, ser;
+    static unsigned char* tris; static size_t tris_cap;
+    const size_t tb = openpete_native_scene_tri_bytes();
+    openpete_native_scene_mark_t m0, ms, mp;
+    openpete_native_scene_mark(&m0);
+    moby_emit_state_save(&pre, rord);
+    const uint64_t t0 = pfc_ns();
+    moby_emit_serial(cpu, E, rord);
+    const uint64_t t1 = pfc_ns();
+    openpete_native_scene_mark(&ms);
+    moby_emit_state_save(&ser, rord);
+    const int ns = ms.n - m0.n;
+    if (tris_cap < (size_t)ns * tb) { free(tris); tris_cap = (size_t)ns * tb; tris = (unsigned char*)malloc(tris_cap); }
+    if (!tris) return;
+    for (int k = 0; k < ns; k++) memcpy(tris + (size_t)k * tb, openpete_native_scene_stored(m0.n + k), tb);
+    static moby_tie_face_t ser_faces[MOBY_TIE_FACES];
+    memcpy(ser_faces, s_tie_face, sizeof ser_faces);
+    openpete_native_scene_rewind(&m0);
+    moby_emit_state_load(&pre, rord);
+    const uint64_t t2 = pfc_ns();
+    if (!moby_emit_fanout(cpu, E, rord)) {   /* the scene could not grow: keep the serial result */
+        s_pfc.refused++;
+        moby_emit_serial(cpu, E, rord);
+        return;
+    }
+    const uint64_t t3 = pfc_ns();
+    openpete_native_scene_mark(&mp);
+    int bad = 0;
+    for (int k = 0; k < ns && k < mp.n - m0.n; k++)
+        if (memcmp(tris + (size_t)k * tb, openpete_native_scene_stored(m0.n + k), tb) != 0) {
+            if (++bad == 1 && s_pfc.bad_tris < 4)
+                fprintf(stderr, "[push-fanout-check MISMATCH vbl=%u] face %d of %d (moby %08x)\n",
+                        openpete_frame, k, ns, s_wtri_moby[k < s_gout.n ? k : 0]);
+        }
+    moby_emit_state_t par;
+    moby_emit_state_save(&par, rord);
+    const int state_bad = ms.n != mp.n || ms.pvz_missing != mp.pvz_missing ||
+                          memcmp(ms.kind, mp.kind, sizeof ms.kind) != 0 ||
+                          memcmp(ser.bk, par.bk, sizeof ser.bk) != 0 || ser.face_n != par.face_n ||
+                          ser.face_stamp != par.face_stamp ||
+                          memcmp(&ser.rord, &par.rord, sizeof ser.rord) != 0 ||
+                          memcmp(ser_faces, s_tie_face, (size_t)ser.face_n * sizeof ser_faces[0]) != 0;
+    if (state_bad && s_pfc.bad_state < 4)
+        fprintf(stderr, "[push-fanout-check STATE vbl=%u] n %d/%d ties %d/%d ordinals %d/%d\n",
+                openpete_frame, ms.n, mp.n, ser.face_n, par.face_n, ser.rord.n, par.rord.n);
+    s_pfc.emits++; s_pfc.faces += s_gout.n; s_pfc.bad_tris += bad; s_pfc.bad_state += state_bad;
+    int b = 0;
+    while (s_gout.n >= k_pfc_band[b]) b++;
+    s_pfc.n[b]++; s_pfc.ser_ns[b] += (double)(t1 - t0); s_pfc.par_ns[b] += (double)(t3 - t2);
+    if ((s_pfc.emits & 255) == 0) pfc_print("running");
+}
+
+/** @brief Emit every walk face into the scene: fanned out over the walk workers when the walk is large enough, else face by face.
+ *
+ * OPENPETE_MOBY_PUSH_FANOUT=0 keeps every emit serial; under
+ * OPENPETE_MOBY_PUSH_FANOUT_CHECK every fanned-out emit is checked against
+ * the serial one (moby_emit_check).
+ * @param cpu Guest CPU state.
+ * @param E The walk's constants.
+ * @param rord The walk's ranked-moby ordinals. */
+static void moby_emit(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) {
+    if (!moby_emit_fanout_workers()) { moby_emit_serial(cpu, E, rord); return; }
+    if (push_fanout_check_on()) { moby_emit_check(cpu, E, rord); return; }
+    if (!moby_emit_fanout(cpu, E, rord)) moby_emit_serial(cpu, E, rord);
+}
+
 
 /** @brief Commit every record of the pass into the stage readback's snapshot of the scene being fed (OPENPETE_MOBY_GSTAGE_AB).
  *
@@ -12176,94 +12667,9 @@ static void push_scene_moby_tris(CPUState* cpu) {
     moby_tri_debug();
     moby_rank_ordinals_t rord;  /* this walk's ranked-moby ordinals */
     moby_rank_ordinals_begin(&rord);
-    moby_matslot_memo_t mat = { 0u, 0u, 0 };  /* the material-slot resolve below */
-    moby_shell_run_t shell_run = { 0, 0 };
-    const int64_t fog = moby_heavy_fog_target();
+    const moby_emit_env_t env = { stbit, moby_heavy_fog_target() };
     const uint64_t t_em = mst_now();
-    const unsigned tbase = msp_loop_base(s_gout.n);
-    for (int i = 0; i < s_gout.n; i++) {
-        uint64_t ts = msp_at(tbase, i);
-        int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
-                : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
-                : s_wtri_front[i]   ? OPENPETE_SCENE_ACTOR_FRONT
-                                    : OPENPETE_SCENE_ACTOR;
-        openpete_scene_tri t = {0};
-        for (int k = 0; k < 3; k++) {
-            t.v[k].sx   = s_wtri[i].v[k].sx;
-            t.v[k].sy   = s_wtri[i].v[k].sy;
-            t.v[k].z    = openpete_native_scene_viewz(openpete_worldvz_full(moby_cover_depth(i, k)));
-            /* Perspective W: the vertex's unshifted view-Z (equal to z where
-             * no OT pull moved it). */
-            t.v[k].pvz  = openpete_native_scene_viewz(openpete_worldvz_full(s_wtri[i].v[k].tvz));
-            t.v[k].u    = (float)s_wtri[i].v[k].u;
-            t.v[k].v    = (float)s_wtri[i].v[k].v;
-            t.v[k].rgba = (s_wtri[i].v[k].rgb & 0xFFFFFFu) | moby_tri_alpha(&s_wtri[i]);
-        }
-        t.textured = s_wtri[i].textured;
-        t.tpage_x  = s_wtri[i].tpage_x; t.tpage_y = s_wtri[i].tpage_y;
-        t.clut_x   = s_wtri[i].clut_x;  t.clut_y  = s_wtri[i].clut_y;
-        t.bpp      = s_wtri[i].bpp;
-        t.blend    = s_wtri[i].blend;
-        t.mid      = moby_scene_identity(s_wtri_moby[i]);
-        t.cbits    = s_wtri_cbits[i];
-        t.shell    = moby_shell_face(i, &shell_run);
-        t.ot_slot1 = moby_face_ot_slot1(s_wtri_wbk[i]);
-        /* og OT key channel, moby twin of the terrain emit: the .s inserts
-         * each moby face at its average-Z slot minus the authored
-         * m_DepthOffset (the angle word's top byte, which the cull packs into record
-         * w0 bits 16-23 / the shaded walk's rot>>24) - an ordering KEY,
-         * never stored depth. Where the scene sorts by one ordering table
-         * (S2/S3) the face's key is the world bucket the draw splices it
-         * into (moby_tri_contest_key). The face's ABSOLUTE key rasters into the
-         * actor key image for the glow-fan aura contest and the key-order
-         * class's terrain yield; every other keyed opaque face rasters its
-         * per-pixel moby-against-moby key there instead (akc, akpx), which
-         * decides moby against moby (MOBY_TRUESCOPE, psx_key_contest.glsl
-         * op_key_loses). Terrain does not yield to the key: the part
-         * of a pulled moby sunk into the terrain it intersects is drawn in
-         * front of that terrain by the snap (moby_snap_collect,
-         * psx_moby_snap.glsl), while og's pull+push compound - which paints
-         * a chest through the wall lip genuinely in front of it - is not
-         * mirrored: a wall in front keeps occluding by TRUE depth. The moby
-         * face contests nearer actor keys except those its own moby owns
-         * (op_akey_select).
-         * Blend/FRONT/HUD classes
-         * stay unkeyed (a blended ACTOR face carries its key for the snap
-         * alone, skey) - and so do MANGLED faces (near-plane fixup /
-         * coordinate saturation): their screen footprint is not the true
-         * projection, so a flat key stamped across one discards terrain
-         * far outside the moby's real silhouette (a right-at-the-camera
-         * moby flooded a whole wall away). A genuinely-near moby needs no
-         * key anyway - it is the viewer-side surface and TRUE depth
-         * already wins its own pixels. */
-        ts = msp_mark(MSP_E_VTX, ts, MSP_STRIDE);
-        moby_face_order(cpu, i, cat, stbit, &rord, &t);
-        ts = msp_mark(MSP_E_ORDER, ts, MSP_STRIDE);
-        /* Per-instance material slot, resolved from the moby's identity
-         * at emit time (moby_matslot_memo). */
-        const uint16_t matslot = moby_matslot_memo(&mat, s_wtri_cls[i], s_wtri_moby[i]);
-        /* --hide-player drops the companion's actor faces and --hide-classes
-         * every face of a listed class here, after every per-moby memo above
-         * has advanced, so every other moby's triangles are submitted as
-         * without the flags. */
-        if (player_hide_moby_face(cat == OPENPETE_SCENE_ACTOR || cat == OPENPETE_SCENE_ACTOR_FRONT,
-                                  s_wtri_cls[i], &t, sizeof t)) {
-            msp_mark(MSP_E_MAT, ts, MSP_STRIDE);
-            continue;
-        }
-        openpete_native_scene_set_tag(
-            OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], matslot));
-        /* Origin: a record the extended-LOD reveal appended is host-added
-         * geometry, and the scene's content and world-frame verdicts are the
-         * game's own to make. Memoized on the moby ptr like the material slot
-         * above - the walk emits a moby's faces contiguously. */
-        openpete_native_scene_set_host_added(moby_walk_tri_host_added(s_wtri_moby[i]));
-        ts = msp_mark(MSP_E_MAT, ts, MSP_STRIDE);
-        moby_tri_heavy_fog(&t, &s_wtri[i], cat, fog);
-        ts = msp_mark(MSP_E_FOG, ts, MSP_STRIDE);
-        openpete_native_scene_add_tri(&t, cat, 0);
-        msp_mark(MSP_E_ADD, ts, MSP_STRIDE);
-    }
+    moby_emit(cpu, &env, &rord);
     mst_add(MST_EMIT, t_em);
     const uint64_t t_post = mst_fine_now();
     moby_td_census(-1, 0, stbit);

@@ -1267,6 +1267,16 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             TIMEOUT 900
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        # The moby emit fan-out against the serial emit on the same capture:
+        # every stored triangle and the tie, ordinal and scene counts.
+        add_test(NAME moby_push_fanout_${_pc_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_pose_cache.sh
+                         --game ${_pc_game} --build-dir=${CMAKE_BINARY_DIR} --instrument=push-fanout)
+        set_tests_properties(moby_push_fanout_${_pc_game} PROPERTIES
+            LABELS "presentation;moby"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
     # Moby occlusion census. Per row of

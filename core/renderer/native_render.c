@@ -2061,30 +2061,6 @@ static int category_snaps_vertices(int category) {
  * view-Z, so its W is the depth's own view-Z. */
 static unsigned s_pvz_missing = 0;
 unsigned openpete_native_scene_pvz_missing(void) { return s_pvz_missing; }
-/** @brief Repair vertices that arrive without a true view-Z and count them.
- *
- * For each of the three vertices with pvz not above 0, increments
- * s_pvz_missing, logs the first occurrence per category with the current tag on
- * stderr, and sets pvz to the vertex's ordering z. The category is reduced
- * modulo 32 for the once-per-category record.
- * @param v The triangle's three vertices; pvz is rewritten in place.
- * @param category Draw category, used only for the log record. */
-static void scene_vert_require_pvz(openpete_scene_vert v[3], int category)
-{
-    static uint32_t s_named = 0;
-    for (int k = 0; k < 3; k++) {
-        if (v[k].pvz > 0.0f) continue;
-        s_pvz_missing++;
-        const uint32_t bit = 1u << ((unsigned)category & 31u);
-        if (!(s_named & bit)) {
-            s_named |= bit;
-            OPL_ERROR_F("native", "scene vertex without true view-Z (pvz=%g, z=%g) "
-                        "in category %d, tag %08x", (double)v[k].pvz, (double)v[k].z,
-                        category, s_cur_tag);
-        }
-        v[k].pvz = v[k].z;
-    }
-}
 /** @brief The blend class a stored triangle keeps: blend itself when it is 0..NR_BLEND_CLASSES-1, else 0 (opaque). */
 static int scene_blend_class(int blend) {
     return (blend >= 0 && blend < NR_BLEND_CLASSES) ? blend : 0;
@@ -2104,102 +2080,148 @@ static void scene_abr0_alpha(scene_tri_t *s) {
         s->v[k].rgba = (s->v[k].rgba & 0x00FFFFFFu) | (0x80u << 24);
 }
 
+/** @brief The OPENPETE_TRUE_W mask, read once: which categories keep their stated perspective W.
+ *
+ * OPENPETE_TRUE_W is a kill switch and bisect mask for openpete_scene_vert.pvz:
+ * 0 replaces every feeder's value with the vertex's ordering view-Z (W from
+ * the ordering depth); a bitmask keeps it for selected categories only (1 =
+ * PLAYER, 2 = ACTOR/HUD3D mobys, 4 = WORLD terrain), which attributes a
+ * divergence to one feeder without a rebuild. The parse is masked to 0..7 so
+ * the latch holds; 7, the default, keeps every category.
+ * @return The mask. */
+static int scene_true_w_mask(void) {
+    static int s_tw = -1;
+    if (s_tw < 0) { const char* e = getenv("OPENPETE_TRUE_W");
+                    s_tw = (e && *e) ? ((int)strtol(e, NULL, 0) & 7) : 7; }
+    return s_tw;
+}
+
+/** @brief Fill one stored scene triangle from a feeder triangle and the routing state, without counting it.
+ *
+ * Copies the feeder triangle (the stored layout's prefix), validates the
+ * blend class, states the ABR 0 alpha, stamps the explicit routing (category,
+ * carry, group, tag, heavy-fog words, host-added) and the sticky state the
+ * feeders set around a feed (fog delta, seq, prim, STP selection, framebuffer
+ * cell, portal rim, key cells, terrain-feed mark), recolours by tag under
+ * OPENPETE_TAG_TINT, snaps to the integer grid under --vertex-precision
+ * integer, repairs a missing true view-Z (counted in *pvz_missing, logged by
+ * the caller) and applies the OPENPETE_TRUE_W mask. Reads the sticky state
+ * only, so threads may fill distinct triangles at once while no feeder sets
+ * it.
+ * @param d The stored triangle.
+ * @param tri The feeder triangle.
+ * @param category Scene layer.
+ * @param carry The 2D-UI carry flag.
+ * @param group Portal grouping id.
+ * @param tag Provenance tag.
+ * @param hq_a Heavy-fog word a.
+ * @param hq_b Heavy-fog word b.
+ * @param host_added Nonzero for host-added geometry.
+ * @param pvz_missing Incremented per vertex whose pvz was not above 0. */
+static void scene_tri_fill(scene_tri_t* d, const openpete_scene_tri* tri, int category, int carry, int group,
+                           uint32_t tag, uint32_t hq_a, uint32_t hq_b, int host_added, unsigned* pvz_missing) {
+    memcpy(d, tri, sizeof *tri);
+    /* One validation of the blend class for every pass that indexes a
+     * table by it; a class outside the table draws opaque, as each
+     * pass's own clamp already maps it. */
+    d->blend = scene_blend_class(d->blend);
+    scene_abr0_alpha(d);
+    d->category = category;  /* explicit layer (ignored for blend!=0) */
+    d->carry = carry;        /* explicit 2D-UI sub-tick carry flag */
+    d->group = group;        /* portal grouping id (PORTAL_* only) */
+    d->tag = tag;
+    d->fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
+    d->hqfog_a = hq_a;
+    d->hqfog_b = hq_b;
+    d->seq = s_cur_seq;              /* sticky (set_seq) */
+    d->over_fade = 0;                /* set at the 2D rank */
+    d->under_player = 0;             /* set at the 2D rank */
+    d->prim = s_cur_prim;            /* sticky (set_prim) */
+    d->stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
+    d->fb_cell = s_cur_fb_cell;      /* sticky (set_fb_cell) */
+    d->host_added = host_added;
+    d->portal_rim = s_cur_portal_rim; /* sticky (set_portal_rim) */
+    scene_stamp_key_cells(d);
+    d->ter_after = s_cur_ter_after;   /* sticky (mark_terrain_feed) */
+    if (tag && tag_tint_on()) {
+        /* Coverage instrument: hash the tag to a stable tint and modulate
+         * the vertex colours - "which source produced this pixel".
+         * The tint bits are read out of the LOW 23 bits, so the hash has to
+         * avalanche: a bare Knuth multiply leaves them zero for any tag
+         * whose payload is zero (a whole-channel tag like 0x60000000 is
+         * 3<<29, and 2^29*odd mod 2^32 keeps only the top bits), which
+         * collapsed every payload-less channel to one identical tint. The
+         * finalizer mixes the path nibble down into the readout bits so
+         * distinct channels stay distinguishable. */
+        uint32_t hsh = tag * 2654435761u;
+        hsh ^= hsh >> 15; hsh *= 2246822519u; hsh ^= hsh >> 13;
+        uint32_t tr = 128u + (hsh & 0x7Fu), tg = 128u + ((hsh >> 8) & 0x7Fu),
+                 tb = 128u + ((hsh >> 16) & 0x7Fu);
+        for (int k = 0; k < 3; k++) {
+            uint32_t c = d->v[k].rgba;
+            uint32_t r = (((c) & 0xFFu) * tr) >> 8,
+                     g = (((c >> 8) & 0xFFu) * tg) >> 8,
+                     b = (((c >> 16) & 0xFFu) * tb) >> 8;
+            d->v[k].rgba = (c & 0xFF000000u) | (b << 16) | (g << 8) | r;
+        }
+    }
+    /* --vertex-precision integer: re-snap the (still 512x240) screen coords to
+     * the PSX integer pixel grid - the polygon wobble. TRUNCATE (floor), not
+     * round: the GTE derives SXY via MAC0 >> 16, an arithmetic shift = floor,
+     * and the choice is load-bearing beyond fidelity - round-half-up measured
+     * 2-3x MORE silhouette holes on real scenes (overlapping unstitched edges
+     * carry correlated fractional parts that a .5 boundary splits apart).
+     * X/Y only; depth and UVs are untouched (Z-buffer + perspective texturing
+     * preserved). The grid is display-resolution-independent because sx/sy are
+     * pre-normalize (scene_to_clip upscales afterward), so SSAA / widescreen
+     * keep the exact 512x240 jitter the original GTE produced. */
+    if (s_vertex_snap && !s_cur_presnap && category_snaps_vertices(category)) {
+        for (int k = 0; k < 3; k++) {
+            d->v[k].sx = floorf(d->v[k].sx);
+            d->v[k].sy = floorf(d->v[k].sy);
+        }
+    }
+    for (int k = 0; k < 3; k++) {
+        if (d->v[k].pvz > 0.0f) continue;
+        (*pvz_missing)++;
+        d->v[k].pvz = d->v[k].z;
+    }
+    const int tw = scene_true_w_mask();
+    if (tw != 7) {
+        int bit = (category == OPENPETE_SCENE_PLAYER) ? 1
+                : (category == OPENPETE_SCENE_ACTOR ||
+                   category == OPENPETE_SCENE_ACTOR_FRONT ||
+                   category == OPENPETE_SCENE_HUD3D ||
+                   category == OPENPETE_SCENE_HUD) ? 2 : 4;
+        if (!(tw & bit))
+            for (int k = 0; k < 3; k++) d->v[k].pvz = d->v[k].z;
+    }
+}
+
+/** @brief Count vertices that reached the scene without a true view-Z, and name the category once.
+ * @param n The vertex count.
+ * @param category Their draw category, for the once-per-category line.
+ * @param tag The provenance tag for the line. */
+static void scene_pvz_missing_note(unsigned n, int category, uint32_t tag) {
+    static uint32_t s_named = 0;
+    if (!n) return;
+    s_pvz_missing += n;
+    const uint32_t bit = 1u << ((unsigned)category & 31u);
+    if (s_named & bit) return;
+    s_named |= bit;
+    OPL_ERROR_F("native", "scene vertex without true view-Z in category %d, tag %08x (%u vertices)",
+                category, tag, n);
+}
+
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group) {
     if (!tri) return;
     if (s_scene_n < (int)s_scene_v.cap || scene_room(s_scene_n + 1)) {
-        /* geometry+material prefix copy (the feeder tri IS the stored tri's
-         * layout prefix - asserted at scene_tri_t), then stamp the routing
-         * state from the explicit args. */
-        memcpy(&s_scene[s_scene_n], tri, sizeof *tri);
-        /* One validation of the blend class for every pass that indexes a
-         * table by it; a class outside the table draws opaque, as each
-         * pass's own clamp already maps it. */
-        s_scene[s_scene_n].blend = scene_blend_class(s_scene[s_scene_n].blend);
-        scene_abr0_alpha(&s_scene[s_scene_n]);
-        s_scene[s_scene_n].category = category;  /* explicit layer (ignored for blend!=0) */
-        s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
-        s_scene[s_scene_n].group = group;        /* portal grouping id (PORTAL_* only) */
-        s_scene[s_scene_n].tag = s_cur_tag;      /* sticky provenance (set_tag) */
+        unsigned missing = 0;
+        scene_tri_fill(&s_scene[s_scene_n], tri, category, carry, group, s_cur_tag,
+                       s_cur_hqfog[0], s_cur_hqfog[1], s_cur_host_added, &missing);
         scene_kind_count(s_cur_tag, 1);
-        s_scene[s_scene_n].fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
-        s_scene[s_scene_n].hqfog_a = s_cur_hqfog[0];     /* sticky (set_hq_fog) */
-        s_scene[s_scene_n].hqfog_b = s_cur_hqfog[1];
-        s_scene[s_scene_n].seq = s_cur_seq;              /* sticky (set_seq) */
-        s_scene[s_scene_n].over_fade = 0;                /* set at the 2D rank */
-        s_scene[s_scene_n].under_player = 0;             /* set at the 2D rank */
-        s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
-        s_scene[s_scene_n].stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
-        s_scene[s_scene_n].fb_cell = s_cur_fb_cell;      /* sticky (set_fb_cell) */
-        s_scene[s_scene_n].host_added = s_cur_host_added; /* sticky (set_host_added) */
-        s_scene[s_scene_n].portal_rim = s_cur_portal_rim; /* sticky (set_portal_rim) */
-        scene_stamp_key_cells(&s_scene[s_scene_n]);
-        s_scene[s_scene_n].ter_after = s_cur_ter_after;   /* sticky (mark_terrain_feed) */
-        if (s_cur_tag && tag_tint_on()) {
-            /* Coverage instrument: hash the tag to a stable tint and modulate
-             * the vertex colours - "which source produced this pixel".
-             * The tint bits are read out of the LOW 23 bits, so the hash has to
-             * avalanche: a bare Knuth multiply leaves them zero for any tag
-             * whose payload is zero (a whole-channel tag like 0x60000000 is
-             * 3<<29, and 2^29*odd mod 2^32 keeps only the top bits), which
-             * collapsed every payload-less channel to one identical tint. The
-             * finalizer mixes the path nibble down into the readout bits so
-             * distinct channels stay distinguishable. */
-            uint32_t hsh = s_cur_tag * 2654435761u;
-            hsh ^= hsh >> 15; hsh *= 2246822519u; hsh ^= hsh >> 13;
-            uint32_t tr = 128u + (hsh & 0x7Fu), tg = 128u + ((hsh >> 8) & 0x7Fu),
-                     tb = 128u + ((hsh >> 16) & 0x7Fu);
-            for (int k = 0; k < 3; k++) {
-                uint32_t c = s_scene[s_scene_n].v[k].rgba;
-                uint32_t r = (((c) & 0xFFu) * tr) >> 8,
-                         g = (((c >> 8) & 0xFFu) * tg) >> 8,
-                         b = (((c >> 16) & 0xFFu) * tb) >> 8;
-                s_scene[s_scene_n].v[k].rgba = (c & 0xFF000000u) | (b << 16) | (g << 8) | r;
-            }
-        }
-        /* --vertex-precision integer: re-snap the (still 512x240) screen coords to
-         * the PSX integer pixel grid - the polygon wobble. TRUNCATE (floor), not
-         * round: the GTE derives SXY via MAC0 >> 16, an arithmetic shift = floor,
-         * and the choice is load-bearing beyond fidelity - round-half-up measured
-         * 2-3x MORE silhouette holes on real scenes (overlapping unstitched edges
-         * carry correlated fractional parts that a .5 boundary splits apart).
-         * X/Y only; depth and UVs are untouched (Z-buffer + perspective texturing
-         * preserved). The grid is display-resolution-independent because sx/sy are
-         * pre-normalize (scene_to_clip upscales afterward), so SSAA / widescreen
-         * keep the exact 512x240 jitter the original GTE produced. */
-        if (s_vertex_snap && !s_cur_presnap && category_snaps_vertices(category)) {
-            openpete_scene_vert *sv = s_scene[s_scene_n].v;
-            for (int k = 0; k < 3; k++) {
-                sv[k].sx = floorf(sv[k].sx);
-                sv[k].sy = floorf(sv[k].sy);
-            }
-        }
-        scene_vert_require_pvz(s_scene[s_scene_n].v, category);
-        /* OPENPETE_TRUE_W: kill switch / bisect mask for the stated perspective
-         * W (openpete_scene_vert.pvz). 0 replaces every feeder's value with the
-         * vertex's ordering view-Z (W from the ordering depth);
-         * a bitmask keeps it for selected categories only (1 = PLAYER,
-         * 2 = ACTOR/HUD3D mobys, 4 = WORLD terrain), which is how a divergence
-         * gets attributed to one feeder without a rebuild. Default = all on. */
-        {
-            /* The parse is masked to 0..7 so the cache stays non-negative and
-             * the `< 0` first-use latch actually holds - a negative "unset"
-             * value would re-enter getenv on every triangle. 7 keeps all three
-             * categories, i.e. the default no-op, so the mask loop is skipped. */
-            static int s_tw = -1;
-            if (s_tw < 0) { const char* e = getenv("OPENPETE_TRUE_W");
-                            s_tw = (e && *e) ? ((int)strtol(e, NULL, 0) & 7) : 7; }
-            if (s_tw != 7) {
-                int bit = (category == OPENPETE_SCENE_PLAYER) ? 1
-                        : (category == OPENPETE_SCENE_ACTOR ||
-                           category == OPENPETE_SCENE_ACTOR_FRONT ||
-                           category == OPENPETE_SCENE_HUD3D ||
-                           category == OPENPETE_SCENE_HUD) ? 2 : 4;
-                if (!(s_tw & bit))
-                    for (int k = 0; k < 3; k++)
-                        s_scene[s_scene_n].v[k].pvz = s_scene[s_scene_n].v[k].z;
-            }
-        }
+        scene_pvz_missing_note(missing, category, s_cur_tag);
         /* Feed-time carry accumulation (see s_overlay_accum): a fresh 2D-UI /
          * overlay tri joins this tick's carry set NOW, so it survives however
          * many sub-tick scene wipes land before the canonical capture. carry==2
@@ -2217,6 +2239,46 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene_dropped++;   /* cap hit - this tri (and the rest of the feed) is lost */
     }
 }
+
+int openpete_native_scene_reserve(int n) {
+    if (n < 0 || (s_scene_n + n > (int)s_scene_v.cap && !scene_room(s_scene_n + n))) return -1;
+    (void)tag_tint_on();
+    (void)scene_true_w_mask();
+    return s_scene_n;
+}
+
+void openpete_native_scene_store_tri(int slot, const openpete_scene_tri* tri, int category, uint32_t tag,
+                                     const uint32_t hqfog[2], int host_added, unsigned* pvz_missing) {
+    scene_tri_fill(&s_scene[slot], tri, category, 0, 0, tag, hqfog[0], hqfog[1], host_added, pvz_missing);
+}
+
+size_t openpete_native_scene_tri_bytes(void) { return sizeof(scene_tri_t); }
+
+openpete_scene_tri* openpete_native_scene_stored(int slot) {
+    return (openpete_scene_tri*)&s_scene[slot];
+}
+
+void openpete_native_scene_mark(openpete_native_scene_mark_t* m) {
+    m->n = s_scene_n;
+    m->pvz_missing = s_pvz_missing;
+    memcpy(m->kind, s_scene_kind_n, sizeof m->kind);
+}
+
+void openpete_native_scene_rewind(const openpete_native_scene_mark_t* m) {
+    s_scene_n = m->n;
+    s_pvz_missing = m->pvz_missing;
+    memcpy(s_scene_kind_n, m->kind, sizeof s_scene_kind_n);
+}
+
+void openpete_native_scene_count_kind(uint32_t tag, int n) {
+    if (n > 0) s_scene_kind_n[tag >> 28][openpete_tag_kind(tag)] += (uint32_t)n;
+}
+
+void openpete_native_scene_commit_stored(int n, unsigned pvz_missing, int category) {
+    scene_pvz_missing_note(pvz_missing, category, 0u);
+    s_scene_n += n;
+}
+
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry) {
     openpete_native_scene_add_tri_grouped(tri, category, carry, 0);
 }
@@ -18801,6 +18863,8 @@ void openpete_native_set_hide_hud(int on) {
 }
 
 int openpete_native_get_hide_hud(void) { return s_hide_hud; }
+
+int openpete_native_hide_class_any(void) { return s_hide_cls_n > 0; }
 
 int openpete_native_hide_class(uint32_t cls) {
     for (int k = 0; k < s_hide_cls_n; k++)

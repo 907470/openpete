@@ -779,6 +779,9 @@ int  openpete_native_get_hide_hud(void);
  * @param cls A moby class halfword.
  * @return 1 when listed, else 0. */
 int  openpete_native_hide_class(uint32_t cls);
+/** @brief Whether --hide-classes lists any class.
+ * @return 1 when the list is not empty. */
+int  openpete_native_hide_class_any(void);
 
 /** @brief Queue the texture and colour interpolation mode: perspective-correct or PSX affine.
  *
@@ -2156,6 +2159,47 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, 
  * @param group Portal grouping id. */
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group);
+/** @brief Make room for n triangles after the current scene's last and return the first one's slot, for a feeder that stores them in parallel.
+ *
+ * Latches the environment instruments the store reads, so the stores that
+ * follow read no lazily initialised state. The scene count does not move
+ * until openpete_native_scene_commit_stored.
+ * @param n The triangle count.
+ * @return The first slot, or -1 when the scene cannot grow to hold them. */
+int openpete_native_scene_reserve(int n);
+/** @brief Store one triangle at a slot openpete_native_scene_reserve handed out, as openpete_native_scene_add_tri_grouped stores it with carry and group 0.
+ *
+ * The tag, heavy-fog words and host-added mark are arguments instead of the
+ * sticky setters; every other sticky field is read as the last setter left
+ * it. Counts nothing and logs nothing: a vertex without a true view-Z is
+ * repaired and added to *pvz_missing for the commit. Safe on a work-pool
+ * worker for distinct slots while no setter runs. The category must not be
+ * OPENPETE_SCENE_OVERLAY or OPENPETE_SCENE_HUD_PANEL, which feed the 2D carry.
+ * @param slot The slot.
+ * @param tri The triangle.
+ * @param category Scene layer.
+ * @param tag Provenance tag.
+ * @param hqfog The two heavy-fog words.
+ * @param host_added Nonzero for host-added geometry.
+ * @param pvz_missing Incremented per repaired vertex. */
+void openpete_native_scene_store_tri(int slot, const openpete_scene_tri* tri, int category, uint32_t tag,
+                                     const uint32_t hqfog[2], int host_added, unsigned* pvz_missing);
+/** @brief The size of one stored scene triangle, of which openpete_scene_tri is the prefix: the span an instrument compares per triangle.
+ * @return The size in bytes. */
+size_t openpete_native_scene_tri_bytes(void);
+/** @brief The stored triangle at a reserved slot, as its feeder-layout prefix, for a commit that patches ordering fields.
+ * @param slot The slot.
+ * @return The triangle. */
+openpete_scene_tri* openpete_native_scene_stored(int slot);
+/** @brief Add n triangles of one provenance tag to the scene's per-family, per-kind counts, as n adds would.
+ * @param tag The tag.
+ * @param n The count. */
+void openpete_native_scene_count_kind(uint32_t tag, int n);
+/** @brief Take n stored triangles after the scene's last into the scene and count the repaired vertices.
+ * @param n The triangle count, the reservation's or fewer.
+ * @param pvz_missing Vertices the stores repaired.
+ * @param category The category the repair line names. */
+void openpete_native_scene_commit_stored(int n, unsigned pvz_missing, int category);
 /** @brief Return the number of scene vertices that reached add_tri without a true view-Z since boot.
  *
  * Each such vertex (pvz <= 0) took its ordering view-Z instead.
@@ -2380,6 +2424,23 @@ void openpete_native_scene_tag_family_counts(uint32_t out[16]);
  * openpete_native_scene_tag_family_counts.
  * @param out Receives 16 rows of OPENPETE_TAG_KINDS counts. */
 void openpete_native_scene_tag_kind_counts(uint32_t out[16][OPENPETE_TAG_KINDS]);
+
+/* The scene's count, repaired-vertex count and per-tag kind counts at one
+ * instant (openpete_native_scene_mark), for an instrument that feeds one
+ * stream twice and compares. */
+typedef struct {
+    int n;
+    unsigned pvz_missing;
+    uint32_t kind[16][OPENPETE_TAG_KINDS];
+} openpete_native_scene_mark_t;
+/** @brief Record the scene's triangle count, repaired-vertex count and per-tag kind counts.
+ * @param m Receives them. */
+void openpete_native_scene_mark(openpete_native_scene_mark_t* m);
+/** @brief Return the scene to a mark: drop the triangles added since and restore the counts.
+ *
+ * The triangles' slots keep their contents until overwritten.
+ * @param m The mark. */
+void openpete_native_scene_rewind(const openpete_native_scene_mark_t* m);
 /** @brief Arm or disarm the provenance tag as a batch-split key.
  *
  * The mod material-selector registry arms it when a selector registers;
