@@ -1702,22 +1702,33 @@ static int s_in_reextract;
  * from the leg's reset, so the last emission bound to a marker is that
  * marker's total. Active only while a trace is open (op_prof_on). */
 enum { MST_DP = 0, MST_REC, MST_FLD, MST_PREV, MST_REVEAL, MST_TRAIL,
-       MST_WALK, MST_PRO, MST_PUSH, MST_RANK, MST_SNAP, MST_SHD, MST_EMIT, MST_N };
+       MST_WALK, MST_PRO, MST_PUSH, MST_RANK, MST_SNAP, MST_SHD, MST_EMIT,
+       MST_PPRE, MST_PPOST, MST_PRESV, MST_PREG, MST_PSPC, MST_PSIM, MST_PSHD,
+       MST_RKC, MST_RKI, MST_RKB, MST_RKS, MST_WFAN, MST_WMRG, MST_SPRE, MST_SFAN, MST_RKF, MST_N };
 enum { MSC_VERTS = 0, MSC_RECS, MSC_TRIS, MSC_FACES, MSC_N };
 static const char* const k_mst_name[MST_N] = {
     "dp", "rec", "fld", "prev", "reveal", "trail",
-    "walk", "prologue", "push", "rank", "snap", "shdwalk", "emit" };
+    "walk", "prologue", "push", "rank", "snap", "shdwalk", "emit",
+    "push.pre", "push.post", "push.resolve", "push.reg", "push.spec", "push.simple", "push.shaded",
+    "rank.carry", "rank.isect", "rank.build", "rank.store", "walk.fanout", "walk.merge",
+    "simple.prefix", "simple.fanout", "rank.carry.fresh" };
 static const char* const k_msc_name[MSC_N] = { "verts", "recs", "tris", "faces" };
 static uint64_t s_mst_ns[2][MST_N];
 static uint64_t s_mst_calls[2][MST_N];
 static uint64_t s_msc[2][MSC_N];
 
+static int s_msp_on;   /* op_prof_on as of the last mst_now, the sampled loops' gate */
+static int msp_enabled(void);
+static uint64_t mst_fine_now(void);
 /** @brief A monotonic nanosecond stamp while a trace is open, else 0.
  *
- * 0 doubles as the "not sampling" start value mst_add ignores.
+ * 0 doubles as the "not sampling" start value mst_add ignores. Also latches
+ * the trace state the sampled loops read (s_msp_on).
  * @return The CLOCK_MONOTONIC time in nanoseconds, or 0. */
 static uint64_t mst_now(void) {
-    if (!op_prof_on()) return 0;
+    const int on = op_prof_on();
+    s_msp_on = on && msp_enabled();
+    if (!on) return 0;
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t ns = (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
     return ns ? ns : 1;
@@ -1776,6 +1787,7 @@ static void mst_intern(void) {
     init = 1;
 }
 
+static void msp_flush(int leg);
 /** @brief Emit a leg's stage totals as spans and its counters as counts, then zero the stage totals.
  *
  * A stage with no call since the last flush emits nothing. The call counts
@@ -1785,6 +1797,7 @@ static void mst_intern(void) {
 static void mst_flush(int leg) {
     if (!op_prof_on()) return;
     mst_intern();
+    msp_flush(leg);
     int (*sid)[MST_N] = s_mst_sid, (*cid)[MST_N] = s_mst_cid, (*kid)[MSC_N] = s_msc_kid;
     for (int s = 0; s < MST_N; s++) {
         if (s_mst_ns[leg][s]) op_prof_add_span(sid[leg][s], (s_mst_ns[leg][s] + 500u) / 1000u);
@@ -1792,6 +1805,140 @@ static void mst_flush(int leg) {
         if (s_mst_calls[leg][s]) op_prof_count(cid[leg][s], s_mst_calls[leg][s]);
     }
     for (int c = 0; c < MSC_N; c++) op_prof_count(kid[leg][c], s_msc[leg][c]);
+}
+
+uint64_t moby_native_stage_now(void) { return mst_fine_now(); }
+
+void moby_native_stage_add(int which, uint64_t t0) {
+    mst_add(which == MOBY_NATIVE_STAGE_SIMPLE_PREFIX ? MST_SPRE : MST_SFAN, t0);
+}
+
+/* ---- sub-stage split by sampled TSC fraction (OPENPETE_MOBY_SUBSTAGE) ------
+ * A stage whose body is one loop over records, vertices or triangles cannot
+ * carry a clock pair per part per iteration within a few microseconds per
+ * present. Each such body is cut into parts; the TSC is read at every part
+ * boundary of one iteration in MSP_STRIDE (one record in MSP_RSTRIDE for the
+ * per-record parts), each part's cycles are scaled by the stride, and at the leg's flush
+ * the parent stage's measured nanoseconds are divided among its parts in
+ * proportion to their cycles. A part's span is named <leg>.<parent>.<part>
+ * (mrex.emit.order). The parts of one family sum to the parent; the
+ * division assumes the sampled iterations are representative, which a
+ * stride that is not a multiple of any per-record face count keeps. */
+#define MSP_STRIDE 256u   /* vertices and triangles; a power of two */
+#define MSP_OFF 0xFFFFFFFFu   /* a loop base while the split is off */
+#define MSP_RSTRIDE 8u    /* records */
+enum { MSP_E_VTX = 0, MSP_E_ORDER, MSP_E_MAT, MSP_E_FOG, MSP_E_ADD,
+       MSP_R_PRE, MSP_R_PREV, MSP_R_DP, MSP_R_CONF, MSP_R_META,
+       MSP_D_SETUP, MSP_D_KF, MSP_D_PV, MSP_D_PROJ, MSP_D_CLOSE, MSP_D_FOGSAT, MSP_N };
+/* Each part's family: its parent stage. */
+static const int k_msp_parent[MSP_N] = {
+    MST_EMIT, MST_EMIT, MST_EMIT, MST_EMIT, MST_EMIT,
+    MST_REC, MST_REC, MST_REC, MST_REC, MST_REC,
+    MST_DP, MST_DP, MST_DP, MST_DP, MST_DP, MST_DP };
+static const char* const k_msp_name[MSP_N] = {
+    "emit.vtx", "emit.order", "emit.mat", "emit.fog", "emit.add",
+    "rec.pre", "rec.prev", "rec.dp", "rec.conf", "rec.meta",
+    "dp.setup", "dp.kf", "dp.prevv", "dp.proj", "dp.close", "dp.fogsat" };
+static uint64_t s_msp_cyc[2][MSP_N];
+static int s_msp_sid[2][MSP_N];
+static unsigned s_msp_run;                  /* vertex and triangle iterations counted while the split is on */
+static unsigned s_msp_rleft = MSP_RSTRIDE;  /* records to the next sampled record */
+
+/** @brief Whether the fine sub-stage scopes run while a trace is open: OPENPETE_MOBY_SUBSTAGE set nonzero, default off, read once.
+ *
+ * Off, a trace carries the stage totals (mcan.<stage>, mrex.<stage>) only;
+ * on, it adds the sampled parts (mrex.emit.vtx), the per-pass push totals
+ * and the rank, walk, simple-model and resolve splits.
+ * @return 1 when on. */
+static int msp_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_SUBSTAGE"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/** @brief The stage clock for a fine sub-stage scope: mst_now while OPENPETE_MOBY_SUBSTAGE is on, else 0.
+ * @return The stamp, or 0. */
+static uint64_t mst_fine_now(void) { return msp_enabled() ? mst_now() : 0; }
+
+/** @brief The TSC while the split is on (s_msp_on), else 0.
+ * @return The TSC value, or 0 (also on a target without one). */
+static inline uint64_t msp_now(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    return s_msp_on ? __rdtsc() : 0;
+#else
+    return 0;
+#endif
+}
+
+/** @brief Reserve n iterations of a sampled loop in the running count and return their base, MSP_OFF while the split is off.
+ *
+ * Iteration i of the loop is sampled when base + i is a multiple of
+ * MSP_STRIDE (msp_at), so the loop touches no shared state per iteration
+ * and, while the split is off, tests one register.
+ * @param n The loop's iteration count.
+ * @return The base, or MSP_OFF. */
+static inline unsigned msp_loop_base(int n) {
+    if (!s_msp_on || n <= 0) return MSP_OFF;
+    const unsigned b = s_msp_run & 0x7FFFFFFFu;
+    s_msp_run = b + (unsigned)n;
+    return b;
+}
+
+/** @brief The TSC when iteration i of a loop based at base is sampled, else 0.
+ * @param base msp_loop_base's value for the loop.
+ * @param i The iteration.
+ * @return The TSC, or 0. */
+static inline uint64_t msp_at(unsigned base, int i) {
+    return (base != MSP_OFF && ((base + (unsigned)i) & (MSP_STRIDE - 1u)) == 0u) ? msp_now() : 0;
+}
+
+/** @brief Whether this record's parts are timed: one record in MSP_RSTRIDE while the split is on.
+ * @return 1 when the record is sampled. */
+static inline int msp_rsample(void) {
+    if (!s_msp_on || --s_msp_rleft) return 0;
+    s_msp_rleft = MSP_RSTRIDE;
+    return 1;
+}
+
+/** @brief Close one part at the TSC value now and return it as the next part's start.
+ *
+ * Does nothing and returns 0 when t0 is 0.
+ * @param part The part, MSP_E_VTX to MSP_D_FOGSAT.
+ * @param t0 The part's start TSC.
+ * @param scale The part's sampling stride (1 for a part timed on every iteration).
+ * @return The TSC now, or 0. */
+static inline uint64_t msp_mark(int part, uint64_t t0, unsigned scale) {
+    if (!t0) return 0;
+    const uint64_t t1 = msp_now();
+    s_msp_cyc[s_in_reextract ? 1 : 0][part] += (t1 - t0) * scale;
+    return t1;
+}
+
+/** @brief Emit each part's share of its parent's nanoseconds as a span, then zero the leg's cycles.
+ *
+ * Called by mst_flush before it emits and zeroes the parents.
+ * @param leg 0 for the canonical pass, 1 for the re-extract. */
+static void msp_flush(int leg) {
+    static int init;
+    if (!init) {
+        char nb[48];
+        for (int l = 0; l < 2; l++)
+            for (int p = 0; p < MSP_N; p++) {
+                snprintf(nb, sizeof nb, "%s.%s", l ? "mrex" : "mcan", k_msp_name[p]);
+                s_msp_sid[l][p] = op_prof_intern(nb);
+            }
+        init = 1;
+    }
+    uint64_t fam[MST_N] = { 0 };
+    for (int p = 0; p < MSP_N; p++) fam[k_msp_parent[p]] += s_msp_cyc[leg][p];
+    for (int p = 0; p < MSP_N; p++) {
+        const int par = k_msp_parent[p];
+        if (fam[par] && s_msp_cyc[leg][p] && s_mst_ns[leg][par]) {
+            const double ns = (double)s_mst_ns[leg][par] * (double)s_msp_cyc[leg][p] / (double)fam[par];
+            op_prof_add_span(s_msp_sid[leg][p], (uint64_t)((ns + 500.0) / 1000.0));
+        }
+        s_msp_cyc[leg][p] = 0;
+    }
 }
 static int rank_carry_on(void);
 static int rank_fresh_on(void);
@@ -2087,6 +2234,197 @@ static void moby_depthdbg(uint32_t header, uint32_t w0, const int TR_raw[3], con
             openpete_frame, header, w0, (int)(((int32_t)(w0 << 8)) >> 24), cf);
 }
 
+/* ---- the sub-tick pose cache ------------------------------------------------
+ * A sub-tick re-extract decodes every record's pose again on every present of
+ * a tick, and the result repeats: the model-space vertices a decode produces
+ * before the sub-tick lerp, the current pose c and the scaled previous pose p,
+ * are a function of the key words (PC_KW: the animation headers, keyframes A
+ * and B, the record word w0, the tier's vertex count, the stream shift, the
+ * blend flag, the previous pose's stream verdict, headers, keyframes, blend
+ * byte and held-pose array with its length, and the bits of the keyframe
+ * blend phase and the previous pose's unit factor) and of guest memory: the
+ * keyframe streams and headers those words address, and the canonical pass's
+ * held-pose arrays, which only guest-fiber code writes. The sub-tick blend
+ * phase, the camera and the translation enter only after c and p (the lerp
+ * and the projection), so they are not key words.
+ *
+ * The first sub-tick decode of a key files c and p, stamped with the guest
+ * generation (openpete_guest_generation); a later sub-tick decode with equal
+ * key words (compared whole, not by hash) under the same generation reads
+ * them back. The generation advances whenever guest code runs (each tick,
+ * including the ticks runahead speculates and a rewind re-executes, a level
+ * load being such ticks) and whenever a savestate restore replaces guest RAM
+ * (file loads, in-memory loads, runahead's quiet rollbacks), so a filed pose
+ * is never read after the memory it was decoded from could have changed:
+ * a hit returns the bytes a decode would compute. The canonical pass neither
+ * files nor reads. A new generation empties the table and the arena; the
+ * arena holds PC_VERTS vertices (6 MiB) and a decode that does not fit, or
+ * finds no free slot within 64 probes, decodes uncached.
+ *
+ * OPENPETE_MOBY_POSE_CACHE: unset or 1 reads back (default), 0 never files or
+ * reads, 2 decodes every vertex and compares it with the filed copy, counting
+ * mismatches (the identity check; the totals print at exit). */
+#define PC_KW 18
+typedef struct { uint64_t kw[PC_KW]; uint32_t gen, off, n, used; } pc_ent;
+#define PC_SLOTS 8192u
+#define PC_VERTS (1u << 17)
+static pc_ent s_pc[PC_SLOTS];
+static double (*s_pc_v)[6];
+static uint32_t s_pc_used, s_pc_gen;
+static long s_pc_dec, s_pc_filed, s_pc_hit, s_pc_bad, s_pc_full, s_pc_vhit;
+
+/** @brief The pose cache mode, OPENPETE_MOBY_POSE_CACHE: 1 read back (unset), 0 off, 2 compare; read once.
+ * @return The mode. */
+static int pc_mode(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_POSE_CACHE"); v = (e && *e) ? atoi(e) : 1; if (v < 0 || v > 2) v = 1; }
+    return v;
+}
+
+/** @brief Print the cache's engagement at exit: sub-tick decodes looked up, filed, hit, mismatched (mode 2), refused for room, and vertices hit. */
+static void pc_report(void) {
+    if (pc_mode() == 2 || getenv("OPENPETE_MOBY_POSE_CACHE_REPORT"))
+        fprintf(stderr, "[pose-cache] mode=%d decodes=%ld filed=%ld hits=%ld mismatches=%ld full=%ld verts_hit=%ld\n",
+                pc_mode(), s_pc_dec, s_pc_filed, s_pc_hit, s_pc_bad, s_pc_full, s_pc_vhit);
+}
+
+/** @brief The table slot a key starts probing at: a multiply-xorshift mix of its words.
+ * @param kw The key words, PC_KW of them.
+ * @return The slot. */
+static uint32_t pc_slot(const uint64_t* kw) {
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    for (int k = 0; k < PC_KW; k++) { h ^= kw[k]; h *= 0xBF58476D1CE4E5B9ull; h ^= h >> 31; }
+    return (uint32_t)(h >> 40) & (PC_SLOTS - 1u);
+}
+
+/** @brief Find a sub-tick decode's filed vertices under its key words in the current guest generation, or reserve room to file them.
+ * @param kw The key words, PC_KW of them.
+ * @param n The vertex count.
+ * @param file Receives the slots to file into on a miss with room, else NULL.
+ * @return The filed vertices (c in [0..2], p in [3..5]) on a hit, else NULL. */
+static const double (*pc_lookup(const uint64_t* kw, int n, double (**file)[6]))[6] {
+    static int s_init;
+    *file = NULL;
+    if (!s_init) {
+        s_init = 1;
+        s_pc_v = (double (*)[6])malloc(sizeof(double[6]) * PC_VERTS);
+        atexit(pc_report);
+    }
+    if (!s_pc_v || n <= 0) return NULL;
+    const uint32_t gen = openpete_guest_generation();
+    if (gen != s_pc_gen) { s_pc_gen = gen; s_pc_used = 0; }
+    s_pc_dec++;
+    uint32_t h = pc_slot(kw);
+    for (uint32_t k = 0; k < 64u; k++, h = (h + 1u) & (PC_SLOTS - 1u)) {
+        pc_ent* e = &s_pc[h];
+        const int live = e->used && e->gen == gen;
+        if (live && e->n == (uint32_t)n && memcmp(e->kw, kw, sizeof e->kw) == 0) {
+            s_pc_hit++; s_pc_vhit += n;
+            return (const double (*)[6])(s_pc_v + e->off);
+        }
+        if (live) continue;
+        if (s_pc_used + (uint32_t)n > PC_VERTS) break;
+        memcpy(e->kw, kw, sizeof e->kw);
+        e->gen = gen; e->off = s_pc_used; e->n = (uint32_t)n; e->used = 1u;
+        *file = s_pc_v + s_pc_used;
+        s_pc_used += (uint32_t)n;
+        s_pc_filed++;
+        return NULL;
+    }
+    s_pc_full++;
+    return NULL;
+}
+
+/** @brief The TSC when a record is sampled for the split, else 0.
+ * @param sampled msp_rsample's verdict for the record.
+ * @return The TSC, or 0. */
+static inline uint64_t msp_rnow(int sampled) { return sampled ? msp_now() : 0; }
+
+/* One record decode's pose sources: its keyframe streams, its previous pose
+ * and the pose cache slots it reads back or files (moby_pose_vertex). */
+typedef struct {
+    CPUState* cpu;
+    vstream *A, *B;              /* keyframe A, and B when blending (else NULL) */
+    double t;                    /* the keyframe blend phase */
+    const moby_pose_t* prev;
+    vstream *Ap, *Bp;            /* the previous pose's streams */
+    int blend_p;                 /* moby_prev_streams' result; negative: no previous pose */
+    double prev_k;               /* the previous pose's unit factor */
+    double blend_alpha;          /* the lerp phase from p to c */
+    const double (*hit)[6];      /* filed c and p under the decode's key, or NULL */
+    double (*file)[6];           /* slots to file c and p into, or NULL */
+    int read;                    /* 1: take c and p from hit instead of decoding */
+    uint32_t header;             /* for the mismatch line */
+} moby_pose_src;
+
+/** @brief Look a sub-tick record decode up in the pose cache (pc_lookup), setting its slots to read back or file.
+ *
+ * Does nothing on the canonical pass or with the cache off. The key words
+ * are the decode's own words, then the previous pose's stream verdict,
+ * headers, keyframes, blend byte, held-pose array and length, then the bits
+ * of the keyframe blend phase and of the previous pose's unit factor. Mode 1
+ * reads back on a hit; mode 2 compares there instead.
+ * @param S The record's sources; hit, file and read are set.
+ * @param own The decode's words: headers A and B, keyframes A and B, w0, vertex count, stream shift, blend flag.
+ * @param count The vertex count. */
+static void pc_record_open(moby_pose_src* S, const uint64_t own[8], int count) {
+    const int pcm = pc_mode();
+    if (!pcm || !s_in_reextract) return;
+    const moby_pose_t* pv = S->prev;
+    const moby_pose_t none = { 0u, 0u, 0u, 0u, 0u, NULL, 0 };
+    if (!pv) pv = &none;
+    uint64_t kw[PC_KW] = { own[0], own[1], own[2], own[3], own[4], own[5], own[6], own[7],
+                           (uint64_t)(int64_t)S->blend_p, pv->header, pv->header_b, pv->frame_a, pv->frame_b,
+                           pv->blend, (uint64_t)(uintptr_t)pv->held, (uint64_t)pv->held_n, 0u, 0u };
+    memcpy(&kw[16], &S->t, sizeof S->t);
+    memcpy(&kw[17], &S->prev_k, sizeof S->prev_k);
+    S->hit = pc_lookup(kw, count, &S->file);
+    S->read = S->hit && pcm == 1;
+}
+
+/** @brief Produce one vertex's current pose c, scaled previous pose p and their lerp v, decoding or reading the pose cache back.
+ *
+ * Without a previous pose p is c and v is c. Files c and p when the
+ * decode reserved cache slots, and in the cache's compare mode counts a
+ * sub-tick vertex whose c or p differs from the filed copy. Marks the
+ * split's keyframe and previous-pose parts at *tv.
+ * @param S The record's sources.
+ * @param i The vertex index.
+ * @param c Receives the current pose.
+ * @param p Receives the previous pose.
+ * @param v Receives the lerped model-space position.
+ * @param tv The split's TSC stamp, advanced. */
+static void moby_pose_vertex(const moby_pose_src* S, int i, double c[3], double p[3], double v[3], uint64_t* tv) {
+    if (S->read) {
+        memcpy(c, S->hit[i], sizeof(double[3]));
+        memcpy(p, &S->hit[i][3], sizeof(double[3]));
+    } else {
+        moby_keyframe_vertex(S->cpu, S->A, S->B, S->t, i, c);
+        memcpy(p, c, sizeof(double[3]));
+    }
+    *tv = msp_mark(MSP_D_KF, *tv, MSP_STRIDE);
+    v[0] = c[0]; v[1] = c[1]; v[2] = c[2];
+    if (S->blend_p >= 0) {
+        /* lerp prev->curr by blend_alpha (the moby's per-object sub-tick alpha) */
+        if (!S->read) {
+            moby_prev_vertex(S->cpu, S->prev, S->Ap, S->Bp, S->blend_p, i, p);
+            p[0] *= S->prev_k; p[1] *= S->prev_k; p[2] *= S->prev_k;
+        }
+        v[0] = p[0] + (c[0] - p[0]) * S->blend_alpha;
+        v[1] = p[1] + (c[1] - p[1]) * S->blend_alpha;
+        v[2] = p[2] + (c[2] - p[2]) * S->blend_alpha;
+    }
+    *tv = msp_mark(MSP_D_PV, *tv, MSP_STRIDE);
+    if (S->file) {
+        memcpy(S->file[i], c, sizeof(double[3]));
+        memcpy(&S->file[i][3], p, sizeof(double[3]));
+    } else if (S->hit && !S->read &&
+               (memcmp(S->hit[i], c, sizeof(double[3])) != 0 || memcmp(&S->hit[i][3], p, sizeof(double[3])) != 0)) {
+        if (++s_pc_bad <= 8) fprintf(stderr, "[pose-cache MISMATCH vbl=%u] header=%08x vertex=%d\n",
+                                     openpete_frame, S->header, i);
+    }
+}
+
 /** @brief Decode one moby record's vertex stream with the game's codec and project every vertex in float.
  *
  * The cull-record path (moby_project_record) and the host-built record path
@@ -2158,6 +2496,7 @@ static void moby_depthdbg(uint32_t header, uint32_t w0, const int TR_raw[3], con
  * @param out Receives one projection per vertex.
  * @param cap Capacity of out; the vertex count is clamped to it.
  * @return The vertex count written, 0 when header or keyframe A is not live, the GPF far skip drops the record, or the tier's count is 0. */
+
 static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t headerB,
                                uint32_t frameA,
                                uint32_t frameB, uint32_t w0,
@@ -2167,6 +2506,8 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
                                const int M[3][3], const float Mf[3][3], int zsf4,
                                const ngte_view* v, proj_xy* out, int cap) {
     if (header < 0x80000000u || !moby_pose_live(header, frameA)) return 0;
+    const int dsamp = msp_rsample();
+    uint64_t td = msp_rnow(dsamp);
     if (headerB < 0x80000000u) headerB = header;
     /* The draw-side translation rescale, and the far skip that rides it, exist
      * only on a game whose cull stores the unscaled translation; where the cull
@@ -2226,24 +2567,25 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
                         moby_tie_pull_on() && centre_full > 0.0, &otr, itr, v->ofx, v->ofy, NULL, 0.0 };
     openpete_gsab_inst* gsab = moby_proj_open(&P, out, moby_rec_gsab_flags(gpf, do_blend, blend_p),
                                               blend_p >= 0 ? blend_alpha : 1.0, count);
+    msp_mark(MSP_D_SETUP, td, MSP_RSTRIDE);
+    moby_pose_src S = { cpu, &A, do_blend ? &B : NULL, t, prev, &Ap, &Bp, blend_p, prev_k, blend_alpha,
+                        NULL, NULL, 0, header };
+    const uint64_t pkw[] = { header, headerB, frameA, frameB, w0, (uint64_t)count, (uint64_t)s5,
+                             (uint64_t)do_blend };
+    pc_record_open(&S, pkw, count);
+    const unsigned vbase = msp_loop_base(count);
     for (int i = 0; i < count; i++) {
-        double c[3];   /* the current pose, before the lerp */
-        moby_keyframe_vertex(cpu, &A, do_blend ? &B : NULL, t, i, c);
+        uint64_t tv = msp_at(vbase, i);
+        double c[3], p[3], vv[3];   /* the current pose, the previous pose, their lerp */
+        moby_pose_vertex(&S, i, c, p, vv, &tv);
         /* A canonical decode keeps the pose it drew (pose_hold_begin). */
         if (t_ph_dst) { t_ph_dst[i][0] = c[0]; t_ph_dst[i][1] = c[1]; t_ph_dst[i][2] = c[2]; }
-        double p[3] = { c[0], c[1], c[2] };   /* the previous pose, the current one without a lerp */
-        double vx = c[0], vy = c[1], vz = c[2];
-        if (blend_p >= 0) {
-            /* lerp prev->curr by blend_alpha (the moby's per-object sub-tick alpha) */
-            moby_prev_vertex(cpu, prev, &Ap, &Bp, blend_p, i, p);
-            p[0] *= prev_k; p[1] *= prev_k; p[2] *= prev_k;
-            vx = p[0] + (c[0] - p[0]) * blend_alpha;
-            vy = p[1] + (c[1] - p[1]) * blend_alpha;
-            vz = p[2] + (c[2] - p[2]) * blend_alpha;
-        }
-        moby_project_vertex(&P, i, c, p, vx, vy, vz, &out[i]);
+        moby_project_vertex(&P, i, c, p, vv[0], vv[1], vv[2], &out[i]);
+        msp_mark(MSP_D_PROJ, tv, MSP_STRIDE);
     }
+    td = msp_rnow(dsamp);
     moby_proj_close(&P, gsab, out, count);
+    msp_mark(MSP_D_CLOSE, td, MSP_RSTRIDE);
     return count;
 }
 
@@ -2286,7 +2628,9 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     int n = moby_decode_project_body(cpu, header, headerB, frameA, frameB, w0, prev,
                                      blend_alpha, gpf_frac, depth_k, TR_raw, TR_frac,
                                      M, Mf, *zsf4, v, out, cap);
+    const uint64_t tf = msp_rnow(msp_rsample());
     const int fs = moby_fog_sat_verdict(cpu, header, out, n);
+    msp_mark(MSP_D_FOGSAT, tf, MSP_RSTRIDE);
     if (fs == MOBY_FS_SKIP) n = 0;
     if (fs == MOBY_FS_LP) {
         *zsf4 = MOBY_FOGSAT_LP_TIER;
@@ -7999,11 +8343,15 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
     for (int w = 0; w < nw; w++) s_wout[w].n = 0;
     mn_job J = { cpu, is_spec };
     uint64_t t_disp = tier_dbg_on() ? openpete_phase_now_us() : 0;
+    const uint64_t m_fan = mst_fine_now();
     openpete_workpool_run(s_nrecs, walk_record_job, &J);
+    mst_add(MST_WFAN, m_fan);
     if (t_disp) s_us_fanout += (long)(openpete_phase_now_us() - t_disp);
     uint64_t t_mrg = tier_dbg_on() ? openpete_phase_now_us() : 0;
+    const uint64_t m_mrg = mst_fine_now();
     s_gout.n = 0;
     walk_merge_runs(s_pre_rec, s_nrecs);
+    mst_add(MST_WMRG, m_mrg);
     if (t_mrg) s_us_merge += (long)(openpete_phase_now_us() - t_mrg);
     walk_diag_rollup(nw);
 }
@@ -10727,7 +11075,9 @@ static void rank_carry_apply(CPUState* cpu) {
         if (s_nrank[i] > 0) s_rc_hit++; else s_rc_miss++;
     }
     s_ip_n = 0;
+    const uint64_t t_fr = mst_fine_now();
     if (rank_fresh_on() || census) rank_fresh_pass(rank_fresh_on());
+    mst_add(MST_RKF, t_fr);
 }
 
 /* Select census on the PSX pixel grid (pixel centres, either winding),
@@ -10915,11 +11265,17 @@ static void moby_rank_prepare(CPUState* cpu) {
     if (!openpete_mobyrank_on() && !isect_log_on()) return;
     int carry = s_in_reextract && rank_carry_on();
     uint64_t t0 = rt_now(), c0 = rt_cpu_ns();
+    uint64_t m0 = mst_fine_now();
     if (carry) rank_carry_apply(cpu); else { rr_begin(); isect_census(); }
+    mst_add(carry ? MST_RKC : MST_RKI, m0);
     rank_stage_time(RT_ISECT, t0, c0);
     t0 = rt_now(); c0 = rt_cpu_ns();
+    m0 = mst_fine_now();
     if (!carry) { native_rank_build(); rr_end(); }
+    mst_add(MST_RKB, m0);
+    m0 = mst_fine_now();
     if (!s_in_reextract) rank_carry_store(cpu);
+    mst_add(MST_RKS, m0);
     rank_stage_time(RT_RANK, t0, c0);
     rt_report(s_cur_mat, s_gout.n);
     if (isect_log_on()) {
@@ -11799,6 +12155,7 @@ static void moby_gsab_commit(void) {
  * @param cpu Guest CPU state, read for game.state (moby_walk_state_bit). */
 static void push_scene_moby_tris(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
+    const uint64_t t_pre = mst_fine_now();
     moby_gsab_commit();
     const uint32_t stbit = moby_walk_state_bit(cpu);
     static int s_logged = 0;
@@ -11812,6 +12169,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
      * icon): the in-game 3D HUD icons (treasure/dragon/lives, the static g_Hud
      * range) go to HUD3D so their own faces Z-sort (depth-off paints them
      * inside-out); the flat near-OT text/2D billboards stay HUD. */
+    mst_add(MST_PPRE, t_pre);
     { const uint64_t t_rk = mst_now();
       moby_rank_prepare(cpu);
       mst_add(MST_RANK, t_rk); }
@@ -11822,7 +12180,9 @@ static void push_scene_moby_tris(CPUState* cpu) {
     moby_shell_run_t shell_run = { 0, 0 };
     const int64_t fog = moby_heavy_fog_target();
     const uint64_t t_em = mst_now();
+    const unsigned tbase = msp_loop_base(s_gout.n);
     for (int i = 0; i < s_gout.n; i++) {
+        uint64_t ts = msp_at(tbase, i);
         int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
                 : s_wtri_front[i]   ? OPENPETE_SCENE_ACTOR_FRONT
@@ -11876,7 +12236,9 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * moby flooded a whole wall away). A genuinely-near moby needs no
          * key anyway - it is the viewer-side surface and TRUE depth
          * already wins its own pixels. */
+        ts = msp_mark(MSP_E_VTX, ts, MSP_STRIDE);
         moby_face_order(cpu, i, cat, stbit, &rord, &t);
+        ts = msp_mark(MSP_E_ORDER, ts, MSP_STRIDE);
         /* Per-instance material slot, resolved from the moby's identity
          * at emit time (moby_matslot_memo). */
         const uint16_t matslot = moby_matslot_memo(&mat, s_wtri_cls[i], s_wtri_moby[i]);
@@ -11885,8 +12247,10 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * has advanced, so every other moby's triangles are submitted as
          * without the flags. */
         if (player_hide_moby_face(cat == OPENPETE_SCENE_ACTOR || cat == OPENPETE_SCENE_ACTOR_FRONT,
-                                  s_wtri_cls[i], &t, sizeof t))
+                                  s_wtri_cls[i], &t, sizeof t)) {
+            msp_mark(MSP_E_MAT, ts, MSP_STRIDE);
             continue;
+        }
         openpete_native_scene_set_tag(
             OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], matslot));
         /* Origin: a record the extended-LOD reveal appended is host-added
@@ -11894,19 +12258,26 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * game's own to make. Memoized on the moby ptr like the material slot
          * above - the walk emits a moby's faces contiguously. */
         openpete_native_scene_set_host_added(moby_walk_tri_host_added(s_wtri_moby[i]));
+        ts = msp_mark(MSP_E_MAT, ts, MSP_STRIDE);
         moby_tri_heavy_fog(&t, &s_wtri[i], cat, fog);
+        ts = msp_mark(MSP_E_FOG, ts, MSP_STRIDE);
         openpete_native_scene_add_tri(&t, cat, 0);
+        msp_mark(MSP_E_ADD, ts, MSP_STRIDE);
     }
     mst_add(MST_EMIT, t_em);
+    const uint64_t t_post = mst_fine_now();
     moby_td_census(-1, 0, stbit);
     openpete_native_scene_set_hq_fog(0u, 0u);
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
     openpete_native_scene_set_host_added(0);
     moby_rank_ordinals_end(&rord);
+    mst_add(MST_PPOST, t_post);
     { const uint64_t t_sn = mst_now();
       moby_snap_collect(&rord);
       mst_add(MST_SNAP, t_sn); }
+    const uint64_t t_rs = mst_fine_now();
     moby_snap_moby_fed();
+    mst_add(MST_PRESV, t_rs);
 }
 
 /** @brief Open the scene of the current VBL counter and append the walk's moby triangles to it (push_scene_moby_tris).
@@ -11916,11 +12287,15 @@ static void push_scene_moby_tris(CPUState* cpu) {
  * @param cpu Guest CPU state. */
 static void push_scene_moby(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
+    const uint64_t t_ps = mst_fine_now();
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
-    const uint64_t t_ps = mst_now();
+    const uint64_t t_pt = mst_now();
     push_scene_moby_tris(cpu);
-    mst_add(MST_PUSH, t_ps);
+    mst_add(MST_PUSH, t_pt);
+    mst_add(s_cur_mat[0] == 'S' && s_cur_mat[1] == 'P' ? MST_PSPC
+          : s_cur_mat[0] == 'S' && s_cur_mat[1] == 'I' ? MST_PSIM
+          : s_cur_mat[0] == 'S' && s_cur_mat[1] == 'H' ? MST_PSHD : MST_PREG, t_ps);
 }
 
 /* ---- projection A/B: native decode+project vs the emitted prim verts -- */
@@ -17761,7 +18136,12 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     s_proj_n = 0; s_nrecs = 0;
     static uint32_t culled_moby[MAX_RECORDS]; int culled_n = 0;
     const uint64_t t_rec = mst_now();
+    /* The record-loop split: the part open since tr, closed at the next
+     * boundary or, after a skip, at the next record's start. */
+    uint64_t tr = 0; int tr_part = MSP_R_PRE;
     for (int i = 0; i < nm; i++) {
+        msp_mark(tr_part, tr, MSP_RSTRIDE);
+        tr = msp_rnow(msp_rsample()); tr_part = MSP_R_PRE;
         /* Occlusion cull: skip the whole record (decode + project + walk +
          * draws) when the moby is provably hidden behind nearer WORLD depth.
          * Display-only skip; the record itself (canonical gameplay state) is
@@ -17840,9 +18220,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * pose, prev zeroed for the trace and the record) on spawn or a
          * topology-changing clip switch. */
         moby_prev_decode pd;
+        tr = msp_mark(MSP_R_PRE, tr, MSP_RSTRIDE); tr_part = MSP_R_PREV;
         { const uint64_t t_pv = mst_now();
           moby_record_prev_pose(cpu, mobys[i], &f, &pd);
           mst_add(MST_PREV, t_pv); }
+        tr = msp_mark(MSP_R_PREV, tr, MSP_RSTRIDE); tr_part = MSP_R_DP;
         const moby_pose_t* prev = &pd.prev;
         /* OPENPETE_MOBY_POSTRACE_CLS=<class> (0xFFFF = every class) also
          * traces the anim channel here. This block sits in the sub-tick
@@ -17881,6 +18263,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                                     s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           moby_sphere_shell_pull(cpu, mobys[i], f.header, depth_k, s_proj + s_proj_n, got);
           if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
+        tr = msp_mark(MSP_R_DP, tr, MSP_RSTRIDE); tr_part = MSP_R_CONF;
         if (got <= 0) continue;
         /* OPENPETE_MOBY_POSTRACE_CLS: final SUBMITTED screen-space centroid -
          * the render-side truth, one step before raster (jitter forensics). */
@@ -17927,6 +18310,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         }
         if (ver_check) occl_verify_end(mobys[i], s_proj + off, got);
         else occl_cache_update(cpu, mobys[i], s_proj + off, got, f.TR_frac, f.header);
+        tr = msp_mark(MSP_R_CONF, tr, MSP_RSTRIDE); tr_part = MSP_R_META;
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
         /* Carry the live record's address: a game whose keyframe patch list
          * hangs off the record needs it to find one, and a zero here would send
@@ -17954,6 +18338,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         rex_bug_note(cpu, s_nrecs, mobys[i], pd.verdict);
         s_proj_n += got; s_nrecs++;
     }
+    msp_mark(tr_part, tr, MSP_RSTRIDE);
     mst_add(MST_REC, t_rec);
     const int n_loop = s_nrecs;
     if (!is_spec) rex_regular_tail(cpu, culled_moby, culled_n);

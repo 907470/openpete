@@ -541,6 +541,16 @@ void moby_simple_scope_take(int n, moby_simple_scope_t* sc);
  * @param arg Passed to every job. */
 void moby_simple_fanout(const moby_simple_scope_t* sc, int nrec, long faces,
                         moby_simple_job_fn fn, void* arg);
+/* The simple-model stages a provider times into the moby stage totals
+ * (mcan.simple.* / mrex.simple.*). */
+enum { MOBY_NATIVE_STAGE_SIMPLE_PREFIX = 0, MOBY_NATIVE_STAGE_SIMPLE_FANOUT = 1 };
+/** @brief The moby fine-stage clock: a monotonic nanosecond stamp while a trace is open and OPENPETE_MOBY_SUBSTAGE is on, else 0.
+ * @return The stamp, or 0. */
+uint64_t moby_native_stage_now(void);
+/** @brief Add the nanoseconds since t0 to a simple-model stage of the current leg (canonical or sub-tick).
+ * @param which MOBY_NATIVE_STAGE_SIMPLE_PREFIX or MOBY_NATIVE_STAGE_SIMPLE_FANOUT.
+ * @param t0 The moby_native_stage_now value at the stage's start; 0 adds nothing. */
+void moby_native_stage_add(int which, uint64_t t0);
 /** @brief Emit one simple-model triangle over three vertices of the bound record's projection.
  *
  * The vertices are moby_simple_project_record's; the triangle goes through

@@ -1254,6 +1254,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Moby sub-tick pose cache. One headless capture per game with sixteen
+    # sub-tick re-extracts at each of two VBLs under OPENPETE_MOBY_POSE_CACHE=2:
+    # every decode the cache would read back decodes again and compares its
+    # vertices with the filed copy. Fails on a mismatch, vacuous on no hit.
+    foreach(_pc_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME moby_pose_cache_${_pc_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_pose_cache.sh
+                         --game ${_pc_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(moby_pose_cache_${_pc_game} PROPERTIES
+            LABELS "presentation;moby"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Moby occlusion census. Per row of
     # games/spyro-2/corpus/moby-occlusion-corpus.manifest, three headless legs at
     # one freecam pose (extended LOD, extended LOD with the simple-kind

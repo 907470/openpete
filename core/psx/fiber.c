@@ -159,8 +159,16 @@ int openpete_fiber_guard_contains(uintptr_t addr) {
 }
 #endif
 
+/* The guest generation (openpete_guest_generation). */
+static unsigned s_guest_gen;
+
+unsigned openpete_guest_generation(void) { return s_guest_gen; }
+
+void openpete_guest_generation_bump(void) { s_guest_gen++; }
+
 void openpete_fiber_switch(void* to) {
     OP_ROLE_CHECK(sim);
+    if (to != openpete_host_fiber) s_guest_gen++;   /* guest code is about to run */
 #if defined(OPENPETE_FIBER_TSAN)
     (void)tsan_fiber_of(co_active(), __tsan_get_current_fiber());
     void* target = tsan_fiber_of(to, NULL);

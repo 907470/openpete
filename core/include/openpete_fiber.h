@@ -45,6 +45,20 @@ void* openpete_fiber_create_guarded(unsigned size, void (*entry)(void));
  * @param to The fiber to resume (openpete_host_fiber or openpete_game_fiber). */
 void openpete_fiber_switch(void* to);
 
+/** @brief The guest generation: a count that moves whenever guest memory may have changed since the last read of it.
+ *
+ * It advances on every switch into the game fiber (guest code runs) and on
+ * every savestate restore, file or in-memory, quiet rollbacks included
+ * (openpete_guest_generation_bump). While it holds, guest RAM holds the
+ * bytes it held at the last read, so a host cache of values derived from
+ * guest memory stays exact while its stamp equals this value. Read and
+ * advanced on the thread holding the `sim` role.
+ * @return The generation. */
+unsigned openpete_guest_generation(void);
+
+/** @brief Advance the guest generation: a caller that replaces guest memory outside the game fiber calls it. */
+void openpete_guest_generation_bump(void);
+
 /** @brief Delete a fiber made by openpete_fiber_create_guarded and release its stack.
  *
  * @param fiber The handle; NULL is a no-op. */

@@ -1278,6 +1278,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
      * bindings from openpete_psx_runtime_init. */
     memcpy(cpu,                        cpu_buf,     CPU_REG_BYTES);
     memcpy(openpete_psx_get_ram(),     ram_buf,     OPENPETE_PSX_RAM_SIZE);
+    openpete_guest_generation_bump();   /* guest RAM replaced */
     /* A state written before the boot seeded the kernel tables lacks them;
      * a state that carries them keeps the kernel RAM it saved. */
     openpete_psx_bios_reseed_ram(openpete_psx_get_ram());
@@ -1489,6 +1490,7 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     memcpy(cpu,                        m->cpu_buf,     CPU_REG_BYTES);
     memcpy(openpete_psx_get_ram(),     m->ram,         OPENPETE_PSX_RAM_SIZE);
     memcpy(openpete_psx_get_scratch(), m->scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
+    openpete_guest_generation_bump();   /* guest RAM replaced, quiet rollbacks included */
     if (PsyX_SPUAL_RestoreStateEx(m->spu, m->spu_bytes, quiet ? 1 : 0) != 0 ||
         state_fault_spu_restore())
         return -2;

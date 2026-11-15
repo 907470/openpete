@@ -2369,12 +2369,16 @@ static int s23_simple_decode(CPUState* cpu) {
     s_s23_pool.vm_n = s_s23_pool.iv_n = s_s23_pool.col_n = s_s23_pool.face_n = 0;
 
     int nrec = 0;
+    const uint64_t t_pre = moby_native_stage_now();
     for (int r = 0; r < s_sq->qn; r++)
         nrec += s23_simple_prefix_record(cpu, &P, r, &s_s23_job[nrec], &s_s23_scope[nrec]);
+    moby_native_stage_add(MOBY_NATIVE_STAGE_SIMPLE_PREFIX, t_pre);
 
     for (int w = 0; w <= MOBY_SIMPLE_WORKERS; w++) memset(&s_ws[w].n, 0, sizeof s_ws[w].n);
     { OP_PROF_ACCUM_SCOPE("msim.fanout");
-      moby_simple_fanout(s_s23_scope, nrec, P.faces, s23_simple_job_run, NULL); }
+      const uint64_t t_fan = moby_native_stage_now();
+      moby_simple_fanout(s_s23_scope, nrec, P.faces, s23_simple_job_run, NULL);
+      moby_native_stage_add(MOBY_NATIVE_STAGE_SIMPLE_FANOUT, t_fan); }
     long held = 0;
     for (int w = 0; w < MOBY_SIMPLE_WORKERS; w++) {
         const s23_simple_counts* n = &s_ws[w].n;

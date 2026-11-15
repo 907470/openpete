@@ -2412,6 +2412,57 @@ static void ms_carry_add(ms_census* cs) {
 }
 
 
+/* ---- the resolve's stage split (--profile-out) ------------------------------
+ * Nanoseconds per part of ms_resolve, summed over the resolve and added to
+ * the profiler bucket <leg>.rs.<part> (mcan.rs.capture, mrex.rs.contact) once
+ * per resolve. The parts sum to the resolve less its entry tests; rs.carry.map
+ * is the part of rs.carry that maps the endpoint's planes (mc_map). */
+enum { RSP_CARRY = 0, RSP_BOX, RSP_CAPTURE, RSP_TMAKE, RSP_CANDS, RSP_CONTACT, RSP_OVERLAP, RSP_END,
+       RSP_MAP, RSP_N };
+static const char* const k_rsp_name[RSP_N] = {
+    "rs.carry", "rs.box", "rs.capture", "rs.tmake", "rs.cands", "rs.contact", "rs.overlap", "rs.end",
+    "rs.carry.map" };
+static uint64_t s_rsp_ns[RSP_N];
+
+/** @brief A monotonic nanosecond stamp while a trace is open and OPENPETE_MOBY_SUBSTAGE is set nonzero, else 0.
+ * @return The stamp, or 0. */
+static uint64_t rsp_now(void) {
+    static int en = -1;
+    if (en < 0) { const char* e = getenv("OPENPETE_MOBY_SUBSTAGE"); en = (e && *e && *e != '0'); }
+    return (en && op_prof_on()) ? ms_mono_ns() : 0;
+}
+
+/** @brief Close one part of the resolve at now and return now as the next part's start.
+ * @param part The part, RSP_CARRY to RSP_END.
+ * @param t0 The part's start; 0 adds nothing and returns 0.
+ * @return The stamp now, or 0. */
+static uint64_t rsp_mark(int part, uint64_t t0) {
+    if (!t0) return 0;
+    const uint64_t t1 = ms_mono_ns();
+    s_rsp_ns[part] += t1 - t0;
+    return t1;
+}
+
+/** @brief Add the resolve's part totals to the profiler buckets of its leg and zero them. */
+static void rsp_flush(void) {
+    static int id[2][RSP_N];
+    static int init;
+    if (!op_prof_on()) { memset(s_rsp_ns, 0, sizeof s_rsp_ns); return; }
+    if (!init) {
+        char nb[48];
+        for (int l = 0; l < 2; l++)
+            for (int k = 0; k < RSP_N; k++) {
+                snprintf(nb, sizeof nb, "%s.%s", l ? "mrex" : "mcan", k_rsp_name[k]);
+                id[l][k] = op_prof_intern(nb);
+            }
+        init = 1;
+    }
+    for (int k = 0; k < RSP_N; k++) {
+        if (s_rsp_ns[k]) op_prof_accum(id[s_rex ? 1 : 0][k], (s_rsp_ns[k] + 500u) / 1000u);
+        s_rsp_ns[k] = 0;
+    }
+}
+
 /** @brief Set up the carry for the resolve under way and return how many queued mobys the contact pass resolves.
  *
  * A canonical resolve (carry or verify on) stores into its epoch's table
@@ -2442,7 +2493,10 @@ static int ms_carry_begin(ms_census* cs) {
     }
     const mc_tab* ep = mc_endpoint();
     s_rs_ep = ep;
-    if (!mc_map(s_rs_ep, s_rs_L, s_rs_P)) return s_q_nm;
+    const uint64_t tm = rsp_now();
+    const int mapped = mc_map(s_rs_ep, s_rs_L, s_rs_P);
+    rsp_mark(RSP_MAP, tm);
+    if (!mapped) return s_q_nm;
     s_vf_on = vm && mc_vf_begin();
     if (!carry) return s_q_nm;
     ms_carry_add(cs);
@@ -2479,25 +2533,32 @@ static void ms_carry_end(const ms_census* cs) {
  * @return 0 when the capture failed (the rest of the queue is dropped), else 1. */
 static int ms_resolve_chunk(int g, int nb, const float view[3], ms_census* cs) {
     terrain_snap_box box[128];
+    uint64_t tp = rsp_now();
     for (int k = 0; k < nb; k++) ms_box(&s_q_mob[g + k], &box[k]);
+    tp = rsp_mark(RSP_BOX, tp);
     const terrain_snap_tri* tt = NULL;
     terrain_snap_census tc;
     const uint64_t c0 = cs->timed ? ms_cpu_ns() : 0;
     const int ntt = terrain_snap_capture(box, nb, &tt, &tc);
     if (cs->timed) cs->cap_ns += ms_cpu_ns() - c0;
+    tp = rsp_mark(RSP_CAPTURE, tp);
     if (ntt < 0) return 0;
     const uint64_t m0 = cs->timed ? ms_mono_ns() : 0;
     if (!ms_terrain_make(tt, ntt, view)) return 0;
     if (cs->timed) cs->near_ns += ms_mono_ns() - m0;
+    tp = rsp_mark(RSP_TMAKE, tp);
     cs->faces += tc.faces; cs->tris += tc.tris; cs->sectors += tc.sectors;
     uint8_t snapped[128];
     int first[129];
     const int* cand = ms_cands(tt, ntt, nb, first);
+    tp = rsp_mark(RSP_CANDS, tp);
     for (int k = 0; k < nb; k++)
         snapped[k] = ms_moby_contact(&s_q_mob[g + k], tt, cand + first[k],
                                      first[k + 1] - first[k], view, cs) > 0;
+    tp = rsp_mark(RSP_CONTACT, tp);
     cs->overlaps += ms_overlaps(box, snapped, nb);
     for (int k = 0; k < nb; k++) if (snapped[k]) cs->zmin = ms_minf(cs->zmin, box[k].z0);
+    rsp_mark(RSP_OVERLAP, tp);
     return 1;
 }
 
@@ -2518,10 +2579,15 @@ static void ms_resolve(void) {
         openpete_native_snap_view(view[0], view[1], view[2]);
         ms_up_sync();
         memcpy(s_rs_view, view, sizeof s_rs_view);
+        uint64_t tp = rsp_now();
         const int nrun = ms_carry_begin(&cs);
+        rsp_mark(RSP_CARRY, tp);
         for (int g = 0; g < nrun; g += 128)
             if (!ms_resolve_chunk(g, nrun - g < 128 ? nrun - g : 128, view, &cs)) break;
+        tp = rsp_now();
         ms_carry_end(&cs);
+        rsp_mark(RSP_END, tp);
+        rsp_flush();
     }
     cs.pulled = s_q_nm;
     s_q_nm = s_q_nt = 0;
