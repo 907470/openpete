@@ -174,3 +174,6 @@ evening_lake | pos=(49300, 52390, 20500) yaw=1100 pitch=108
 # they are drawn as their near-clipped view-space shapes and selected on their
 # true facing, as the animated models' are.
 sunny_villa | pos=(76936, 50960, 12313) yaw=867 pitch=197
+# --lod extended: the water loses its texture as it nears the boundary between
+# the high-poly and low-poly terrain tiers
+spooky_swamp | pos=(35818, 17779, 16172) yaw=1021 pitch=297

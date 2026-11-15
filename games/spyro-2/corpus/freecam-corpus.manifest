@@ -268,3 +268,6 @@ metropolis | pos=(93600, 73185, 41300) yaw=2048 pitch=300
 # hundred units apart: the platform is drawn down to the near plane at both.
 metropolis | pos=(92900, 73185, 40800) yaw=2048 pitch=250
 metropolis | pos=(92800, 73185, 40800) yaw=2048 pitch=250
+# --lod extended: the water loses its texture as it nears the boundary between
+# the high-poly and low-poly terrain tiers
+ocean_speedway | pos=(51802, 81753, 36334) yaw=-160 pitch=356
