@@ -15453,6 +15453,7 @@ typedef struct {
 typedef struct tn_secverd_s {
     double  cbin;
     uint8_t drawHP, drawLP, lpFarOnly, lpGapOnly, lpUncovOnly, fillLP, secInLOD;
+    uint8_t hpRange;                     /* the bounding sphere reaches inside the game's HP envelope (lodThr > cbin - r, unscaled) */
     uint16_t lpNearThr;                  /* LP near-outcode SZ3 bound this walk, 0 = no test */
 } tn_secverd;
 static tn_secverd s_pre_verd[1024];
@@ -15648,6 +15649,7 @@ static void sector_verdicts(tscache_t* SC, const tn_wcfg* G, tn_secverd* V) {
     V->lpGapOnly = (uint8_t)(ride == TN_RIDE_GAPONLY);
     V->lpUncovOnly = (uint8_t)(ride == TN_RIDE_UNCOVONLY);
     V->fillLP = (uint8_t)fillLP; V->secInLOD = (uint8_t)secInLOD;
+    V->hpRange = (uint8_t)((double)lodThr > cbin - H.r);
     V->lpNearThr = (uint16_t)((drawHP || !H.hasHP) ? sector_lp_near_thr(&H, cbin) : 0);
 }
 
@@ -18008,6 +18010,25 @@ static void tn_snap_take(const ttri* t, int n, const uint64_t set[2], int vanim,
     }
 }
 
+/** @brief Whether OPENPETE_SNAP_HP_ONLY=1 limits the snap capture to sectors inside the game's HP envelope, read once (default off).
+ * @return 1 when limited. */
+static int tn_snap_hp_only(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SNAP_HP_ONLY"); v = e && *e == '1'; }
+    return v;
+}
+
+/** @brief Whether the capture may take a visible sector's triangles: always, or under OPENPETE_SNAP_HP_ONLY=1 only when its bounding sphere reaches inside the game's HP envelope at this view (tn_secverd.hpRange).
+ *
+ * The envelope is the draw's own HP binning test (lodThr > cbin - radius,
+ * lodThr from the guest's LOD distance, not scaled by --fog-scale), so the
+ * limit is the same at --lod original and --lod extended.
+ * @param vi The sector's index in the visible list.
+ * @return 1 when it may. */
+static int tn_snap_range_ok(int vi) {
+    return !tn_snap_hp_only() || !s_snap_G.verd || s_snap_G.verd[vi].hpRange;
+}
+
 /** @brief Take the triangles of the walked faces whose bounds meet a search box.
  *
  * Two levels over the walk's face records: a sector's union bounds
@@ -18023,7 +18044,7 @@ static void tn_snap_take_recs(const tn_snapgrid* g, int nv, terrain_snap_census*
     for (int vi = 0; vi < nv; vi++) {
         const tn_secrec* e = &s_secrec[vi];
         uint64_t set[2];
-        if (e->gen != s_secrec_gen || !e->n || !s_vrun_n[vi]) continue;
+        if (e->gen != s_secrec_gen || !e->n || !s_vrun_n[vi] || !tn_snap_range_ok(vi)) continue;
         if (!tn_snapgrid_hit(g, e->ub[0], e->ub[1], e->ub[2], e->ub[3], e->ub[4], e->ub[5], set)) continue;
         const tn_facerec* r = (const tn_facerec*)e->v->data + e->r0;
         for (int k = 0; k < e->n; k++) {
@@ -18088,6 +18109,126 @@ static void tn_snap_walk_owned(int vi, const uint64_t set[2], terrain_snap_censu
     tn_snap_take(W->tri, W->tri_n, set, tn_snap_vanim(vi), cen);
 }
 
+/* ---- the owned-sector box test ----------------------------------------------
+ * Before an owned sector is walked for a capture, the eight corners of its
+ * vertex box (tscache vMin/vMax: both tiers' decoded vertices and the faces
+ * borrowed from the source level, tsimp_aabb) are transformed as the walk
+ * transforms a vertex (tn_vert_project). With every corner in front of the
+ * eye, every vertex of the sector projects inside the corners' screen
+ * rectangle and lies within their view-Z range (the box is convex and in
+ * front of the eye, and view-Z is linear in position), so every face's
+ * corner rectangle that tn_snap_face_hit tests lies inside that rectangle
+ * widened by its own pixel. When the rectangle, widened by two pixels, and
+ * the range, widened by one world unit for rounding, meet no search box, the
+ * masked walk keeps no face and the sector is not walked. A sector whose
+ * vertices can leave the box this build (poly-anim lerp banks, a walker-model
+ * HP bank), with no decoded vertex, or with a corner at or behind the eye is
+ * walked. OPENPETE_SNAP_OWNED_BOX=0 walks every reached sector;
+ * OPENPETE_SNAP_OWNED_BOX_CHECK=1 runs both and compares (an instrument). */
+static long s_sob_tested, s_sob_skipped;   /* engagement: owned sectors box-tested, walks skipped */
+
+/** @brief Whether the owned-sector box test is on (OPENPETE_SNAP_OWNED_BOX not 0), read once.
+ * @return 1 when on, else 0. */
+static int tn_sob_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SNAP_OWNED_BOX"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/** @brief Whether a cache-owned sector's vertex box provably meets no search box of the capture, so its masked walk keeps no face.
+ * @param vi The sector's index in the visible list.
+ * @return 1 when the walk can be skipped, 0 when it must run. */
+static int tn_snap_owned_clear(int vi) {
+    const tscache_t* SC = s_snap_G.SC[vi];
+    if (SC->vMinX > SC->vMaxX || SC->polyanim || SC->envModel) return 0;
+    const double s4 = SC->originX - s_snap_G.camx, s5 = s_snap_G.camy - SC->originY,
+                 s6 = s_snap_G.camz - SC->originZ;
+    const double xs[2] = { (double)SC->vMinX, (double)SC->vMaxX };
+    const double ys[2] = { (double)SC->vMinY, (double)SC->vMaxY };
+    const double zs[2] = { (double)SC->vMinZ, (double)SC->vMaxZ };
+    float r[6] = { 1e30f, 1e30f, -1e30f, -1e30f, 1e30f, -1e30f };
+    for (int c = 0; c < 8; c++) {
+        lvert v;
+        tn_vert_project((const int (*)[3])s_snap_G.M, s4, s5, s6, xs[c & 1], ys[(c >> 1) & 1], zs[(c >> 2) & 1], &v);
+        if (!(v.m3 > 0.0)) return 0;
+        r[0] = tn_minf(r[0], v.sx); r[2] = tn_maxf(r[2], v.sx);
+        r[1] = tn_minf(r[1], v.sy); r[3] = tn_maxf(r[3], v.sy);
+        r[4] = tn_minf(r[4], (float)(v.m3 * 16.0)); r[5] = tn_maxf(r[5], (float)(v.m3 * 16.0));
+    }
+    return !tn_snapgrid_hit(&s_snap_grid, r[0] - 2.0f, r[1] - 2.0f, r[2] + 2.0f, r[3] + 2.0f,
+                            r[4] - 1.0f, r[5] + 1.0f, NULL);
+}
+
+/** @brief Take the triangles of every cache-owned sector the capture's boxes reach, walking each one its box test does not clear.
+ * @param nv The visible sectors of the build.
+ * @param box 1 to apply the box test.
+ * @param cen The capture's cost counters. */
+static void tn_snap_take_owned(int nv, int box, terrain_snap_census* cen) {
+    for (int vi = 0; vi < nv; vi++) {
+        uint64_t set[2];
+        if (s_vrun_n[vi] || !tn_snap_owned(vi) || !tn_snap_range_ok(vi)) continue;
+        tn_snap_sector_hit(vi, set);
+        if (!(set[0] | set[1])) continue;
+        if (box) {
+            s_sob_tested++;
+            if (tn_snap_owned_clear(vi)) { s_sob_skipped++; continue; }
+        }
+        tn_snap_walk_owned(vi, set, cen);
+    }
+}
+
+/* ---- the box test's identity check (OPENPETE_SNAP_OWNED_BOX_CHECK) --------- */
+static struct { long captures, owned_tris, bad_count, bad_tris, bad_census; } s_sobc;
+
+/** @brief Whether OPENPETE_SNAP_OWNED_BOX_CHECK is set nonzero, read once.
+ * @return 1 when on. */
+static int tn_sob_check_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SNAP_OWNED_BOX_CHECK"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/** @brief Print the check's totals and the box test's engagement (sectors tested and walks skipped). */
+static void tn_sob_check_print(void) {
+    fprintf(stderr, "[snap-owned-box-check] captures=%ld owned_tris=%ld mismatched_counts=%ld mismatched_tris=%ld "
+                    "mismatched_census=%ld tested=%ld skipped=%ld\n",
+            s_sobc.captures, s_sobc.owned_tris, s_sobc.bad_count, s_sobc.bad_tris, s_sobc.bad_census,
+            s_sob_tested, s_sob_skipped);
+}
+
+/** @brief Take the owned sectors' triangles both by walking every reached sector and with the box test, compare the two results and their census counts, and keep the box test's.
+ *
+ * The census's sector count is the walks made, which the box test lowers by
+ * design, so it is compared after adding back the skipped sectors.
+ * @param nv The visible sectors of the build.
+ * @param c The capture's cost counters, updated by the box test's pass. */
+static void tn_sob_check(int nv, terrain_snap_census* c) {
+    static int s_atexit;
+    static terrain_snap_tri* ref; static size_t refcap;
+    if (!s_atexit) { s_atexit = 1; atexit(tn_sob_check_print); }
+    const size_t n0 = s_snap_out.count;
+    terrain_snap_census ca = *c, cb = *c;
+    tn_snap_take_owned(nv, 0, &ca);
+    const size_t na = s_snap_out.count - n0;
+    if (na > refcap) {
+        terrain_snap_tri* q = (terrain_snap_tri*)realloc(ref, na * sizeof *ref);
+        if (!q) { *c = ca; return; }
+        ref = q; refcap = na;
+    }
+    memcpy(ref, (const terrain_snap_tri*)s_snap_out.data + n0, na * sizeof *ref);
+    s_snap_out.count = n0;
+    const long sk0 = s_sob_skipped;
+    tn_snap_take_owned(nv, 1, &cb);
+    const size_t nb = s_snap_out.count - n0;
+    s_sobc.captures++; s_sobc.owned_tris += (long)nb;
+    if (na != nb) s_sobc.bad_count++;
+    else if (memcmp(ref, (const terrain_snap_tri*)s_snap_out.data + n0, na * sizeof *ref) != 0) s_sobc.bad_tris++;
+    s_sobc.bad_census += ca.faces != cb.faces || ca.tris != cb.tris ||
+                         ca.sectors != cb.sectors + (int)(s_sob_skipped - sk0);
+    if ((s_sobc.captures & 4095) == 0) tn_sob_check_print();
+    *c = cb;
+}
+
 int terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_tri** out,
                          terrain_snap_census* cen) {
     terrain_snap_census c = { 0, 0, 0 };
@@ -18099,12 +18240,8 @@ int terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_t
     tn_snapgrid_build(&s_snap_grid, b, nb);
     const int nv = s_snap_G.nvis < 1024 ? s_snap_G.nvis : 1024;
     tn_snap_take_recs(&s_snap_grid, nv, &c);
-    for (int vi = 0; vi < nv; vi++) {
-        uint64_t set[2];
-        if (s_vrun_n[vi] || !tn_snap_owned(vi)) continue;
-        tn_snap_sector_hit(vi, set);
-        if (set[0] | set[1]) tn_snap_walk_owned(vi, set, &c);
-    }
+    if (tn_sob_check_on()) tn_sob_check(nv, &c);
+    else tn_snap_take_owned(nv, tn_sob_on(), &c);
     *out = (const terrain_snap_tri*)s_snap_out.data;
     if (cen) *cen = c;
     return (int)s_snap_out.count;

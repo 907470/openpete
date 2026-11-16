@@ -8,7 +8,9 @@
 # the sub-tick record pass's decode fan-out (moby.c, rex_fanout_pass) against
 # a serial decode of the same records, or with --instrument=rank-fanout the
 # paint rank's fan-out (moby.c, rkf_run) against the serial rank of the same
-# runs.
+# runs, or with --instrument=snap-owned-box the snap capture's owned-sector box
+# test (games/common/renderer/terrain.c, tn_snap_owned_clear) against walking
+# every reached owned sector for the same capture.
 #
 # One headless capture per game at extended LOD with sixteen sub-tick
 # re-extracts at each of two VBLs (fifteen uncaptured phases from
@@ -38,14 +40,22 @@
 # canonical leg) or sub-tick re-rank (the fresh leg) fans out runs again on
 # the calling thread from the same inputs, and each face's contest flag,
 # rank and decal base are compared ([rank-fanout-check final] canon: sets=
-# ... mismatched= fresh: sets= ... mismatched=).
+# ... mismatched= fresh: sets= ... mismatched=). Under snap-owned-box the same
+# walking rows run with OPENPETE_SNAP_OWNED_BOX_CHECK=1 and the terrain
+# cache forced on (OPENPETE_TERRAIN_CACHE_FORCE=1; the software device
+# otherwise keeps it off and no sector is cache-owned): every capture takes
+# the owned sectors' triangles both ways and compares the two results field
+# by field and their census counts ([snap-owned-box-check] captures=
+# owned_tris= mismatched_counts= mismatched_tris= mismatched_census= tested=
+# skipped=).
 #
 # Usage:
 #   tests/harness/check_moby_pose_cache.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
-#       [--instrument=pose-cache|push-fanout|snap-fanout|rec-fanout|rank-fanout]
+#       [--instrument=pose-cache|push-fanout|snap-fanout|rec-fanout|rank-fanout|snap-owned-box]
 # Exit 0 PASS: engaged above zero (hits, emits compared, chunks of each leg
 # compared) and no mismatch. 1 FAIL: a mismatch, a missing capture or a
-# missing total. 2 VACUOUS: no hit, no emit or no chunk of a leg compared.
+# missing total. 2 VACUOUS: no hit, no emit, no chunk of a leg compared, or
+# no owned triangle captured or no owned sector walk skipped.
 # 64 SKIP (no binary or disc).
 set -u
 
@@ -86,7 +96,7 @@ case "$GAME" in
     spyro-3) ROW=(--skip-to-level sunrise_spring --freecam-pose topdown); VBLS=3000,3040;;
     *) echo "pose-cache: SKIP (no row for $GAME)"; exit 64;;
 esac
-if [[ "$INSTR" == snap-fanout || "$INSTR" == rec-fanout || "$INSTR" == rank-fanout ]]; then
+if [[ "$INSTR" == snap-fanout || "$INSTR" == rec-fanout || "$INSTR" == rank-fanout || "$INSTR" == snap-owned-box ]]; then
     # A bk2 per game that walks the player through the captured VBLs.
     BK2=games/$GAME/bk2
     case "$GAME" in
@@ -108,6 +118,7 @@ case "$INSTR" in
     snap-fanout) KNOB=(OPENPETE_MOBY_SNAP_FANOUT_CHECK=1 OPENPETE_MOBY_SNAP_FANOUT_MIN=0);;
     rec-fanout)  KNOB=(OPENPETE_MOBY_REC_FANOUT_CHECK=1 OPENPETE_MOBY_REC_FANOUT_MIN=0 OPENPETE_MOBY_POSE_CACHE=0);;
     rank-fanout) KNOB=(OPENPETE_MOBY_RANK_FANOUT_CHECK=1 OPENPETE_MOBY_RANK_FANOUT_MIN=0);;
+    snap-owned-box)   KNOB=(OPENPETE_SNAP_OWNED_BOX_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
     *) echo "pose-cache: SKIP (no instrument $INSTR)"; exit 64;;
 esac
 PG_CAPTURE_ENV=("${KNOB[@]}" OPENPETE_INTERMEDIATE_ALPHA=0.5
@@ -118,6 +129,23 @@ pg_capture "$LOG" "$OUTS" -- --renderer vk --aspect 16:9 --lod extended --no-car
     --screenshot-output "${SHOT}__{n}.png" --frame-limit "$(( ${VBLS#*,} + 10 ))" ||
     { echo "$INSTR: FAIL (capture, see $LOG)"; exit 1; }
 
+if [[ "$INSTR" == snap-owned-box ]]; then
+    line="$(grep '^\[snap-owned-box-check\]' "$LOG" | tail -n 1)"
+    [[ -n "$line" ]] || { echo "snap-owned-box: FAIL (no [snap-owned-box-check] total in $LOG)"; exit 1; }
+    echo "snap-owned-box: $GAME $line"
+    bad=0
+    for f in counts tris census; do
+        v="$(sed -n "s/.* mismatched_$f=\([0-9]*\).*/\1/p" <<<"$line")"
+        [[ "${v:-1}" == 0 ]] || { echo "snap-owned-box: FAIL (mismatched_$f=${v:-missing})"; bad=1; }
+    done
+    [[ "$bad" == 0 ]] || exit 1
+    tris="$(sed -n 's/.* owned_tris=\([0-9]*\).*/\1/p' <<<"$line")"
+    skip="$(sed -n 's/.* skipped=\([0-9]*\).*/\1/p' <<<"$line")"
+    [[ "${tris:-0}" -gt 0 && "${skip:-0}" -gt 0 ]] ||
+        { echo "snap-owned-box: VACUOUS (owned triangles ${tris:-0}, walks skipped ${skip:-0})"; exit 2; }
+    echo "snap-owned-box: PASS"
+    exit 0
+fi
 if [[ "$INSTR" == rank-fanout ]]; then
     line="$(grep -m1 '^\[rank-fanout-check final\]' "$LOG")"
     [[ -n "$line" ]] || { echo "rank-fanout: FAIL (no [rank-fanout-check final] total in $LOG)"; exit 1; }
