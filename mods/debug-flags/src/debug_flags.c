@@ -54,6 +54,7 @@ typedef struct {
 } action_t;
 
 static int glimmer_gem_lamps(int write);
+static int atlas_page_stress(int write);
 
 /* Spyro 2 0x800646AE: the halfword of entry 15 of the progress table at
  * 0x80064670. Ripto's Arena (level_66 moby_update, sh at 0x8007F740)
@@ -124,6 +125,11 @@ static const action_t k_actions[] = {
       "on every unlit gem lamp; each gem then runs its own completion and "
       "the gem cutter's dialogue opens. Waits for Glimmer to be in play "
       "when pressed elsewhere.", glimmer_gem_lamps },
+    { "Atlas page stress (synthetic progress)", "spyro-3", 0u, 0u, 1u,
+      "Spyro 3 atlas: Sorceress defeated, 9999999 gems and every egg bit in "
+      "every level. Synthetic values that lengthen every atlas row; applied "
+      "only while the atlas overlay is resident. A save written afterwards "
+      "keeps them.", atlas_page_stress },
 };
 
 #define N_ACTIONS ((int)(sizeof k_actions / sizeof k_actions[0]))
@@ -206,6 +212,57 @@ static int glimmer_gem_lamps(int write) {
                 op_write_u32(g_api, m + 0x18u, hit | GL_HIT_BIT);
                 stores++;
             }
+        }
+    }
+    return write ? stores : (todo == 0);
+}
+
+#define S3_SORCERESS_DEFEATED 0x8007158Fu /* progressFlags + 0x1F (lvl47_SorceressDefeated) */
+#define S3_LEVEL_GEMS     0x80071A10u /* int[40] gems collected per level */
+#define S3_LEVEL_EGGS     0x80070300u /* u8[40] eggs collected bitmask per level */
+#define S3_ATLAS_LEVELS   39u         /* entry 39 of the gem array is Moneybags' refund */
+#define S3_STRESS_GEMS    9999999u
+#define S3_ATLAS_CODE_A   0x8007839Cu /* func_atlas_8007839C: lui $v1, %hi(D_atlas_8007ADE0) */
+#define S3_ATLAS_WORD_A   0x3C038008u
+#define S3_ATLAS_CODE_B   0x800774FCu /* func_atlas_80076B64: lh $v0, %lo(D_atlas_8007AE0E)($v0) */
+#define S3_ATLAS_WORD_B   0x8442AE0Eu
+
+/** @brief Writes synthetic Spyro 3 progress that lengthens every atlas row, while the atlas overlay is resident.
+ *
+ * The atlas draws one sprite per glyph and reads its numbers each tick:
+ * gems per level from the int array at 0x80071A10 (printed "%d/%d" on the
+ * contents and world pages), eggs as the popcount of each level's bitmask
+ * at 0x80070300, and the Sorceress-defeated byte 0x8007158F, which adds the
+ * Super Bonus Worlds contents row and the "Press ... for skill points"
+ * prompt (func_atlas_800765F8). 9999999 gems and 0xFF egg masks are values
+ * the game never reaches; they widen every number so a page turn, which
+ * draws both pages, links more 2D primitives than a real save does. The
+ * routine waits until two atlas code words read back at their addresses,
+ * so a level overlay occupying the same range is never written, and a run
+ * outside the atlas keeps the game's own values.
+ * @param write Nonzero: make the stores.
+ * @return With write 0: 1 when every value is in place, 0 when one is not,
+ *         -1 while the atlas overlay is not resident; with write 1: the
+ *         stores made. */
+static int atlas_page_stress(int write) {
+    uint32_t i;
+    int todo = 0, stores = 0;
+
+    if (op_read_u32(g_api, S3_ATLAS_CODE_A) != S3_ATLAS_WORD_A ||
+        op_read_u32(g_api, S3_ATLAS_CODE_B) != S3_ATLAS_WORD_B)
+        return -1;
+    if (op_read_u8(g_api, S3_SORCERESS_DEFEATED) != 1u) {
+        todo++;
+        if (write) { op_write_u8(g_api, S3_SORCERESS_DEFEATED, 1u); stores++; }
+    }
+    for (i = 0; i < S3_ATLAS_LEVELS; i++) {
+        if (op_read_u32(g_api, S3_LEVEL_GEMS + 4u * i) != S3_STRESS_GEMS) {
+            todo++;
+            if (write) { op_write_u32(g_api, S3_LEVEL_GEMS + 4u * i, S3_STRESS_GEMS); stores++; }
+        }
+        if (op_read_u8(g_api, S3_LEVEL_EGGS + i) != 0xFFu) {
+            todo++;
+            if (write) { op_write_u8(g_api, S3_LEVEL_EGGS + i, 0xFFu); stores++; }
         }
     }
     return write ? stores : (todo == 0);

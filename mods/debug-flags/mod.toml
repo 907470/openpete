@@ -47,6 +47,14 @@
 # Play on scratch cards (--card1/--card2) or --no-card to keep a save
 # unchanged.
 #
+# - Spyro 3, "Atlas page stress (synthetic progress)": while the atlas
+#   overlay is resident (two of its code words read back), the
+#   Sorceress-defeated byte 0x8007158F = 1, 9999999 in each of the 39
+#   per-level gem words at 0x80071A10 and 0xFF in each per-level egg mask
+#   at 0x80070300. The values are synthetic: no save reaches them. Every
+#   atlas number widens, so a page turn links more 2D primitives than any
+#   real save.
+#
 # uses: `openpete_mod_ui.h` - the button panel; a press sets a host bit, never guest RAM
 # uses: `api->override_name` - the Spyro 1 tick hook on GamestateUpdate
 # uses: `api->override_addr` - the Spyro 2 and 3 tick hooks, by address

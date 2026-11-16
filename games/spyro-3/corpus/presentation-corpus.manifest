@@ -197,6 +197,16 @@ open-atlas|1473|100|freeze|1773,1873
 # 1893/1901/1917/1925 (forward 2), 2073/2083 (reverse 1) and 2097/2105
 # (reverse 2), each a turning tick where the sheet covers the most screen.
 open-atlas-turn-pages|1813|100|freeze|1817,1825,1841,1849,1893,1901,1917,1925,2073,2083,2097,2105
+# open-atlas-turn-pages@stress: the same movie with debug-flags' "Atlas page
+# stress" row, which, while the atlas is open, sets the Sorceress-defeated
+# byte and writes synthetic progress no save reaches (9999999 gems and an
+# 0xFF egg mask in every level), so every atlas number widens. The first
+# turn (VBL ~1818-1852) then links ~1076 and ~1026 2D triangles per tick
+# against ~900 on the fresh save. 1835, 1839 and 1845 sit inside that turn,
+# 1867 on the settled Sunrise Spring page; on the intermediate leg the
+# turning sheet's last row ("Buzz's Dungeon") loses its last glyphs while
+# the canonical leg draws it whole. Blessed pre-fix.
+open-atlas-turn-pages@stress|1835|100|freeze|1835,1839,1845,1867|PRESENTATION_MOD=debug-flags:test.apply_tick=1,test.apply_only=Atlas
 
 # title-demo-tracers: the attract demo's tracer ribbons, the only geometry the
 # ribbon producer (func_8002FB68) emits anywhere in the corpus (VBL 5060-5108).
