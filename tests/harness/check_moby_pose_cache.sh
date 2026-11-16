@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # check_moby_pose_cache.sh - the sub-tick pose cache (games/common/renderer/
-# moby.c, pc_lookup) against a fresh decode of the same records, or with
+# moby.c, pc_lookup) against a fresh decode of the same records, with
 # --instrument=push-fanout the moby emit fan-out (moby_emit_fanout) against
-# the serial emit of the same walk.
+# the serial emit of the same walk, or with --instrument=snap-fanout the snap
+# contact pass's fan-out (games/common/renderer/moby_snap.c, ms_fo_parallel)
+# against the serial pass of the same chunk.
 #
 # One headless capture per game at extended LOD with sixteen sub-tick
 # re-extracts at each of two VBLs (fifteen uncaptured phases from
@@ -14,14 +16,22 @@
 # same capture runs with OPENPETE_MOBY_PUSH_FANOUT_CHECK=1: every emit that
 # fans out runs serially first, and every stored triangle and the tie,
 # ordinal and scene counts are compared ([push-fanout-check final] emits=
-# mismatched_tris= mismatched_state=).
+# mismatched_tris= mismatched_state=). Under snap-fanout each game replays a
+# bk2 that walks the player (a moving camera, so the sub-tick resolves run
+# the carry's moved-camera path and resolve fresh mobys), with
+# OPENPETE_MOBY_SNAP_FANOUT_CHECK=1 and both fan-out bounds at 0: every chunk
+# of both legs runs serially, then fanned out, and each moby's planes, the
+# snap table, the carry table, the snapped flags, the census and the corner
+# boxes are compared ([snap-fanout-check final] canon: chunks= ... rex:
+# chunks= ... mismatched_*=).
 #
 # Usage:
 #   tests/harness/check_moby_pose_cache.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
-#       [--instrument=pose-cache|push-fanout]
-# Exit 0 PASS: engaged above zero (hits, emits compared) and no mismatch.
-# 1 FAIL: a mismatch, a missing capture or a missing total. 2 VACUOUS: no
-# hit or no emit compared. 64 SKIP (no binary or disc).
+#       [--instrument=pose-cache|push-fanout|snap-fanout]
+# Exit 0 PASS: engaged above zero (hits, emits compared, chunks of each leg
+# compared) and no mismatch. 1 FAIL: a mismatch, a missing capture or a
+# missing total. 2 VACUOUS: no hit, no emit or no chunk of a leg compared.
+# 64 SKIP (no binary or disc).
 set -u
 
 # Unattended launcher: every run this script starts is silenced.
@@ -61,6 +71,16 @@ case "$GAME" in
     spyro-3) ROW=(--skip-to-level sunrise_spring --freecam-pose topdown); VBLS=3000,3040;;
     *) echo "pose-cache: SKIP (no row for $GAME)"; exit 64;;
 esac
+if [[ "$INSTR" == snap-fanout ]]; then
+    # A bk2 per game that walks the player through the captured VBLs.
+    BK2=games/$GAME/bk2
+    case "$GAME" in
+        spyro-1) ROW=(--no-card --skip-to-level artisans --bk2 "$BK2/stone-hill-entry.bk2"); VBLS=1640,1680;;
+        spyro-2) ROW=(--skip-to-level colossus --player-pose "pos=(123439, 127435, 20502) yaw=-1057"
+                      --bk2 "$BK2/colossus-ice-skating.bk2"); VBLS=1460,1500;;
+        spyro-3) ROW=(--skip-to-level dino_mines --bk2 "$BK2/dino-mines-walk-scan.bk2"); VBLS=1920,1960;;
+    esac
+fi
 
 [[ -n "$OUT" ]] || OUT="$OPENPETE_SANDBOX/pose-cache"
 mkdir -p "$OUT"
@@ -68,11 +88,12 @@ LOG="$OUT/$GAME-$INSTR.log"
 SHOT="$OUT/$GAME-$INSTR"
 OUTS="${SHOT}__${VBLS%,*}-vk.png,${SHOT}__${VBLS#*,}-vk.png"
 case "$INSTR" in
-    pose-cache)  KNOB=OPENPETE_MOBY_POSE_CACHE=2;;
-    push-fanout) KNOB=OPENPETE_MOBY_PUSH_FANOUT_CHECK=1;;
+    pose-cache)  KNOB=(OPENPETE_MOBY_POSE_CACHE=2);;
+    push-fanout) KNOB=(OPENPETE_MOBY_PUSH_FANOUT_CHECK=1);;
+    snap-fanout) KNOB=(OPENPETE_MOBY_SNAP_FANOUT_CHECK=1 OPENPETE_MOBY_SNAP_FANOUT_MIN=0);;
     *) echo "pose-cache: SKIP (no instrument $INSTR)"; exit 64;;
 esac
-PG_CAPTURE_ENV=("$KNOB" OPENPETE_INTERMEDIATE_ALPHA=0.5
+PG_CAPTURE_ENV=("${KNOB[@]}" OPENPETE_INTERMEDIATE_ALPHA=0.5
     OPENPETE_INTERMEDIATE_PRE_ALPHA=0.06,0.12,0.18,0.25,0.31,0.37,0.43,0.56,0.62,0.68,0.75,0.81,0.87,0.93,0.97)
 PG_CAPTURE_TIMEOUT=600
 pg_capture "$LOG" "$OUTS" -- --renderer vk --aspect 16:9 --lod extended --no-card --mute 1 \
@@ -80,6 +101,23 @@ pg_capture "$LOG" "$OUTS" -- --renderer vk --aspect 16:9 --lod extended --no-car
     --screenshot-output "${SHOT}__{n}.png" --frame-limit "$(( ${VBLS#*,} + 10 ))" ||
     { echo "$INSTR: FAIL (capture, see $LOG)"; exit 1; }
 
+if [[ "$INSTR" == snap-fanout ]]; then
+    line="$(grep -m1 '^\[snap-fanout-check final\]' "$LOG")"
+    [[ -n "$line" ]] || { echo "snap-fanout: FAIL (no [snap-fanout-check final] total in $LOG)"; exit 1; }
+    echo "snap-fanout: $GAME $line"
+    bad=0
+    for f in results snap carry snapped census boxes; do
+        v="$(sed -n "s/.* mismatched_$f=\([0-9]*\).*/\1/p" <<<"$line")"
+        [[ "${v:-1}" == 0 ]] || { echo "snap-fanout: FAIL (mismatched_$f=${v:-missing})"; bad=1; }
+    done
+    [[ "$bad" == 0 ]] || exit 1
+    can="$(sed -n 's/.*canon: chunks=\([0-9]*\).*/\1/p' <<<"$line")"
+    rex="$(sed -n 's/.*rex: chunks=\([0-9]*\).*/\1/p' <<<"$line")"
+    [[ "${can:-0}" -gt 0 && "${rex:-0}" -gt 0 ]] ||
+        { echo "snap-fanout: VACUOUS (canonical chunks ${can:-0}, sub-tick chunks ${rex:-0})"; exit 2; }
+    echo "snap-fanout: PASS"
+    exit 0
+fi
 if [[ "$INSTR" == push-fanout ]]; then
     line="$(grep -m1 '^\[push-fanout-check final\]' "$LOG")"
     [[ -n "$line" ]] || { echo "push-fanout: FAIL (no [push-fanout-check final] total in $LOG)"; exit 1; }

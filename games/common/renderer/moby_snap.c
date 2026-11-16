@@ -9,7 +9,9 @@
 #include "openpete_pace_log.h"       /* OP_PACE_SPLIT_SCOPE - per-tick CPU split */
 #include "openpete_native_render.h"
 #include "openpete_fiber.h"          /* openpete_feed_key_now: census line label */
+#include "openpete_workpool.h"       /* the contact pass's fan-out */
 
+#include <limits.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -336,6 +338,23 @@ static int ms_plane_add(ms_plane* P, int* np, const ms_tri* F, const terrain_sna
     return 1;
 }
 
+static unsigned s_dump_keys[16];
+static int s_dump_nk = -1;   /* key count, -1 until read */
+
+/** @brief The count of feed keys OPENPETE_MOBY_SNAP_DUMP names, read once; a nonzero count keeps the contact pass serial so the dump lines keep queue order.
+ * @return The count. */
+static int ms_dump_keys(void) {
+    if (s_dump_nk >= 0) return s_dump_nk;
+    int n = 0;
+    const char* e = getenv("OPENPETE_MOBY_SNAP_DUMP");
+    while (e && *e && n < 16) {
+        s_dump_keys[n++] = (unsigned)strtoul(e, (char**)&e, 10);
+        if (*e == '+') e++; else break;
+    }
+    s_dump_nk = n;
+    return n;
+}
+
 /** @brief Print a moby's contact planes at the feed keys the OPENPETE_MOBY_SNAP_DUMP knob names, an instrument.
  *
  * One line per plane: the moby's identity, ordinal, pull and offset, the
@@ -346,18 +365,11 @@ static int ms_plane_add(ms_plane* P, int* np, const ms_tri* F, const terrain_sna
  * @param np Their count.
  * @param view H, ofx, ofy. */
 static void ms_dump(const ms_moby* mb, const openpete_snap_plane* pl, int np, const float view[3]) {
-    static int s_init; static unsigned s_keys[16]; static int s_nk;
-    if (!s_init) {
-        s_init = 1;
-        const char* e = getenv("OPENPETE_MOBY_SNAP_DUMP");
-        while (e && *e && s_nk < 16) {
-            s_keys[s_nk++] = (unsigned)strtoul(e, (char**)&e, 10);
-            if (*e == '+') e++; else break;
-        }
-    }
+    const int nk = ms_dump_keys();
+    if (!nk) return;
     const unsigned key = openpete_feed_key_now();
     int on = 0;
-    for (int k = 0; k < s_nk; k++) on |= s_keys[k] == key;
+    for (int k = 0; k < nk; k++) on |= s_dump_keys[k] == key;
     for (int k = 0; on && k < np; k++)
         fprintf(stderr, "[moby-snap-plane] key=%u mid=%u mord=%d dofs=%d off=%.3f H=%.4f ofx=%.4f ofy=%.4f "
                         "n=%.7f,%.7f,%.7f d=%.4f sslab=%.4f dside=%d\n",
@@ -385,30 +397,59 @@ static void ms_up_sync(void) {
     s_up_p = s_up;
 }
 
-/* Scratch shared by the per-moby contact pass, grown on demand. */
-static ms_tri*  s_mt;  static int s_mt_cap;
-static ms_tri*  s_tt;  static int s_tt_cap;      /* per captured triangle: camera-space form */
-static float  (*s_tb)[6]; static int s_tb_cap;   /* per captured triangle: bounds */
-static int*     s_cj;  static int s_cj_cap;      /* one moby's usable candidates */
-static unsigned* s_tcon; static int s_tcon_cap;  /* per captured triangle: the last moby (s_mserial) it touched */
-static unsigned  s_mserial;                      /* the contact pass's moby counter */
-static int*     s_ix;  static int s_ix_cap;
-static uint8_t* s_made; static int s_made_cap;   /* s_mt[i] is built (ms_make_near) */
-static int*     s_ml;  static int s_ml_cap;      /* the moby triangles near the candidates */
-static int*     s_mstamp; static int s_mstamp_cap; /* per moby triangle: the last query that met it */
-static unsigned s_mquery;                        /* the query counter s_mstamp holds */
+/* Per captured triangle, shared read-only by the contact pass once built
+ * (ms_terrain_make). */
+static ms_tri*  s_tt;  static int s_tt_cap;      /* camera-space form */
+static float  (*s_tb)[6]; static int s_tb_cap;   /* bounds */
+/* Per captured triangle: the last moby (s_mserial) it touched. Only the cut
+ * falsifier reads them, so they are written only while it runs, which keeps
+ * the contact pass serial. */
+static unsigned* s_tcon; static int s_tcon_cap;
+static unsigned  s_mserial;
 
-/** @brief Grow every scratch array of the contact pass for a moby of nt triangles against nc candidates.
+/* The near grid (ms_ng_build): the near moby triangles binned on an
+ * MS_NG x MS_NG screen grid over the candidates' rectangle, cell by cell. */
+#define MS_NG 8
+#define MS_NG_PAIRS 256
+/* The pool's largest worker count (openpete_workpool_threads). */
+#define MS_WORKERS 8
+
+/* One contact-pass worker's scratch, grown on demand: the per-moby arrays,
+ * the near grid, the stamp counter, and the census the worker counts into
+ * during a fan-out. Worker 0 is the calling thread, and the serial pass. */
+typedef struct {
+    OPENPETE_WORKER_ALIGN ms_tri* mt; int mt_cap;   /* the moby's camera-space triangles */
+    int*     cj;  int cj_cap;              /* one moby's usable candidates */
+    int*     ix;  int ix_cap;              /* the moby triangles one terrain triangle intersects */
+    uint8_t* made; int made_cap;           /* mt[i] is built (ms_make_near) */
+    int*     ml;  int ml_cap;              /* the moby triangles near the candidates */
+    unsigned* mstamp; int mstamp_cap;      /* per moby triangle: the last query that met it */
+    unsigned mquery;                       /* the query counter mstamp holds */
+    int      ng_first[MS_NG * MS_NG + 1];
+    int*     ng_ent; int ng_cap;
+    float    ng_x0, ng_y0, ng_ix, ng_iy;
+    ms_census cs;                          /* the worker's counts in a fan-out */
+} ms_ws;
+OPENPETE_WORKER_ELEM(ms_ws);
+static ms_ws s_ws[MS_WORKERS];
+
+/** @brief Grow every scratch array of one worker's contact pass for a moby of nt triangles against nc candidates.
+ *
+ * Stamp slots the growth adds are zeroed: the query counter starts at 1 and
+ * only rises, so a new slot never reads as met by the current query.
+ * @param W The worker's scratch.
  * @param nt Moby triangles.
  * @param nc Candidate terrain triangles.
  * @return 1 when all hold, 0 on an allocation failure. */
-static int ms_scratch(int nt, int nc) {
-    return ms_grow((void**)&s_mt, &s_mt_cap, nt, sizeof *s_mt) &&
-           ms_grow((void**)&s_cj, &s_cj_cap, nc > 0 ? nc : 1, sizeof *s_cj) &&
-           ms_grow((void**)&s_ix, &s_ix_cap, nt * 2, sizeof *s_ix) &&
-           ms_grow((void**)&s_made, &s_made_cap, nt, 1) &&
-           ms_grow((void**)&s_ml, &s_ml_cap, nt, sizeof *s_ml) &&
-           ms_grow((void**)&s_mstamp, &s_mstamp_cap, nt, sizeof *s_mstamp);
+static int ms_scratch(ms_ws* W, int nt, int nc) {
+    const int sc0 = W->mstamp_cap;
+    if (!ms_grow((void**)&W->mstamp, &W->mstamp_cap, nt, sizeof *W->mstamp)) return 0;
+    if (W->mstamp_cap > sc0) memset(W->mstamp + sc0, 0, (size_t)(W->mstamp_cap - sc0) * sizeof *W->mstamp);
+    return ms_grow((void**)&W->mt, &W->mt_cap, nt, sizeof *W->mt) &&
+           ms_grow((void**)&W->cj, &W->cj_cap, nc > 0 ? nc : 1, sizeof *W->cj) &&
+           ms_grow((void**)&W->ix, &W->ix_cap, nt * 2, sizeof *W->ix) &&
+           ms_grow((void**)&W->made, &W->made_cap, nt, 1) &&
+           ms_grow((void**)&W->ml, &W->ml_cap, nt, sizeof *W->ml);
 }
 
 /** @brief Widen a bounds record (x0, y0, x1, y1, z0, z1) by one screen point.
@@ -422,44 +463,46 @@ static void ms_bounds_add(float b[6], float x, float y, float z) {
     b[4] = ms_minf(b[4], z); b[5] = ms_maxf(b[5], z);
 }
 
-/** @brief Build the camera-space form (s_mt) of the moby triangles whose bounds meet u (the candidates' bounds) and list them in s_ml.
+/** @brief Build the camera-space form (W->mt) of the moby triangles whose bounds meet u (the candidates' bounds) and list them in W->ml.
  *
- * The rest are marked not built (s_made 0).
+ * The rest are marked not built (W->made 0).
+ * @param W The worker's scratch.
  * @param m The triangles' screen corners.
  * @param bnd Their bounds records (ms_bounds_tris).
  * @param nt Their count.
  * @param u The candidates' bounds.
  * @param view H, ofx, ofy.
  * @return The count listed. */
-static int ms_make_near(const float (*m)[3][3], const float (*bnd)[6], int nt, const float u[6],
+static int ms_make_near(ms_ws* W, const float (*m)[3][3], const float (*bnd)[6], int nt, const float u[6],
                         const float view[3]) {
     int nl = 0;
     for (int i = 0; i < nt; i++) {
         const float* b = bnd[i];
-        s_made[i] = !(b[2] < u[0] || b[0] > u[2] || b[3] < u[1] || b[1] > u[3] || b[5] < u[4] || b[4] > u[5]);
-        if (!s_made[i]) continue;
+        W->made[i] = !(b[2] < u[0] || b[0] > u[2] || b[3] < u[1] || b[1] > u[3] || b[5] < u[4] || b[4] > u[5]);
+        if (!W->made[i]) continue;
         const float sx[3] = { m[i][0][0], m[i][1][0], m[i][2][0] };
         const float sy[3] = { m[i][0][1], m[i][1][1], m[i][2][1] };
         const float z[3]  = { m[i][0][2], m[i][1][2], m[i][2][2] };
-        ms_tri_make(&s_mt[i], sx, sy, z, view[0], view[1], view[2]);
-        if (s_mt[i].ok) s_ml[nl++] = i;
+        ms_tri_make(&W->mt[i], sx, sy, z, view[0], view[1], view[2]);
+        if (W->mt[i].ok) W->ml[nl++] = i;
     }
     return nl;
 }
 
-/** @brief Unproject the corners (s_mt[i].p) of every moby triangle ms_make_near did not build; the plane pass reads only the corners.
+/** @brief Unproject the corners (W->mt[i].p) of every moby triangle ms_make_near did not build; the plane pass reads only the corners.
+ * @param W The worker's scratch.
  * @param m The triangles' screen corners.
  * @param nt Their count.
  * @param view H, ofx, ofy. */
-static void ms_make_rest(const float (*m)[3][3], int nt, const float view[3]) {
+static void ms_make_rest(ms_ws* W, const float (*m)[3][3], int nt, const float view[3]) {
     const double H = view[0], ofx = view[1], ofy = view[2];
     for (int i = 0; i < nt; i++) {
-        if (s_made[i]) continue;
+        if (W->made[i]) continue;
         for (int k = 0; k < 3; k++) {
             const double z = m[i][k][2];
-            s_mt[i].p[k].x = ((double)m[i][k][0] - ofx) * z / H;
-            s_mt[i].p[k].y = ((double)m[i][k][1] - ofy) * z / H;
-            s_mt[i].p[k].z = z;
+            W->mt[i].p[k].x = ((double)m[i][k][0] - ofx) * z / H;
+            W->mt[i].p[k].y = ((double)m[i][k][1] - ofy) * z / H;
+            W->mt[i].p[k].z = z;
         }
     }
 }
@@ -484,16 +527,9 @@ static int ms_terrain_make(const terrain_snap_tri* tt, int n, const float view[3
     return 1;
 }
 
-/* The near moby triangles (s_ml) binned on an MS_NG x MS_NG screen grid
- * over the candidates' rectangle, cell by cell (s_ng_first, s_ng_ent): a
- * terrain triangle reads the cells its rectangle covers instead of the
- * whole near list. Built for a moby whose near list times its candidates
- * exceeds MS_NG_PAIRS. */
-#define MS_NG 8
-#define MS_NG_PAIRS 256
-static int  s_ng_first[MS_NG * MS_NG + 1];
-static int* s_ng_ent; static int s_ng_cap;
-static float s_ng_x0, s_ng_y0, s_ng_ix, s_ng_iy;
+/* The near grid (ms_ws.ng_first, ng_ent): a terrain triangle reads the
+ * cells its rectangle covers instead of the whole near list. Built for a
+ * moby whose near list times its candidates exceeds MS_NG_PAIRS. */
 
 /** @brief Return the near grid's cell range [lo, hi] an interval covers, clamped to the grid.
  * @param a Interval start.
@@ -508,41 +544,43 @@ static void ms_ng_cells(float a, float b, float o, float ic, int c[2]) {
     c[1] = h > MS_NG - 1 ? MS_NG - 1 : h;
 }
 
-/** @brief Bin the near list (s_ml, nl long) on the near grid over rectangle u.
+/** @brief Bin the near list (W->ml, nl long) on the worker's near grid over rectangle u.
+ * @param W The worker's scratch.
  * @param mb The moby triangles' bounds.
  * @param nl The near list's length.
  * @param u The candidates' bounds.
  * @return 0 on an allocation failure, else 1. */
-static int ms_ng_build(const float (*mb)[6], int nl, const float u[6]) {
+static int ms_ng_build(ms_ws* W, const float (*mb)[6], int nl, const float u[6]) {
     int cnt[MS_NG * MS_NG] = { 0 };
-    s_ng_x0 = u[0]; s_ng_y0 = u[1];
-    s_ng_ix = (float)MS_NG / ms_maxf(u[2] - u[0], 1e-3f);
-    s_ng_iy = (float)MS_NG / ms_maxf(u[3] - u[1], 1e-3f);
+    W->ng_x0 = u[0]; W->ng_y0 = u[1];
+    W->ng_ix = (float)MS_NG / ms_maxf(u[2] - u[0], 1e-3f);
+    W->ng_iy = (float)MS_NG / ms_maxf(u[3] - u[1], 1e-3f);
     int n = 0;
     for (int j = 0; j < nl; j++) {
         int cx[2], cy[2];
-        ms_ng_cells(mb[s_ml[j]][0], mb[s_ml[j]][2], s_ng_x0, s_ng_ix, cx);
-        ms_ng_cells(mb[s_ml[j]][1], mb[s_ml[j]][3], s_ng_y0, s_ng_iy, cy);
+        ms_ng_cells(mb[W->ml[j]][0], mb[W->ml[j]][2], W->ng_x0, W->ng_ix, cx);
+        ms_ng_cells(mb[W->ml[j]][1], mb[W->ml[j]][3], W->ng_y0, W->ng_iy, cy);
         for (int y = cy[0]; y <= cy[1]; y++)
             for (int x = cx[0]; x <= cx[1]; x++) { cnt[y * MS_NG + x]++; n++; }
     }
-    if (!ms_grow((void**)&s_ng_ent, &s_ng_cap, n > 0 ? n : 1, sizeof *s_ng_ent)) return 0;
-    s_ng_first[0] = 0;
-    for (int c = 0; c < MS_NG * MS_NG; c++) { s_ng_first[c + 1] = s_ng_first[c] + cnt[c]; cnt[c] = s_ng_first[c]; }
+    if (!ms_grow((void**)&W->ng_ent, &W->ng_cap, n > 0 ? n : 1, sizeof *W->ng_ent)) return 0;
+    W->ng_first[0] = 0;
+    for (int c = 0; c < MS_NG * MS_NG; c++) { W->ng_first[c + 1] = W->ng_first[c] + cnt[c]; cnt[c] = W->ng_first[c]; }
     for (int j = 0; j < nl; j++) {
         int cx[2], cy[2];
-        ms_ng_cells(mb[s_ml[j]][0], mb[s_ml[j]][2], s_ng_x0, s_ng_ix, cx);
-        ms_ng_cells(mb[s_ml[j]][1], mb[s_ml[j]][3], s_ng_y0, s_ng_iy, cy);
+        ms_ng_cells(mb[W->ml[j]][0], mb[W->ml[j]][2], W->ng_x0, W->ng_ix, cx);
+        ms_ng_cells(mb[W->ml[j]][1], mb[W->ml[j]][3], W->ng_y0, W->ng_iy, cy);
         for (int y = cy[0]; y <= cy[1]; y++)
-            for (int x = cx[0]; x <= cx[1]; x++) s_ng_ent[cnt[y * MS_NG + x]++] = s_ml[j];
+            for (int x = cx[0]; x <= cx[1]; x++) W->ng_ent[cnt[y * MS_NG + x]++] = W->ml[j];
     }
     return 1;
 }
 
-/** @brief Test one moby triangle against a terrain triangle and list it at s_ix[nh] when they intersect.
+/** @brief Test one moby triangle against a terrain triangle and list it at W->ix[nh] when they intersect.
  *
  * Screen bounds reject first (a shared point projects into both
  * rectangles), then camera-space bounds, then the exact test.
+ * @param W The worker's scratch.
  * @param F The terrain triangle.
  * @param fb Its bounds.
  * @param mb The moby triangles' bounds.
@@ -550,47 +588,49 @@ static int ms_ng_build(const float (*mb)[6], int nl, const float u[6]) {
  * @param nh Where to list it.
  * @param cs The census; counts the exact tests run.
  * @return 1 when listed, else 0. */
-static int ms_hit_one(const ms_tri* F, const float fb[6], const float (*mb)[6], int i, int nh, ms_census* cs) {
+static int ms_hit_one(ms_ws* W, const ms_tri* F, const float fb[6], const float (*mb)[6], int i, int nh, ms_census* cs) {
     const float* b = mb[i];
     if (b[2] < fb[0] || b[0] > fb[2] || b[3] < fb[1] || b[1] > fb[3] || b[5] < fb[4] || b[4] > fb[5])
         return 0;
-    if (!ms_box_overlap(&s_mt[i], F)) return 0;
+    if (!ms_box_overlap(&W->mt[i], F)) return 0;
     cs->tests++;
-    if (!ms_tri_tri(&s_mt[i], F)) return 0;
-    s_ix[nh] = i;
+    if (!ms_tri_tri(&W->mt[i], F)) return 0;
+    W->ix[nh] = i;
     return 1;
 }
 
-/** @brief List the near moby triangles (s_ml) a terrain triangle intersects into s_ix.
+/** @brief List the near moby triangles (W->ml) a terrain triangle intersects into W->ix.
+ * @param W The worker's scratch.
  * @param F The terrain triangle.
  * @param fb Its bounds.
  * @param mb The moby triangles' bounds.
  * @param nl The near list's length.
  * @param cs The census; counts the exact tests run.
  * @return The count listed. */
-static int ms_hits(const ms_tri* F, const float fb[6], const float (*mb)[6], int nl, ms_census* cs) {
+static int ms_hits(ms_ws* W, const ms_tri* F, const float fb[6], const float (*mb)[6], int nl, ms_census* cs) {
     int nh = 0;
-    for (int j = 0; j < nl; j++) nh += ms_hit_one(F, fb, mb, s_ml[j], nh, cs);
+    for (int j = 0; j < nl; j++) nh += ms_hit_one(W, F, fb, mb, W->ml[j], nh, cs);
     return nh;
 }
 
-/** @brief List the near moby triangles of the near grid's cells a terrain triangle's rectangle covers that it intersects into s_ix, each tested once.
+/** @brief List the near moby triangles of the near grid's cells a terrain triangle's rectangle covers that it intersects into W->ix, each tested once.
+ * @param W The worker's scratch.
  * @param F The terrain triangle.
  * @param fb Its bounds.
  * @param mb The moby triangles' bounds.
  * @param cs The census; counts the exact tests run.
  * @return The count listed. */
-static int ms_hits_grid(const ms_tri* F, const float fb[6], const float (*mb)[6], ms_census* cs) {
+static int ms_hits_grid(ms_ws* W, const ms_tri* F, const float fb[6], const float (*mb)[6], ms_census* cs) {
     int nh = 0, cx[2], cy[2];
-    ms_ng_cells(fb[0], fb[2], s_ng_x0, s_ng_ix, cx);
-    ms_ng_cells(fb[1], fb[3], s_ng_y0, s_ng_iy, cy);
-    const int q = (int)++s_mquery;
+    ms_ng_cells(fb[0], fb[2], W->ng_x0, W->ng_ix, cx);
+    ms_ng_cells(fb[1], fb[3], W->ng_y0, W->ng_iy, cy);
+    const unsigned q = ++W->mquery;
     for (int y = cy[0]; y <= cy[1]; y++)
-        for (int e = s_ng_first[y * MS_NG + cx[0]]; e < s_ng_first[y * MS_NG + cx[1] + 1]; e++) {
-            const int i = s_ng_ent[e];
-            if (s_mstamp[i] == q) continue;
-            s_mstamp[i] = q;
-            nh += ms_hit_one(F, fb, mb, i, nh, cs);
+        for (int e = W->ng_first[y * MS_NG + cx[0]]; e < W->ng_first[y * MS_NG + cx[1] + 1]; e++) {
+            const int i = W->ng_ent[e];
+            if (W->mstamp[i] == q) continue;
+            W->mstamp[i] = q;
+            nh += ms_hit_one(W, F, fb, mb, i, nh, cs);
         }
     return nh;
 }
@@ -733,7 +773,8 @@ static int ms_falsify_class(ms_v3 p, double vz, double zt, const openpete_snap_p
  * for the terrain key owner there; the sample is cut when that triangle
  * lies more than one world unit nearer than the depth the snap writes for
  * it.
- * @param nt The moby's triangle count (s_mt).
+ * @param mt The moby's camera-space triangles (ms_ws.mt).
+ * @param nt Their count.
  * @param out Its planes.
  * @param np Their count.
  * @param tt The captured terrain triangles.
@@ -742,7 +783,7 @@ static int ms_falsify_class(ms_v3 p, double vz, double zt, const openpete_snap_p
  * @param view H, ofx, ofy.
  * @param cls The cut samples by class (ms_falsify_class), updated.
  * @return The cut sample count. */
-static long ms_falsify(int nt, const openpete_snap_plane* out, int np,
+static long ms_falsify(const ms_tri* mt, int nt, const openpete_snap_plane* out, int np,
                        const terrain_snap_tri* tt, const int* cj, int nc, const float view[3], long cls[3]) {
     double S = 0.0;
     for (int k = 0; k < np; k++) S = ms_max(S, (double)out[k].slab);
@@ -751,7 +792,7 @@ static long ms_falsify(int nt, const openpete_snap_plane* out, int np,
     long cut = 0;
     for (int i = 0; i < nt && no; i++)
         for (int w = 0; w < 7; w++) {
-            const ms_v3 p = ms_falsify_sample(&s_mt[i], w);
+            const ms_v3 p = ms_falsify_sample(&mt[i], w);
             if (!(p.z > 1.0)) continue;
             double zt = 0.0;
             const int q = ms_falsify_owner(p, tt, own, no, view, &zt);
@@ -764,10 +805,18 @@ static long ms_falsify(int nt, const openpete_snap_plane* out, int np,
     return cut;
 }
 
-static void ms_result(const ms_moby* mb, const openpete_snap_plane* out, const ms_pid* id, int np);
-static void mc_vf_near(const ms_moby* mb, int nc, int nl);
+static void ms_result(const ms_moby* mb, const openpete_snap_plane* out, const ms_pid* id, int np,
+                      const float* wb, const double (*kc)[3]);
+static void mc_vf_near(const ms_ws* W, const ms_moby* mb, int nc, int nl);
 
 /** @brief Find one queued moby's contact planes against the captured terrain.
+ *
+ * Reads the queue, the captured terrain's built form (s_tt, s_tb) and world
+ * up, and writes only the worker's scratch and census and the outputs, so
+ * mobys resolve on any worker in any order; the cut falsifier's touch marks
+ * (s_tcon) and the verify's near contacts (mc_vf_near) are written only
+ * while those instruments keep the pass serial.
+ * @param W The worker's scratch.
  * @param mb The moby.
  * @param tt The captured terrain triangles.
  * @param cand The indices into @p tt of those its search box reaches.
@@ -777,14 +826,15 @@ static void mc_vf_near(const ms_moby* mb, int nc, int nl);
  * @param out Receives the planes, MS_MAX_PLANES at most.
  * @param id Receives each plane's source face, parallel to @p out.
  * @return The plane count, or -1 on a scratch allocation failure. */
-static int ms_moby_planes(const ms_moby* mb, const terrain_snap_tri* tt, const int* cand,
+static int ms_moby_planes(ms_ws* W, const ms_moby* mb, const terrain_snap_tri* tt, const int* cand,
                           int ncand, const float view[3], ms_census* cs, openpete_snap_plane* out,
                           ms_pid* id) {
     const float (*m)[3][3] = (const float (*)[3][3])&s_q_tri[mb->t0];
     const int nt = mb->nt;
     if (!ncand) return 0;
-    if (!ms_scratch(nt, ncand)) return -1;
-    s_mserial++;
+    if (!ms_scratch(W, nt, ncand)) return -1;
+    const int fz = ms_falsify_on();
+    if (fz) s_mserial++;
     uint64_t t = cs->timed ? ms_mono_ns() : 0, t1;
     float u[6] = { 1e30f, 1e30f, -1e30f, -1e30f, 1e30f, -1e30f };
     int nc = 0;
@@ -792,36 +842,36 @@ static int ms_moby_planes(const ms_moby* mb, const terrain_snap_tri* tt, const i
         const float* b = s_tb[cand[q]];
         u[0] = ms_minf(u[0], b[0]); u[1] = ms_minf(u[1], b[1]); u[2] = ms_maxf(u[2], b[2]);
         u[3] = ms_maxf(u[3], b[3]); u[4] = ms_minf(u[4], b[4]); u[5] = ms_maxf(u[5], b[5]);
-        if (s_tt[cand[q]].ok) s_cj[nc++] = cand[q];
+        if (s_tt[cand[q]].ok) W->cj[nc++] = cand[q];
     }
     const float (*mbnd)[6] = (const float (*)[6])&s_q_bnd[mb->t0];
-    const int nl = ms_make_near(m, mbnd, nt, u, view);
+    const int nl = ms_make_near(W, m, mbnd, nt, u, view);
     if (t) { t1 = ms_mono_ns(); cs->near_ns += t1 - t; t = t1; }
     ms_plane P[MS_MAX_PLANES];
     int np = 0;
-    const int grid = nl * nc > MS_NG_PAIRS && ms_ng_build(mbnd, nl, u);
+    const int grid = nl * nc > MS_NG_PAIRS && ms_ng_build(W, mbnd, nl, u);
     for (int q = 0; q < nc && nl; q++) {
-        const int j = s_cj[q];
-        const int nh = grid ? ms_hits_grid(&s_tt[j], s_tb[j], mbnd, cs) : ms_hits(&s_tt[j], s_tb[j], mbnd, nl, cs);
+        const int j = W->cj[q];
+        const int nh = grid ? ms_hits_grid(W, &s_tt[j], s_tb[j], mbnd, cs) : ms_hits(W, &s_tt[j], s_tb[j], mbnd, nl, cs);
         if (!nh) continue;
-        s_tcon[j] = s_mserial;
+        if (fz) s_tcon[j] = s_mserial;
         cs->contacts++;
         cs->contacts_t4 += tt[j].ftris >= 16;
         if (!ms_plane_add(P, &np, &s_tt[j], &tt[j])) cs->ovf++;
     }
     if (t) { t1 = ms_mono_ns(); cs->test_ns += t1 - t; t = t1; }
-    mc_vf_near(mb, nc, nl);
+    mc_vf_near(W, mb, nc, nl);
     if (!np) return 0;
-    ms_make_rest(m, nt, view);
+    ms_make_rest(W, m, nt, view);
     for (int k = 0; k < np; k++) {
-        ms_plane_finish(s_mt, nt, mb->dofs, &P[k], s_up_p, &out[k]);
+        ms_plane_finish(W->mt, nt, mb->dofs, &P[k], s_up_p, &out[k]);
         id[k] = P[k].id;
     }
     cs->planes += np;
     if (t) cs->plane_ns += ms_mono_ns() - t;
-    if (ms_falsify_on()) {
+    if (fz) {
         const long b0 = cs->cut_cls[1];
-        const long cut = ms_falsify(nt, out, np, tt, s_cj, nc, view, cs->cut_cls);
+        const long cut = ms_falsify(W->mt, nt, out, np, tt, W->cj, nc, view, cs->cut_cls);
         cs->cut_samples += cut;
         cs->cut_mobys += cut > 0;
         cs->cut_b_mobys += cs->cut_cls[1] > b0;
@@ -842,27 +892,15 @@ static int ms_add(const ms_moby* mb, const openpete_snap_plane* out, int np, ms_
     return np;
 }
 
-/** @brief Find one queued moby's contact planes against the captured terrain, hand them to the carry and add them to the scene's snap table.
- *
- * A moby the carry already placed (add 0) is resolved for the verify
- * instrument only and adds nothing.
- * @param mb The moby.
- * @param tt The captured terrain triangles.
- * @param cand The indices into @p tt of those its search box reaches.
- * @param ncand Their count.
- * @param view H, ofx, ofy.
- * @param cs The census, updated.
- * @return The planes added. */
-static int ms_moby_contact(const ms_moby* mb, const terrain_snap_tri* tt, const int* cand,
-                           int ncand, const float view[3], ms_census* cs) {
-    openpete_snap_plane out[MS_MAX_PLANES];
-    ms_pid id[MS_MAX_PLANES];
-    const int np = ms_moby_planes(mb, tt, cand, ncand, view, cs, out, id);
-    if (np < 0) return 0;
-    ms_result(mb, out, id, np);
-    if (!np || !mb->add) return 0;
-    return ms_add(mb, out, np, cs);
-}
+/* One resolve chunk's per-moby results, by chunk index (at most 128): the
+ * planes, their source faces and the count (-1 on a scratch allocation
+ * failure). The fan-out's workers write them (ms_fo_item); the identity
+ * check (ms_fo_check) has the serial pass record its own into the same form
+ * (s_ck_rec). */
+typedef struct { openpete_snap_plane pl[MS_MAX_PLANES]; ms_pid id[MS_MAX_PLANES]; int np; } ms_fo_res;
+static ms_fo_res s_fo_res[128];
+static ms_fo_res s_ck_res[128];
+static const ms_moby* s_ck_rec;   /* the chunk's first moby while the check's serial pass records, else NULL */
 
 /** @brief The search box of one queued moby: its screen rectangle widened by one pixel and its key depth range.
  * @param mb The moby.
@@ -1086,6 +1124,31 @@ static void ms_moby_wbox(const ms_moby* mb, float wb[6]) {
         }
 }
 
+/* Per queued triangle corner (3 t0 + 3q + k), for the resolve under way:
+ * its key-depth world point, as the carry's store records it
+ * (ms_store_prep). */
+static double (*s_kc)[3]; static int s_kc_cap;
+
+/** @brief Grow the key-depth corner slab (s_kc) to the queue's triangles; the fan-out grows it before its workers write their mobys' runs.
+ * @return 1 when it holds them, 0 on an allocation failure. */
+static int ms_store_kc_grow(void) {
+    return ms_grow((void**)&s_kc, &s_kc_cap, 3 * s_q_nt, sizeof *s_kc);
+}
+
+/** @brief Compute what the carry's store records of a queued moby's geometry under the resolve's camera: the world box of its corners at raster depth (ms_moby_wbox) and every corner at key depth (ms_moby_kcorner).
+ *
+ * A pure function of the queue and the resolve's camera; the serial pass
+ * and the fan-out's workers both produce a moby's record through it, and
+ * mc_store_geom copies it into the table.
+ * @param mb The moby.
+ * @param wb Receives the world box.
+ * @param kc Receives 3 corners per triangle, or NULL to compute the box alone. */
+static void ms_store_prep(const ms_moby* mb, float wb[6], double (*kc)[3]) {
+    ms_moby_wbox(mb, wb);
+    for (int q = 0; kc && q < mb->nt; q++)
+        for (int c = 0; c < 3; c++) ms_moby_kcorner(mb, q, c, kc[3 * q + c]);
+}
+
 /** @brief A world box containing a queued moby's triangle corners at raster depth: the world box of the eight corners of their camera-space box, under the resolve's camera.
  *
  * It contains every corner (ms_moby_wcorner), and costs one camera-space
@@ -1123,6 +1186,34 @@ static void ms_moby_cbox(const ms_moby* mb, float wb[6]) {
             wb[i] = ms_minf(wb[i], (float)w); wb[i + 3] = ms_maxf(wb[i + 3], (float)w);
         }
     }
+}
+
+/* Per queue index, for the resolve under way: the world box of the moby's
+ * corners' camera-space box (ms_moby_cbox) where a fan-out already computed
+ * it (s_cb_ok 1), for s_cb_n queue indices. */
+static float  (*s_cb)[6]; static int s_cb_cap;
+static uint8_t* s_cb_ok;  static int s_cb_okcap;
+static int      s_cb_n;
+
+/** @brief Size the resolve's precomputed corner boxes for the queue and mark none computed.
+ *
+ * On an allocation failure no box counts as computed (s_cb_n 0), and every
+ * reader computes its own. */
+static void ms_cb_begin(void) {
+    s_cb_n = 0;
+    if (!ms_grow((void**)&s_cb, &s_cb_cap, s_q_nm, sizeof *s_cb) ||
+        !ms_grow((void**)&s_cb_ok, &s_cb_okcap, s_q_nm, 1)) return;
+    memset(s_cb_ok, 0, (size_t)s_q_nm);
+    s_cb_n = s_q_nm;
+}
+
+/** @brief A queued moby's corner box (ms_moby_cbox): the fan-out's copy when it computed one, else computed here.
+ * @param k The moby's queue index.
+ * @param mb The moby.
+ * @param wb Receives x0, y0, z0, x1, y1, z1. */
+static void ms_cb_get(int k, const ms_moby* mb, float wb[6]) {
+    if (k >= 0 && k < s_cb_n && s_cb_ok[k]) memcpy(wb, s_cb[k], sizeof s_cb[k]);
+    else ms_moby_cbox(mb, wb);
 }
 
 static struct CPUState* s_vf_cpu;   /* the guest, for the verify's moby class and state signature */
@@ -1241,6 +1332,27 @@ static void mc_cam_note(mc_tab* t, const double L[3][3], const double P[3]) {
     }
 }
 
+/** @brief Record a stored moby's geometry in its entry: its world box, the probe's fields, and its key-depth corners with, while the probe is on, their face keys.
+ *
+ * The entry keeps no corners (nwc 0) when none were computed or the table
+ * cannot grow; the refresh test then treats the moby as unrecorded.
+ * @param t The table.
+ * @param e The moby's entry, just claimed.
+ * @param mb The moby.
+ * @param wb Its world box (ms_store_prep).
+ * @param kc Its key-depth world corners, 3 per triangle, or NULL. */
+static void mc_store_geom(mc_tab* t, mc_ent* e, const ms_moby* mb, const float* wb, const double (*kc)[3]) {
+    const int n = 3 * mb->nt;
+    memcpy(e->wb, wb, sizeof e->wb);
+    e->path = mb->path; e->off = mb->off; e->kr = mb->kr;
+    if (!kc || !ms_grow((void**)&t->wc, &t->cap_wc, t->nwc + n, sizeof *t->wc)) return;
+    if (moby_snap_probe_on() && ms_grow((void**)&t->fk, &t->cap_fk, t->nwc + n, sizeof *t->fk))
+        for (int i = 0; i < n; i++) t->fk[t->nwc + i] = s_q_fk[mb->t0 + i / 3];
+    memcpy(t->wc[t->nwc], kc, (size_t)n * sizeof *t->wc);
+    t->nwc += n;
+    e->nwc = n;
+}
+
 /** @brief Store one resolved moby's planes, mapped to world space under the resolve's camera, in the table.
  *
  * A moby stored twice in one table keeps the later planes (counted as dup).
@@ -1251,8 +1363,11 @@ static void mc_cam_note(mc_tab* t, const double L[3][3], const double P[3]) {
  * @param mb The moby.
  * @param out Its camera-space planes.
  * @param id Their source faces.
- * @param np Their count, 0 for a moby resolved with no contact. */
-static void mc_store(mc_tab* t, const ms_moby* mb, const openpete_snap_plane* out, const ms_pid* id, int np) {
+ * @param np Their count, 0 for a moby resolved with no contact.
+ * @param wb The moby's world box (ms_store_prep), NULL when the resolve keeps no world boxes (s_rs_wb 0).
+ * @param kc Its key-depth world corners (ms_store_prep), 3 per triangle, NULL when none were computed. */
+static void mc_store(mc_tab* t, const ms_moby* mb, const openpete_snap_plane* out, const ms_pid* id, int np,
+                     const float* wb, const double (*kc)[3]) {
     const uint32_t mid = mb->mid;
     if (t->ne >= MC_HSIZE - (MC_HSIZE >> 2)) { t->full++; return; }
     if (!ms_grow((void**)&t->e, &t->cap_e, t->ne + 1, sizeof *t->e) ||
@@ -1269,20 +1384,7 @@ static void mc_store(mc_tab* t, const ms_moby* mb, const openpete_snap_plane* ou
     e->wc0 = t->nwc; e->nwc = 0;
     e->f0 = e->nf = e->fc_ok = 0;
     e->sig_ok = mc_moby_sig(mid, &e->sig);
-    if (s_rs_wb) {
-        ms_moby_wbox(mb, e->wb);
-        if (ms_grow((void**)&t->wc, &t->cap_wc, t->nwc + 3 * mb->nt, sizeof *t->wc)) {
-            const int probe = moby_snap_probe_on() &&
-                              ms_grow((void**)&t->fk, &t->cap_fk, t->nwc + 3 * mb->nt, sizeof *t->fk);
-            for (int q = 0; q < mb->nt; q++)
-                for (int k = 0; k < 3; k++) {
-                    if (probe) t->fk[t->nwc] = s_q_fk[mb->t0 + q];
-                    ms_moby_kcorner(mb, q, k, t->wc[t->nwc++]);
-                }
-            e->nwc = 3 * mb->nt;
-        }
-        e->path = mb->path; e->off = mb->off; e->kr = mb->kr;
-    }
+    if (wb) mc_store_geom(t, e, mb, wb, kc);
     for (int k = 0; k < np; k++) {
         mc_wplane* w = &t->w[t->npl];
         double dw = out[k].d;
@@ -1505,7 +1607,7 @@ static void mc_store_cands(mc_tab* t) {
             if (x[k] >= 0 && (!s_rs_wb || !s_q_mob[g + k].nt)) x[k] = -1;
             if (x[k] < 0) continue;
             mc_ent* e = &t->e[x[k]];
-            ms_moby_cbox(&s_q_mob[g + k], e->rb);
+            ms_cb_get(g + k, &s_q_mob[g + k], e->rb);
             for (int a = 0; a < 3; a++) { e->rb[a] -= MC_CAND; e->rb[a + 3] += MC_CAND; }
             memcpy(rb[k], e->rb, sizeof rb[k]);
         }
@@ -1832,9 +1934,12 @@ static void mc_vf_put(int qi, const openpete_snap_plane* out, const ms_pid* id, 
  * @param mb The moby.
  * @param out Its planes.
  * @param id Their source faces.
- * @param np Their count, 0 for no contact. */
-static void ms_result(const ms_moby* mb, const openpete_snap_plane* out, const ms_pid* id, int np) {
-    if (s_store) mc_store(s_store, mb, out, id, np);
+ * @param np Their count, 0 for no contact.
+ * @param wb The moby's world box for the store when already computed, else NULL (mc_store).
+ * @param kc Its key-depth world corners for the store when already computed, else NULL. */
+static void ms_result(const ms_moby* mb, const openpete_snap_plane* out, const ms_pid* id, int np,
+                      const float* wb, const double (*kc)[3]) {
+    if (s_store) mc_store(s_store, mb, out, id, np, wb, kc);
     if (s_vf_on) mc_vf_put(mb->qi, out, id, np);
 }
 
@@ -1954,18 +2059,19 @@ static int mc_box_apart(const ms_tri* a, const ms_tri* b, double g) {
 }
 
 /** @brief Record, for the verify, every candidate terrain triangle of a moby's fresh resolve whose intersection margin with the moby's near triangles exceeds -MC_TANGENT (s_vt), with its plane and that margin.
+ * @param W The scratch the moby resolved in.
  * @param mb The moby.
- * @param nc Its usable candidates (s_cj).
- * @param nl Its near triangles (s_ml). */
-static void mc_vf_near(const ms_moby* mb, int nc, int nl) {
+ * @param nc Its usable candidates (W->cj).
+ * @param nl Its near triangles (W->ml). */
+static void mc_vf_near(const ms_ws* W, const ms_moby* mb, int nc, int nl) {
     const int qi = mb->qi;
     if (!s_vf_on || qi < 0 || qi >= s_vq_n) return;
     s_vt_p0[qi] = s_vt_n; s_vt_np[qi] = 0;
     for (int q = 0; q < nc; q++) {
-        const ms_tri* F = &s_tt[s_cj[q]];
+        const ms_tri* F = &s_tt[W->cj[q]];
         double m = -1e30;
         for (int l = 0; l < nl; l++)
-            if (!mc_box_apart(&s_mt[s_ml[l]], F, MC_TANGENT)) m = ms_max(m, mc_pair_margin(&s_mt[s_ml[l]], F));
+            if (!mc_box_apart(&W->mt[W->ml[l]], F, MC_TANGENT)) m = ms_max(m, mc_pair_margin(&W->mt[W->ml[l]], F));
         if (m <= -MC_TANGENT || !ms_grow((void**)&s_vt, &s_vt_cap, s_vt_n + 1, sizeof *s_vt)) continue;
         mc_near* r = &s_vt[s_vt_n++];
         r->n[0] = (float)F->n.x; r->n[1] = (float)F->n.y; r->n[2] = (float)F->n.z;
@@ -2478,6 +2584,7 @@ static void rsp_flush(void) {
 static int ms_carry_begin(ms_census* cs) {
     s_store = NULL; s_vf_on = 0; s_rs_ep = NULL; s_rs_wb = 0;
     for (int k = 0; k < s_q_nm; k++) { s_q_mob[k].qi = k; s_q_mob[k].add = 1; }
+    ms_cb_begin();
     const int carry = mc_carry_on(), vm = mc_verify_mode();
     if (!carry && !vm) return s_q_nm;
     if (!terrain_snap_camera(s_rs_L, s_rs_P)) return s_q_nm;
@@ -2525,6 +2632,406 @@ static void ms_carry_end(const ms_census* cs) {
     }
 }
 
+/* ---- the contact pass's fan-out ---------------------------------------------
+ * One chunk's contact pass runs per moby on the walk workers when the chunk is
+ * large enough. Serial prefix (the chunk's capture, the built terrain and the
+ * candidate buckets, on the calling thread): the corner slab's size. Workers:
+ * one moby each (ms_fo_item), its planes into its own result slot through the
+ * worker's scratch, and, for a resolve that stores into the carry, its world
+ * box and key-depth corners. Commit, on the calling thread in queue order:
+ * the carry's store (mc_store), the scene's snap table add and the ordinal
+ * census (ms_add), and the worker censuses summed. Everything order-dependent
+ * is in the commit, so the tables are the serial pass's
+ * (OPENPETE_MOBY_SNAP_FANOUT_CHECK compares them). */
+
+static float    s_fo_wb[128][6];                      /* per chunk moby: the store's world box */
+
+/* The fan-out's work bound: below it the chunk runs serially. Work is
+ * counted per moby with candidates as its triangle count plus its candidate
+ * count, and per moby the carry stores as its triangle count (ms_fo_work).
+ * The fan-out pays a fixed cost the serial pass does not (the pool's wake
+ * and join, the census merge, the commit), measured near 150 us per chunk
+ * whatever its size against about 0.04 us per work unit serial. Measured
+ * per chunk by OPENPETE_MOBY_SNAP_FANOUT_CHECK on six rows of the three
+ * games (8 workers, Linux): 4,000 to 8,000 units ran 154 to 268 us serial
+ * against 166 to 186 fanned out; 8,000 to 32,000 ran 318 to 903 against 182
+ * to 310; every sub-tick chunk measured stayed under 2,000. The crossover is
+ * near 6,000; OPENPETE_MOBY_SNAP_FANOUT_MIN re-derives it on another
+ * machine. */
+#define MS_FO_MIN_WORK 6000
+
+typedef struct {
+    int g;                          /* the chunk's first queued moby */
+    const terrain_snap_tri* tt;     /* the captured terrain */
+    const int* cand;                /* the candidate buckets (ms_cands) */
+    const int* first;               /* each moby's bucket start; first[nb] the end */
+    const float* view;              /* H, ofx, ofy */
+    int prep;                       /* the resolve stores into the carry: compute each moby's box and corners */
+    int cbox;                       /* the store records contact regions: compute each moby's corner box (s_cb) */
+} ms_fo_job;
+
+/** @brief Work-pool job: one chunk moby's contact planes into its result slot, its store box and corners when the resolve stores, and its corner box when the store records contact regions.
+ * @param k The moby's chunk index.
+ * @param worker The pool worker, 0 for the calling thread.
+ * @param arg The ms_fo_job. */
+static void ms_fo_item(int k, int worker, void* arg) {
+    const ms_fo_job* J = (const ms_fo_job*)arg;
+    ms_ws* W = &s_ws[worker];
+    const ms_moby* mb = &s_q_mob[J->g + k];
+    ms_fo_res* r = &s_fo_res[k];
+    if (J->cbox) ms_moby_cbox(mb, s_cb[J->g + k]);
+    r->np = ms_moby_planes(W, mb, J->tt, J->cand + J->first[k], J->first[k + 1] - J->first[k], J->view,
+                           &W->cs, r->pl, r->id);
+    if (J->prep && r->np >= 0) ms_store_prep(mb, s_fo_wb[k], &s_kc[3 * mb->t0]);
+}
+
+/** @brief Add the counts a worker's contact pass made to the resolve's census (its phase clocks included).
+ * @param d The resolve's census.
+ * @param w The worker's. */
+static void ms_census_merge(ms_census* d, const ms_census* w) {
+    d->tests += w->tests; d->contacts += w->contacts; d->contacts_t4 += w->contacts_t4;
+    d->ovf += w->ovf; d->planes += w->planes;
+    d->near_ns += w->near_ns; d->test_ns += w->test_ns; d->plane_ns += w->plane_ns;
+}
+
+/** @brief Whether OPENPETE_MOBY_SNAP_FANOUT is not 0: the contact pass may fan out (default on), read once.
+ * @return 1 when it may. */
+static int ms_fo_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_FANOUT"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/** @brief The fan-out's work bound: OPENPETE_MOBY_SNAP_FANOUT_MIN, else MS_FO_MIN_WORK, a calibration override.
+ * @return The bound. */
+static long ms_fo_min(void) {
+    static long v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_FANOUT_MIN"); v = (e && *e) ? atol(e) : MS_FO_MIN_WORK; }
+    return v;
+}
+
+/** @brief Whether OPENPETE_MOBY_SNAP_FANOUT_CHECK is set nonzero: every chunk that fans out also runs serially and the two are compared, read once.
+ * @return 1 when on. */
+static int ms_fo_check_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_FANOUT_CHECK"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/** @brief The work of one chunk's contact pass, in the unit MS_FO_MIN_WORK bounds.
+ * @param g The chunk's first queued moby.
+ * @param nb Its moby count.
+ * @param first The candidate bucket starts.
+ * @return The work. */
+static long ms_fo_work(int g, int nb, const int* first) {
+    long w = 0;
+    const int store = s_store && s_rs_wb;
+    for (int k = 0; k < nb; k++) {
+        const int nc = first[k + 1] - first[k], nt = s_q_mob[g + k].nt;
+        w += (nc > 0 ? nt + nc : 0) + (store ? nt : 0);
+    }
+    return w;
+}
+
+/** @brief Whether this chunk's contact pass fans out: on, not the first chunk of the run, no instrument that runs per moby in queue order, at least two mobys and two workers, the work bound met.
+ *
+ * The first chunk runs serially so every lazy latch the pass reaches
+ * resolves on one thread. The cut falsifier, the carry verify and the plane
+ * dump write shared state or print per moby, so each keeps the pass serial.
+ * @param g The chunk's first queued moby.
+ * @param nb Its moby count.
+ * @param first The candidate bucket starts.
+ * @return The worker count to fan out over, or 0 for the serial pass. */
+static int ms_fo_workers(int g, int nb, const int* first) {
+    static int first_chunk = 1;
+    if (first_chunk) {
+        first_chunk = 0;
+        (void)ms_falsify_on(); (void)ms_dump_keys(); (void)moby_snap_probe_on(); (void)ms_fo_check_on();
+        return 0;
+    }
+    if (!ms_fo_on() || s_vf_on || ms_falsify_on() || ms_dump_keys() || nb < 2) return 0;
+    int nw = openpete_workpool_threads();
+    if (nw > MS_WORKERS) nw = MS_WORKERS;
+    if (nw <= 1 || ms_fo_work(g, nb, first) < ms_fo_min()) return 0;
+    return nw;
+}
+
+/** @brief Find one queued moby's contact planes against the captured terrain, hand them to the carry and add them to the scene's snap table.
+ *
+ * A moby the carry already placed (add 0) is resolved for the verify
+ * instrument only and adds nothing.
+ * @param W The worker's scratch.
+ * @param mb The moby.
+ * @param tt The captured terrain triangles.
+ * @param cand The indices into @p tt of those its search box reaches.
+ * @param ncand Their count.
+ * @param view H, ofx, ofy.
+ * @param cs The census, updated.
+ * @return The planes added. */
+static int ms_moby_contact(ms_ws* W, const ms_moby* mb, const terrain_snap_tri* tt, const int* cand,
+                           int ncand, const float view[3], ms_census* cs) {
+    openpete_snap_plane out[MS_MAX_PLANES];
+    ms_pid id[MS_MAX_PLANES];
+    const int np = ms_moby_planes(W, mb, tt, cand, ncand, view, cs, out, id);
+    if (s_ck_rec) {
+        ms_fo_res* r = &s_ck_res[mb - s_ck_rec];
+        r->np = np;
+        if (np > 0) { memcpy(r->pl, out, (size_t)np * sizeof *out); memcpy(r->id, id, (size_t)np * sizeof *id); }
+    }
+    if (np < 0) return 0;
+    float wb[6];
+    double (*kc)[3] = NULL;
+    const int prep = s_store && s_rs_wb;
+    if (prep) {
+        kc = ms_store_kc_grow() ? &s_kc[3 * mb->t0] : NULL;
+        ms_store_prep(mb, wb, kc);
+    }
+    ms_result(mb, out, id, np, prep ? wb : NULL, (const double (*)[3])kc);
+    if (!np || !mb->add) return 0;
+    return ms_add(mb, out, np, cs);
+}
+
+/** @brief Run one chunk's contact pass serially, moby by moby, on the calling thread.
+ * @param J The chunk.
+ * @param nb Its moby count.
+ * @param cs The resolve's census.
+ * @param snapped Receives, per chunk moby, 1 when its planes went to the snap table. */
+static void ms_fo_serial(const ms_fo_job* J, int nb, ms_census* cs, uint8_t* snapped) {
+    for (int k = 0; k < nb; k++)
+        snapped[k] = ms_moby_contact(&s_ws[0], &s_q_mob[J->g + k], J->tt, J->cand + J->first[k],
+                                     J->first[k + 1] - J->first[k], J->view, cs) > 0;
+}
+
+/** @brief Run one chunk's contact pass on the walk workers, then commit every moby's planes in queue order.
+ * @param J The chunk; prep set when the resolve stores into the carry.
+ * @param nb Its moby count.
+ * @param cs The resolve's census.
+ * @param snapped Receives, per chunk moby, 1 when its planes went to the snap table.
+ * @return 1 when it ran, 0 when the corner slab could not grow (nothing changed; run serially). */
+static int ms_fo_parallel(const ms_fo_job* J, int nb, ms_census* cs, uint8_t* snapped) {
+    if (J->prep && !ms_store_kc_grow()) return 0;
+    for (int w = 0; w < MS_WORKERS; w++) { memset(&s_ws[w].cs, 0, sizeof s_ws[w].cs); s_ws[w].cs.timed = cs->timed; }
+    openpete_workpool_run(nb, ms_fo_item, (void*)J);
+    if (J->cbox) memset(&s_cb_ok[J->g], 1, (size_t)nb);
+    for (int w = 0; w < MS_WORKERS; w++) ms_census_merge(cs, &s_ws[w].cs);
+    for (int k = 0; k < nb; k++) {
+        const ms_moby* mb = &s_q_mob[J->g + k];
+        const ms_fo_res* r = &s_fo_res[k];
+        snapped[k] = 0;
+        if (r->np < 0) continue;
+        ms_result(mb, r->pl, r->id, r->np, J->prep ? s_fo_wb[k] : NULL,
+                  J->prep ? (const double (*)[3])&s_kc[3 * mb->t0] : NULL);
+        if (r->np && mb->add) snapped[k] = ms_add(mb, r->pl, r->np, cs) > 0;
+    }
+    return 1;
+}
+
+/* ---- the fan-out's identity check (OPENPETE_MOBY_SNAP_FANOUT_CHECK) --------- */
+
+/* The part of a carry table a chunk's commit appends to, and the slots it
+ * writes, as they stood before the commit. */
+typedef struct { int ne, npl, nwc, nfc; long dup, full; unsigned hg[MC_HSIZE]; int hi[MC_HSIZE]; } mc_tab_mark;
+
+/** @brief Record a carry table's counts and slots.
+ * @param t The table.
+ * @param m Receives them. */
+static void mc_tab_mark_take(const mc_tab* t, mc_tab_mark* m) {
+    m->ne = t->ne; m->npl = t->npl; m->nwc = t->nwc; m->nfc = t->nfc; m->dup = t->dup; m->full = t->full;
+    memcpy(m->hg, t->hg, sizeof m->hg); memcpy(m->hi, t->hi, sizeof m->hi);
+}
+
+/** @brief Return a carry table to its recorded counts and slots; what was appended past them is dropped by the counts.
+ * @param t The table.
+ * @param m The record. */
+static void mc_tab_mark_back(mc_tab* t, const mc_tab_mark* m) {
+    t->ne = m->ne; t->npl = m->npl; t->nwc = m->nwc; t->nfc = m->nfc; t->dup = m->dup; t->full = m->full;
+    memcpy(t->hg, m->hg, sizeof t->hg); memcpy(t->hi, m->hi, sizeof t->hi);
+}
+
+/* What one commit appended to the carry table: its entries, world planes,
+ * resolved planes, source faces, corners and corner face keys, copied out. */
+typedef struct {
+    mc_ent* e; int ne, cap_e;
+    mc_wplane* w; openpete_snap_plane* c; ms_pid* id; int npl, cap_p;
+    double (*wc)[3]; uint32_t* fk; int nwc, cap_wc;
+    long dup, full; unsigned hg[MC_HSIZE]; int hi[MC_HSIZE];
+} mc_tab_span;
+
+/** @brief Copy what a table holds past a mark into a span.
+ * @param t The table.
+ * @param m The mark.
+ * @param o Receives the appended entries, planes and corners and the table's counters and slots.
+ * @return 0 on an allocation failure, else 1. */
+static int mc_tab_span_take(const mc_tab* t, const mc_tab_mark* m, mc_tab_span* o) {
+    o->ne = t->ne - m->ne; o->npl = t->npl - m->npl; o->nwc = t->nwc - m->nwc;
+    if (!ms_grow((void**)&o->e, &o->cap_e, o->ne + 1, sizeof *o->e) ||
+        !ms_grow((void**)&o->w, &o->cap_p, o->npl + 1, sizeof *o->w) ||
+        !(o->c = (openpete_snap_plane*)realloc(o->c, (size_t)o->cap_p * sizeof *o->c)) ||
+        !(o->id = (ms_pid*)realloc(o->id, (size_t)o->cap_p * sizeof *o->id)) ||
+        !ms_grow((void**)&o->wc, &o->cap_wc, o->nwc + 1, sizeof *o->wc) ||
+        !(o->fk = (uint32_t*)realloc(o->fk, (size_t)o->cap_wc * sizeof *o->fk))) return 0;
+    memcpy(o->e, t->e + m->ne, (size_t)o->ne * sizeof *o->e);
+    memcpy(o->w, t->w + m->npl, (size_t)o->npl * sizeof *o->w);
+    memcpy(o->c, t->c + m->npl, (size_t)o->npl * sizeof *o->c);
+    memcpy(o->id, t->id + m->npl, (size_t)o->npl * sizeof *o->id);
+    memcpy(o->wc, t->wc + m->nwc, (size_t)o->nwc * sizeof *o->wc);
+    const int probe = moby_snap_probe_on() && t->fk;
+    for (int i = 0; i < o->nwc; i++) o->fk[i] = probe ? t->fk[m->nwc + i] : 0u;
+    o->dup = t->dup; o->full = t->full;
+    memcpy(o->hg, t->hg, sizeof o->hg); memcpy(o->hi, t->hi, sizeof o->hi);
+    return 1;
+}
+
+/** @brief Count the fields in which two spans differ: entry by entry (identity, plane run, world box, corner run, signature, probe fields), plane by plane (world, resolved, source face), corner by corner, and the counters and slots.
+ * @param a One span.
+ * @param b The other.
+ * @return The mismatch count. */
+static long mc_tab_span_diff(const mc_tab_span* a, const mc_tab_span* b) {
+    if (a->ne != b->ne || a->npl != b->npl || a->nwc != b->nwc) return 1 + labs((long)a->ne - b->ne);
+    long bad = a->dup != b->dup || a->full != b->full;
+    bad += memcmp(a->hg, b->hg, sizeof a->hg) != 0 || memcmp(a->hi, b->hi, sizeof a->hi) != 0;
+    for (int i = 0; i < a->ne; i++) {
+        const mc_ent* x = &a->e[i]; const mc_ent* y = &b->e[i];
+        bad += x->mid != y->mid || x->p0 != y->p0 || x->np != y->np || x->wb_ok != y->wb_ok ||
+               memcmp(x->wb, y->wb, sizeof x->wb) != 0 || x->wc0 != y->wc0 || x->nwc != y->nwc ||
+               x->sig_ok != y->sig_ok || (x->sig_ok && x->sig != y->sig) || x->path != y->path ||
+               memcmp(&x->off, &y->off, sizeof x->off) != 0 || memcmp(&x->kr, &y->kr, sizeof x->kr) != 0;
+    }
+    for (int i = 0; i < a->npl; i++)
+        bad += memcmp(&a->w[i], &b->w[i], sizeof a->w[i]) != 0 || memcmp(&a->c[i], &b->c[i], sizeof a->c[i]) != 0 ||
+               memcmp(&a->id[i], &b->id[i], sizeof a->id[i]) != 0;
+    for (int i = 0; i < a->nwc; i++)
+        bad += memcmp(a->wc[i], b->wc[i], sizeof a->wc[i]) != 0 || a->fk[i] != b->fk[i];
+    return bad;
+}
+
+/* Check totals: chunks compared and their mobys and planes, by leg (0 canonical,
+ * 1 sub-tick); mismatches per moby result, snap table, carry table field,
+ * snapped flag and census; chunks refused; serial and fanned-out
+ * nanoseconds per work band; the corner boxes the canonical chunks
+ * computed (s_cb) against a serial recompute. */
+#define FOC_BANDS 9
+static const long k_foc_band[FOC_BANDS] = { 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, LONG_MAX };
+static struct {
+    long chunks[2], mobys[2], planes[2], bad_res, bad_snap, bad_carry, bad_flag, bad_census, refused;
+    long n[2][FOC_BANDS]; double ser_ns[2][FOC_BANDS], par_ns[2][FOC_BANDS];
+    long boxes, bad_box;
+} s_foc;
+
+/** @brief Print the check's totals, with the mean serial and fanned-out microseconds per leg and work band.
+ * @param tag Why the line prints. */
+static void foc_print(const char* tag) {
+    fprintf(stderr, "[snap-fanout-check %s] canon: chunks=%ld mobys=%ld planes=%ld | rex: chunks=%ld mobys=%ld planes=%ld"
+                    " | mismatched_results=%ld mismatched_snap=%ld mismatched_carry=%ld mismatched_snapped=%ld"
+                    " mismatched_census=%ld refused=%ld |",
+            tag, s_foc.chunks[0], s_foc.mobys[0], s_foc.planes[0], s_foc.chunks[1], s_foc.mobys[1], s_foc.planes[1],
+            s_foc.bad_res, s_foc.bad_snap, s_foc.bad_carry, s_foc.bad_flag, s_foc.bad_census, s_foc.refused);
+    fprintf(stderr, " boxes=%ld mismatched_boxes=%ld |", s_foc.boxes, s_foc.bad_box);
+    for (int l = 0; l < 2; l++)
+        for (int b = 0; b < FOC_BANDS; b++)
+            if (s_foc.n[l][b])
+                fprintf(stderr, " %s<%ld: n=%ld ser=%.1f par=%.1f", l ? "rex" : "can", k_foc_band[b], s_foc.n[l][b],
+                        s_foc.ser_ns[l][b] / s_foc.n[l][b] / 1000.0, s_foc.par_ns[l][b] / s_foc.n[l][b] / 1000.0);
+    fputc('\n', stderr);
+}
+
+/** @brief atexit hook: print the check's final totals. */
+static void foc_atexit(void) { foc_print("final"); }
+
+
+/** @brief Count the result fields in which the serial pass's record of one chunk moby differs from the fan-out's.
+ * @param a The serial pass's.
+ * @param b The fan-out's.
+ * @return 0 when equal, else 1. */
+static int foc_res_diff(const ms_fo_res* a, const ms_fo_res* b) {
+    if (a->np != b->np) return 1;
+    return a->np > 0 && (memcmp(a->pl, b->pl, (size_t)a->np * sizeof a->pl[0]) != 0 ||
+                         memcmp(a->id, b->id, (size_t)a->np * sizeof a->id[0]) != 0);
+}
+
+/** @brief Run one chunk's contact pass serially and then fanned out on the same input, and compare.
+ *
+ * Between the two the snap table, the carry table the resolve stores into,
+ * the ordinal census and the census return to their marks. Compared: each
+ * moby's planes, source faces and count; the snap table's entries, planes
+ * and counters added (openpete_native_snap_digest); every field the commit
+ * appended to the carry table and its slots and counters; each moby's
+ * snapped flag; and the census counts. The fanned-out run's result is kept.
+ * @param J The chunk.
+ * @param nb Its moby count.
+ * @param cs The resolve's census.
+ * @param snapped Receives, per chunk moby, 1 when its planes went to the snap table. */
+static void ms_fo_check(const ms_fo_job* J, int nb, ms_census* cs, uint8_t* snapped) {
+    static int s_atexit;
+    if (!s_atexit) { s_atexit = 1; atexit(foc_atexit); }
+    static mc_tab_mark tm;
+    static mc_tab_span sp_ser, sp_par;
+    openpete_native_snap_mark_t sm;
+    openpete_native_snap_mark(&sm);
+    if (s_store) mc_tab_mark_take(s_store, &tm);
+    const int sn0 = s_sn_n;
+    const ms_census cs0 = *cs;
+    uint8_t fl_ser[128];
+    s_ck_rec = &s_q_mob[J->g];
+    const uint64_t t0 = ms_mono_ns();
+    ms_fo_serial(J, nb, cs, fl_ser);
+    const uint64_t t1 = ms_mono_ns();
+    s_ck_rec = NULL;
+    const uint64_t dg_ser = openpete_native_snap_digest(&sm);
+    const ms_census cs_ser = *cs;
+    const int carry_ok = !s_store || mc_tab_span_take(s_store, &tm, &sp_ser);
+    openpete_native_snap_rewind(&sm);
+    if (s_store) mc_tab_mark_back(s_store, &tm);
+    s_sn_n = sn0;
+    *cs = cs0;
+    const uint64_t t2 = ms_mono_ns();
+    if (!ms_fo_parallel(J, nb, cs, snapped)) { s_foc.refused++; ms_fo_serial(J, nb, cs, snapped); return; }
+    const uint64_t t3 = ms_mono_ns();
+    const int leg = s_rex ? 1 : 0;
+    long bres = 0, flag = 0, planes = 0;
+    for (int k = 0; k < nb; k++) {
+        bres += foc_res_diff(&s_ck_res[k], &s_fo_res[k]);
+        flag += fl_ser[k] != snapped[k];
+        planes += s_fo_res[k].np > 0 ? s_fo_res[k].np : 0;
+        if (!J->cbox) continue;
+        float b[6];
+        ms_moby_cbox(&s_q_mob[J->g + k], b);
+        s_foc.bad_box += memcmp(b, s_cb[J->g + k], sizeof b) != 0;
+        s_foc.boxes++;
+    }
+    const long bsnap = openpete_native_snap_digest(&sm) != dg_ser;
+    long bcarry = 0;
+    if (s_store) bcarry = carry_ok && mc_tab_span_take(s_store, &tm, &sp_par) ? mc_tab_span_diff(&sp_ser, &sp_par) : 1;
+    const long bcen = cs_ser.tests != cs->tests || cs_ser.contacts != cs->contacts ||
+                      cs_ser.contacts_t4 != cs->contacts_t4 || cs_ser.ovf != cs->ovf || cs_ser.planes != cs->planes;
+    if ((bres || bsnap || bcarry || flag || bcen) && s_foc.bad_res + s_foc.bad_snap + s_foc.bad_carry < 8)
+        fprintf(stderr, "[snap-fanout-check MISMATCH key=%u leg=%d] mobys=%d results=%ld snap=%ld carry=%ld snapped=%ld census=%ld\n",
+                openpete_feed_key_now(), leg, nb, bres, bsnap, bcarry, flag, bcen);
+    s_foc.bad_res += bres; s_foc.bad_snap += bsnap; s_foc.bad_carry += bcarry; s_foc.bad_flag += flag;
+    s_foc.bad_census += bcen;
+    s_foc.chunks[leg]++; s_foc.mobys[leg] += nb; s_foc.planes[leg] += planes;
+    const long work = ms_fo_work(J->g, nb, J->first);
+    int b = 0;
+    while (work >= k_foc_band[b]) b++;
+    s_foc.n[leg][b]++; s_foc.ser_ns[leg][b] += (double)(t1 - t0); s_foc.par_ns[leg][b] += (double)(t3 - t2);
+    if (((s_foc.chunks[0] + s_foc.chunks[1]) & 1023) == 0) foc_print("running");
+}
+
+/** @brief Run one chunk's contact pass: fanned out over the walk workers when the chunk is large enough, else moby by moby.
+ *
+ * OPENPETE_MOBY_SNAP_FANOUT=0 keeps every chunk serial; under
+ * OPENPETE_MOBY_SNAP_FANOUT_CHECK every fanned-out chunk is checked against
+ * the serial pass (ms_fo_check).
+ * @param J The chunk.
+ * @param nb Its moby count.
+ * @param cs The resolve's census.
+ * @param snapped Receives, per chunk moby, 1 when its planes went to the snap table. */
+static void ms_contact(const ms_fo_job* J, int nb, ms_census* cs, uint8_t* snapped) {
+    if (!ms_fo_workers(J->g, nb, J->first)) { ms_fo_serial(J, nb, cs, snapped); return; }
+    if (ms_fo_check_on()) { ms_fo_check(J, nb, cs, snapped); return; }
+    if (!ms_fo_parallel(J, nb, cs, snapped)) ms_fo_serial(J, nb, cs, snapped);
+}
+
 /** @brief Resolve one chunk of at most 128 queued mobys: capture the terrain their boxes reach, find each one's contact planes, add them to the table.
  * @param g The chunk's first queued moby.
  * @param nb Its moby count.
@@ -2552,9 +3059,9 @@ static int ms_resolve_chunk(int g, int nb, const float view[3], ms_census* cs) {
     int first[129];
     const int* cand = ms_cands(tt, ntt, nb, first);
     tp = rsp_mark(RSP_CANDS, tp);
-    for (int k = 0; k < nb; k++)
-        snapped[k] = ms_moby_contact(&s_q_mob[g + k], tt, cand + first[k],
-                                     first[k + 1] - first[k], view, cs) > 0;
+    const int prep = s_store && s_rs_wb;
+    const ms_fo_job J = { g, tt, cand, first, view, prep, prep && mc_refresh_on() && g + nb <= s_cb_n };
+    ms_contact(&J, nb, cs, snapped);
     tp = rsp_mark(RSP_CONTACT, tp);
     cs->overlaps += ms_overlaps(box, snapped, nb);
     for (int k = 0; k < nb; k++) if (snapped[k]) cs->zmin = ms_minf(cs->zmin, box[k].z0);

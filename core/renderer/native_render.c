@@ -709,6 +709,38 @@ void openpete_native_snap_census(int *ne, int *np, unsigned *ovf)
     if (np) *np = s_snap_live.np;
     if (ovf) *ovf = s_snap_live.ovf_ent + s_snap_live.ovf_plane;
 }
+
+void openpete_native_snap_mark(openpete_native_snap_mark_t *m)
+{
+    const nr_snap_table *t = &s_snap_live;
+    m->ne = t->ne; m->np = t->np; m->S = t->S;
+    m->ovf_ent = t->ovf_ent; m->ovf_plane = t->ovf_plane;
+    m->ver = t->ver; m->ver_next = s_snap_ver_next;
+}
+
+void openpete_native_snap_rewind(const openpete_native_snap_mark_t *m)
+{
+    nr_snap_table *t = &s_snap_live;
+    t->ne = m->ne; t->np = m->np; t->S = m->S;
+    t->ovf_ent = m->ovf_ent; t->ovf_plane = m->ovf_plane;
+    t->ver = m->ver; s_snap_ver_next = m->ver_next;
+}
+
+uint64_t openpete_native_snap_digest(const openpete_native_snap_mark_t *m)
+{
+    const nr_snap_table *t = &s_snap_live;
+    uint64_t h = 0xCBF29CE484222325ull;
+    const uint32_t head[6] = { (uint32_t)t->ne, (uint32_t)t->np, t->ovf_ent, t->ovf_plane, t->ver - m->ver,
+                               s_snap_ver_next - m->ver_next };
+    const unsigned char *parts[4] = { (const unsigned char *)head, (const unsigned char *)&t->S,
+                                      (const unsigned char *)&t->ent[m->ne], (const unsigned char *)&t->pl[m->np] };
+    const size_t len[4] = { sizeof head, sizeof t->S,
+                            t->ne > m->ne ? (size_t)(t->ne - m->ne) * sizeof t->ent[0] : 0u,
+                            t->np > m->np ? (size_t)(t->np - m->np) * sizeof t->pl[0] : 0u };
+    for (int p = 0; p < 4; p++)
+        for (size_t i = 0; i < len[p]; i++) { h ^= parts[p][i]; h *= 0x100000001B3ull; }
+    return h;
+}
 /* The blended-world emission order a game-render scene recorded
  * (bw_key_order_record): keys in first-emission order and the terrain feed's
  * rank among them. The compose sorts re-extracted blended blocks by it. */

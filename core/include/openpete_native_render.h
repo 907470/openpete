@@ -2120,6 +2120,24 @@ int openpete_native_snap_add(uint32_t mid, int mordinal, float off_m,
  * @param np Receives the plane count.
  * @param ovf Receives the entries plus planes refused at the caps. */
 void openpete_native_snap_census(int *ne, int *np, unsigned *ovf);
+/* The current scene's snap table counts and version at one instant
+ * (openpete_native_snap_mark), for an instrument that adds, compares and
+ * takes back a run of entries. */
+typedef struct {
+    int ne, np;
+    float S;
+    uint32_t ovf_ent, ovf_plane, ver, ver_next;
+} openpete_native_snap_mark_t;
+/** @brief Record the current scene's snap table counts, largest slab, refusal counts and version.
+ * @param m Receives them. */
+void openpete_native_snap_mark(openpete_native_snap_mark_t *m);
+/** @brief Return the current scene's snap table to a mark: the entries and planes added since are dropped and the counters and version restored.
+ * @param m The mark. */
+void openpete_native_snap_rewind(const openpete_native_snap_mark_t *m);
+/** @brief A digest (FNV-1a 64) of what the current scene's snap table added since a mark: its counts, refusal counts, version steps, largest slab, and every field of the entries and planes past the mark.
+ * @param m The mark.
+ * @return The digest. */
+uint64_t openpete_native_snap_digest(const openpete_native_snap_mark_t *m);
 
 /** @brief Set the sticky portal inner-rim mark stamped on the triangles added after it.
  *

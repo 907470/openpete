@@ -1283,6 +1283,17 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             TIMEOUT 900
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        # The snap contact pass's fan-out against the serial pass on a walking
+        # bk2, every chunk of both legs: each moby's planes, the snap and carry
+        # tables, the snapped flags, the census and the corner boxes.
+        add_test(NAME moby_snap_fanout_${_pc_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_pose_cache.sh
+                         --game ${_pc_game} --build-dir=${CMAKE_BINARY_DIR} --instrument=snap-fanout)
+        set_tests_properties(moby_snap_fanout_${_pc_game} PROPERTIES
+            LABELS "presentation;moby"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
     # Moby occlusion census. Per row of
