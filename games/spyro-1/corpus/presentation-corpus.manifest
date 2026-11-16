@@ -215,3 +215,5 @@ artisans-letterbox|1697|2||1699,1705|--skip-to-level artisans --player-pose pos=
 # @subtickdome: sub-tick presents of a derived portal dome (extended-LOD forced
 # dome, 16:9 strip reveal), which held tick N's camera rotation.
 portal-cyclorama-cull@subtickdome        | 1640  | 100  |        | 1648,1660,1664 |
+# @handover: a 16:9 left-strip portal on the tick the game's portal leaf first takes it (feed key 1913): at alpha 1/16 the leaf replay's 4:3 game rect is empty and the portal draws nothing.
+portal-handover|1700|100||1913|--skip-to-level artisans --freecam-path ticks=120;88288,57471,8925,1818,22;88288,57471,8925,1218,22 OPENPETE_INTERMEDIATE_ALPHA=0.0625
