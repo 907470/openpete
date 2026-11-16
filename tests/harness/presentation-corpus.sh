@@ -252,8 +252,10 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   local bk2_arg=(); [[ -f "$PG_BK2_DIR/${bk2name}.bk2" ]] && bk2_arg=(--bk2 "$PG_BK2_DIR/${bk2name}.bk2")
   # The identity leg is the intermediate re-extract phased onto the newest tick's
   # stamp (alpha 1), which must reproduce the canonical dump of the same frame.
-  local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
-  mapfile -t -O "${#leg_env[@]}" leg_env < <(pg_leg_env "$legdir")
+  # A row whose launch env names another phase for its intermediate leg keeps
+  # alpha 1 on the identity leg: the leg's assignment goes after the row's.
+  local -a leg_env=() ident_env=(); [[ "$leg" == ident ]] && ident_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
+  mapfile -t leg_env < <(pg_leg_env "$legdir")
   # Always capture at 16:9 so the golden catches widescreen (Hor+) artifacts -
   # the revealed side world and the reveal-edge seams a 4:3 dump can't see. The
   # headless native-only capture honors --aspect (openpete_native_widescreen_factor
@@ -269,7 +271,7 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   for t in "${TS[@]}"; do pngs+=("${name}__${tag}${leg}__${t}-vk.png"); done
   pg_census_clear "$OUTDIR" "${pngs[@]}"
   local t_start="${EPOCHREALTIME:-$(date +%s.%N)}"
-  local -a cmd=(env "${leg_env[@]}" "${run_env[@]}" timeout -k 10 "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
+  local -a cmd=(env "${leg_env[@]}" "${run_env[@]}" "${ident_env[@]}" timeout -k 10 "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${run_args[@]}"
     "${mod_args[@]}" "${bk2_arg[@]}" --screenshot-native-only
     "$flag" "$targets" --screenshot-output "$out"
