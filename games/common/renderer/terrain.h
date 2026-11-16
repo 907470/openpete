@@ -224,6 +224,29 @@ int  terrain_snap_camera(double L[3][3], double P[3]);
  * @return The triangle count, or -1 when terrain_snap_ready does not hold. */
 int  terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_tri** out,
                           terrain_snap_census* cen);
+/* A face a listed capture keeps: its level sector index, walk pass (0, 1, 3
+ * or 4) and face index. */
+typedef struct { int16_t sec; uint8_t pass; uint16_t face; } terrain_snap_fkey;
+/** @brief terrain_snap_capture with the walk of cache-owned sectors limited to the boxes that need it.
+ *
+ * A cache-owned sector that a box of @p walk reaches is walked as
+ * terrain_snap_capture walks it. One that only other boxes reach is walked
+ * with its faces limited to the listed faces of that sector, each still
+ * under the corner mask, and is not walked when none is listed. A box
+ * outside @p walk therefore receives, from cache-owned sectors that no box
+ * of @p walk reaches, only triangles of listed faces; the triangles of
+ * sectors the last build walked reach every box as in terrain_snap_capture.
+ * @param b The boxes.
+ * @param nb Box count, at most 128.
+ * @param walk The boxes that take the full walk, as bits (bit k of walk[k >> 6]).
+ * @param fk The listed faces, in any order and with repeats.
+ * @param nfk Their count.
+ * @param out Receives the triangles, valid until the next call.
+ * @param cen Receives the cost counters; may be NULL.
+ * @return The triangle count, or -1 when terrain_snap_ready does not hold. */
+int  terrain_snap_capture_listed(const terrain_snap_box* b, int nb, const uint64_t walk[2],
+                                 const terrain_snap_fkey* fk, int nfk, const terrain_snap_tri** out,
+                                 terrain_snap_census* cen);
 
 /* A walk verdict of one terrain face: dropped (a gate or the back-face cull
  * removed it, or its pass or sector did not run), drawn flat, or drawn on

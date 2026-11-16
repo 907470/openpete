@@ -1263,6 +1263,11 @@ typedef struct {
     /* Non-NULL on the snap capture's private run: the face walk skips every
      * face whose corners meet no search box (tn_snap_face_hit). */
     const tn_snapgrid* snapmask;
+    /* Non-NULL on a listed capture's walk of a sector no full-walk box
+     * reaches: the faces of the sector kept besides the mask (snapfk_n of
+     * them, sorted by pass and face; tn_snap_face_keep). */
+    const terrain_snap_fkey* snapfk;
+    int snapfk_n;
     /* Per-face bounds of this run (tn_facerec), the index the snap capture
      * scans instead of the triangles; face_t0 = the open face's first
      * triangle; face_F and face_sv = the open face and its sector's
@@ -16605,6 +16610,34 @@ static int tn_snap_face_hit(const tn_snapgrid* g, const lvert* sv, const tsface_
     return tn_snapgrid_hit(g, x0 - 1.0f, y0 - 1.0f, x1 + 1.0f, y1 + 1.0f, z0, z1, NULL);
 }
 
+/** @brief Whether a face of a walk pass is among a listed walk's faces (W->snapfk, sorted by pass and face).
+ * @param W The walk context.
+ * @param pass The walk pass.
+ * @param f The face index.
+ * @return 1 when listed, else 0. */
+static int tn_snap_fk_listed(const tn_wctx* W, int pass, int f) {
+    int lo = 0, hi = W->snapfk_n;
+    const uint32_t key = ((uint32_t)pass << 16) | (uint32_t)f;
+    while (lo < hi) {
+        const int m = (lo + hi) >> 1;
+        const uint32_t k = ((uint32_t)W->snapfk[m].pass << 16) | W->snapfk[m].face;
+        if (k < key) lo = m + 1; else hi = m;
+    }
+    return lo < W->snapfk_n && W->snapfk[lo].pass == pass && W->snapfk[lo].face == f;
+}
+
+/** @brief Whether the snap capture's walk keeps a face: listed, on a listed walk, and its corners meeting a search box (tn_snap_face_hit).
+ * @param W The walk context; its snapmask is set.
+ * @param sv The sector's projected vertices.
+ * @param F The face.
+ * @param pass The walk pass.
+ * @param f The face index.
+ * @return 1 when kept, else 0. */
+static int tn_snap_face_keep(const tn_wctx* W, const lvert* sv, const tsface_t* F, int pass, int f) {
+    if (W->snapfk && !tn_snap_fk_listed(W, pass, f)) return 0;
+    return tn_snap_face_hit(W->snapmask, sv, F);
+}
+
 /** @brief Print the sector-bin verdict against the game's own HP list under OPENPETE_TERRAIN_BINCHECK=<frame>.
  *
  * The HP list is decoded from the render arena after this tick's
@@ -17359,7 +17392,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             W->dbg_faces++;
             W->emit_sec = (int)i; W->emit_face = f;   /* fardbg attribution identity */
             W->emit_dside = F->dside;
-            if (W->snapmask && !tn_snap_face_hit(W->snapmask, sv, F)) continue;
+            if (W->snapmask && !tn_snap_face_keep(W, sv, F, pass, f)) continue;
             /* Inspector tint class: a listed FILL tag vs a face preview forced
              * through (the untagged candidates). HP faces carry neither. */
             W->emit_fptag = (passLP && F->gapfill) ? (F->fillcand ? 2 : 1) : 0;
@@ -18089,8 +18122,11 @@ static int tn_snap_owned(int vi) {
 /** @brief Walk one cache-owned sector's masked faces into the capture's private run and take its triangles.
  * @param vi The sector's index in the visible list.
  * @param set The boxes the sector may reach, as bits.
+ * @param fk The sector's listed faces, sorted by pass and face, or NULL to walk every masked face.
+ * @param nfk Their count.
  * @param cen The capture's cost counters. */
-static void tn_snap_walk_owned(int vi, const uint64_t set[2], terrain_snap_census* cen) {
+static void tn_snap_walk_owned(int vi, const uint64_t set[2], const terrain_snap_fkey* fk, int nfk,
+                               terrain_snap_census* cen) {
     tn_wctx* W = &s_snap_W;
     if (!s_snap_wv.elem_size)
         mod_fvec_init(&s_snap_wv, sizeof(ttri), 1024, "terrain.snap.walk", 1024);
@@ -18099,6 +18135,7 @@ static void tn_snap_walk_owned(int vi, const uint64_t set[2], terrain_snap_censu
     W->tri_n = 0;
     W->serial = 0;
     W->snapmask = &s_snap_grid;
+    W->snapfk = fk; W->snapfk_n = nfk;
     W->faces = tn_face_vec(TN_MAX_WORKERS);
     W->tj_split = 0;
     tn_wcfg G = s_snap_G;
@@ -18159,6 +18196,55 @@ static int tn_snap_owned_clear(int vi) {
                             r[4] - 1.0f, r[5] + 1.0f, NULL);
 }
 
+/* ---- the listed capture (terrain_snap_capture_listed) ----------------------
+ * The boxes that take the full walk (s_snap_lwalk) and the listed faces
+ * sorted by sector, pass and face (s_snap_lfk, s_snap_nlfk); without a
+ * listing every box takes the full walk. Counters: owned sectors walked
+ * whole, walked over listed faces only, and left unwalked for want of a
+ * full-walk box or a listed face. */
+static int s_snap_listing;
+static uint64_t s_snap_lwalk[2];
+static terrain_snap_fkey* s_snap_lfk; static int s_snap_nlfk, s_snap_lfkcap;
+static long s_snap_lcen[3];
+
+/** @brief Order two listed faces by sector, pass and face (qsort).
+ * @param a The first.
+ * @param b The second.
+ * @return Negative, zero or positive as a sorts before, with or after b. */
+static int tn_fkey_cmp(const void* a, const void* b) {
+    const terrain_snap_fkey* x = (const terrain_snap_fkey*)a;
+    const terrain_snap_fkey* y = (const terrain_snap_fkey*)b;
+    const int64_t kx = ((int64_t)x->sec << 24) | ((int64_t)x->pass << 16) | x->face;
+    const int64_t ky = ((int64_t)y->sec << 24) | ((int64_t)y->pass << 16) | y->face;
+    return kx < ky ? -1 : kx > ky;
+}
+
+/** @brief The listed faces of one level sector: the run of s_snap_lfk holding it.
+ * @param sec The level sector index.
+ * @param n Receives the run's length.
+ * @return Its first entry (NULL when n is 0). */
+static const terrain_snap_fkey* tn_snap_lfk_of(int sec, int* n) {
+    int lo = 0, hi = s_snap_nlfk;
+    while (lo < hi) { const int m = (lo + hi) >> 1; if (s_snap_lfk[m].sec < sec) lo = m + 1; else hi = m; }
+    int e = lo;
+    while (e < s_snap_nlfk && s_snap_lfk[e].sec == sec) e++;
+    *n = e - lo;
+    return e > lo ? &s_snap_lfk[lo] : NULL;
+}
+
+/** @brief How the capture takes a reached cache-owned sector under the listing: whole, over its listed faces, or not at all.
+ * @param vi The sector's index in the visible list.
+ * @param set The boxes it may reach, as bits.
+ * @param fk Receives its listed faces for a listed walk, else NULL.
+ * @param nfk Receives their count.
+ * @return 0 to leave it unwalked, 1 to walk it. */
+static int tn_snap_listed_walk(int vi, const uint64_t set[2], const terrain_snap_fkey** fk, int* nfk) {
+    *fk = NULL; *nfk = 0;
+    if (!s_snap_listing || (set[0] & s_snap_lwalk[0]) | (set[1] & s_snap_lwalk[1])) return 1;
+    *fk = tn_snap_lfk_of((int)s_snap_G.visidx[vi], nfk);
+    return *fk != NULL;
+}
+
 /** @brief Take the triangles of every cache-owned sector the capture's boxes reach, walking each one its box test does not clear.
  * @param nv The visible sectors of the build.
  * @param box 1 to apply the box test.
@@ -18166,14 +18252,18 @@ static int tn_snap_owned_clear(int vi) {
 static void tn_snap_take_owned(int nv, int box, terrain_snap_census* cen) {
     for (int vi = 0; vi < nv; vi++) {
         uint64_t set[2];
+        const terrain_snap_fkey* fk;
+        int nfk;
         if (s_vrun_n[vi] || !tn_snap_owned(vi) || !tn_snap_range_ok(vi)) continue;
         tn_snap_sector_hit(vi, set);
         if (!(set[0] | set[1])) continue;
+        if (!tn_snap_listed_walk(vi, set, &fk, &nfk)) { s_snap_lcen[2]++; continue; }
         if (box) {
             s_sob_tested++;
             if (tn_snap_owned_clear(vi)) { s_sob_skipped++; continue; }
         }
-        tn_snap_walk_owned(vi, set, cen);
+        s_snap_lcen[fk ? 1 : 0] += s_snap_listing;
+        tn_snap_walk_owned(vi, set, fk, nfk, cen);
     }
 }
 
@@ -18245,6 +18335,36 @@ int terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_t
     *out = (const terrain_snap_tri*)s_snap_out.data;
     if (cen) *cen = c;
     return (int)s_snap_out.count;
+}
+
+/** @brief Print the listed capture's sector counts at exit, when OPENPETE_SNAP_LISTED_CHECK asked for them. */
+static void tn_snap_lcen_print(void) {
+    fprintf(stderr, "[snap-listed-sectors] whole=%ld listed=%ld unwalked=%ld\n",
+            s_snap_lcen[0], s_snap_lcen[1], s_snap_lcen[2]);
+}
+
+int terrain_snap_capture_listed(const terrain_snap_box* b, int nb, const uint64_t walk[2],
+                                const terrain_snap_fkey* fk, int nfk, const terrain_snap_tri** out,
+                                terrain_snap_census* cen) {
+    static int s_print = -1;
+    if (s_print < 0) {
+        const char* e = getenv("OPENPETE_SNAP_LISTED_CHECK");
+        s_print = e && *e == '1';
+        if (s_print) atexit(tn_snap_lcen_print);
+    }
+    if (nfk > s_snap_lfkcap) {
+        terrain_snap_fkey* q = (terrain_snap_fkey*)realloc(s_snap_lfk, (size_t)nfk * sizeof *q);
+        if (!q) return terrain_snap_capture(b, nb, out, cen);
+        s_snap_lfk = q; s_snap_lfkcap = nfk;
+    }
+    if (nfk > 0) memcpy(s_snap_lfk, fk, (size_t)nfk * sizeof *fk);
+    qsort(s_snap_lfk, (size_t)nfk, sizeof *s_snap_lfk, tn_fkey_cmp);
+    s_snap_nlfk = nfk;
+    s_snap_lwalk[0] = walk[0]; s_snap_lwalk[1] = walk[1];
+    s_snap_listing = 1;
+    const int n = terrain_snap_capture(b, nb, out, cen);
+    s_snap_listing = 0;
+    return n;
 }
 
 /* ---- face verdicts for the snap carry (terrain_snap_sectors, _faces,

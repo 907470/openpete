@@ -900,6 +900,8 @@ static int ms_add(const ms_moby* mb, const openpete_snap_plane* out, int np, ms_
 typedef struct { openpete_snap_plane pl[MS_MAX_PLANES]; ms_pid id[MS_MAX_PLANES]; int np; } ms_fo_res;
 static ms_fo_res s_fo_res[128];
 static ms_fo_res s_ck_res[128];
+static int s_lc_serial;              /* the listed capture's check runs the contact pass serially */
+static uint8_t s_lc_snapped[128];    /* and keeps its snapped flags here */
 static const ms_moby* s_ck_rec;   /* the chunk's first moby while the check's serial pass records, else NULL */
 
 /** @brief The search box of one queued moby: its screen rectangle widened by one pixel and its key depth range.
@@ -1149,9 +1151,9 @@ static void ms_store_prep(const ms_moby* mb, float wb[6], double (*kc)[3]) {
         for (int c = 0; c < 3; c++) ms_moby_kcorner(mb, q, c, kc[3 * q + c]);
 }
 
-/** @brief A world box containing a queued moby's triangle corners at raster depth: the world box of the eight corners of their camera-space box, under the resolve's camera.
+/** @brief A world box containing a queued moby's triangle corners at their stored view-Z less a depth offset: the world box of the eight corners of their camera-space box, under the resolve's camera.
  *
- * It contains every corner (ms_moby_wcorner), and costs one camera-space
+ * It contains every such corner (ms_moby_corner_at), and costs one camera-space
  * bound per corner where the exact world box costs one world transform per
  * corner. The x and y bounds are taken over (v - of) * z and scaled by 1/H
  * once: multiplying by a positive constant rounds monotonically, so the
@@ -1159,8 +1161,9 @@ static void ms_store_prep(const ms_moby* mb, float wb[6], double (*kc)[3]) {
  * accumulators split the dependency chain; minimum and maximum are
  * order-independent.
  * @param mb The moby.
+ * @param off The depth subtracted from each corner's stored view-Z.
  * @param wb Receives x0, y0, z0, x1, y1, z1; inverted (x0 > x1) for a moby without triangles. */
-static void ms_moby_cbox(const ms_moby* mb, float wb[6]) {
+static void ms_moby_box_at(const ms_moby* mb, double off, float wb[6]) {
     const double iH = 1.0 / s_rs_view[0], ofx = s_rs_view[1], ofy = s_rs_view[2];
     double lo[2][3] = { { 1e300, 1e300, 1e300 }, { 1e300, 1e300, 1e300 } };
     double hi[2][3] = { { -1e300, -1e300, -1e300 }, { -1e300, -1e300, -1e300 } };
@@ -1169,7 +1172,7 @@ static void ms_moby_cbox(const ms_moby* mb, float wb[6]) {
     const float (*v)[3] = (const float (*)[3])s_q_tri[mb->t0];
     for (int j = 0, n = mb->nt * 3; j < n; j++) {
         const int s = j & 1;
-        const double z = (double)v[j][2] - mb->off;
+        const double z = (double)v[j][2] - off;
         const double c[3] = { ((double)v[j][0] - ofx) * z, ((double)v[j][1] - ofy) * z, z };
         for (int i = 0; i < 3; i++) { lo[s][i] = ms_min(lo[s][i], c[i]); hi[s][i] = ms_max(hi[s][i], c[i]); }
     }
@@ -1187,6 +1190,11 @@ static void ms_moby_cbox(const ms_moby* mb, float wb[6]) {
         }
     }
 }
+
+/** @brief A world box containing a queued moby's triangle corners at raster depth (ms_moby_wcorner), under the resolve's camera (ms_moby_box_at).
+ * @param mb The moby.
+ * @param wb Receives x0, y0, z0, x1, y1, z1; inverted (x0 > x1) for a moby without triangles. */
+static void ms_moby_cbox(const ms_moby* mb, float wb[6]) { ms_moby_box_at(mb, (double)mb->off, wb); }
 
 /* Per queue index, for the resolve under way: the world box of the moby's
  * corners' camera-space box (ms_moby_cbox) where a fan-out already computed
@@ -3032,6 +3040,157 @@ static void ms_contact(const ms_fo_job* J, int nb, ms_census* cs, uint8_t* snapp
     if (!ms_fo_parallel(J, nb, cs, snapped)) ms_fo_serial(J, nb, cs, snapped);
 }
 
+static int ms_chunk_run(int g, int nb, const terrain_snap_box* box, const float view[3], ms_census* cs,
+                        int listed, uint64_t tp);
+
+/* ---- the listed capture --------------------------------------------------------
+ * ms_moby_planes tests contacts between a moby's triangles at their stored
+ * view-Z and the captured terrain triangles. A terrain triangle that meets a
+ * moby triangle has a point in the box of the moby's corners at stored view-Z
+ * (ms_moby_box_at with no offset), and lies in its face, so its face's corner
+ * box (terrain_snap_faces: every face of every visible sector meeting a box,
+ * drawn or not, at the vertex phase the build draws, with the build's own
+ * walk verdict) meets that box widened by MC_CAND, which covers the rounding
+ * of the screen corners the triangle is rebuilt from. Only a face the build
+ * draws (verdict not TERRAIN_FACE_DROPPED) emits triangles. So the capture
+ * walks a cache-owned sector over those faces only (terrain_snap_capture_listed),
+ * and every moby's planes, their order and its snap table rows are those of
+ * the full walk: each triangle left out meets none of its triangles, and the
+ * kept ones keep their capture order. The captured triangles, the triangle
+ * tests and the sectors walked fall. OPENPETE_SNAP_LISTED=0 walks as before;
+ * OPENPETE_SNAP_LISTED_CHECK=1 runs both on every chunk and compares
+ * (ms_lc_check). */
+static long s_lc_cen[3];   /* chunks listed, mobys listed, faces listed */
+
+/** @brief Whether the listed capture is on (OPENPETE_SNAP_LISTED not 0), read once.
+ * @return 1 when on, else 0. */
+static int ms_lc_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SNAP_LISTED"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/** @brief Capture one chunk's terrain with the walk of cache-owned sectors limited to the drawn faces whose corner box meets a moby's stored view-Z box widened by MC_CAND.
+ *
+ * A moby without triangles keeps the full walk; on a failed face query or
+ * allocation the whole chunk does.
+ * @param g The chunk's first queued moby.
+ * @param nb Its moby count.
+ * @param box Its search boxes.
+ * @param tt Receives the triangles.
+ * @param tc Receives the capture's cost counters.
+ * @return The triangle count, or -1 when the terrain is not ready. */
+static int ms_lc_capture(int g, int nb, const terrain_snap_box* box, const terrain_snap_tri** tt,
+                         terrain_snap_census* tc) {
+    static terrain_snap_fkey* fk; static int fkcap;
+    float kb[128][6];
+    uint64_t walk[2] = { 0, 0 };
+    for (int k = 0; k < nb; k++) {
+        ms_moby_box_at(&s_q_mob[g + k], 0.0, kb[k]);
+        if (!s_q_mob[g + k].nt) walk[k >> 6] |= 1ull << (k & 63);
+        for (int a = 0; a < 3; a++) { kb[k][a] -= MC_CAND; kb[k][a + 3] += MC_CAND; }
+    }
+    const terrain_snap_face* ff = NULL;
+    const int mf = terrain_snap_faces((const float (*)[6])kb, nb, &ff);
+    if (mf < 0 || !ms_grow((void**)&fk, &fkcap, mf + 1, sizeof *fk)) return terrain_snap_capture(box, nb, tt, tc);
+    int n = 0;
+    for (int j = 0; j < mf; j++) {
+        if (ff[j].verd == TERRAIN_FACE_DROPPED) continue;
+        fk[n].sec = ff[j].sec; fk[n].pass = ff[j].pass; fk[n].face = ff[j].face;
+        n++;
+    }
+    s_lc_cen[0]++; s_lc_cen[1] += nb; s_lc_cen[2] += n;
+    return terrain_snap_capture_listed(box, nb, walk, fk, n, tt, tc);
+}
+
+/* ---- the listed capture's identity check (OPENPETE_SNAP_LISTED_CHECK) ------- */
+static struct { long chunks[2], mobys, planes, bad_res, bad_snap, bad_flag, bad_census, tris[2], walks[2]; } s_lcc;
+
+/** @brief Whether OPENPETE_SNAP_LISTED_CHECK is set nonzero, read once.
+ * @return 1 when on. */
+static int ms_lc_check_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SNAP_LISTED_CHECK"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/** @brief Print the check's totals. */
+static void ms_lc_check_print(void) {
+    fprintf(stderr, "[snap-listed-check] chunks_canon=%ld chunks_rex=%ld mobys=%ld planes=%ld mismatched_results=%ld "
+                    "mismatched_snap=%ld mismatched_snapped=%ld mismatched_census=%ld tris_full=%ld tris_listed=%ld "
+                    "walks_full=%ld walks_listed=%ld faces_listed=%ld\n",
+            s_lcc.chunks[0], s_lcc.chunks[1], s_lcc.mobys, s_lcc.planes, s_lcc.bad_res, s_lcc.bad_snap, s_lcc.bad_flag,
+            s_lcc.bad_census, s_lcc.tris[0], s_lcc.tris[1], s_lcc.walks[0], s_lcc.walks[1], s_lc_cen[2]);
+}
+
+/** @brief Run one chunk both ways, the full walk first and then the listed capture, and compare.
+ *
+ * The full walk's pass runs serially with its results recorded (s_ck_rec);
+ * the snap table, the carry table the resolve stores into, the ordinal
+ * census and the census return to their marks before the listed pass runs,
+ * serially as well. Compared, moby by moby: plane count, planes (normal,
+ * offset, side, slab, double-sided flag) in order and their source faces;
+ * the snap table rows added (openpete_native_snap_digest); every field the
+ * store appended to the carry table; the snapped flags; and the census's
+ * contacts, contacts on split faces, planes and overflow. The captured
+ * triangles, the faces and sectors walked and the triangle tests differ by
+ * design and are counted. The listed run's result is kept.
+ * @param g The chunk's first queued moby.
+ * @param nb Its moby count.
+ * @param box Its search boxes.
+ * @param view H, ofx, ofy.
+ * @param cs The census, updated.
+ * @return 0 when a capture failed, else 1. */
+static int ms_lc_check(int g, int nb, const terrain_snap_box* box, const float view[3], ms_census* cs) {
+    static int s_atexit;
+    static ms_fo_res ref[128];
+    static mc_tab_mark tm;
+    static mc_tab_span sp_full, sp_list;
+    if (!s_atexit) { s_atexit = 1; atexit(ms_lc_check_print); }
+    openpete_native_snap_mark_t sm;
+    openpete_native_snap_mark(&sm);
+    if (s_store) mc_tab_mark_take(s_store, &tm);
+    const int sn0 = s_sn_n;
+    const ms_census cs0 = *cs;
+    s_ck_rec = &s_q_mob[g];
+    s_lc_serial = 1;
+    const int ok_full = ms_chunk_run(g, nb, box, view, cs, 0, 0);
+    memcpy(ref, s_ck_res, (size_t)nb * sizeof ref[0]);
+    uint8_t fl_full[128];
+    memcpy(fl_full, s_lc_snapped, (size_t)nb);
+    const uint64_t dg_full = openpete_native_snap_digest(&sm);
+    const ms_census cs_full = *cs;
+    const int carry_ok = !s_store || mc_tab_span_take(s_store, &tm, &sp_full);
+    openpete_native_snap_rewind(&sm);
+    if (s_store) mc_tab_mark_back(s_store, &tm);
+    s_sn_n = sn0;
+    *cs = cs0;
+    const int ok = ms_chunk_run(g, nb, box, view, cs, 1, 0);
+    s_ck_rec = NULL;
+    s_lc_serial = 0;
+    if (!ok_full || !ok) return ok;
+    long bres = 0, flag = 0, planes = 0;
+    for (int k = 0; k < nb; k++) {
+        bres += foc_res_diff(&ref[k], &s_ck_res[k]);
+        flag += fl_full[k] != s_lc_snapped[k];
+        planes += s_ck_res[k].np > 0 ? s_ck_res[k].np : 0;
+    }
+    long bcarry = 0;
+    if (s_store) bcarry = carry_ok && mc_tab_span_take(s_store, &tm, &sp_list) ? mc_tab_span_diff(&sp_full, &sp_list) : 1;
+    const long bsnap = (openpete_native_snap_digest(&sm) != dg_full) + bcarry;
+    const long bcen = cs_full.contacts - cs0.contacts != cs->contacts - cs0.contacts ||
+                      cs_full.contacts_t4 - cs0.contacts_t4 != cs->contacts_t4 - cs0.contacts_t4 ||
+                      cs_full.ovf - cs0.ovf != cs->ovf - cs0.ovf || cs_full.planes - cs0.planes != cs->planes - cs0.planes;
+    if ((bres || bsnap || flag || bcen) && s_lcc.bad_res + s_lcc.bad_snap + s_lcc.bad_flag + s_lcc.bad_census < 8)
+        fprintf(stderr, "[snap-listed-check MISMATCH key=%u leg=%d] mobys=%d results=%ld snap=%ld snapped=%ld census=%ld\n",
+                openpete_feed_key_now(), s_rex, nb, bres, bsnap, flag, bcen);
+    s_lcc.chunks[s_rex ? 1 : 0]++; s_lcc.mobys += nb; s_lcc.planes += planes;
+    s_lcc.bad_res += bres; s_lcc.bad_snap += bsnap; s_lcc.bad_flag += flag; s_lcc.bad_census += bcen;
+    s_lcc.tris[0] += cs_full.tris - cs0.tris; s_lcc.tris[1] += cs->tris - cs0.tris;
+    s_lcc.walks[0] += cs_full.sectors - cs0.sectors; s_lcc.walks[1] += cs->sectors - cs0.sectors;
+    return 1;
+}
+
 /** @brief Resolve one chunk of at most 128 queued mobys: capture the terrain their boxes reach, find each one's contact planes, add them to the table.
  * @param g The chunk's first queued moby.
  * @param nb Its moby count.
@@ -3043,10 +3202,26 @@ static int ms_resolve_chunk(int g, int nb, const float view[3], ms_census* cs) {
     uint64_t tp = rsp_now();
     for (int k = 0; k < nb; k++) ms_box(&s_q_mob[g + k], &box[k]);
     tp = rsp_mark(RSP_BOX, tp);
+    const int listed = ms_lc_on() && s_rs_wb;
+    if (listed && ms_lc_check_on()) return ms_lc_check(g, nb, box, view, cs);
+    return ms_chunk_run(g, nb, box, view, cs, listed, tp);
+}
+
+/** @brief Capture the terrain of one chunk's boxes, by the listed capture (ms_lc_capture) or the full walk, find each moby's contact planes and add them to the table.
+ * @param g The chunk's first queued moby.
+ * @param nb Its moby count.
+ * @param box Its search boxes.
+ * @param view H, ofx, ofy.
+ * @param cs The census, updated (its clocks run when cs->timed).
+ * @param listed 1 to take the listed capture.
+ * @param tp The resolve part clock (rsp_now), 0 when off.
+ * @return 0 when the capture failed (the rest of the queue is dropped), else 1. */
+static int ms_chunk_run(int g, int nb, const terrain_snap_box* box, const float view[3], ms_census* cs,
+                        int listed, uint64_t tp) {
     const terrain_snap_tri* tt = NULL;
     terrain_snap_census tc;
     const uint64_t c0 = cs->timed ? ms_cpu_ns() : 0;
-    const int ntt = terrain_snap_capture(box, nb, &tt, &tc);
+    const int ntt = listed ? ms_lc_capture(g, nb, box, &tt, &tc) : terrain_snap_capture(box, nb, &tt, &tc);
     if (cs->timed) cs->cap_ns += ms_cpu_ns() - c0;
     tp = rsp_mark(RSP_CAPTURE, tp);
     if (ntt < 0) return 0;
@@ -3061,7 +3236,8 @@ static int ms_resolve_chunk(int g, int nb, const float view[3], ms_census* cs) {
     tp = rsp_mark(RSP_CANDS, tp);
     const int prep = s_store && s_rs_wb;
     const ms_fo_job J = { g, tt, cand, first, view, prep, prep && mc_refresh_on() && g + nb <= s_cb_n };
-    ms_contact(&J, nb, cs, snapped);
+    if (s_lc_serial) { ms_fo_serial(&J, nb, cs, snapped); memcpy(s_lc_snapped, snapped, (size_t)nb); }
+    else ms_contact(&J, nb, cs, snapped);
     tp = rsp_mark(RSP_CONTACT, tp);
     cs->overlaps += ms_overlaps(box, snapped, nb);
     for (int k = 0; k < nb; k++) if (snapped[k]) cs->zmin = ms_minf(cs->zmin, box[k].z0);
