@@ -2265,13 +2265,19 @@ static void moby_depthdbg(uint32_t header, uint32_t w0, const int TR_raw[3], con
  * reads, 2 decodes every vertex and compares it with the filed copy, counting
  * mismatches (the identity check; the totals print at exit). */
 #define PC_KW 18
-typedef struct { uint64_t kw[PC_KW]; uint32_t gen, off, n, used; } pc_ent;
+typedef struct { uint64_t kw[PC_KW]; uint32_t gen, off, n, used, pass; } pc_ent;
 #define PC_SLOTS 8192u
 #define PC_VERTS (1u << 17)
 static pc_ent s_pc[PC_SLOTS];
 static double (*s_pc_v)[6];
 static uint32_t s_pc_used, s_pc_gen;
-static long s_pc_dec, s_pc_filed, s_pc_hit, s_pc_bad, s_pc_full, s_pc_vhit;
+static long s_pc_dec, s_pc_filed, s_pc_hit, s_pc_bad, s_pc_full, s_pc_vhit, s_pc_unfilled;
+/* The record pass's fan-out looks every decode up before any is decoded
+ * (rex_fanout_pass): while s_pc_prefix is set, an entry reserved in the same
+ * pass (pass stamp s_pc_pass) is not filed yet, and the lookup answers
+ * neither a hit nor slots to file, so the decode computes its pose itself. */
+static uint32_t s_pc_pass;
+static int s_pc_prefix;
 
 /** @brief The pose cache mode, OPENPETE_MOBY_POSE_CACHE: 1 read back (unset), 0 off, 2 compare; read once.
  * @return The mode. */
@@ -2284,8 +2290,8 @@ static int pc_mode(void) {
 /** @brief Print the cache's engagement at exit: sub-tick decodes looked up, filed, hit, mismatched (mode 2), refused for room, and vertices hit. */
 static void pc_report(void) {
     if (pc_mode() == 2 || getenv("OPENPETE_MOBY_POSE_CACHE_REPORT"))
-        fprintf(stderr, "[pose-cache] mode=%d decodes=%ld filed=%ld hits=%ld mismatches=%ld full=%ld verts_hit=%ld\n",
-                pc_mode(), s_pc_dec, s_pc_filed, s_pc_hit, s_pc_bad, s_pc_full, s_pc_vhit);
+        fprintf(stderr, "[pose-cache] mode=%d decodes=%ld filed=%ld hits=%ld mismatches=%ld full=%ld verts_hit=%ld unfilled=%ld\n",
+                pc_mode(), s_pc_dec, s_pc_filed, s_pc_hit, s_pc_bad, s_pc_full, s_pc_vhit, s_pc_unfilled);
 }
 
 /** @brief The table slot a key starts probing at: a multiply-xorshift mix of its words.
@@ -2319,13 +2325,14 @@ static const double (*pc_lookup(const uint64_t* kw, int n, double (**file)[6]))[
         pc_ent* e = &s_pc[h];
         const int live = e->used && e->gen == gen;
         if (live && e->n == (uint32_t)n && memcmp(e->kw, kw, sizeof e->kw) == 0) {
+            if (s_pc_prefix && e->pass == s_pc_pass) { s_pc_unfilled++; return NULL; }
             s_pc_hit++; s_pc_vhit += n;
             return (const double (*)[6])(s_pc_v + e->off);
         }
         if (live) continue;
         if (s_pc_used + (uint32_t)n > PC_VERTS) break;
         memcpy(e->kw, kw, sizeof e->kw);
-        e->gen = gen; e->off = s_pc_used; e->n = (uint32_t)n; e->used = 1u;
+        e->gen = gen; e->off = s_pc_used; e->n = (uint32_t)n; e->used = 1u; e->pass = s_pc_pass;
         *file = s_pc_v + s_pc_used;
         s_pc_used += (uint32_t)n;
         s_pc_filed++;
@@ -2420,10 +2427,34 @@ static void moby_pose_vertex(const moby_pose_src* S, int i, double c[3], double 
         memcpy(&S->file[i][3], p, sizeof(double[3]));
     } else if (S->hit && !S->read &&
                (memcmp(S->hit[i], c, sizeof(double[3])) != 0 || memcmp(&S->hit[i][3], p, sizeof(double[3])) != 0)) {
-        if (++s_pc_bad <= 8) fprintf(stderr, "[pose-cache MISMATCH vbl=%u] header=%08x vertex=%d\n",
+        if (__atomic_add_fetch(&s_pc_bad, 1, __ATOMIC_RELAXED) <= 8) fprintf(stderr, "[pose-cache MISMATCH vbl=%u] header=%08x vertex=%d\n",
                                      openpete_frame, S->header, i);
     }
 }
+
+/* One record decode between its setup and its vertex loop (moby_dp_setup,
+ * moby_dp_run): the projection translation, the paint key's record, the
+ * keyframe and previous-pose streams, the projection's terms, the readback
+ * record, the pose sources and the held-pose capture target. P and S point
+ * into the struct, so it is used in place and never copied. */
+typedef struct {
+    double TR[3];
+    moby_otk_rec_t otr;
+    int itr[3];
+    vstream A, B, Ap, Bp;
+    moby_proj_rec P;
+    openpete_gsab_inst* gsab;
+    moby_pose_src S;
+    double (*ph)[3];
+    int count, dsamp;
+} moby_dp_state;
+static int moby_dp_setup(moby_dp_state* D, CPUState* cpu, uint32_t header, uint32_t headerB,
+                         uint32_t frameA, uint32_t frameB, uint32_t w0,
+                         const moby_pose_t* prev, double blend_alpha, double gpf_frac,
+                         double depth_k, const int TR_raw[3], const double TR_frac[3],
+                         const int M[3][3], const float Mf[3][3], int zsf4,
+                         const ngte_view* v, const proj_xy* out, int cap);
+static int moby_dp_run(moby_dp_state* D, proj_xy* out);
 
 /** @brief Decode one moby record's vertex stream with the game's codec and project every vertex in float.
  *
@@ -2505,6 +2536,46 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
                                const double TR_frac[3],
                                const int M[3][3], const float Mf[3][3], int zsf4,
                                const ngte_view* v, proj_xy* out, int cap) {
+    moby_dp_state D;
+    if (!moby_dp_setup(&D, cpu, header, headerB, frameA, frameB, w0, prev, blend_alpha, gpf_frac, depth_k,
+                       TR_raw, TR_frac, M, Mf, zsf4, v, out, cap)) return 0;
+    return moby_dp_run(&D, out);
+}
+
+/** @brief Set up one record decode up to its vertex loop (moby_decode_project_body): the far skip, the translation, the tier's vertex count, the keyframe and previous-pose streams, the projection's terms and the pose cache lookup.
+ *
+ * Everything that reads shared state runs here: the pose cache lookup
+ * (pc_record_open), the readback and split instruments, and the held-pose
+ * capture target of the calling thread. The vertex loop (moby_dp_run) then
+ * reads only D, guest memory and its own output, so it may run on another
+ * thread; D holds pointers into itself and is used in place.
+ * Parameters as moby_decode_project_body.
+ * @param D Receives the decode's state.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader.
+ * @param headerB Keyframe B's header.
+ * @param frameA Keyframe A's reference.
+ * @param frameB Keyframe B's reference.
+ * @param w0 The record flags word.
+ * @param prev The previous pose, or NULL.
+ * @param blend_alpha The lerp phase from prev to the current pose.
+ * @param gpf_frac The sub-tick-lerped GPF scale, or negative.
+ * @param depth_k The projected view-Z to written depth factor.
+ * @param TR_raw The stored translation.
+ * @param TR_frac The full-precision centre, or NULL.
+ * @param M The model-to-view rotation, Q12.
+ * @param Mf The model-to-view rotation at unit scale.
+ * @param zsf4 The record's tier.
+ * @param v The view.
+ * @param out The record's first output vertex.
+ * @param cap Capacity of out.
+ * @return The vertex count the loop will write, 0 when the record yields none. */
+static int moby_dp_setup(moby_dp_state* D, CPUState* cpu, uint32_t header, uint32_t headerB,
+                         uint32_t frameA, uint32_t frameB, uint32_t w0,
+                         const moby_pose_t* prev, double blend_alpha, double gpf_frac,
+                         double depth_k, const int TR_raw[3], const double TR_frac[3],
+                         const int M[3][3], const float Mf[3][3], int zsf4,
+                         const ngte_view* v, const proj_xy* out, int cap) {
     if (header < 0x80000000u || !moby_pose_live(header, frameA)) return 0;
     const int dsamp = msp_rsample();
     uint64_t td = msp_rnow(dsamp);
@@ -2526,8 +2597,8 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
      * (reextract_record_pass). */
     int gpf = moby_rec_gpf(w0);
     if (gpf && ((gpf * (int)(int16_t)((TR_raw[2] << 2) >> m_scale)) >> 5) > 63000) return 0;
-    double TR[3], key_b;
-    const double gk = moby_record_proj_tr(m_scale, gpf, gpf_frac, TR_raw, TR_frac, TR, &key_b);
+    double key_b;
+    const double gk = moby_record_proj_tr(m_scale, gpf, gpf_frac, TR_raw, TR_frac, D->TR, &key_b);
     /* .s OT bias, REGULAR/SPECULAR walks: the render loop keys the OT as
      * (TR.z_raw>>5) - signext(w0 byte2) [@8001F810..F828; spec twin @80020FB0].
      * That bias is an OT ORDERING KEY (slots, 128 world each), not geometry:
@@ -2553,38 +2624,51 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
     int do_blend = (blend > 0 && moby_pose_live(headerB, frameB));
     double t = (double)blend / 4096.0;
 
-    moby_otk_rec_t otr;
-    int itr[3];
-    moby_otk_anim_record(cpu, header, headerB, w0, TR_raw, itr, &otr);
-    vstream A, B, Ap, Bp;
-    vstream_init(cpu, &A, header, frameA, s5);
-    if (do_blend) vstream_init(cpu, &B, headerB, frameB, s5);
+    moby_otk_anim_record(cpu, header, headerB, w0, TR_raw, D->itr, &D->otr);
+    vstream_init(cpu, &D->A, header, frameA, s5);
+    if (do_blend) vstream_init(cpu, &D->B, headerB, frameB, s5);
     /* Optional prev pose (two-pass sub-tick shape lerp). */
-    int blend_p = moby_prev_streams(cpu, prev, count, &Ap, &Bp);
+    int blend_p = moby_prev_streams(cpu, prev, count, &D->Ap, &D->Bp);
     const double prev_k = moby_prev_unit(cpu, prev, blend_p, m_scale);
     const double unit = moby_scale_unit(m_scale);
-    moby_proj_rec P = { M, Mf, TR, v, v->ofx, v->ofy, unit * gk, depth_k, 1.0 / gk, key_b * unit * depth_k,
-                        moby_tie_pull_on() && centre_full > 0.0, &otr, itr, v->ofx, v->ofy, NULL, 0.0 };
-    openpete_gsab_inst* gsab = moby_proj_open(&P, out, moby_rec_gsab_flags(gpf, do_blend, blend_p),
-                                              blend_p >= 0 ? blend_alpha : 1.0, count);
+    D->P = (moby_proj_rec){ M, Mf, D->TR, v, v->ofx, v->ofy, unit * gk, depth_k, 1.0 / gk, key_b * unit * depth_k,
+                            moby_tie_pull_on() && centre_full > 0.0, &D->otr, D->itr, v->ofx, v->ofy, NULL, 0.0 };
+    D->gsab = moby_proj_open(&D->P, out, moby_rec_gsab_flags(gpf, do_blend, blend_p),
+                             blend_p >= 0 ? blend_alpha : 1.0, count);
     msp_mark(MSP_D_SETUP, td, MSP_RSTRIDE);
-    moby_pose_src S = { cpu, &A, do_blend ? &B : NULL, t, prev, &Ap, &Bp, blend_p, prev_k, blend_alpha,
-                        NULL, NULL, 0, header };
+    D->S = (moby_pose_src){ cpu, &D->A, do_blend ? &D->B : NULL, t, prev, &D->Ap, &D->Bp, blend_p, prev_k,
+                            blend_alpha, NULL, NULL, 0, header };
     const uint64_t pkw[] = { header, headerB, frameA, frameB, w0, (uint64_t)count, (uint64_t)s5,
                              (uint64_t)do_blend };
-    pc_record_open(&S, pkw, count);
+    pc_record_open(&D->S, pkw, count);
+    D->ph = t_ph_dst;   /* the calling thread's held-pose capture, read once per record */
+    D->count = count;
+    D->dsamp = dsamp;
+    return count;
+}
+
+/** @brief Run one record decode's vertex loop from the state moby_dp_setup left: each vertex's pose (moby_pose_vertex), its held-pose capture and its projection, then the record's close.
+ *
+ * Writes only D's streams and terms, its pose cache slots (D->S.file, reserved
+ * for this record alone), its held-pose capture and out.
+ * @param D The decode's state.
+ * @param out The record's output vertices, D->count of them.
+ * @return The vertex count written. */
+static int moby_dp_run(moby_dp_state* D, proj_xy* out) {
+    const int count = D->count;
+    double (*ph)[3] = D->ph;
     const unsigned vbase = msp_loop_base(count);
     for (int i = 0; i < count; i++) {
         uint64_t tv = msp_at(vbase, i);
         double c[3], p[3], vv[3];   /* the current pose, the previous pose, their lerp */
-        moby_pose_vertex(&S, i, c, p, vv, &tv);
+        moby_pose_vertex(&D->S, i, c, p, vv, &tv);
         /* A canonical decode keeps the pose it drew (pose_hold_begin). */
-        if (t_ph_dst) { t_ph_dst[i][0] = c[0]; t_ph_dst[i][1] = c[1]; t_ph_dst[i][2] = c[2]; }
-        moby_project_vertex(&P, i, c, p, vv[0], vv[1], vv[2], &out[i]);
+        if (ph) { ph[i][0] = c[0]; ph[i][1] = c[1]; ph[i][2] = c[2]; }
+        moby_project_vertex(&D->P, i, c, p, vv[0], vv[1], vv[2], &out[i]);
         msp_mark(MSP_D_PROJ, tv, MSP_STRIDE);
     }
-    td = msp_rnow(dsamp);
-    moby_proj_close(&P, gsab, out, count);
+    const uint64_t td = msp_rnow(D->dsamp);
+    moby_proj_close(&D->P, D->gsab, out, count);
     msp_mark(MSP_D_CLOSE, td, MSP_RSTRIDE);
     return count;
 }
@@ -18551,6 +18635,582 @@ static void mrex_records_exit(int tok, uint64_t t0) {
     if (t0) op_prof_exit(tok, s_mrex_records_pid, op_prof_now_us() - t0);
 }
 
+/* ---- the sub-tick record pass, record by record -------------------------------
+ * Each queued record goes through three steps. rex_rec_prepare decides the
+ * occlusion verdict, rebuilds the record's fields and row scale, and picks the
+ * previous pose and the tier; the decode projects its vertices
+ * (moby_decode_project, or moby_dp_setup and moby_dp_run); rex_rec_commit
+ * confirms the verdict on the decode's bounds, updates the occlusion cache
+ * and appends the record to s_recs. The serial pass runs the three steps per
+ * record; the fan-out (rex_fanout_pass) runs every prepare and decode setup in
+ * order, the decode loops on the walk workers, and the commits in order. */
+
+/* A record's state between its steps. */
+enum { RJ_SKIP = 0,   /* nothing to decode: fields unavailable or the GPF far skip */
+       RJ_CULLED,     /* the occlusion verdict culled it: the commit lists it */
+       RJ_DECODE,     /* prepared; decoded at off */
+       RJ_DEFER };    /* the fan-out runs it serially at its place in the commit */
+typedef struct {
+    int state;
+    int ver_check;         /* the occlusion verifier audits it (occl_verify_begin) */
+    uint32_t prov;         /* s_occl_prov_moby after its verdict, for occl_confirm */
+    moby_fields f;
+    moby_prev_decode pd;   /* holds pointers into itself: used in place */
+    double gpf_frac, depth_k;
+    int zsf4;
+    int off, got;          /* its projections' first index in s_proj, and their count */
+    moby_dp_state D;       /* the fan-out's decode between setup and loop */
+} rex_job;
+static rex_job s_rjob[MAX_RECORDS];
+
+/* The record loop's split (OPENPETE_MOBY_SUBSTAGE): the part open since tr. */
+typedef struct { uint64_t tr; int part; } rex_split;
+
+/** @brief OPENPETE_MOBY_INTERP_MISS: name, rate-limited, a record moby with no interp-objs snapshot (it presents at the tick rate: the capture walk never saw it).
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address. */
+static void rex_interp_miss_note(CPUState* cpu, uint32_t moby) {
+    static int s_imiss = -1;
+    if (s_imiss < 0) { const char* e = getenv("OPENPETE_MOBY_INTERP_MISS"); s_imiss = (e && *e && *e != '0'); }
+    if (!s_imiss) return;
+    static uint64_t t0 = 0; static int n = 0;
+    uint64_t nowp = openpete_phase_now_us();
+    if (nowp - t0 >= 1000000u) { t0 = nowp; n = 0; }
+    const openpete_interp_obj_t* io = moby_interp_find(moby);
+    if ((io && io->have_prev) || n >= 16) return;
+    n++;
+    fprintf(stderr, "[moby-interp-%s vbl=%u] moby=%08x cls=%04x pos=(%d,%d,%d)\n",
+            io ? "noprev" : "MISS", openpete_frame, moby,
+            (unsigned)(cpu->read_half(moby + game_layout.moby.class_off)),
+            (int)cpu->read_word(moby + game_layout.moby.pos_off + 0u),
+            (int)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
+            (int)cpu->read_word(moby + game_layout.moby.pos_off + 8u));
+}
+
+/** @brief The class OPENPETE_MOBY_POSTRACE_CLS traces (0xFFFF every class), or -1 when unset; read once.
+ * @return The class, or -1. */
+static long rex_postrace_cls(void) {
+    static long s_cls = -2;
+    if (s_cls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_cls = e ? strtol(e, NULL, 0) : -1; }
+    return s_cls;
+}
+
+/** @brief Whether OPENPETE_MOBY_POSTRACE_CLS traces this moby's class.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @return The class when traced, else -1. */
+static int rex_postrace_class(CPUState* cpu, uint32_t moby) {
+    const long want = rex_postrace_cls();
+    if (want < 0) return -1;
+    const uint16_t cls = (uint16_t)cpu->read_half(moby + game_layout.moby.class_off);
+    return (want == 0xFFFF || cls == (uint16_t)want) ? (int)cls : -1;
+}
+
+/** @brief OPENPETE_MOBY_POSTRACE_CLS: the anim channel of a traced record before its decode.
+ *
+ * This runs in the sub-tick re-extract pass, so a run that presents only
+ * canonical ticks prints nothing however the variable is set.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param f The record's fields.
+ * @param pd Its previous pose. */
+static void rex_anim_trace(CPUState* cpu, uint32_t moby, const moby_fields* f, const moby_prev_decode* pd) {
+    const int cls = rex_postrace_class(cpu, moby);
+    if (cls < 0) return;
+    const moby_pose_t* prev = &pd->prev;
+    const uint32_t as = moby + game_layout.moby.anim_state_off;
+    fprintf(stderr, "[moby-anim vbl=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u nid=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x hdr=%08x hdrp=%08x rot=%06x\n",
+            openpete_feed_key_now(), moby, cls, pd->verdict, pd->alpha,
+            cpu->read_byte(as + 2u), cpu->read_byte(as + 3u), cpu->read_byte(as + 4u), cpu->read_byte(as + 0u),
+            cpu->read_byte(as + 1u), f->frameA, f->frameB, prev->frame_a, prev->frame_b, f->w0 & 0xFFFFu,
+            (prev->blend << 8) & 0xFFFFu, f->header, prev->header,
+            cpu->read_word(moby + game_layout.moby.angle_off + 0u) & 0xFFFFFFu);
+}
+
+/** @brief OPENPETE_MOBY_POSTRACE_CLS: a traced record's submitted screen-space centroid and world position, one step before raster.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param f The record's fields.
+ * @param p Its projections.
+ * @param got Their count, above 0. */
+static void rex_screen_trace(CPUState* cpu, uint32_t moby, const moby_fields* f, const proj_xy* p, int got) {
+    const int cls = rex_postrace_class(cpu, moby);
+    if (cls < 0) return;
+    extern int g_openpete_canon_lag_leg;
+    double mx = 0, my = 0, mz = 0;
+    for (int j = 0; j < got; j++) { mx += p[j].sx; my += p[j].sy; mz += p[j].vz; }
+    double cf[3] = { 0, 0, 0 }, mf[3] = { 0, 0, 0 };
+    int ch = openpete_native_interp_pos(game_layout.cam.base, cf);
+    int mh2 = openpete_native_interp_pos(moby, mf);
+    /* The moby's world position at the tick and the own-motion offset the
+     * replay path applied to it this present: a record whose wpos changes
+     * tick to tick is the class the offset exists for, and dmob is how much
+     * of that tick step this present's phase carries. */
+    double dmob[3]; moby_record_world_offset(moby, dmob);
+    fprintf(stderr, "[moby-world vbl=%u] m=%08x rot=%08X kf=(%08x,%08x,%02x) wpos=(%d,%d,%d) dmob=(%.2f,%.2f,%.2f)\n",
+            openpete_feed_key_now(), moby, cpu->read_word(moby + game_layout.moby.angle_off + 0u),
+            f->frameA, f->frameB, (unsigned)((f->w0 >> 8) & 0xFFu),
+            (int)cpu->read_word(moby + game_layout.moby.pos_off + 0u),
+            (int)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
+            (int)cpu->read_word(moby + game_layout.moby.pos_off + 8u), dmob[0], dmob[1], dmob[2]);
+    double ctr[3]; build_moby_record_tr(cpu, moby, ctr);
+    fprintf(stderr, "[moby-screen vbl=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f) size=%.3f ctrue=%.1f\n",
+            openpete_feed_key_now(), g_openpete_canon_lag_leg ? "CANON" : "inter",
+            (double)op_now() / 1e6, /* clock-guard: wall */ /* prints both */
+            moby, cls, got, mx / got, my / got, mz / got,
+            ch, mh2, cf[0], cf[1], cf[2], mf[0], mf[1], mf[2],
+            f->TR_frac[0], f->TR_frac[1], f->TR_frac[2],
+            moby_record_size_at(cpu, moby), ctr[2] * 4.0);
+}
+
+/** @brief Rebuild one record's fields under the present's camera: replayed from the captured record without host reveal, else built from gamestate with the snapshot pose, the live record's GPF verdict and byte, and the draw's row scale.
+ * @param cpu The guest CPU state, read only.
+ * @param rec The live record's address.
+ * @param moby The Moby address.
+ * @param f Receives the fields.
+ * @param rot_bins The rotation census, updated.
+ * @param gpf_frac Receives the sub-tick GPF byte, or keeps -1.
+ * @return 1 when the record decodes, 0 when it has no fields or the GPF far skip drops it. */
+static int rex_rec_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby_fields* f, long* rot_bins,
+                          double* gpf_frac) {
+    if (!moby_game.host_reveal) return record_replay_fields(cpu, rec, moby, f, rot_bins);
+    { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+      const uint64_t t_fl = mst_now();
+      const int bok = build_moby_record_fields(cpu, moby, f);
+      mst_add(MST_FLD, t_fl);
+      if (t0) s_us_fields += (long)(openpete_phase_now_us() - t0);
+      if (!bok) return 0; }   /* shaded -> handled separately */
+    moby_fields_pose_from_snapshot(cpu, moby, f);
+    /* .s far-skip parity: the host-rebuilt w0 has no low byte (the GPF-TR
+     * scale), so moby_decode_project's mirror of .L8001F888 can't fire on
+     * sub-ticks. Re-apply the canonical verdict from the LIVE record's w0 +
+     * TR.z (frozen per tick - no sub-tick boundary flicker), else a GPF-far
+     * moby the game popped out draws on intermediates only. */
+    moby_record_t LR; int lrok = moby_game.read_record(cpu, rec, &LR);
+    uint32_t rw0 = lrok ? LR.w0 : 0u;
+    if ((rw0 & 0xFFu) != 0u && f->header >= 0x80000000u) {
+        int msc  = (int)(cpu->read_byte(f->header + game_layout.moby.anim_scale_off) & 0xFFu);
+        int ir3  = (int)(int16_t)((LR.TR_raw[2] << 2) >> msc);
+        if ((((int)(rw0 & 0xFFu) * ir3) >> 5) > 63000) return 0;
+        /* thread the live GPF byte into the decode so the sub-tick pose
+         * projects at the same GPF-rescaled translation */
+        f->w0 = (f->w0 & ~0xFFu) | (rw0 & 0xFFu);
+        /* Frozen per tick, the on-screen scale steps at the tick rate
+         * under --render-fps: the sub-tick decode takes the lerped byte. */
+        *gpf_frac = moby_gpf_subtick(moby, (int)(rw0 & 0xFFu), *gpf_frac);
+    }
+    if (!moby_draw_row_scale(cpu, rec, s_cur_mat, f->M, f->Mf))
+        moby_ratio_row_scale(cpu, rec, moby, f->M, f->Mf);
+    return 1;
+}
+
+/** @brief Prepare one record for its decode: the occlusion verdict (a culled record skips the decode and extraction; the record itself, canonical gameplay state, is untouched), its fields, its previous pose and its tier.
+ *
+ * Culled records of the regular pass still join the specular dedup set at
+ * the commit: their specular twin is equally hidden.
+ * @param cpu The guest CPU state, read only.
+ * @param rec The live record's address.
+ * @param moby The Moby address.
+ * @param rot_bins The rotation census, updated.
+ * @param J Receives the record's state.
+ * @param sp The loop's split, advanced.
+ * @param check_cap Nonzero to stop the pass when s_recs or s_proj is full (the serial pass's test).
+ * @return -1 when the pass stops here, else 0 (J->state says what follows). */
+static int rex_rec_prepare(CPUState* cpu, uint32_t rec, uint32_t moby, long* rot_bins, rex_job* J,
+                           rex_split* sp, int check_cap) {
+    rex_interp_miss_note(cpu, moby);
+    s_occl_seen++;
+    J->state = RJ_SKIP; J->got = 0; J->ver_check = 0;
+    if (occl_record_culled(cpu, moby)) {
+        J->ver_check = occl_verify_begin(moby);   /* extract anyway and audit */
+        if (!J->ver_check) { J->state = RJ_CULLED; return 0; }
+    }
+    J->prov = s_occl_prov_moby;
+    J->gpf_frac = -1.0;
+    if (!rex_rec_fields(cpu, rec, moby, &J->f, rot_bins, &J->gpf_frac)) return 0;
+    if (check_cap && (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ)) return -1;
+    /* Two-pass shape lerp: f is the curr REAL pose (no synthesized blend - the
+     * spine no longer writes m_FrameProgress); add the prev REAL pose and lerp
+     * the two in model space. Crossfades within a clip AND across a clip switch
+     * when the two animations share vertex topology; snaps to curr (no prev
+     * pose, prev zeroed for the trace and the record) on spawn or a
+     * topology-changing clip switch. */
+    sp->tr = msp_mark(MSP_R_PRE, sp->tr, MSP_RSTRIDE); sp->part = MSP_R_PREV;
+    { const uint64_t t_pv = mst_now();
+      moby_record_prev_pose(cpu, moby, &J->f, &J->pd);
+      mst_add(MST_PREV, t_pv); }
+    sp->tr = msp_mark(MSP_R_PREV, sp->tr, MSP_RSTRIDE); sp->part = MSP_R_DP;
+    rex_anim_trace(cpu, moby, &J->f, &J->pd);
+    /* LOD tier from the last canonical pass (sub-tick reuse - the tier is a
+     * per-tick verdict, held across intermediates). Miss default 1024 = the
+     * near/HP tier, today's behaviour for a moby with no canonical record.
+     * Read BEFORE the decode: the tier-adjusted vertex-count read
+     * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
+    J->zsf4 = fade_snap_get(moby, 1024);
+    J->depth_k = moby_record_depth_k(cpu, moby);
+    J->state = RJ_DECODE;
+    return 0;
+}
+
+/** @brief Decode and project one prepared record at s_proj_n, as the serial pass does: moby_decode_project, then the sphere-shell pull.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param J The record's state; off and got are written. */
+static void rex_rec_decode(CPUState* cpu, uint32_t moby, rex_job* J) {
+    const moby_fields* f = &J->f;
+    uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+    J->off = s_proj_n;
+    J->got = moby_decode_project(cpu, f->header, f->header_b, f->frameA, f->frameB, f->w0,
+                                 J->pd.dprev, J->pd.dalpha, J->gpf_frac, J->depth_k,
+                                 f->TR_raw, f->TR_frac, f->M, (const float (*)[3])f->Mf, &J->zsf4,
+                                 moby_record_view(moby), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+    moby_sphere_shell_pull(cpu, moby, f->header, J->depth_k, s_proj + s_proj_n, J->got);
+    if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0);
+}
+
+/** @brief Commit one record in pass order: list a culled one; for a decoded one, move its projections to s_proj_n, confirm its verdict on their bounds, update the occlusion cache and append it to s_recs.
+ * @param cpu The guest CPU state, read only.
+ * @param is_spec Nonzero on the specular pass.
+ * @param rec The live record's address.
+ * @param moby The Moby address.
+ * @param J The record's state.
+ * @param sp The loop's split, advanced.
+ * @param culled The pass's culled mobys, appended to.
+ * @param culled_n Their count, updated. */
+static void rex_rec_commit(CPUState* cpu, int is_spec, uint32_t rec, uint32_t moby, rex_job* J,
+                           rex_split* sp, uint32_t* culled, int* culled_n) {
+    if (J->state == RJ_CULLED) { occl_pass_culled(moby, is_spec, culled, culled_n); return; }
+    if (J->state != RJ_DECODE) return;
+    sp->tr = msp_mark(MSP_R_DP, sp->tr, MSP_RSTRIDE); sp->part = MSP_R_CONF;
+    const int got = J->got, off = s_proj_n;
+    if (got <= 0) return;
+    if (J->off != off) memmove(s_proj + off, s_proj + J->off, (size_t)got * sizeof *s_proj);
+    const moby_fields* f = &J->f;
+    rex_screen_trace(cpu, moby, f, s_proj + off, got);
+    moby_late_trace(cpu, moby, s_proj + off, got);
+    s_occl_prov_moby = J->prov;
+    if (!J->ver_check && occl_confirm(cpu, moby, s_proj + off, got, f->TR_frac, f->header)) {
+        occl_pass_culled(moby, is_spec, culled, culled_n);
+        return;
+    }
+    if (J->ver_check) occl_verify_end(moby, s_proj + off, got);
+    else occl_cache_update(cpu, moby, s_proj + off, got, f->TR_frac, f->header);
+    sp->tr = msp_mark(MSP_R_CONF, sp->tr, MSP_RSTRIDE); sp->part = MSP_R_META;
+    for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
+    const moby_prev_decode* pd = &J->pd;
+    /* Carry the live record's address: a game whose keyframe patch list
+     * hangs off the record needs it to find one, and a zero here would send
+     * the provider reading at address 0. Host-built records have none and
+     * the reveal path passes 0 for that reason. */
+    s_recs[s_nrecs] = (rec_meta){ .addr = rec, .proj_off = off, .proj_n = got,
+        .header = f->header, .header_b = f->header_b,
+        .faceblock = moby_tier_faceblock(cpu, f->header, J->zsf4),
+        .w0 = f->w0, .metal = f->metal, .mscol = f->mscol, .moby = moby, .zsf4 = J->zsf4,
+        .env_az = (float)atan2(f->TR_frac[2], f->TR_frac[0]), .frameA = f->frameA,
+        .tr_z = f->TR_raw[2], .tr_zf = (float)f->TR_frac[2],
+        .frameA_p = pd->prev.frame_a, .header_p = pd->prev.header,
+        .clr_alpha = (float)pd->clr_alpha };
+    s_recs[s_nrecs].clr_flags = (uint8_t)pd->clr_flags;
+    s_recs[s_nrecs].wbase_p1 = moby_present_wbase(cpu, moby);
+    moby_wbase_trace(cpu, rec, moby, s_recs[s_nrecs].wbase_p1);
+    s_recs[s_nrecs].model_held = pd->model_held;
+    memcpy(s_recs[s_nrecs].Mf, f->Mf, sizeof s_recs[s_nrecs].Mf);
+    s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f->mscol);
+    /* The colour fade follows this present's centre and the authored term
+     * between the two ticks; the tier above stays the tick's. */
+    s_recs[s_nrecs].zf_on = (uint8_t)fade_snap_present_z(moby, J->zsf4,
+                                                         fade_present_tz(cpu, moby, f->TR_frac[2]),
+                                                         s_rc_alpha, &s_recs[s_nrecs].zf);
+    rex_bug_note(cpu, s_nrecs, moby, pd->verdict);
+    s_proj_n += got; s_nrecs++;
+}
+
+/** @brief Run one record through the serial pass: prepare, decode at s_proj_n, commit.
+ * @param cpu The guest CPU state, read only.
+ * @param is_spec Nonzero on the specular pass.
+ * @param rec The live record's address.
+ * @param moby The Moby address.
+ * @param rot_bins The rotation census, updated.
+ * @param J The record's state.
+ * @param sp The loop's split, advanced.
+ * @param culled The pass's culled mobys, appended to.
+ * @param culled_n Their count, updated.
+ * @return -1 when the pass stops at this record, else 0. */
+static int rex_rec_serial(CPUState* cpu, int is_spec, uint32_t rec, uint32_t moby, long* rot_bins,
+                          rex_job* J, rex_split* sp, uint32_t* culled, int* culled_n) {
+    msp_mark(sp->part, sp->tr, MSP_RSTRIDE);
+    sp->tr = msp_rnow(msp_rsample()); sp->part = MSP_R_PRE;
+    if (rex_rec_prepare(cpu, rec, moby, rot_bins, J, sp, 1) < 0) return -1;
+    if (J->state == RJ_DECODE) rex_rec_decode(cpu, moby, J);
+    rex_rec_commit(cpu, is_spec, rec, moby, J, sp, culled, culled_n);
+    return 0;
+}
+
+/* ---- the record pass's fan-out ------------------------------------------------ */
+
+/* The decode fan-out's vertex bound: below it the decode loops run on the
+ * calling thread, in the same phased pass. The serial decode costs about
+ * 0.03 us per vertex; the pool's wake and join cost 40 to 180 us per pass
+ * whatever its size. Measured per in-between scene (8 workers, Linux, the
+ * profile's mrex.records plus its pool wait): 10,000 vertices ran 485 us
+ * serial against 342 fanned out, 4,200 ran 234 against 380, 2,800 ran 152
+ * against 197. OPENPETE_MOBY_REC_FANOUT_MIN re-derives the bound on another
+ * machine. */
+#define REX_FANOUT_MIN_VERTS 8000
+
+/** @brief Whether OPENPETE_MOBY_REC_FANOUT is not 0: the record pass may fan its decodes out (default on), read once.
+ * @return 1 when it may. */
+static int rex_fanout_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_REC_FANOUT"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/** @brief The decode fan-out's vertex bound: OPENPETE_MOBY_REC_FANOUT_MIN, else REX_FANOUT_MIN_VERTS, a calibration override.
+ * @return The bound. */
+static long rex_fanout_min(void) {
+    static long v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_REC_FANOUT_MIN"); v = (e && *e) ? atol(e) : REX_FANOUT_MIN_VERTS; }
+    return v;
+}
+
+/** @brief Whether OPENPETE_MOBY_REC_FANOUT_CHECK is set nonzero: every fanned-out decode set also decodes serially and the two are compared, read once.
+ * @return 1 when on. */
+static int rex_fanout_check_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_REC_FANOUT_CHECK"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/* Fan-out totals: passes run phased, passes refused for colliding occlusion
+ * slots, records deferred, decodes run on the workers. */
+static long s_rfo_passes, s_rfo_refused, s_rfo_deferred, s_rfo_decodes;
+
+/** @brief Whether this record pass may run phased: on, not the first pass of the run, two workers, and no instrument that runs per record in pass order or writes shared state from the decode.
+ *
+ * The first pass runs serially so every lazy latch the decode reaches
+ * resolves on one thread. Kept serial by: the sub-stage split, the tier
+ * census, the position trace, the interp-miss note, the occlusion verifier,
+ * the stage readback, the fog-saturation cull (its LP redecode looks the
+ * pose cache up from the decode), the late trace and the shell census.
+ * @return 1 when it may. */
+static int rex_fanout_allowed(void) {
+    static int first = 1;
+    if (first) {
+        first = 0;
+        (void)moby_verify_negctl(); (void)moby_tie_pull_on(); (void)pc_mode(); (void)rex_fanout_check_on();
+        (void)moby_shell_census_level(); (void)moby_fog_sat_on(); (void)rex_postrace_cls();
+        return 0;
+    }
+    static int s_traces = -1;   /* the interp-miss note, the Mf bound check or the depth trace is set */
+    if (s_traces < 0) s_traces = getenv("OPENPETE_MOBY_INTERP_MISS") || getenv("OPENPETE_MOBY_MF_BOUND") ||
+                                 getenv("OPENPETE_DEPTHDBG");
+    if (!rex_fanout_on() || openpete_workpool_threads() <= 1) return 0;
+    return !(s_traces || msp_enabled() || tier_dbg_on() || rex_postrace_cls() >= 0 || occl_verify_on() ||
+             openpete_gsab_on() || moby_fog_sat_on() || moby_late_trace_on() || moby_shell_census_level());
+}
+
+/** @brief The most vertices a record's decode writes: the larger of its header's two tier counts, 0 below KSEG0.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader.
+ * @return The bound. */
+static int rex_vert_bound(CPUState* cpu, uint32_t header) {
+    if (header < 0x80000000u) return 0;
+    const int hi = cpu->read_byte(header + game_layout.moby.anim_vcount_hi) & 0xFF;
+    const int lo = cpu->read_byte(header + game_layout.moby.anim_vcount_lo) & 0xFF;
+    return hi > lo ? hi : lo;
+}
+
+/** @brief Count the records whose occlusion cache slot an earlier record of the pass also hashes to.
+ * @param mobys The pass's mobys.
+ * @param nm Their count.
+ * @param dup Receives, per record, 1 when its slot repeats.
+ * @return The count. */
+static int rex_slot_repeats(const uint32_t* mobys, int nm, uint8_t* dup) {
+    static uint32_t s_stamp[OCCL_HASH_N], s_gen;
+    if (!++s_gen) { memset(s_stamp, 0, sizeof s_stamp); s_gen = 1; }
+    int n = 0;
+    for (int i = 0; i < nm; i++) {
+        const unsigned sl = occl_slot(mobys[i]);
+        dup[i] = s_stamp[sl] == s_gen;
+        n += dup[i];
+        s_stamp[sl] = s_gen;
+    }
+    return n;
+}
+
+typedef struct { CPUState* cpu; const uint32_t* mobys; const int* idx; } rex_dec_job;
+
+/** @brief Work-pool job: one prepared record's decode loop (moby_dp_run) into its own run of s_proj, then its sphere-shell pull.
+ * @param item The list index.
+ * @param worker Unused: the job writes only its record's state and run.
+ * @param arg The rex_dec_job. */
+static void rex_dec_item(int item, int worker, void* arg) {
+    (void)worker;
+    const rex_dec_job* X = (const rex_dec_job*)arg;
+    const int i = X->idx[item];
+    rex_job* J = &s_rjob[i];
+    J->got = moby_dp_run(&J->D, s_proj + J->off);
+    moby_sphere_shell_pull(X->cpu, X->mobys[i], J->f.header, J->depth_k, s_proj + J->off, J->got);
+}
+
+static void rex_fanout_check(const rex_dec_job* X, int nd);
+static void rfc_arm(void);
+
+/** @brief The fan-out's serial prefix: in pass order, each record's prepare and decode setup into its own run of s_proj, or its deferral.
+ *
+ * A record's run is reserved at rex_vert_bound vertices, a deferred
+ * record's at 256 (a vertex count is a byte), from s_proj_n on. The pose
+ * cache answers every lookup here, before any decode is filed (s_pc_prefix).
+ * The reservations stop before they could pass MAX_PROJ.
+ * @param cpu The guest CPU state, read only.
+ * @param recs The pass's live records.
+ * @param mobys Their mobys.
+ * @param nm Their count.
+ * @param rot_bins The rotation census, updated.
+ * @param dup Per record, 1 to defer it (rex_slot_repeats).
+ * @param idx Receives the records with vertices to decode, in pass order.
+ * @param nd Receives their count.
+ * @param verts Receives their vertices.
+ * @return The first record not reserved: nm when every record was. */
+static int rex_fanout_prefix(CPUState* cpu, const uint32_t* recs, const uint32_t* mobys, int nm, long* rot_bins,
+                             const uint8_t* dup, int* idx, int* nd, long* verts) {
+    rex_split sp = { 0, MSP_R_PRE };
+    int resv = s_proj_n, stop = nm;
+    s_pc_pass++; s_pc_prefix = 1;
+    for (int i = 0; i < nm; i++) {
+        rex_job* J = &s_rjob[i];
+        if (resv + 256 > MAX_PROJ) { stop = i; break; }
+        J->off = resv;
+        if (dup[i]) { J->state = RJ_DEFER; resv += 256; s_rfo_deferred++; continue; }
+        (void)rex_rec_prepare(cpu, recs[i], mobys[i], rot_bins, J, &sp, 0);
+        if (J->state != RJ_DECODE) continue;
+        const moby_fields* f = &J->f;
+        const int bound = rex_vert_bound(cpu, f->header);
+        J->got = moby_dp_setup(&J->D, cpu, f->header, f->header_b, f->frameA, f->frameB, f->w0, J->pd.dprev,
+                               J->pd.dalpha, J->gpf_frac, J->depth_k, f->TR_raw, f->TR_frac, f->M,
+                               (const float (*)[3])f->Mf, J->zsf4, moby_record_view(mobys[i]),
+                               s_proj + resv, bound);
+        resv += bound;
+        if (J->got > 0) { idx[(*nd)++] = i; *verts += J->got; }
+    }
+    s_pc_prefix = 0;
+    return stop;
+}
+
+/** @brief Run the record pass phased: every record's prepare and decode setup in pass order, the decode loops on the walk workers, then every commit in pass order.
+ *
+ * Each record decodes into its own run of s_proj reserved at the largest
+ * count its header allows (rex_vert_bound), and the commit moves the run
+ * down to s_proj_n, so the projections, the s_recs entries and every state
+ * the commits advance are the serial pass's. Two orders the serial pass
+ * keeps are kept here too. A record whose occlusion cache slot an earlier
+ * record also hashes to may read, in its verdict, the bounds that record's
+ * commit writes (occl_cache_update): it is deferred and runs the serial
+ * pass at its place in the commit, and a pass where more than a fifth of
+ * the records are deferred runs serially. The pose cache answers every
+ * lookup in the prefix, where an entry reserved earlier in the same pass is
+ * not filed yet and the decode computes its pose instead (s_pc_prefix). The
+ * reservations stop before they could pass MAX_PROJ; the records from there
+ * on run the serial pass after the commit.
+ * @param cpu The guest CPU state, read only.
+ * @param is_spec Nonzero on the specular pass.
+ * @param recs The pass's live records.
+ * @param mobys Their mobys.
+ * @param nm Their count.
+ * @param rot_bins The rotation census, updated.
+ * @param culled The pass's culled mobys, appended to.
+ * @param culled_n Their count, updated.
+ * @return The first record left for the serial pass: 0 when the pass did not run phased. */
+static int rex_fanout_pass(CPUState* cpu, int is_spec, const uint32_t* recs, const uint32_t* mobys, int nm,
+                           long* rot_bins, uint32_t* culled, int* culled_n) {
+    static uint8_t dup[MAX_RECORDS];
+    static int idx[MAX_RECORDS];
+    if (rex_fanout_check_on()) rfc_arm();
+    if (nm < 2 || !rex_fanout_allowed()) return 0;
+    int nd_slots = rex_slot_repeats(mobys, nm, dup);
+    /* The check also defers every eighth record, so the deferred path runs
+     * in the compared passes whatever the slots. */
+    for (int i = 7; rex_fanout_check_on() && i < nm; i += 8) { nd_slots += !dup[i]; dup[i] = 1; }
+    if (nd_slots * 5 > nm) { s_rfo_refused++; return 0; }
+    int nd = 0;
+    long verts = 0;
+    const int stop = rex_fanout_prefix(cpu, recs, mobys, nm, rot_bins, dup, idx, &nd, &verts);
+    const rex_dec_job X = { cpu, mobys, idx };
+    const uint64_t t_dp = mst_now();
+    if (verts >= rex_fanout_min() && nd >= 2) {
+        openpete_workpool_run(nd, rex_dec_item, (void*)&X);
+        s_rfo_decodes += nd;
+        if (rex_fanout_check_on()) rex_fanout_check(&X, nd);
+    } else {
+        for (int k = 0; k < nd; k++) rex_dec_item(k, 0, (void*)&X);
+    }
+    mst_add(MST_DP, t_dp);
+    s_rfo_passes++;
+    rex_split sp = { 0, MSP_R_PRE };
+    for (int i = 0; i < stop; i++) {
+        rex_job* J = &s_rjob[i];
+        if (J->state == RJ_DEFER) { (void)rex_rec_serial(cpu, is_spec, recs[i], mobys[i], rot_bins, J, &sp, culled, culled_n); continue; }
+        if (J->state == RJ_DECODE && J->got > 0) { msc_add(MSC_VERTS, J->got); msc_add(MSC_RECS, 1); }
+        rex_rec_commit(cpu, is_spec, recs[i], mobys[i], J, &sp, culled, culled_n);
+    }
+    return stop;
+}
+
+/* ---- the decode fan-out's identity check (OPENPETE_MOBY_REC_FANOUT_CHECK) ------ */
+
+static struct { long sets, decodes, verts, bad_n, bad_v; } s_rfc;
+static void rfc_print(void);
+
+/** @brief Register the check's exit line once. */
+static void rfc_arm(void) {
+    static int s_armed;
+    if (!s_armed) { s_armed = 1; atexit(rfc_print); }
+}
+
+/** @brief Print the check's totals with the fan-out's. */
+static void rfc_print(void) {
+    fprintf(stderr, "[rec-fanout-check final] sets=%ld decodes=%ld verts=%ld mismatched_counts=%ld mismatched_verts=%ld"
+                    " | passes=%ld refused=%ld deferred=%ld fanned_decodes=%ld\n",
+            s_rfc.sets, s_rfc.decodes, s_rfc.verts, s_rfc.bad_n, s_rfc.bad_v,
+            s_rfo_passes, s_rfo_refused, s_rfo_deferred, s_rfo_decodes);
+}
+
+/** @brief Decode every fanned-out record again on the calling thread from a fresh setup and compare its count and every projection field with the workers' output.
+ *
+ * The fresh setup reads the pose cache as a serial decode would, after the
+ * workers filed it, so under OPENPETE_MOBY_POSE_CACHE=0 the two legs are
+ * two full decodes, and under the default the serial leg reads the workers'
+ * filed poses back.
+ * @param X The fan-out's job.
+ * @param nd Its decode count. */
+static void rex_fanout_check(const rex_dec_job* X, int nd) {
+    static proj_xy buf[256];
+    static moby_dp_state D;
+    s_rfc.sets++;
+    for (int k = 0; k < nd; k++) {
+        const int i = X->idx[k];
+        const rex_job* J = &s_rjob[i];
+        const moby_fields* f = &J->f;
+        int n = moby_dp_setup(&D, X->cpu, f->header, f->header_b, f->frameA, f->frameB, f->w0, J->pd.dprev,
+                              J->pd.dalpha, J->gpf_frac, J->depth_k, f->TR_raw, f->TR_frac, f->M,
+                              (const float (*)[3])f->Mf, J->zsf4, moby_record_view(X->mobys[i]), buf, 256);
+        if (n > 0) n = moby_dp_run(&D, buf);
+        moby_sphere_shell_pull(X->cpu, X->mobys[i], f->header, J->depth_k, buf, n);
+        s_rfc.decodes++; s_rfc.verts += n > 0 ? n : 0;
+        if (n != J->got) { s_rfc.bad_n++; continue; }
+        for (int v = 0; v < n; v++) {
+            const proj_xy* a = &buf[v]; const proj_xy* b = &s_proj[J->off + v];
+            s_rfc.bad_v += a->sx != b->sx || a->sy != b->sy || a->vz != b->vz || a->sat != b->sat ||
+                           a->unr != b->unr || a->ex != b->ex || a->ey != b->ey || a->ez != b->ez ||
+                           a->tvz != b->tvz || a->kvz != b->kvz || a->okz != b->okz ||
+                           memcmp(&a->iv, &b->iv, sizeof a->iv) != 0 || memcmp(a->mv, b->mv, sizeof a->mv) != 0 ||
+                           a->hx != b->hx || a->hy != b->hy ||
+                           (v == 0 && memcmp(&a->otk, &b->otk, sizeof a->otk) != 0);
+        }
+    }
+}
+
 /** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or "SP").
  *
  * The pass rebuilds each record's fields from gamestate under the present's
@@ -18571,213 +19231,14 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     s_proj_n = 0; s_nrecs = 0;
     static uint32_t culled_moby[MAX_RECORDS]; int culled_n = 0;
     /* The record loop's profiler region, opened by hand: the loop's state
-     * outlives a block around it. The loop leaves by break or continue only. */
+     * outlives a block around it. */
     uint64_t rec_t0;
     const int rec_tok = mrex_records_enter(&rec_t0);
     const uint64_t t_rec = mst_now();
-    /* The record-loop split: the part open since tr, closed at the next
-     * boundary or, after a skip, at the next record's start. */
-    uint64_t tr = 0; int tr_part = MSP_R_PRE;
-    for (int i = 0; i < nm; i++) {
-        msp_mark(tr_part, tr, MSP_RSTRIDE);
-        tr = msp_rnow(msp_rsample()); tr_part = MSP_R_PRE;
-        /* Occlusion cull: skip the whole record (decode + project + walk +
-         * draws) when the moby is provably hidden behind nearer WORLD depth.
-         * Display-only skip; the record itself (canonical gameplay state) is
-         * untouched. Culled REG mobys still join the SPEC dedup set below -
-         * their specular twin is equally hidden. */
-        /* OPENPETE_MOBY_INTERP_MISS: name the record mobys with NO interp-objs
-         * snapshot (they present at 30 Hz - the capture walk never saw them).
-         * Rate-limited; prints the moby addr + class + position. */
-        {
-            static int s_imiss = -1;
-            if (s_imiss < 0) { const char* e = getenv("OPENPETE_MOBY_INTERP_MISS"); s_imiss = (e && *e && *e != '0'); }
-            if (s_imiss) {
-                static uint64_t t0 = 0; static int n = 0;
-                uint64_t nowp = openpete_phase_now_us();
-                if (nowp - t0 >= 1000000u) { t0 = nowp; n = 0; }
-                const openpete_interp_obj_t* io = moby_interp_find(mobys[i]);
-                if ((!io || !io->have_prev) && n < 16) {
-                    n++;
-                    fprintf(stderr, "[moby-interp-%s vbl=%u] moby=%08x cls=%04x pos=(%d,%d,%d)\n",
-                            io ? "noprev" : "MISS", openpete_frame, mobys[i],
-                            (unsigned)(cpu->read_half(mobys[i] + game_layout.moby.class_off)),
-                            (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 0u),
-                            (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 4u),
-                            (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 8u));
-                }
-            }
-        }
-        s_occl_seen++;
-        int ver_check = 0;              /* verify mode: audit this moby post-extract */
-        if (occl_record_culled(cpu, mobys[i])) {
-            ver_check = occl_verify_begin(mobys[i]);   /* extract anyway and audit */
-            if (!ver_check) { occl_pass_culled(mobys[i], is_spec, culled_moby, &culled_n); continue; }
-        }
-        moby_fields f;
-        double gpf_frac = -1.0;
-        if (!moby_game.host_reveal) {
-            if (!record_replay_fields(cpu, recs[i], mobys[i], &f, rot_bins)) continue;
-        } else {
-        { int bok;
-          uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
-          const uint64_t t_fl = mst_now();
-          bok = build_moby_record_fields(cpu, mobys[i], &f);
-          mst_add(MST_FLD, t_fl);
-          if (t0) s_us_fields += (long)(openpete_phase_now_us() - t0);
-          if (!bok) continue; }   /* shaded -> handled separately */
-        moby_fields_pose_from_snapshot(cpu, mobys[i], &f);
-        /* .s far-skip parity: the host-rebuilt w0 has no low byte (the GPF-TR
-         * scale), so moby_decode_project's mirror of .L8001F888 can't fire on
-         * sub-ticks. Re-apply the canonical verdict from the LIVE record's w0 +
-         * TR.z (frozen per tick - no sub-tick boundary flicker), else a GPF-far
-         * moby the game popped out draws on intermediates only. */
-        {
-            moby_record_t LR; int lrok = moby_game.read_record(cpu, recs[i], &LR);
-            uint32_t rw0 = lrok ? LR.w0 : 0u;
-            if ((rw0 & 0xFFu) != 0u && f.header >= 0x80000000u) {
-                int msc  = (int)(cpu->read_byte(f.header + game_layout.moby.anim_scale_off) & 0xFFu);
-                int ir3  = (int)(int16_t)((LR.TR_raw[2] << 2) >> msc);
-                if ((((int)(rw0 & 0xFFu) * ir3) >> 5) > 63000) continue;
-                /* thread the live GPF byte into the decode so the sub-tick pose
-                 * projects at the same GPF-rescaled translation */
-                f.w0 = (f.w0 & ~0xFFu) | (rw0 & 0xFFu);
-                /* Frozen per tick, the on-screen scale steps at the tick rate
-                 * under --render-fps: the sub-tick decode takes the lerped byte. */
-                gpf_frac = moby_gpf_subtick(mobys[i], (int)(rw0 & 0xFFu), gpf_frac);
-            }
-        }
-        if (!moby_draw_row_scale(cpu, recs[i], s_cur_mat, f.M, f.Mf))
-            moby_ratio_row_scale(cpu, recs[i], mobys[i], f.M, f.Mf);
-        }
-        if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
-        int off = s_proj_n;
-        /* Two-pass shape lerp: f is the curr REAL pose (no synthesized blend - the
-         * spine no longer writes m_FrameProgress); add the prev REAL pose and lerp
-         * the two in model space. Crossfades within a clip AND across a clip switch
-         * when the two animations share vertex topology; snaps to curr (no prev
-         * pose, prev zeroed for the trace and the record) on spawn or a
-         * topology-changing clip switch. */
-        moby_prev_decode pd;
-        tr = msp_mark(MSP_R_PRE, tr, MSP_RSTRIDE); tr_part = MSP_R_PREV;
-        { const uint64_t t_pv = mst_now();
-          moby_record_prev_pose(cpu, mobys[i], &f, &pd);
-          mst_add(MST_PREV, t_pv); }
-        tr = msp_mark(MSP_R_PREV, tr, MSP_RSTRIDE); tr_part = MSP_R_DP;
-        const moby_pose_t* prev = &pd.prev;
-        /* OPENPETE_MOBY_POSTRACE_CLS=<class> (0xFFFF = every class) also
-         * traces the anim channel here. This block sits in the sub-tick
-         * re-extract pass, so a run that presents only canonical ticks prints
-         * nothing however the variable is set. */
-        {
-            static long s_atcls = -2;
-            if (s_atcls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_atcls = e ? strtol(e, NULL, 0) : -1; }
-            uint16_t tcls2 = (uint16_t)cpu->read_half(mobys[i] + game_layout.moby.class_off);
-            if (s_atcls >= 0 && (s_atcls == 0xFFFF || tcls2 == (uint16_t)s_atcls)) {
-                uint32_t mrot = cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u);
-                fprintf(stderr, "[moby-anim vbl=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u nid=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x hdr=%08x hdrp=%08x rot=%06x\n",
-                        openpete_feed_key_now(), mobys[i], tcls2,
-                        pd.verdict, pd.alpha,
-                        cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 2u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 3u),
-                        cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 4u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 0u),
-                        cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 1u),
-                        f.frameA, f.frameB, prev->frame_a, prev->frame_b, f.w0 & 0xFFFFu, (prev->blend << 8) & 0xFFFFu,
-                        f.header, prev->header,
-                        mrot & 0xFFFFFFu);
-            }
-        }
-        /* LOD tier from the last canonical pass (sub-tick reuse - the tier is a
-         * per-tick verdict, held across intermediates). Miss default 1024 = the
-         * near/HP tier, today's behaviour for a moby with no canonical record.
-         * Read BEFORE the decode: the tier-adjusted vertex-count read
-         * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
-        int zsf4 = fade_snap_get(mobys[i], 1024);
-        int got;
-        { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
-          const double depth_k = moby_record_depth_k(cpu, mobys[i]);
-          got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0,
-                                    pd.dprev, pd.dalpha, gpf_frac, depth_k,
-                                    f.TR_raw, f.TR_frac, f.M, (const float (*)[3])f.Mf, &zsf4,
-                                    moby_record_view(mobys[i]),
-                                    s_proj + s_proj_n, MAX_PROJ - s_proj_n);
-          moby_sphere_shell_pull(cpu, mobys[i], f.header, depth_k, s_proj + s_proj_n, got);
-          if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
-        tr = msp_mark(MSP_R_DP, tr, MSP_RSTRIDE); tr_part = MSP_R_CONF;
-        if (got <= 0) continue;
-        /* OPENPETE_MOBY_POSTRACE_CLS: final SUBMITTED screen-space centroid -
-         * the render-side truth, one step before raster (jitter forensics). */
-        {
-            static long s_sccls = -2;
-            if (s_sccls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_sccls = e ? strtol(e, NULL, 0) : -1; }
-            uint16_t sccls = (uint16_t)cpu->read_half(mobys[i] + game_layout.moby.class_off);
-            if (s_sccls >= 0 && (s_sccls == 0xFFFF || sccls == (uint16_t)s_sccls)) {
-                extern int g_openpete_canon_lag_leg;
-                double mx = 0, my = 0, mz = 0;
-                for (int j = 0; j < got; j++) { mx += s_proj[s_proj_n+j].sx; my += s_proj[s_proj_n+j].sy; mz += s_proj[s_proj_n+j].vz; }
-                double cf[3]={0,0,0}, mf[3]={0,0,0};
-                int ch = openpete_native_interp_pos(game_layout.cam.base, cf);
-                int mh2 = openpete_native_interp_pos(mobys[i], mf);
-                /* The moby's world position at the tick and the own-motion
-                 * offset the replay path applied to it this present: a record
-                 * whose wpos changes tick to tick is the class the offset
-                 * exists for, and dmob is how much of that tick step this
-                 * present's phase carries. */
-                double dmob[3]; moby_record_world_offset(mobys[i], dmob);
-                fprintf(stderr, "[moby-world vbl=%u] m=%08x rot=%08X kf=(%08x,%08x,%02x) wpos=(%d,%d,%d) dmob=(%.2f,%.2f,%.2f)\n",
-                        openpete_feed_key_now(), mobys[i],
-                        cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u),
-                        f.frameA, f.frameB, (unsigned)((f.w0 >> 8) & 0xFFu),
-                        (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 0u),
-                        (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 4u),
-                        (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 8u),
-                        dmob[0], dmob[1], dmob[2]);
-                double ctr[3]; build_moby_record_tr(cpu, mobys[i], ctr);
-                fprintf(stderr, "[moby-screen vbl=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f) size=%.3f ctrue=%.1f\n",
-                        openpete_feed_key_now(), g_openpete_canon_lag_leg ? "CANON" : "inter",
-                        (double)op_now() / 1e6, /* clock-guard: wall */ /* prints both */
-                        mobys[i], sccls, got,
-                        mx / got, my / got, mz / got,
-                        ch, mh2, cf[0], cf[1], cf[2], mf[0], mf[1], mf[2],
-                        f.TR_frac[0], f.TR_frac[1], f.TR_frac[2],
-                        moby_record_size_at(cpu, mobys[i]), ctr[2] * 4.0);
-            }
-        }
-        moby_late_trace(cpu, mobys[i], s_proj + off, got);
-        if (!ver_check && occl_confirm(cpu, mobys[i], s_proj + off, got, f.TR_frac, f.header)) {
-            occl_pass_culled(mobys[i], is_spec, culled_moby, &culled_n);
-            continue;
-        }
-        if (ver_check) occl_verify_end(mobys[i], s_proj + off, got);
-        else occl_cache_update(cpu, mobys[i], s_proj + off, got, f.TR_frac, f.header);
-        tr = msp_mark(MSP_R_CONF, tr, MSP_RSTRIDE); tr_part = MSP_R_META;
-        for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
-        /* Carry the live record's address: a game whose keyframe patch list
-         * hangs off the record needs it to find one, and a zero here would send
-         * the provider reading at address 0. Host-built records have none and
-         * the reveal path passes 0 for that reason. */
-        s_recs[s_nrecs] = (rec_meta){ .addr = recs[i], .proj_off = off, .proj_n = got,
-            .header = f.header, .header_b = f.header_b,
-            .faceblock = moby_tier_faceblock(cpu, f.header, zsf4),
-            .w0 = f.w0, .metal = f.metal, .mscol = f.mscol, .moby = mobys[i], .zsf4 = zsf4,
-            .env_az = (float)atan2(f.TR_frac[2], f.TR_frac[0]), .frameA = f.frameA,
-            .tr_z = f.TR_raw[2], .tr_zf = (float)f.TR_frac[2],
-            .frameA_p = prev->frame_a, .header_p = prev->header,
-            .clr_alpha = (float)pd.clr_alpha };
-        s_recs[s_nrecs].clr_flags = (uint8_t)pd.clr_flags;
-        s_recs[s_nrecs].wbase_p1 = moby_present_wbase(cpu, mobys[i]);
-        moby_wbase_trace(cpu, recs[i], mobys[i], s_recs[s_nrecs].wbase_p1);
-        s_recs[s_nrecs].model_held = pd.model_held;
-        memcpy(s_recs[s_nrecs].Mf, f.Mf, sizeof s_recs[s_nrecs].Mf);
-        s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
-        /* The colour fade follows this present's centre and the authored term
-         * between the two ticks; the tier above stays the tick's. */
-        s_recs[s_nrecs].zf_on = (uint8_t)fade_snap_present_z(mobys[i], zsf4,
-                                                             fade_present_tz(cpu, mobys[i], f.TR_frac[2]),
-                                                             s_rc_alpha, &s_recs[s_nrecs].zf);
-        rex_bug_note(cpu, s_nrecs, mobys[i], pd.verdict);
-        s_proj_n += got; s_nrecs++;
-    }
-    msp_mark(tr_part, tr, MSP_RSTRIDE);
+    rex_split sp = { 0, MSP_R_PRE };
+    for (int i = rex_fanout_pass(cpu, is_spec, recs, mobys, nm, rot_bins, culled_moby, &culled_n); i < nm; i++)
+        if (rex_rec_serial(cpu, is_spec, recs[i], mobys[i], rot_bins, &s_rjob[i], &sp, culled_moby, &culled_n) < 0) break;
+    msp_mark(sp.part, sp.tr, MSP_RSTRIDE);
     mst_add(MST_REC, t_rec);
     mrex_records_exit(rec_tok, rec_t0);
     const int n_loop = s_nrecs;

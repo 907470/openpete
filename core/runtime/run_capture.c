@@ -6,6 +6,7 @@
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
 #include "openpete_pace_log.h"
+#include "openpete_profile.h"         /* the in-between scene root */
 #include "openpete_present_thread.h"
 #include "openpete_native_render.h"
 #include "screenshot.h"
@@ -467,7 +468,10 @@ static int intermediate_reextract(openpete_native_reextract_fn ire, void *cpu,
         alpha >= 1.0
             ? openpete_interp_identity_present_ns()
             : curr_ns + (op_time_t)((double)g_openpete_tick_period_ns * alpha));
-    ire(cpu);                                  /* s_scene @ sub-tick phase */
+    /* The in-between scene's production root, as the live sub-tick present
+     * opens it, so a profile of a capture run splits its re-extracts. */
+    { OP_PROF_FLAGS_SCOPE("scene", OP_PROF_F_INTERMEDIATE);
+      ire(cpu); }                              /* s_scene @ sub-tick phase */
     openpete_interp_set_present_target(0);     /* restore op_now() fallback */
     /* The bracket verdict of the pass just run: the game-side re-extract
      * publishes it with the alpha it drew at. */

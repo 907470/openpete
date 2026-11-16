@@ -1294,6 +1294,16 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             TIMEOUT 900
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        # The sub-tick record pass's decode fan-out against a serial decode of
+        # the same records on a walking bk2, the deferred path included.
+        add_test(NAME moby_rec_fanout_${_pc_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_pose_cache.sh
+                         --game ${_pc_game} --build-dir=${CMAKE_BINARY_DIR} --instrument=rec-fanout)
+        set_tests_properties(moby_rec_fanout_${_pc_game} PROPERTIES
+            LABELS "presentation;moby"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
     # Moby occlusion census. Per row of
