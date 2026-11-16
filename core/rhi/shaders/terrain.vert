@@ -2222,26 +2222,27 @@ void main()
         }
     }
 
-    /* ---- LP world-pass gates (gaponly / .s far cull / authored admission) ---- */
+    /* ---- LP gates (gaponly / .s far cull / authored admission) ---- */
     bool gapfill_face = (gf & GF_GAPFILL) != 0 && (ff & FF_GAPFILL) != 0u;
+    float z3g = quad ? m3c.z : m2.z;
+    precise float slotv = PDIV(m0.z + m1.z + m2.z + z3g, 32.0);
+    if (lp && (gf & GF_NOLOD) == 0) {
+        /* .s LP far cull: slot >= cull_dist>>7 drops (all faces, fill tags
+         * included, and the hole fill, which re-emits only faces the game's
+         * LP walk draws); a keyed game tests the whole LP bucket index
+         * against (cull_dist>>7) - 1. Skipped under extended LOD, which
+         * keeps far faces. */
+        precise float fcv = slotv;
+        int fclim = g.fog.z;
+        if (ot_farcull_keyed()) {
+            fcv += ot_lp_slots((ff >> 24) & 0x1Fu);
+            fclim -= 1;
+        }
+        if (fcv >= float(fclim)) { kill_vert(); return; }
+    }
     if (lp && !fillPass) {
         if ((sf & SF_LPGAPONLY) != 0u && (ff & FF_GAPFILL) == 0u) { kill_vert(); return; }
         if ((sf & SF_LPUNCOV) != 0u && (ff & FF_LPRIDE) == 0u) { kill_vert(); return; }
-        float z3g = quad ? m3c.z : m2.z;
-        precise float slotv = PDIV(m0.z + m1.z + m2.z + z3g, 32.0);
-        if ((gf & GF_NOLOD) == 0) {
-            /* .s LP far cull: slot >= cull_dist>>7 drops (all faces, fill
-             * tags included); a keyed game tests the whole LP bucket index
-             * against (cull_dist>>7) - 1. Skipped under extended LOD, which
-             * keeps far faces. */
-            precise float fcv = slotv;
-            int fclim = g.fog.z;
-            if (ot_farcull_keyed()) {
-                fcv += ot_lp_slots((ff >> 24) & 0x1Fu);
-                fclim -= 1;
-            }
-            if (fcv >= float(fclim)) { kill_vert(); return; }
-        }
         float thr = float((sf >> SF_LPNEAR_SHIFT) & SF_LPNEAR_MASK);
         if (!gapfill_face && (gf & GF_LPNEAROUT) != 0) {
             /* LP near outcode, the only near rule of a game that has one:
@@ -2491,8 +2492,9 @@ void main()
     }
 
     /* ---- NCLIP back-face cull (flat faces; near faces dispatched before
-     * the cull in the walk; fill is emit-all by design) ---- */
-    if (!near && !fillPass) {
+     * the cull in the walk; the fill passes included, since the fill
+     * re-emits only faces the game's LP walk draws) ---- */
+    if (!near) {
         bool cullable = lp ? ((gf & GF_CULLLP) != 0) : ((gf & GF_CULLHP) != 0);
         /* An HP straddler with a corner in front of the eye that the
          * classifier does not queue for the near drain is emitted whole with

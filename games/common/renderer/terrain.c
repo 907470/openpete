@@ -16523,21 +16523,39 @@ static uint16_t tface_ot_slots(const tsface_t* F, int lp) {
     return (uint16_t)(base + mul * F->otbias);
 }
 
+/** @brief Tests the draw's LP far cull on a face: 1 when the game drops it past the cull distance.
+ *
+ * Spyro 1 r_environment.s:792-793 quad / 930-931 tri: slot = (four corner
+ * SZ3s summed, a triangle counting its shared corner twice) >> 5, dropped
+ * iff slot >= s2 = cull_dist >> 7. Under terrain.lp_farcull_keyed (Spyro 3
+ * environment.s 80027714-80027724) the operand is the whole LP bucket index
+ * (slot plus tface_ot_slots) and s2 is (cull_dist >> 7) - 1. The slot is
+ * an integer in the .s, so the real-valued slot compares the same against
+ * an integer bound. The cull is a distinct, larger distance than
+ * m_LodDistance. --lod extended skips it (extending the draw distance is
+ * that mode's purpose) and OPENPETE_TERRAIN_LP_FARCULL=0 disables it.
+ * @param G The walk's shared inputs (lp_farcull, cullRefS2).
+ * @param F The LP face.
+ * @param cz The corners' view-Z (SZ3 scale) in i0..i3 order.
+ * @param quad Nonzero for a quad.
+ * @return 1 when the face is past the cull, else 0. */
+static int tn_lp_face_farcull(const tn_wcfg* G, const tsface_t* F, const double cz[4], int quad) {
+    if (!G->lp_farcull || openpete_no_lod) return 0;
+    double slot = (cz[0] + cz[1] + cz[2] + (quad ? cz[3] : cz[2])) / 32.0;
+    int lim = G->cullRefS2;
+    if (game_layout.terrain.lp_farcull_keyed) {
+        slot += (double)tface_ot_slots(F, 1);
+        lim -= 1;
+    }
+    return slot >= (double)lim;
+}
+
 /** @brief Applies the draw's world-pass distance gates to an LP face: the far cull, then the near rule.
  *
- * Far cull (Spyro 1 r_environment.s:792-793 quad / 930-931 tri): slot =
- * (four corner SZ3s summed, a triangle counting its shared corner twice)
- * >> 5, dropped iff slot >= s2 = cull_dist >> 7. Under
- * terrain.lp_farcull_keyed the operand is the whole LP bucket index (slot
- * plus tface_ot_slots) and s2 is (cull_dist >> 7) - 1. The slot is an
- * integer in the .s, so the real-valued slot compares the same against an
- * integer bound. The cull is a distinct, larger distance than
- * m_LodDistance; every LP face takes it, fill tags included, since
- * og-attested cover cannot extend past og's own draw distance. --lod
- * extended skips it (extending the draw distance is that mode's purpose)
- * and OPENPETE_TERRAIN_LP_FARCULL=0 disables it. A surviving face takes
- * tn_lp_face_near_drop unless it is a fill-tagged face under gap fill
- * (og-attested hole cover at any range).
+ * Every LP face takes the far cull (tn_lp_face_farcull), fill tags
+ * included, since og-attested cover cannot extend past og's own draw
+ * distance. A surviving face takes tn_lp_face_near_drop unless it is a
+ * fill-tagged face under gap fill (og-attested hole cover at any range).
  * @param G The walk's shared inputs (lp_farcull, lp_admit, cullRefS2, fogRefBase).
  * @param SV The sector's verdicts.
  * @param F The LP face.
@@ -16546,15 +16564,7 @@ static uint16_t tface_ot_slots(const tsface_t* F, int lp) {
  * @return The drop reason ("farcull", "nearout", "admit"), or NULL when the face draws. */
 static const char* tn_lp_face_world_drop(const tn_wcfg* G, const tn_secverd* SV,
                                          const tsface_t* F, const double cz[4], int quad) {
-    if (G->lp_farcull && !openpete_no_lod) {
-        double slot = (cz[0] + cz[1] + cz[2] + (quad ? cz[3] : cz[2])) / 32.0;
-        int lim = G->cullRefS2;
-        if (game_layout.terrain.lp_farcull_keyed) {
-            slot += (double)tface_ot_slots(F, 1);
-            lim -= 1;
-        }
-        if (slot >= (double)lim) return "farcull";
-    }
+    if (tn_lp_face_farcull(G, F, cz, quad)) return "farcull";
     if (s_gapfill_en && F->gapfill) return NULL;
     return tn_lp_face_near_drop(SV, F, cz, quad, G->lp_admit, G->fogRefBase);
 }
@@ -17090,163 +17100,169 @@ static void tn_face_classify(const tn_facectx* c, tn_facegate* g) {
     g->nclip = nclip; g->front = front; g->front2 = front2;
 }
 
-/** @brief Gate one classified face of a walk pass: the world-pass drops, then its facing and route.
+/** @brief Applies the legacy LP far gate to a face the LOD handoff rides, under OPENPETE_TERRAIN_LP_ADMIT=0.
  *
- * The drops in walk order: an LP face the sector's LP rides leave out
- * (tn_lp_face_rides), the LP far cull and near rule
- * (tn_lp_face_world_drop), a second-walk far face past its drop
- * (tn_water_drop), the LOD handoff's HP drop and legacy LP far gate, and
- * the hole-fill pass's per-face gates. A face that survives takes its
- * straddle flag, facing verdicts (tface_facing), near-path verdict
- * (tn_near_gate and tn_face_near, or the queue oracle under
- * OPENPETE_TERRAIN_NEARQ) and back-face cull verdict.
+ * The fog-corner test drops LP until a corner crosses the fog line, but the
+ * .s's actual near cull is the authored admission (tn_lp_face_near_drop),
+ * which admits LP well inside the fog band (the authored LP/HP overlap is
+ * wide), so running both re-drops mid-band LP the game draws. This gate
+ * runs only with the admission off, on a far-only ride sector's face with
+ * no corner past the fog line. Classified HP-coverage-gap fillers (the
+ * frozen fill tags) are kept at every distance, so a sparse near HP mesh
+ * opens no hole to the cyclorama; at the fog line the game itself draws
+ * these faces the moment one corner crosses, so this only stabilizes that
+ * verdict inward. OPENPETE_TERRAIN_LPKEEP=1 keeps every such face (probe);
+ * OPENPETE_TERRAIN_LPKEEPDBG=<frame> logs each kept face (sector, face,
+ * world corners, screen bbox) for four frames from that frame.
  * @param c The face.
- * @param g The face's classification (tn_face_classify); receives the facing, route and cull fields.
- * @return The dropping gate's name ("fill" for a hole-fill gate), or NULL when the face survives the drops. */
-static const char* tn_face_gate(const tn_facectx* c, tn_facegate* g) {
+ * @return "lpfar" when the face drops, else NULL. */
+static const char* tn_lp_handoff_far_drop(const tn_facectx* c) {
+    static int s_lpkeep = -2, s_lpkeepdbg;
+    if (s_lpkeep == -2) {
+        const char* e = getenv("OPENPETE_TERRAIN_LPKEEP");
+        s_lpkeep = (e && *e && *e != '0');
+        e = getenv("OPENPETE_TERRAIN_LPKEEPDBG");   /* = frame to log at */
+        s_lpkeepdbg = (e && *e) ? atoi(e) : 0;
+    }
+    const tsface_t* F = c->F;
+    if (!s_lpkeep && !(s_gapfill_en && F->gapfill)) return "lpfar";
+    if (!s_lpkeepdbg || openpete_frame < (unsigned)s_lpkeepdbg
+        || openpete_frame >= (unsigned)s_lpkeepdbg + 4u) return NULL;
+    const int nc = F->quad ? 4 : 3;
+    const int ci[4] = { F->i0, F->i1, F->i2, F->i3 };
+    float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
+    fprintf(stderr, "[lpkeep] s=%u f=%d q=%d gf=%d", c->sec, c->face, F->quad, F->gapfill);
+    for (int q = 0; q < nc; q++) {
+        const tsvert_t* V = &c->V[ci[q]];
+        const lvert* P = &c->sv[ci[q]];
+        bx0 = fminf(bx0, P->sx); bx1 = fmaxf(bx1, P->sx);
+        by0 = fminf(by0, P->sy); by1 = fmaxf(by1, P->sy);
+        fprintf(stderr, " v%d=%d,%d,%d", q, c->ox + V->x, c->oy + V->y, c->oz + V->z);
+    }
+    fprintf(stderr, " bbox=%.0f,%.0f..%.0f,%.0f\n", bx0, by0, bx1, by1);
+    return NULL;
+}
+
+/** @brief Applies the world passes' per-face drops: LP ride, LP distance gates, second-walk water, LOD handoff.
+ *
+ * In walk order: an LP face the sector's LP rides leave out
+ * (tn_lp_face_rides); the LP far cull and near rule (tn_lp_face_world_drop:
+ * the authored admission, or the LP near outcode on a game that has one;
+ * OPENPETE_TERRAIN_LP_ADMIT=0 restores the legacy fog-corner behaviour);
+ * a second-walk far face past its drop (tn_water_drop); then, with the LOD
+ * handoff on, the HP far drop (tn_hp_face_world_drop) and the legacy LP
+ * far gate (tn_lp_handoff_far_drop).
+ * @param c The face of a world pass (0, 1, 3 or 4).
+ * @param g The face's classification (tn_face_classify).
+ * @return The dropping gate's name, or NULL when the face survives. */
+static const char* tn_world_face_drop(const tn_facectx* c, const tn_facegate* g) {
     const tn_wcfg* G = c->G;
     const tn_secverd* SV = c->SV;
     const tsface_t* F = c->F;
-    const lvert* sv = c->sv;
-    const int i0 = F->i0, i1 = F->i1, i2 = F->i2, i3 = F->i3, quad = F->quad;
-    const int pass = c->pass, f = c->face, fogRef = c->fogRef;
-    const uint32_t i = c->sec;
-    const int passLP = (pass == 0 || pass == 2 || pass >= 4), passFill = (pass == 2 || pass == 5);
-    const int faceStride = passLP ? 8 : 16;
-    const int lod_handoff = G->lod_handoff, lpFarOnly = SV->lpFarOnly, waterFar = g->waterFar;
+    const int passLP = (c->pass == 0 || c->pass == 4), quad = F->quad;
     const double* cz = g->cz;
-    if (passLP && !passFill && !tn_lp_face_rides(SV, F)) return "rideonly";
-    /* Authored per-face LP admission (the .s test, exact): with
-     * slot = (four corner SZ3 summed, tris doubling the shared corner)
-     * >> 5 and s3 = (m_LodDistance >> 7) - 0x20, an LP face draws iff
-     * slot + 8*admit >= s3; a deficit of -31..-1 falls back to
-     * per-vertex "draw if ANY corner SZ3 >= (s3 - 8*admit)*8"; deeper
-     * deficits reject. LP is a FAR tier - the .s drops it NEAR (coarse
-     * alternates the player is never meant to see up close). Applies
-     * in every mode; fill-tag faces are exempt (og-attested hole cover at any range)
-     * - but only while OPENPETE_TERRAIN_GAPFILL=1, so the tag A/B
-     * knob keeps its contract in original mode too.
-     * OPENPETE_TERRAIN_LP_ADMIT=0 restores the legacy fog-corner-only
-     * behaviour (A/B). A game with the LP near outcode
-     * (terrain.lp_near_sz) takes that rule instead and ignores the knob
-     * (tn_lp_face_near_drop). */
-    if (passLP && !passFill) {
+    if (passLP) {
+        if (!tn_lp_face_rides(SV, F)) return "rideonly";
         const char* why = tn_lp_face_world_drop(G, SV, F, cz, quad);
         if (why) return why;
     }
-    if (waterFar && tn_water_drop(cz, quad)) return "water";
-    if (lod_handoff) {
-        int nc = quad ? 4 : 3, beyond = 0;
-        for (int q2 = 0; q2 < nc; q2++)
-            if (fogRef - (int)(cz[q2] * s_fogscale) <= 0) beyond++;
-        if (!passLP && tn_hp_face_world_drop(G, cz, quad, beyond == nc)) {
-            return "hpdrop";
-        }
-        if (passLP && !passFill && lpFarOnly && beyond == 0
-            && !G->lp_admit) {
-            /* Legacy (LP_ADMIT=0) near gate for handoff-riding LP: the
-             * fog-corner test drops LP until a corner crosses the fog
-             * line, but the .s's actual near cull is the authored
-             * admission above - it admits LP well INSIDE the fog band
-             * (the authored LP/HP overlap is wide), so running both
-             * re-drops mid-band LP the game draws. LP far-only -
-             * EXCEPT classified HP-coverage-gap fillers (the frozen
-             * fill tags), which draw at all distances so a sparse near
-             * HP mesh doesn't open a hole to the cyclorama (at the fog
-             * line the game itself draws these faces the moment one
-             * corner crosses, so this only stabilizes that verdict
-             * inward).
-             * OPENPETE_TERRAIN_LPKEEP=1 keeps ALL such faces (probe);
-             * LPKEEPDBG=<frame> logs each kept face - sector/face id,
-             * world verts, screen bbox - to identify hole culprits. */
-            static int s_lpkeep = -2, s_lpkeepdbg;
-            if (s_lpkeep == -2) {
-                const char* e = getenv("OPENPETE_TERRAIN_LPKEEP");
-                s_lpkeep = (e && *e && *e != '0');
-                e = getenv("OPENPETE_TERRAIN_LPKEEPDBG");   /* = frame to log at */
-                s_lpkeepdbg = (e && *e) ? atoi(e) : 0;
-            }
-            int gfKeep = s_gapfill_en && F->gapfill;
-            if (!s_lpkeep && !gfKeep) return "lpfar";
-            if (s_lpkeepdbg && openpete_frame >= (unsigned)s_lpkeepdbg
-                && openpete_frame < (unsigned)s_lpkeepdbg + 4u) {
-                float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
-                const int ci2[4] = { i0, i1, i2, i3 };
-                fprintf(stderr, "[lpkeep] s=%u f=%d q=%d gf=%d", i, f, quad, F->gapfill);
-                for (int q2 = 0; q2 < nc; q2++) {
-                    const tsvert_t* V = &c->V[ci2[q2]];
-                    const lvert* P = &sv[ci2[q2]];
-                    if (P->sx < bx0) bx0 = P->sx;
-                    if (P->sx > bx1) bx1 = P->sx;
-                    if (P->sy < by0) by0 = P->sy;
-                    if (P->sy > by1) by1 = P->sy;
-                    fprintf(stderr, " v%d=%d,%d,%d", q2,
-                            c->ox + V->x, c->oy + V->y, c->oz + V->z);
-                }
-                fprintf(stderr, " bbox=%.0f,%.0f..%.0f,%.0f\n", bx0, by0, bx1, by1);
-            }
-        }
+    if (g->waterFar && tn_water_drop(cz, quad)) return "water";
+    if (!G->lod_handoff) return NULL;
+    int beyond = 0;
+    for (int q = 0; q < (quad ? 4 : 3); q++)
+        beyond += (c->fogRef - (int)(cz[q] * s_fogscale) <= 0);
+    if (!passLP) return tn_hp_face_world_drop(G, cz, quad, beyond == (quad ? 4 : 3)) ? "hpdrop" : NULL;
+    if (SV->lpFarOnly && beyond == 0 && !G->lp_admit) return tn_lp_handoff_far_drop(c);
+    return NULL;
+}
+
+/** @brief Applies the hole-fill passes' per-face drops: blended faces, the LP far cull, and the fog gate.
+ *
+ * The fill re-emits only faces the game's LP walk would draw, so it takes
+ * the walk's LP far cull (tn_lp_face_farcull) here and its NCLIP back-face
+ * cull in tn_face_route; a face either cull drops would otherwise paint its
+ * fogged colour over stencil-0 sky where the game draws none. Transparent LP
+ * never rides the fill: it blends instead of covering, so a stencil-gated
+ * twin over the face's own raster (transparents write no stencil) would
+ * blend the same pixels twice. The far gate keeps only fully-fogged faces
+ * (every corner at or past the fog saturation, ir0 = fogRef - 4*m3 <= 0),
+ * where the T-junction seams the fill exists for lie; a mid-band face would
+ * paint a 1-2 px LP fringe along terrain-vs-sky silhouettes, since native's
+ * float raster is a hair tighter than the PSX integer edge.
+ * OPENPETE_TERRAIN_FILL_FOGSLACK (default 0) widens the gate to every
+ * corner with ir0 at or under the slack, so the LP of sectors straddling
+ * the LOD boundary fills their far rows; a slack-admitted face that is not
+ * fully fogged passes only when screen-thin (bbox height at most
+ * OPENPETE_TERRAIN_FILL_THINPX, default 16 px, every corner in front of the
+ * eye), the 1 px straddling water rows the slack exists for, never a mid-band
+ * LP body ghosting into sky above terrain tops.
+ * @param c The face of a fill pass (2 or 5).
+ * @param g The face's classification (tn_face_classify).
+ * @return "farcull" or "fill" when the face drops, else NULL. */
+static const char* tn_fill_face_drop(const tn_facectx* c, const tn_facegate* g) {
+    const tsface_t* F = c->F;
+    if (F->mat.blend) return "fill";
+    if (tn_lp_face_farcull(c->G, F, g->cz, F->quad)) return "farcull";
+    static int s_fogslack = -1;
+    if (s_fogslack < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_FOGSLACK"); s_fogslack = (e && *e) ? atoi(e) : 0; }
+    static float s_thin = -1.0f;
+    if (s_thin < 0.0f) { const char* e = getenv("OPENPETE_TERRAIN_FILL_THINPX"); s_thin = (e && *e) ? (float)atof(e) : 16.0f; }
+    const int nc = F->quad ? 4 : 3;
+    const int ci[4] = { F->i0, F->i1, F->i2, F->i3 };
+    int fogged = 1, thinOk = 1;
+    float ty0 = 1e9f, ty1 = -1e9f;
+    for (int q = 0; q < nc; q++) {
+        const lvert* V = &c->sv[ci[q]];
+        const int ir0 = c->fogRef - (int)(V->m3 * 4.0);
+        if (ir0 > s_fogslack) return "fill";
+        fogged &= (ir0 <= 0);
+        thinOk &= (V->m3 > 0.0);
+        ty0 = fminf(ty0, V->sy); ty1 = fmaxf(ty1, V->sy);
     }
-    /* HOLE-FILL per-face far gate: only FULLY-FOGGED faces
-     * (every corner at/past the exact fog saturation, ir0 = fogRef−4·m3
-     * ≤ 0 - the proven decode scale, independent of the shipped
-     * s_fogscale), unless OPENPETE_TERRAIN_FILL_FOGSLACK widens it.
-     * The T-junction seams the fill exists for are at the
-     * fully-fogged horizon; a mid-band face admitted here paints a
-     * dark 1-2px LP fringe along terrain-vs-sky silhouettes (native's
-     * float raster is a hair tighter than the PSX integer edge). */
-    if (passFill) {
-        /* Transparent LP never rides the fill: it blends instead of
-         * covering, so a stencil-gated twin over the face's own raster
-         * (transparents write no stencil) would blend the same pixels
-         * TWICE. The fill exists to patch opaque raster slivers. */
-        if (F->mat.blend) return "fill";
-        /* Slack (OPENPETE_TERRAIN_FILL_FOGSLACK, default 0: only
-         * fully-fogged faces; 1024 admits faces whose every corner is
-         * ≥75% fogged). A strict ir0≤0 drops the LP of sectors
-         * STRADDLING the LOD boundary, leaving their far rows' raster
-         * gaps unfilled; a slack admits those while excluding the
-         * mid-band faces that fringe sky silhouettes. */
-        static int s_fogslack = -1;
-        if (s_fogslack < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_FOGSLACK"); s_fogslack = (e && *e) ? atoi(e) : 0;   /* default 0: fully-fogged faces only */ }
-        int nc2 = quad ? 4 : 3, farAll = 1, fogged = 1;
-        const int cf[4] = { i0, i1, i2, i3 };
-        for (int q2 = 0; q2 < nc2 && farAll; q2++) {
-            int ir0 = fogRef - (int)(sv[cf[q2]].m3 * 4.0);
-            if (ir0 > 0) fogged = 0;
-            if (ir0 > s_fogslack) farAll = 0;
-        }
-        if (!farAll) return "fill";
-        /* Slack-admitted (NOT fully fogged) faces pass ONLY when screen-
-         * THIN (bbox height ≤ OPENPETE_TERRAIN_FILL_THINPX, default 16px):
-         * the class the slack exists for is 1px straddling water rows. An
-         * unrestricted slack admits mid-band LP BODIES whose coarse
-         * silhouette ghosts into stencil-0 sky above terrain tops and
-         * depth-notches neighbouring geometry. */
-        if (!fogged) {
-            static float s_thin = -1.0f;
-            if (s_thin < 0.0f) { const char* e2 = getenv("OPENPETE_TERRAIN_FILL_THINPX"); s_thin = (e2 && *e2) ? (float)atof(e2) : 16.0f; }
-            float ty0 = 1e9f, ty1 = -1e9f; int thinOk = 1;
-            for (int q2 = 0; q2 < nc2; q2++) {
-                const lvert* V = &sv[cf[q2]];
-                if (V->m3 <= 0.0) { thinOk = 0; break; }  /* behind-camera: not the sliver class */
-                if (V->sy < ty0) ty0 = V->sy;
-                if (V->sy > ty1) ty1 = V->sy;
-            }
-            if (!thinOk || ty1 - ty0 > s_thin) return "fill";
-        }
-    }
-    g->straddle = tface_straddle(sv, i0, i1, i2, i3, quad, faceStride == 16);
-    g->satv = tface_facing(sv, i0, i1, i2, i3, quad, F->flip, F->dside, faceStride == 16, g->straddle,
+    if (!fogged && (!thinOk || ty1 - ty0 > s_thin)) return "fill";
+    return NULL;
+}
+
+/** @brief Sets a surviving face's straddle, facing, near-path and back-face cull verdicts.
+ *
+ * The straddle flag (tface_straddle), facing verdicts (tface_facing),
+ * near-path verdict (tn_near_gate and tn_face_near, or the queue oracle
+ * under OPENPETE_TERRAIN_NEARQ), and the NCLIP cull: OPENPETE_TERRAIN_CULL
+ * bit 0 culls HP, bit 1 LP, the fill passes included, since the fill
+ * re-emits only faces the game's LP walk draws.
+ * @param c The face.
+ * @param g The face's classification; receives the route and cull fields. */
+static void tn_face_route(const tn_facectx* c, tn_facegate* g) {
+    const tsface_t* F = c->F;
+    const lvert* sv = c->sv;
+    const int i0 = F->i0, i1 = F->i1, i2 = F->i2, i3 = F->i3, quad = F->quad;
+    const int pass = c->pass, waterFar = g->waterFar;
+    const int hp = !(pass == 0 || pass == 2 || pass >= 4);
+    g->straddle = tface_straddle(sv, i0, i1, i2, i3, quad, hp);
+    g->satv = tface_facing(sv, i0, i1, i2, i3, quad, F->flip, F->dside, hp, g->straddle,
                            F->w3, g->front, g->front2, &g->near_front, &g->cfront);
-    g->near0 = tn_near_gate(faceStride == 16, waterFar, g->blendFar, g->near_front, c->hqTable)
+    g->near0 = tn_near_gate(hp, waterFar, g->blendFar, g->near_front, c->hqTable)
                && tn_face_near(sv, F, c->rec);
     g->near = g->near0;
     if (s_nearq >= 0)   /* debug: use the queue oracle directly (exact 37) */
-        g->near = tn_near_gate(faceStride == 16, waterFar, g->blendFar, 1, c->hqTable)
+        g->near = tn_near_gate(hp, waterFar, g->blendFar, 1, c->hqTable)
                   && tn_queue_near(quad, c->rec);
-    g->cullable = ((faceStride == 16) ? (s_cull & 1) : (s_cull & 2)) && !passFill;
+    g->cullable = hp ? (s_cull & 1) : (s_cull & 2);
     g->late_drop = g->cullable && !g->cfront && !waterFar;
+}
+
+/** @brief Gate one classified face of a walk pass: the pass's per-face drops, then its facing and route.
+ *
+ * A fill pass (2, 5) takes tn_fill_face_drop, every other pass
+ * tn_world_face_drop; a face that survives takes tn_face_route.
+ * @param c The face.
+ * @param g The face's classification (tn_face_classify); receives the facing, route and cull fields.
+ * @return The dropping gate's name ("fill" or "farcull" for a hole-fill gate), or NULL when the face survives the drops. */
+static const char* tn_face_gate(const tn_facectx* c, tn_facegate* g) {
+    const int passFill = (c->pass == 2 || c->pass == 5);
+    const char* why = passFill ? tn_fill_face_drop(c, g) : tn_world_face_drop(c, g);
+    if (why) return why;
+    tn_face_route(c, g);
     return NULL;
 }
 
@@ -17849,9 +17865,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * the canonical visibility rule, not a perf knob.
              * Straddling faces (a corner behind the camera) take
              * tface_facing's camera-space verdict (HP) or are waived (LP).
-             * One carve-out where the .s verdict can't be mirrored:
-             *  - fill passes: native-only hole cover with no .s counterpart,
-             *    stencil-gated to pixels nothing else drew - stay emit-all.
+             * The fill passes take the LP rule too: they re-emit only faces
+             * the game's LP walk draws.
              * Both tiers are whole-face verdicts: the .s emits the full
              * GT4/GT3 when either half accepts (LP: block_80026490's emit
              * path is shared by the front, double-sided and half-2 routes). */

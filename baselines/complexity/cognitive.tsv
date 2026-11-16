@@ -137,7 +137,6 @@ games/common/renderer/terrain.c	tgpu_build_sector	33	0
 games/common/renderer/terrain.c	tgpu_ensure	39	0	
 games/common/renderer/terrain.c	tgpu_env_block	26	0	
 games/common/renderer/terrain.c	tgpu_pack_scan_faces	40	0	
-games/common/renderer/terrain.c	tn_face_gate	124	0	
 games/common/renderer/terrain.c	tn_tridump	29	0	
 games/common/renderer/terrain.c	tsc_decode_faces	26	0	
 games/common/renderer/terrain.c	tsc_field_census	27	0	
