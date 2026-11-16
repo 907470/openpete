@@ -199,3 +199,9 @@ sunny_villa:1@fillcull | pos=(14797, 35768, 19616) yaw=186 pitch=54 | 3700 | OPE
 super_bonus_round:3@fillcull | pos=(121846, 127590, 32999) yaw=-1586 pitch=184
 super_bonus_round:2@fillcull | pos=(50893, 39660, 21037) yaw=653 pitch=5
 scorchs_pit@fillcull | pos=(11888, 96432, 24944) yaw=-810 pitch=-20 | 3700 | OPENPETE_FREECAM_AT_VBL=3500 --bk2 games/spyro-3/bk2/area-dismiss.bk2
+# @lampglow: a gem lamp extended LOD draws beyond the game's glow distance
+# (view depth 0x7800) and beyond its gem's draw distance has no glow. The
+# first pose is inside the band where the game still holds the glow record,
+# the second beyond the gem's draw distance.
+crystal_islands@lampglow-band | pos=(61247, 51039, 12218) yaw=1335 pitch=114 | 2000 | --player-pose 61548,51382,11770,0
+crystal_islands@lampglow-far | pos=(62687, 49176, 12391) yaw=1335 pitch=114 | 2000 | --player-pose 61548,51382,11770,0
