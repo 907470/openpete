@@ -187,3 +187,6 @@ charmed_ridge:1 | pos=(43481, 38847, 12900) yaw=1024 pitch=0 | 2700 | OPENPETE_F
 spooky_swamp@fogorig | pos=(35818, 17779, 16172) yaw=1021 pitch=297 | | --fog original
 spooky_swamp@fogpp | pos=(35818, 17779, 16172) yaw=1021 pitch=297 | | --fog per-pixel
 spooky_swamp@fogoff | pos=(35818, 17779, 16172) yaw=1021 pitch=297 | | --fog off
+# charmed_ridge@wedge: sector 12 face 88 (0 slots), hanging from the grass top's edge behind its plane,
+# keys over face 50 (4 slots), painting a dark wedge on the plateau; the PSX paints it too.
+charmed_ridge:2@wedge | pos=(37206, 52999, 14102) yaw=1024 pitch=96 | | --aspect 4:3
