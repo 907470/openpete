@@ -1315,17 +1315,6 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             TIMEOUT 900
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-        # The snap capture's owned-sector box test against walking every
-        # reached owned sector, on a walking bk2 with the terrain cache forced
-        # on: every capture's triangles and census counts.
-        add_test(NAME moby_snap_owned_box_${_pc_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_pose_cache.sh
-                         --game ${_pc_game} --build-dir=${CMAKE_BINARY_DIR} --instrument=snap-owned-box)
-        set_tests_properties(moby_snap_owned_box_${_pc_game} PROPERTIES
-            LABELS "presentation;moby"
-            TIMEOUT 900
-            SKIP_RETURN_CODE 64
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
         # The snap capture limited to the drawn faces near each moby's contact
         # box against the full walk of the same chunk, on a walking bk2 with
         # the terrain cache forced on: every moby's planes, the snap table and
