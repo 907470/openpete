@@ -44,6 +44,8 @@
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "renderer/env_knob.h"
 #include "openpete_thread_roles.h"
+#include "openpete_log.h"
+#include "mod_vec.h"
 
 extern unsigned openpete_frame;
 
@@ -1028,11 +1030,17 @@ static void unclaimed_note(CPUState* cpu, uint32_t prim) {
 enum { QK_FT4 = 0, QK_FREEZE, QK_DR_MODE, QK_F4_BAR, QK_F4_PANEL, QK_LINE_G2, QK_SPRT, QK_POLY_G, QK_LINE_F2 };
 typedef struct { uint32_t addr; uint32_t sum; uint32_t seq; uint32_t aux; uint32_t xy_link; uint32_t xy_rel; uint8_t kind; } ui_claim_t;
 
-/* One drawn tick's 2D. Spyro 3's atlas links ~370 quads per tick, the widest
- * screen in either game; the cap is well clear of that and an overflow is
- * counted rather than silently dropped. */
-#define UI_CLAIM_MAX 2048
-static ui_claim_t s_claim[UI_CLAIM_MAX];
+/* One drawn tick's 2D. The claim run grows with the screen (a page turn of
+ * Spyro 3's atlas links both pages at once); UI_CLAIM_WAS is its former
+ * fixed capacity, past which each growth is logged. A claim is lost only
+ * when the run cannot grow, which is counted in s_claim_lost and logged. */
+#define UI_CLAIM_INIT 2048
+#define UI_CLAIM_WAS  2048
+/* The scene's 2D primitive addresses, one per triangle of the scene and of the
+ * carry accumulation, collected for ranking; the former fixed capacity. */
+#define UI_PRIMS_INIT 4096
+static mod_fvec s_claim_v;
+#define s_claim ((ui_claim_t*)s_claim_v.data)   /* moves on growth: index, never hold */
 static unsigned s_claim_n;            /* claimed, awaiting release */
 static unsigned s_claim_frame;        /* openpete_frame the batch's first claim was made in */
 static unsigned s_claim_lost;         /* claims dropped on overflow (engagement: 0) */
@@ -1069,8 +1077,44 @@ static unsigned s_claim_at_capture;   /* batches released at their own frame's c
  * changed after the release (must be 0, a nonzero count means a store lands
  * after the capture and the release point is too early), against
  * `s_verify_n` primitives checked. */
-static ui_claim_t s_verify[UI_CLAIM_MAX];
+static mod_fvec s_verify_v;
+#define s_verify ((ui_claim_t*)s_verify_v.data)
 static unsigned s_verify_pending;     /* entries awaiting their walk */
+
+/** @brief Grow a 2D run to hold n elements, initialising it on first use.
+ *
+ * @param v The run.
+ * @param elem Element size in bytes, used on first use.
+ * @param init Initial capacity, used on first use.
+ * @param name Census name, used on first use.
+ * @param was Former fixed capacity, past which a growth is logged; used on first use.
+ * @param n Elements required.
+ * @return 1 when the run holds @p n elements, 0 when the allocation fell short. */
+static int ui_run_fit(mod_fvec* v, size_t elem, unsigned init, const char* name,
+                      unsigned long was, unsigned n) {
+    if (!v->elem_size) mod_fvec_init(v, elem, init, name, was);
+    return mod_fvec_reserve_noted(v, n) == 0;
+}
+
+/** @brief Collect the scene's 2D primitive addresses into a run grown until they all fit.
+ *
+ * @param v The run.
+ * @param spare Slots kept free after the addresses, for the caller to append to.
+ * @param n Receives the address count.
+ * @return The run's base, or NULL when it cannot grow; *n is then 0. */
+static uint32_t* scene_2d_prims(mod_fvec* v, int spare, int* n) {
+    unsigned want = UI_PRIMS_INIT;
+    for (;;) {
+        if (!ui_run_fit(v, sizeof(uint32_t), UI_PRIMS_INIT, "ui.prims", UI_PRIMS_INIT, want)) {
+            *n = 0;
+            return NULL;
+        }
+        const int room = (int)v->cap - spare;
+        *n = openpete_native_scene_collect_2d_prims((uint32_t*)v->data, room);
+        if (*n < room) return (uint32_t*)v->data;
+        want = (unsigned)v->cap * 2u;
+    }
+}
 static unsigned s_verify_n, s_verify_stale;
 static unsigned s_claim_spec_refused; /* claims and glyph feeds refused because the tick was
                                        * speculative: the engagement counter for that guard
@@ -1772,8 +1816,9 @@ static void defer_open_period_2d(void) {
     static int cen = -1;
     ENV_FLAG_LATCH(cen, "OPENPETE_UI_DEFER_CENSUS");
     if (cen) {   /* every capture holding open-table 2D, with the wait it is parked at */
-        static uint32_t kp[UI_CLAIM_MAX * 2];
-        const int k = openpete_native_scene_collect_2d_prims(kp, (int)(sizeof kp / sizeof kp[0]));
+        static mod_fvec kp_v;
+        int k;
+        const uint32_t* kp = scene_2d_prims(&kp_v, 0, &k);
         int open = 0;
         for (int i = 0; i < k; i++) open += prim_in_open_period(kp[i]);
         if (open)
@@ -1786,17 +1831,22 @@ static void defer_open_period_2d(void) {
 
 /** @brief Collects the scene's 2D primitive addresses, and one more address when given, sorted ascending.
  *
- * @param known Receives the addresses; holds UI_CLAIM_MAX * 2 + 1.
+ * @param v The run the addresses are collected into, grown to hold them all.
  * @param extra An address ranked with them (the fade quad), or 0 for none.
- * @return The count of addresses. */
-static int collect_scene_2d_sorted(uint32_t* known, uint32_t extra) {
-    int kn = openpete_native_scene_collect_2d_prims(known, UI_CLAIM_MAX * 2);
+ * @param kn_out Receives the count of addresses.
+ * @return The sorted addresses, or NULL when the run cannot grow. */
+static uint32_t* collect_scene_2d_sorted(mod_fvec* v, uint32_t extra, int* kn_out) {
+    int kn;
+    uint32_t* known = scene_2d_prims(v, 1, &kn);
+    *kn_out = 0;
+    if (!known) return NULL;
     if (extra) known[kn++] = extra;
     for (int i = 1; i < kn; i++) {
         uint32_t a = known[i]; int j = i - 1;
         while (j >= 0 && known[j] > a) { known[j+1] = known[j]; j--; }
         known[j+1] = a; }
-    return kn;
+    *kn_out = kn;
+    return known;
 }
 
 /** @brief Marks the scene's 2D the game draws before the avatar when no claimed batch is released to rank it.
@@ -1807,8 +1857,10 @@ static int collect_scene_2d_sorted(uint32_t* known, uint32_t extra) {
  * (prim_under_player). Inert on a game ranked by the DrawOTag walk. */
 static void mark_unranked_under_player(void) {
     if (!under_player_on()) return;
-    static uint32_t known[UI_CLAIM_MAX * 2 + 1];
-    build_link_rank_map(known, collect_scene_2d_sorted(known, 0u));
+    static mod_fvec known_v;
+    int kn;
+    const uint32_t* known = collect_scene_2d_sorted(&known_v, 0u, &kn);
+    build_link_rank_map(known, kn);
     under_player_census(openpete_native_scene_mark_under_player(prim_under_player, s_player_slot));
 }
 
@@ -1832,8 +1884,9 @@ static void mark_unranked_under_player(void) {
 static void rank_scene_2d(CPUState* cpu) {
     s_walk_hits = 0;
     const uint32_t fade_prim = openpete_native_scene_fade_prim();
-    { static uint32_t known[UI_CLAIM_MAX * 2 + 1];
-      const int kn = collect_scene_2d_sorted(known, fade_prim);   /* the fade ranked so the 2D after it is known */
+    { static mod_fvec known_v;
+      int kn;
+      const uint32_t* known = collect_scene_2d_sorted(&known_v, fade_prim, &kn);   /* the fade ranked so the 2D after it is known */
       if (rank_by_link_on()) build_link_rank_map(known, kn);
       else build_ot_rank_map(cpu, known, kn); }
     defer_open_period_2d();
@@ -1845,16 +1898,18 @@ static void rank_scene_2d(CPUState* cpu) {
                                                                 s_player_slot));
     { static int fc = -1; ENV_FLAG_LATCH(fc, "OPENPETE_UI_FADE_CENSUS");
       if (fc && fade_prim) {
-          static uint32_t kp[UI_CLAIM_MAX * 2];
-          const int k = openpete_native_scene_collect_2d_prims(kp, (int)(sizeof kp / sizeof kp[0]));
+          static mod_fvec kp_v;
+          int k;
+          const uint32_t* kp = scene_2d_prims(&kp_v, 0, &k);
           int over = 0;
           for (int i = 0; i < k; i++) over += fade_rank && ot_rank_of_quiet(kp[i]) > fade_rank;
           fprintf(stderr, "[uifade f=%u] prim=%08X rank=%u over=%d of=%d\n", openpete_frame,
                   fade_prim, fade_rank, over, k);
       } }
     { static int pz2 = -1; ENV_FLAG_LATCH(pz2, "OPENPETE_OT_RING_PROBE");
-      if (pz2) { static uint32_t kn2[UI_CLAIM_MAX * 2];
-        int k2 = openpete_native_scene_collect_2d_prims(kn2, (int)(sizeof kn2 / sizeof kn2[0]));
+      if (pz2) { static mod_fvec kn2_v;
+        int k2;
+        const uint32_t* kn2 = scene_2d_prims(&kn2_v, 0, &k2);
         for (int i = 0; i < k2; i++) if (!ot_rank_of_quiet(kn2[i]))
             fprintf(stderr, "[otmiss f=%u] prim=%08X words=%08X %08X %08X\n", openpete_frame, kn2[i],
                     cpu->read_word(kn2[i]), cpu->read_word(kn2[i]+4), cpu->read_word(kn2[i]+8)); } }
@@ -1886,13 +1941,15 @@ static void release_batch(void) {
      * below, over every 2D tri of the scene at once. */
     static int s_tr = -1;
     ENV_FLAG_LATCH(s_tr, "OPENPETE_UISPRITE_TRACE");
+    const int verify_fits = ui_run_fit(&s_verify_v, sizeof(ui_claim_t), UI_CLAIM_INIT, "ui.verify",
+                                       UI_CLAIM_WAS, s_verify_pending + n);
     for (unsigned i = 0; i < n; i++) {
         const uint32_t prim = s_claim[i].addr;
         openpete_native_scene_set_prim(prim);   /* ranked by the table walk below */
         const uint32_t sum = claim_sum(cpu, prim);
         if (sum != s_claim[i].sum) s_mutated++;
         { unsigned vi = s_verify_pending + i;
-          if (vi < UI_CLAIM_MAX) { s_verify[vi].addr = prim; s_verify[vi].sum = sum;
+          if (verify_fits) { s_verify[vi].addr = prim; s_verify[vi].sum = sum;
                                    s_verify[vi].kind = s_claim[i].kind;
                                    s_verify[vi].xy_link = s_claim[i].xy_link;
                                    s_verify[vi].xy_rel  = cpu->read_word(prim + 0x08u); } }
@@ -1901,7 +1958,7 @@ static void release_batch(void) {
     }
     openpete_native_scene_set_prim(0u);
     rank_scene_2d(cpu);
-    s_verify_pending += n;
+    if (verify_fits) s_verify_pending += n;
     if (s_tr)
         fprintf(stderr, "[uifeed f=%u built=%u live=%u] rel=%u mutated=%u lost=%u late=%u cap=%u fed=%u\n",
                 openpete_frame, s_claim_frame, openpete_native_scene_frame(), n,
@@ -1985,7 +2042,7 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
  * Refused (counted in s_claim_spec_refused) unless the canonical capture is
  * open. A claim in a later frame first releases the earlier frame's
  * batch; the first claim of a batch opens the frame's scene. A claim past
- * UI_CLAIM_MAX is counted in s_claim_lost and dropped. The record keeps a
+ * the claim run's growth is counted in s_claim_lost, logged and dropped. The record keeps a
  * checksum of the primitive's words and its xy0 word as linked.
  * @param cpu The guest CPU state.
  * @param prim The primitive's guest address.
@@ -2015,7 +2072,13 @@ static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
          * walk's newer scene, one drawn tick after the world it belongs to. */
         openpete_native_scene_begin_frame(openpete_frame);
     }
-    if (s_claim_n >= UI_CLAIM_MAX) { s_claim_lost++; return; }
+    if (!ui_run_fit(&s_claim_v, sizeof(ui_claim_t), UI_CLAIM_INIT, "ui.claim", UI_CLAIM_WAS,
+                    s_claim_n + 1)) {
+        s_claim_lost++;
+        OPL_ERROR_F("ui-sprite", "2D claim run cannot grow past %u: primitive %08X at frame %u "
+                    "is not drawn (%u lost since boot)", s_claim_n, prim, openpete_frame, s_claim_lost);
+        return;
+    }
     s_claim[s_claim_n].addr = prim;
     s_claim[s_claim_n].sum  = claim_sum(cpu, prim);
     s_claim[s_claim_n].seq  = 0;                /* the traversal walk ranks it at the release */

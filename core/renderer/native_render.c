@@ -515,6 +515,23 @@ static void scene_run_swap(mod_fvec *a, mod_fvec *b) {
  * @param n Triangles wanted.
  * @return 1 when the scene holds @p n, 0 when the allocation fell short. */
 static int scene_room(int n) { return scene_run_fit(&s_scene_v, "scene.tri", n) >= n; }
+/** @brief Grow a flat run of any element type to hold n elements, initialising it on first use.
+ *
+ * The run starts at @p init elements and doubles. On failure
+ * mod_fvec_reserve_noted logs the refusal and the run keeps its capacity.
+ * @param v The run.
+ * @param elem Element size in bytes, used on first use.
+ * @param init Initial capacity, used on first use.
+ * @param name Census name, used on first use.
+ * @param was Former fixed capacity for the census line, used on first use.
+ * @param n Elements required; a negative value reserves 0.
+ * @return 1 when the run holds @p n elements, 0 when it cannot. */
+static int vec_run_fit(mod_fvec *v, size_t elem, size_t init, const char *name,
+                       unsigned long was, int n)
+{
+    if (!v->elem_size) mod_fvec_init(v, elem, init, name, was);
+    return mod_fvec_reserve_noted(v, (size_t)(n > 0 ? n : 0)) == 0;
+}
 
 /* ---- eager scene ring ----------------------------------------------------
  *
@@ -791,12 +808,78 @@ static struct { unsigned published, refused_full, superseded, presented; } s_rin
  * at high --render-fps - the deterministic egg.bk2 f3603 blink).
  * Carry-eligible tris are instead copied here AT ADD TIME (apply_overlay's
  * re-applies bypass add_tri, so re-applied carry never re-accumulates). */
-#define OVERLAY_CARRY_MAX 1024
-static scene_tri_t s_overlay_accum[OVERLAY_CARRY_MAX];
+/* Every carry run (the accumulation, the committed carry, the previous
+ * capture and the pairing scratch sized from them) grows like the scene store:
+ * a fixed cap dropped the triangles fed last, so the tail of a busy 2D screen
+ * vanished on sub-tick presents while the canonical present, drawn from the
+ * uncapped scene, kept it. OVERLAY_CARRY_WAS is the former fixed capacity,
+ * past which each growth is logged; a triangle is now dropped only when an
+ * allocation fails, which carry_drop_note reports on every tick it happens. */
+#define OVERLAY_CARRY_INIT 1024
+#define OVERLAY_CARRY_WAS  1024
+static mod_fvec           s_overlay_accum_v;
+#define s_overlay_accum ((scene_tri_t*)s_overlay_accum_v.data)   /* moves on growth: index, never hold */
 static int                s_overlay_accum_n;
 /* The scene epoch each accumulated tri was fed into (see s_scene_epoch). */
-static uint32_t           s_overlay_accum_epoch[OVERLAY_CARRY_MAX];
-static int                s_overlay_accum_dropped;
+static mod_fvec           s_overlay_accum_epoch_v;
+#define s_overlay_accum_epoch ((uint32_t*)s_overlay_accum_epoch_v.data)
+static int                s_overlay_accum_dropped;   /* since the last capture or hold (held census) */
+static unsigned           s_carry_drop_tick;         /* since the last capture: carry_drop_note */
+static unsigned long      s_carry_drop_total;        /* since boot */
+
+/** @brief Count carry triangles lost to an allocation failure.
+ *
+ * @param n Triangles lost. */
+static void carry_drop(int n)
+{
+    if (n <= 0) return;
+    s_overlay_accum_dropped += n;
+    s_carry_drop_tick += (unsigned)n;
+    s_carry_drop_total += (unsigned long)n;
+}
+
+/** @brief Grow a run sized from a carry run, without a growth log of its own.
+ *
+ * The carry run it follows logs the growth; an allocation failure is
+ * returned to the caller, which reports it.
+ * @param v The run.
+ * @param elem Element size in bytes, used on first use.
+ * @param n Elements required.
+ * @return 1 when the run holds @p n elements, 0 when it cannot. */
+static int carry_side_fit(mod_fvec *v, size_t elem, int n)
+{
+    if (!v->elem_size) mod_fvec_init(v, elem, OVERLAY_CARRY_INIT, NULL, 0);
+    return mod_fvec_reserve(v, (size_t)(n > 0 ? n : 0)) == 0;
+}
+
+/** @brief Grow a carry run and, when given, its parallel epoch run to hold n entries.
+ *
+ * @param tris The triangle run.
+ * @param epochs The epoch run, or NULL for a run that keeps none.
+ * @param name Census name of the triangle run, which logs a growth past OVERLAY_CARRY_WAS.
+ * @param n Entries required.
+ * @return 1 when both runs hold @p n entries, 0 when an allocation fell short. */
+static int carry_run_fit(mod_fvec *tris, mod_fvec *epochs, const char *name, int n)
+{
+    if (!vec_run_fit(tris, sizeof(scene_tri_t), OVERLAY_CARRY_INIT, name, OVERLAY_CARRY_WAS, n))
+        return 0;
+    return !epochs || carry_side_fit(epochs, sizeof(uint32_t), n);
+}
+
+/** @brief Append one triangle to the carry accumulation, stamped with the live scene epoch.
+ *
+ * Counts it in s_overlay_accum_dropped when the accumulation cannot grow.
+ * @param t The triangle. */
+static void carry_accum_push(const scene_tri_t *t)
+{
+    if (!carry_run_fit(&s_overlay_accum_v, &s_overlay_accum_epoch_v, "carry.accum",
+                       s_overlay_accum_n + 1)) {
+        carry_drop(1);
+        return;
+    }
+    s_overlay_accum_epoch[s_overlay_accum_n] = s_scene_epoch;
+    s_overlay_accum[s_overlay_accum_n++] = *t;
+}
 static void (*s_overlay_precapture)(void);
 
 void openpete_native_scene_register_overlay_precapture(void (*fn)(void)) {
@@ -2228,11 +2311,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
          * (a re-applied carry tri routed through a feeder) never re-accumulates. */
         if ((category == OPENPETE_SCENE_OVERLAY || category == OPENPETE_SCENE_HUD_PANEL ||
              carry == 1) && carry != 2) {
-            if (s_overlay_accum_n < OVERLAY_CARRY_MAX) {
-                s_overlay_accum_epoch[s_overlay_accum_n] = s_scene_epoch;
-                s_overlay_accum[s_overlay_accum_n++] = s_scene[s_scene_n];
-            } else
-                s_overlay_accum_dropped++;
+            carry_accum_push(&s_scene[s_scene_n]);
         }
         s_scene_n++;
     } else {
@@ -2826,11 +2905,7 @@ static void scene_append_stored(const scene_tri_t *t) {
     scene_kind_count(t->tag, 1);
     if ((t->category == OPENPETE_SCENE_OVERLAY || t->category == OPENPETE_SCENE_HUD_PANEL ||
          t->carry == 1) && t->carry != 2) {
-        if (s_overlay_accum_n < OVERLAY_CARRY_MAX) {
-            s_overlay_accum_epoch[s_overlay_accum_n] = s_scene_epoch;
-            s_overlay_accum[s_overlay_accum_n++] = *t;
-        } else
-            s_overlay_accum_dropped++;
+        carry_accum_push(t);
     }
     s_scene_n++;
 }
@@ -2924,10 +2999,12 @@ void openpete_native_scene_set_actor_front(int front) { s_scene_actor_front = fr
  * "PRESS START", HUD glyph text, UI separators) live in OPENPETE_SCENE_HUD too,
  * but the 3D feeders never re-derive THEM, so they carry by an explicit per-tri
  * flag (the add_tri carry argument) that the moby near-OT billboards leave 0.
- * (OVERLAY_CARRY_MAX + the feed-time accumulation buffer live up by s_scene.) */
-static scene_tri_t s_overlay_carry[OVERLAY_CARRY_MAX];      /* curr (latest canonical capture) */
+ * (The feed-time accumulation buffer lives up by s_scene.) */
+static mod_fvec           s_overlay_carry_v;      /* curr (latest canonical capture) */
+#define s_overlay_carry ((scene_tri_t*)s_overlay_carry_v.data)
 static int                s_overlay_carry_n;
-static uint32_t           s_overlay_carry_epoch[OVERLAY_CARRY_MAX];
+static mod_fvec           s_overlay_carry_epoch_v;
+#define s_overlay_carry_epoch ((uint32_t*)s_overlay_carry_epoch_v.data)
 static uint32_t           s_overlay_carry_freeze;
 /* The previous canonical tick's freeze word, so the freeze fade (bits 30:24)
  * interpolates sub-tick like the fade word: the exit-level freeze darkens one
@@ -2941,8 +3018,46 @@ static uint32_t           s_overlay_prev_freeze;
  * by index when the two captures have equal count + matching sprite identity
  * (category/textured/uv), else that tri snaps to curr (a structural change - a
  * blink toggling the count, a glyph swap - is discrete anyway). */
-static scene_tri_t s_overlay_prev[OVERLAY_CARRY_MAX];
+static mod_fvec           s_overlay_prev_v;
+#define s_overlay_prev ((scene_tri_t*)s_overlay_prev_v.data)
 static int                s_overlay_prev_n;
+
+/** @brief Copy one carry store into another, growing the destination to fit.
+ *
+ * Every move between the accumulation, the committed carry and the previous
+ * capture goes through here. When the destination cannot grow, the entries
+ * that fit are kept and the rest are counted by carry_drop.
+ * @param tris Destination triangle run.
+ * @param epochs Destination epoch run, or NULL for a store that keeps none.
+ * @param name Census name of the destination triangle run.
+ * @param src Source triangles.
+ * @param src_epochs Source epochs; read only when @p epochs is given.
+ * @param n Entries to copy.
+ * @return The entries copied. */
+static int carry_copy(mod_fvec *tris, mod_fvec *epochs, const char *name,
+                      const scene_tri_t *src, const uint32_t *src_epochs, int n)
+{
+    if (!carry_run_fit(tris, epochs, name, n)) {
+        size_t fit = tris->cap;
+        if (epochs && epochs->cap < fit) fit = epochs->cap;
+        carry_drop(n - (int)fit);
+        n = (int)fit;
+    }
+    if (n <= 0) return 0;
+    memcpy(tris->data, src, (size_t)n * sizeof *src);
+    if (epochs) memcpy(epochs->data, src_epochs, (size_t)n * sizeof *src_epochs);
+    return n;
+}
+
+/** @brief Copy the committed carry into the previous-capture store. */
+static void carry_prev_take(void)
+{
+    s_overlay_prev_n = carry_copy(&s_overlay_prev_v, NULL, "carry.prev",
+                                  s_overlay_carry, NULL, s_overlay_carry_n);
+}
+
+struct carry_census;
+static void carry_compose(const int32_t *match, double oalpha, struct carry_census *cz);
 /* Tick-grid timestamps (openpete_interp_tick_stamp) of the two most-recent CANONICAL overlay captures, so
  * apply_overlay computes the position/fade interpolation alpha from the OVERLAY's
  * OWN cadence - NOT the camera-bracket alpha, which the re-extract leaves at 0
@@ -3588,9 +3703,7 @@ static void held_capture(void) {
  * capture left them, since the buffer holds the same content. */
 static void overlay_carry_hold(void) {
     s_lb_prev = s_lb_curr;   /* the letterbox stands still with the rest */
-    if (s_overlay_carry_n > 0)
-        memcpy(s_overlay_prev, s_overlay_carry, (size_t)s_overlay_carry_n * sizeof(s_overlay_carry[0]));
-    s_overlay_prev_n = s_overlay_carry_n;
+    carry_prev_take();
 }
 
 int openpete_native_scene_canon_repeat(void) {
@@ -3752,6 +3865,106 @@ static void fbwin_census(const char* kind, double alpha) {
     fprintf(stderr, " space=%s\n", fbwin_space((const float (*)[4])b, n, xlo, xhi));
 }
 
+/** @brief Commit the feed-time accumulation as this tick's carry set, in emission order.
+ *
+ * Only the game render's fresh emission accumulates: OVERLAY/HUD_PANEL by
+ * category, 2D-UI sprites and lines by carry 1; apply_overlay's re-applied
+ * copies (carry 2) bypass add_tri, so the accumulation never doubles, and a
+ * sub-tick scene wipe between the feed and the capture cannot lose a sprite.
+ * The two 2D emitters reach the accumulation at different points of the
+ * frame, so feed order is not the game's emission order; it is restored. */
+static void carry_commit(void)
+{
+    s_overlay_carry_n = carry_copy(&s_overlay_carry_v, &s_overlay_carry_epoch_v, "carry.curr",
+                                   s_overlay_accum, s_overlay_accum_epoch, s_overlay_accum_n);
+    s_overlay_accum_n = 0;
+    s_held_2d_mark = 0;
+    seq_sort_carry(s_overlay_carry, s_overlay_carry_epoch, s_overlay_carry_n);
+}
+
+/** @brief Return whether a scene triangle is the game render's fresh 2D, which the carry holds.
+ *
+ * @param q The triangle.
+ * @return 1 for an OVERLAY or HUD_PANEL triangle or a carry-1 2D-UI triangle that is not a re-applied copy. */
+static int carry_eligible(const scene_tri_t *q)
+{
+    return (q->category == OPENPETE_SCENE_OVERLAY || q->category == OPENPETE_SCENE_HUD_PANEL ||
+            q->carry == 1) && q->carry != 2;
+}
+
+/** @brief Print the canonical capture's carry epoch line under OPENPETE_CARRY_EPOCH_PROBE.
+ *
+ * One line per canonical capture, zeros included, naming how many carry
+ * entries carry an epoch other than the scene's and whether that swapped the
+ * scene's carry-eligible tris for the carry set. The held-present census is
+ * reported and reset either way.
+ * @param mismatch Carry entries whose epoch is not the live scene's.
+ * @param reapplied Nonzero when the scene already holds re-applied carry. */
+static void carry_epoch_probe(int mismatch, int reapplied)
+{
+    static int pz = -1;
+    if (pz < 0) { const char* e = getenv("OPENPETE_CARRY_EPOCH_PROBE"); pz = (e && *e && *e != '0'); }
+    held_2d_report(pz);
+    if (!pz) return;
+    int elig = 0;
+    for (int t = 0; t < s_scene_n; t++) elig += carry_eligible(&s_scene[t]);
+    fprintf(stderr, "[carry f=%u] epoch=%u carry_n=%d mismatch=%d stale=%d"
+                    " reapplied=%d scene_n=%d eligible=%d swap=%d\n",
+            s_scene_frame, s_scene_epoch, s_overlay_carry_n, mismatch, mismatch > 0,
+            reapplied, s_scene_n, elig, (mismatch > 0 && !reapplied) ? 1 : 0);
+}
+
+/** @brief Compose the committed carry into the canonical scene when part of it was fed into a scene since replaced.
+ *
+ * A game whose 2D layer emits on alternate VBLs (Spyro 3's menu panel and
+ * its glyphs) puts that emission in one scene and rebuilds the scene before
+ * the canonical present, so the canonical scene holds no 2D at all while the
+ * carry holds the whole set; only the sub-tick re-extract's apply_overlay put
+ * it back, leaving the canonical present and the sub-tick presents showing
+ * different 2D layers. The live scene's own carry-eligible tris are dropped
+ * and the carry is appended in feed order, the set and the order
+ * apply_overlay composes, so the two legs agree.
+ *
+ * A game that emits its 2D into the scene being presented (Spyro 1) has every
+ * carry entry stamped with the live epoch and the scene keeps its own tris,
+ * in their own order. Skipped too when the scene already holds re-applied
+ * carry (carry 2): apply_overlay has composed this set into it already.
+ * @param reapplied Nonzero when the scene holds re-applied carry, taken before any compose. */
+static void carry_canon_compose(int reapplied)
+{
+    int mismatch = 0;
+    for (int t = 0; t < s_overlay_carry_n; t++) mismatch += s_overlay_carry_epoch[t] != s_scene_epoch;
+    carry_epoch_probe(mismatch, reapplied);
+    if (!mismatch || reapplied) return;
+    int w = 0;
+    for (int t = 0; t < s_scene_n; t++) {
+        if (carry_eligible(&s_scene[t])) continue;
+        if (w != t) s_scene[w] = s_scene[t];
+        w++;
+    }
+    s_scene_n = w;
+    carry_compose(NULL, 1.0, NULL);
+    static int s_c2ddbg = -1;
+    if (s_c2ddbg < 0) { const char* e = getenv("OPENPETE_ALPHA_MAP_DBG"); s_c2ddbg = (e && *e && *e != '0'); }
+    if (s_c2ddbg)
+        fprintf(stderr, "[canon-2d f=%u] composed=%d scene_n=%d\n",
+                s_scene_frame, s_overlay_carry_n, s_scene_n);
+}
+
+/** @brief Report the carry triangles lost since the last capture, on every capture that saw a loss.
+ *
+ * A lost triangle vanishes on every sub-tick present of its tick. Resets the
+ * per-capture counts. */
+static void carry_drop_report(void)
+{
+    if (s_carry_drop_tick > 0)
+        OPL_ERROR_F("native", "2D carry lost %u triangles at frame %u (%lu since boot): "
+                    "the sub-tick presents of this tick omit them",
+                    s_carry_drop_tick, s_scene_frame, s_carry_drop_total);
+    s_carry_drop_tick = 0;
+    s_overlay_accum_dropped = 0;
+}
+
 void openpete_native_scene_capture_overlay(void) {
     /* Let the 2D-UI feeder flush its deferred ("feed-previous") prim into this
      * tick's accumulation first - by the canonical present every post-link prim
@@ -3783,9 +3996,7 @@ void openpete_native_scene_capture_overlay(void) {
     /* Roll curr -> prev so apply_overlay can interpolate animated 2D-UI positions
      * (the logo slide-in) across sub-ticks. Runs on the CANONICAL present only, so
      * prev/curr are consecutive canonical captures (one sim tick apart). */
-    if (s_overlay_carry_n > 0)
-        memcpy(s_overlay_prev, s_overlay_carry, (size_t)s_overlay_carry_n * sizeof(s_overlay_carry[0]));
-    s_overlay_prev_n = s_overlay_carry_n;
+    carry_prev_take();
     s_overlay_prev_ns = s_overlay_curr_ns;   /* roll the capture timestamp too */
     /* Stamp the capture with the tick's gridded instant, the same clock the
      * 3D per-object channels roll on, not the wall-clock time this code runs
@@ -3793,88 +4004,10 @@ void openpete_native_scene_capture_overlay(void) {
      * time would judder against the 3D scene it sits over. */
     s_overlay_curr_ns = openpete_interp_tick_stamp();
     letterbox_commit();
-    /* Commit the feed-time accumulation as this tick's carry set. Only the GAME
-     * RENDER's fresh emission ever accumulates: OVERLAY/HUD_PANEL by category,
-     * 2D-UI sprites/lines by carry==1, and apply_overlay's re-applied (carry==2)
-     * copies bypass add_tri entirely - so the accumulation never doubles, and a
-     * sub-tick scene wipe between the feed and this capture can't lose a sprite. */
-    memcpy(s_overlay_carry, s_overlay_accum, (size_t)s_overlay_accum_n * sizeof(s_overlay_accum[0]));
-    memcpy(s_overlay_carry_epoch, s_overlay_accum_epoch,
-           (size_t)s_overlay_accum_n * sizeof(s_overlay_accum_epoch[0]));
-    s_overlay_carry_n = s_overlay_accum_n;
-    s_overlay_accum_n = 0;
-    s_held_2d_mark = 0;
-    /* The two 2D emitters reach the accumulation at different points of the
-     * frame, so feed order is not the game's emission order; restore it. */
-    seq_sort_carry(s_overlay_carry, s_overlay_carry_epoch, s_overlay_carry_n);
-    /* Compose the carry into the scene this present is about to draw, when part
-     * of it was fed into a scene that has since been replaced. A game whose 2D
-     * layer emits on alternate VBLs (Spyro 3's menu panel and its glyphs) puts
-     * that emission in one scene and rebuilds the scene before the canonical
-     * present, so the canonical scene holds no 2D at all while the carry holds
-     * the whole set; only the sub-tick re-extract's apply_overlay put it back,
-     * leaving the canonical present and the sub-tick presents showing different
-     * 2D layers. Drop the live scene's own carry-eligible tris and append the
-     * carry in feed order, which is the set and the order apply_overlay
-     * composes, so the two legs agree.
-     *
-     * A game that emits its 2D into the scene being presented (Spyro 1) has
-     * every carry entry stamped with the live epoch, `stale` stays 0, and the
-     * block is skipped: the scene keeps its own tris, in their own order,
-     * untouched. Skipped too when the scene already holds re-applied carry
-     * (carry == 2) - apply_overlay has composed this set into it already. */
-    /* Taken before the compose below, which itself appends re-applied
-     * copies. */
+    carry_commit();
+    /* Taken before the compose, which itself appends re-applied copies. */
     const int reapplied = scene_holds_reapplied();
-    {
-        int stale = 0, mismatch = 0;
-        for (int t = 0; t < s_overlay_carry_n; t++)
-            if (s_overlay_carry_epoch[t] != s_scene_epoch) { stale = 1; mismatch++; }
-        /* OPENPETE_CARRY_EPOCH_PROBE=1: one line per canonical capture, zeros
-         * included, naming how many carry entries carry an epoch other than the
-         * scene's and whether that swapped the scene's carry-eligible tris for
-         * the carry set. A feeder that emits at a different point of the frame
-         * than the rest of the 2D changes those numbers. */
-        { static int pz = -1;
-          if (pz < 0) { const char* e = getenv("OPENPETE_CARRY_EPOCH_PROBE");
-                        pz = (e && *e && *e != '0'); }
-          held_2d_report(pz);
-          if (pz) {
-            int elig = 0;
-            for (int t = 0; t < s_scene_n; t++) {
-                const scene_tri_t *q = &s_scene[t];
-                if ((q->category == OPENPETE_SCENE_OVERLAY ||
-                     q->category == OPENPETE_SCENE_HUD_PANEL ||
-                     q->carry == 1) && q->carry != 2) elig++;
-            }
-            fprintf(stderr, "[carry f=%u] epoch=%u carry_n=%d mismatch=%d stale=%d"
-                            " reapplied=%d scene_n=%d eligible=%d swap=%d\n",
-                    s_scene_frame, s_scene_epoch, s_overlay_carry_n, mismatch, stale,
-                    reapplied, s_scene_n, elig, (stale && !reapplied) ? 1 : 0); } }
-        if (stale && !reapplied) {
-            int w = 0;
-            for (int t = 0; t < s_scene_n; t++) {
-                const scene_tri_t *q = &s_scene[t];
-                int eligible = (q->category == OPENPETE_SCENE_OVERLAY ||
-                                q->category == OPENPETE_SCENE_HUD_PANEL ||
-                                q->carry == 1) && q->carry != 2;
-                if (!eligible) { if (w != t) s_scene[w] = s_scene[t]; w++; }
-            }
-            s_scene_n = w;
-            (void)scene_room(s_scene_n + s_overlay_carry_n);
-            for (int t = 0; t < s_overlay_carry_n && s_scene_n < (int)s_scene_v.cap; t++) {
-                scene_tri_t tri = s_overlay_carry[t];
-                tri.carry = 2;                   /* composed copy: never re-accumulates */
-                s_scene[s_scene_n++] = tri;
-            }
-            static int s_c2ddbg = -1;
-            if (s_c2ddbg < 0) { const char* e = getenv("OPENPETE_ALPHA_MAP_DBG");
-                                s_c2ddbg = (e && *e && *e != '0'); }
-            if (s_c2ddbg)
-                fprintf(stderr, "[canon-2d f=%u] composed=%d scene_n=%d\n",
-                        s_scene_frame, s_overlay_carry_n, s_scene_n);
-        }
-    }
+    carry_canon_compose(reapplied);
     /* The canonical scene shows the current tick's letterbox, unless
      * apply_overlay has already composed the bars into it. */
     if (!reapplied) letterbox_append(1.0, "canon");
@@ -3886,18 +4019,7 @@ void openpete_native_scene_capture_overlay(void) {
       if (pz < 0) { const char* e = getenv("OPENPETE_FREEZE_LEG_PROBE"); pz = (e && *e && *e != '0'); }
       if (pz) fprintf(stderr, "[canonscene f=%u] epoch=%u scene_n=%d twod=%d\n",
                       s_scene_frame, s_scene_epoch, s_scene_n, scene_2d_count_fwd(s_scene, s_scene_n)); }
-    /* Mirror the scene-cap warn-once: a busy title/menu that overruns the carry
-     * buffer silently loses 2D-UI sprites sub-tick with no signal - warn so the
-     * cap can be raised rather than leaving a view-dependent dropout in the wild. */
-    if (s_overlay_accum_dropped > 0) {
-        static int s_ov_warned = 0;
-        if (!s_ov_warned) { s_ov_warned = 1;
-            fprintf(stderr, "native: WARNING OVERLAY_CARRY_MAX %d exceeded (frame=%u, %d 2D-UI carry "
-                    "tris dropped) - sprites will vanish sub-tick; raise OVERLAY_CARRY_MAX\n",
-                    OVERLAY_CARRY_MAX, s_scene_frame, s_overlay_accum_dropped);
-        }
-        s_overlay_accum_dropped = 0;
-    }
+    carry_drop_report();
     /* NOTE: the freeze backdrop carry is committed in commit_fade (the per-tick
      * overlay-signal commit), NOT here - capturing it from s_scene_freeze created a
      * feedback loop (apply_overlay re-set s_scene_freeze from the carry, so capture
@@ -3975,21 +4097,23 @@ void openpete_native_scene_capture_overlay(void) {
  * whose members displace by different amounts - a re-flow, or a scroll that
  * reveals one more glyph - snaps whole rather than tearing.
  */
-#define CARRY_KEY_SLOTS 2048            /* power of two > OVERLAY_CARRY_MAX */
+#define CARRY_KEY_SLOTS 2048            /* hash buckets; a capture of any size chains in them */
 #define CARRY_MOVE_MAX  64.0f           /* per-tick move bound, px (billboard interp's) */
 #define CARRY_RIGID_TOL 0.5f            /* a run entry's agreement with the run's translation, px */
-/* Open-address table for the per-key multiplicities; power of two, loaded at
- * most half by one capture. */
-#define CARRY_COUNT_SLOTS 4096
+/* Open-address table for the per-key multiplicities: a power of two at least
+ * twice the entry count, so one capture loads it at most half. */
+#define CARRY_COUNT_SLOTS 4096          /* the table's size for up to 2048 entries */
 
+/* The per-entry arrays below point into runs that carry_scratch_fit grows to
+ * the larger capture before a present pairs them. */
 typedef struct {
-    uint32_t key[OVERLAY_CARRY_MAX];    /* per prev entry */
-    int32_t  next[OVERLAY_CARRY_MAX];   /* chain within a bucket, -1 end */
-    int32_t  head[CARRY_KEY_SLOTS];
+    uint32_t* key;                      /* per prev entry */
+    int32_t*  next;                     /* chain within a bucket, -1 end */
+    int32_t   head[CARRY_KEY_SLOTS];
     /* Same entries bucketed by the integer cell of their first vertex and their
      * layer, for the occupancy pass. */
-    int32_t  pnext[OVERLAY_CARRY_MAX];
-    int32_t  phead[CARRY_KEY_SLOTS];
+    int32_t*  pnext;
+    int32_t   phead[CARRY_KEY_SLOTS];
 } carry_key_map_t;
 
 /** @brief Fold one 32-bit word into a 32-bit FNV-1a hash state.
@@ -4092,7 +4216,7 @@ static void carry_keys_build(const scene_tri_t* tris, int n, uint32_t* key) {
  * (carry_pos_slot_of at zero offset). Each chain is built in reverse, so a
  * walk visits entries in feed order.
  * @param m Map to fill; every bucket is reset first.
- * @param prev Previous capture, at most OVERLAY_CARRY_MAX entries.
+ * @param prev Previous capture, at most the entries carry_scratch_fit sized.
  * @param prev_n Entry count. */
 static void carry_map_build(carry_key_map_t* m, const scene_tri_t* prev, int prev_n) {
     for (int i = 0; i < CARRY_KEY_SLOTS; i++) { m->head[i] = -1; m->phead[i] = -1; }
@@ -4124,28 +4248,10 @@ static float tri_pos_dist(const scene_tri_t* a, const scene_tri_t* b) {
     return w;
 }
 
-/** @brief Count, for each entry of a capture, the entries holding its content key.
- *
- * The count uses an open-address table of CARRY_COUNT_SLOTS static slots
- * with linear probing, so the function is not reentrant.
- * @param key Content keys, one per entry.
- * @param n Entry count.
- * @param out Receives, at index i, the number of entries whose key equals key[i]. */
-static void carry_key_counts(const uint32_t* key, int n, uint16_t* out) {
-    static uint32_t slot_key[CARRY_COUNT_SLOTS];
-    static uint16_t slot_n[CARRY_COUNT_SLOTS];
-    static int8_t   slot_used[CARRY_COUNT_SLOTS];
-    static int32_t  slot_of[OVERLAY_CARRY_MAX];
-    memset(slot_used, 0, sizeof(slot_used));
-    for (int i = 0; i < n; i++) {
-        uint32_t s = key[i] & (CARRY_COUNT_SLOTS - 1);
-        while (slot_used[s] && slot_key[s] != key[i]) s = (s + 1) & (CARRY_COUNT_SLOTS - 1);
-        if (!slot_used[s]) { slot_used[s] = 1; slot_key[s] = key[i]; slot_n[s] = 0; }
-        slot_n[s]++;
-        slot_of[i] = (int32_t)s;
-    }
-    for (int i = 0; i < n; i++) out[i] = slot_n[slot_of[i]];
-}
+/* One slot of the multiplicity table. */
+typedef struct { uint32_t key; uint16_t n; int8_t used; } carry_count_slot_t;
+
+static void carry_key_counts(const uint32_t* key, int n, uint16_t* out);
 
 /* The match one present's three passes build. `match[t]` is the previous-capture
  * index paired to current entry `t`, or -1; `ckey[t]` its content key;
@@ -4155,12 +4261,12 @@ static void carry_key_counts(const uint32_t* key, int n, uint16_t* out) {
  * `ambig[t]` whether the entry's content key is held by two or more entries in
  * either capture. */
 typedef struct {
-    int32_t  match[OVERLAY_CARRY_MAX];
-    uint32_t ckey[OVERLAY_CARRY_MAX];
-    int8_t   occupied[OVERLAY_CARRY_MAX];
-    int8_t   prev_taken[OVERLAY_CARRY_MAX];
-    int8_t   anchored[OVERLAY_CARRY_MAX];
-    int8_t   ambig[OVERLAY_CARRY_MAX];
+    int32_t*  match;
+    uint32_t* ckey;
+    int8_t*   occupied;
+    int8_t*   prev_taken;
+    int8_t*   anchored;
+    int8_t*   ambig;
 } carry_match_t;
 
 /* The runs of one capture. `of[t]` is entry t's run; `lo` and `len` the run's
@@ -4169,14 +4275,124 @@ typedef struct {
  * `cx`/`cy` the mean of its entries' vertex positions; `taken` whether a
  * current run has already claimed this one. */
 typedef struct {
-    int32_t  lo[OVERLAY_CARRY_MAX];
-    int32_t  len[OVERLAY_CARRY_MAX];
-    uint32_t sig[OVERLAY_CARRY_MAX];
-    float    cx[OVERLAY_CARRY_MAX], cy[OVERLAY_CARRY_MAX];
-    int32_t  of[OVERLAY_CARRY_MAX];
-    int8_t   taken[OVERLAY_CARRY_MAX];
-    int      n;
+    int32_t*  lo;
+    int32_t*  len;
+    uint32_t* sig;
+    float*    cx;
+    float*    cy;
+    int32_t*  of;
+    int8_t*   taken;
+    int       n;
 } carry_runs_t;
+
+/* The pairing scratch of one present: the previous capture's key map, the
+ * match, both captures' runs, the per-entry key multiplicities and the
+ * multiplicity table, with the runs backing each array. */
+enum { CARRY_ARR_MAP_KEY, CARRY_ARR_MAP_NEXT, CARRY_ARR_MAP_PNEXT,
+       CARRY_ARR_MATCH, CARRY_ARR_CKEY, CARRY_ARR_OCCUPIED, CARRY_ARR_PREV_TAKEN,
+       CARRY_ARR_ANCHORED, CARRY_ARR_AMBIG,
+       CARRY_ARR_RUN_LO, CARRY_ARR_RUN_LEN = CARRY_ARR_RUN_LO + 2,
+       CARRY_ARR_RUN_SIG = CARRY_ARR_RUN_LEN + 2, CARRY_ARR_RUN_CX = CARRY_ARR_RUN_SIG + 2,
+       CARRY_ARR_RUN_CY = CARRY_ARR_RUN_CX + 2, CARRY_ARR_RUN_OF = CARRY_ARR_RUN_CY + 2,
+       CARRY_ARR_RUN_TAKEN = CARRY_ARR_RUN_OF + 2,
+       CARRY_ARR_PCOUNT = CARRY_ARR_RUN_TAKEN + 2, CARRY_ARR_CCOUNT, CARRY_ARR_SLOT_OF,
+       CARRY_ARR_N };
+static struct {
+    carry_key_map_t map;
+    carry_match_t   mt;
+    carry_runs_t    prun, crun;
+    uint16_t       *pcount, *ccount;
+    int32_t        *slot_of;
+    carry_count_slot_t *slots;
+    int             nslots;
+    mod_fvec        arr[CARRY_ARR_N];
+    mod_fvec        slots_v;
+} s_carry;
+
+/** @brief Grow one scratch array to hold n elements and return its base.
+ *
+ * @param i Index of the array's run in s_carry.arr.
+ * @param elem Element size in bytes.
+ * @param n Elements required.
+ * @param ok Cleared when the run cannot hold @p n.
+ * @return The run's base, which moves on growth. */
+static void* carry_arr(int i, size_t elem, int n, int* ok) {
+    if (!carry_side_fit(&s_carry.arr[i], elem, n)) *ok = 0;
+    return s_carry.arr[i].data;
+}
+
+/** @brief Point a run set's arrays at runs grown to n entries.
+ *
+ * @param r The run set.
+ * @param base Index in s_carry.arr of its first array; the set uses every second index from it.
+ * @param n Entries required.
+ * @param ok Cleared when a run cannot hold @p n. */
+static void carry_runs_fit(carry_runs_t* r, int base, int n, int* ok) {
+    const int d = base - CARRY_ARR_RUN_LO;
+    r->lo    = carry_arr(CARRY_ARR_RUN_LO + d,    sizeof *r->lo, n, ok);
+    r->len   = carry_arr(CARRY_ARR_RUN_LEN + d,   sizeof *r->len, n, ok);
+    r->sig   = carry_arr(CARRY_ARR_RUN_SIG + d,   sizeof *r->sig, n, ok);
+    r->cx    = carry_arr(CARRY_ARR_RUN_CX + d,    sizeof *r->cx, n, ok);
+    r->cy    = carry_arr(CARRY_ARR_RUN_CY + d,    sizeof *r->cy, n, ok);
+    r->of    = carry_arr(CARRY_ARR_RUN_OF + d,    sizeof *r->of, n, ok);
+    r->taken = carry_arr(CARRY_ARR_RUN_TAKEN + d, sizeof *r->taken, n, ok);
+}
+
+/** @brief Size every pairing scratch array for captures of up to n entries.
+ *
+ * The multiplicity table takes the smallest power of two that is at least
+ * CARRY_COUNT_SLOTS and at least 2n.
+ * @param n Entries of the larger capture.
+ * @return 1 when every array holds @p n entries, 0 when an allocation fell short. */
+static int carry_scratch_fit(int n) {
+    int ok = 1;
+    carry_key_map_t* m = &s_carry.map;
+    carry_match_t* mt = &s_carry.mt;
+    m->key   = carry_arr(CARRY_ARR_MAP_KEY,   sizeof *m->key, n, &ok);
+    m->next  = carry_arr(CARRY_ARR_MAP_NEXT,  sizeof *m->next, n, &ok);
+    m->pnext = carry_arr(CARRY_ARR_MAP_PNEXT, sizeof *m->pnext, n, &ok);
+    mt->match      = carry_arr(CARRY_ARR_MATCH,      sizeof *mt->match, n, &ok);
+    mt->ckey       = carry_arr(CARRY_ARR_CKEY,       sizeof *mt->ckey, n, &ok);
+    mt->occupied   = carry_arr(CARRY_ARR_OCCUPIED,   sizeof *mt->occupied, n, &ok);
+    mt->prev_taken = carry_arr(CARRY_ARR_PREV_TAKEN, sizeof *mt->prev_taken, n, &ok);
+    mt->anchored   = carry_arr(CARRY_ARR_ANCHORED,   sizeof *mt->anchored, n, &ok);
+    mt->ambig      = carry_arr(CARRY_ARR_AMBIG,      sizeof *mt->ambig, n, &ok);
+    carry_runs_fit(&s_carry.prun, CARRY_ARR_RUN_LO, n, &ok);
+    carry_runs_fit(&s_carry.crun, CARRY_ARR_RUN_LO + 1, n, &ok);
+    s_carry.pcount  = carry_arr(CARRY_ARR_PCOUNT,  sizeof *s_carry.pcount, n, &ok);
+    s_carry.ccount  = carry_arr(CARRY_ARR_CCOUNT,  sizeof *s_carry.ccount, n, &ok);
+    s_carry.slot_of = carry_arr(CARRY_ARR_SLOT_OF, sizeof *s_carry.slot_of, n, &ok);
+    int slots = CARRY_COUNT_SLOTS;
+    while (slots < 2 * n) slots *= 2;
+    if (carry_side_fit(&s_carry.slots_v, sizeof(carry_count_slot_t), slots))
+        s_carry.nslots = slots;
+    else
+        ok = 0;
+    s_carry.slots = (carry_count_slot_t*)s_carry.slots_v.data;
+    return ok;
+}
+
+/** @brief Count, for each entry of a capture, the entries holding its content key.
+ *
+ * The count uses the open-address table in s_carry.slots with linear
+ * probing, sized by carry_scratch_fit, so the function is not reentrant.
+ * @param key Content keys, one per entry.
+ * @param n Entry count.
+ * @param out Receives, at index i, the number of entries whose key equals key[i]. */
+static void carry_key_counts(const uint32_t* key, int n, uint16_t* out) {
+    carry_count_slot_t* slot = s_carry.slots;
+    int32_t* slot_of = s_carry.slot_of;
+    const uint32_t mask = (uint32_t)s_carry.nslots - 1u;
+    for (int i = 0; i < s_carry.nslots; i++) slot[i].used = 0;
+    for (int i = 0; i < n; i++) {
+        uint32_t s = key[i] & mask;
+        while (slot[s].used && slot[s].key != key[i]) s = (s + 1) & mask;
+        if (!slot[s].used) { slot[s].used = 1; slot[s].key = key[i]; slot[s].n = 0; }
+        slot[s].n++;
+        slot_of[i] = (int32_t)s;
+    }
+    for (int i = 0; i < n; i++) out[i] = slot[slot_of[i]].n;
+}
 
 /* Per-present run tallies for the census. */
 typedef struct { int runs, lerped, disagree, segmented, segs; } carry_run_stats_t;
@@ -4203,7 +4419,7 @@ static int carry_run_joins(const scene_tri_t* a, const scene_tri_t* b) {
  * of adjacent entries. Each run records its first entry, length, order-
  * independent content signature (the sum of the entries' hashed keys) and
  * the mean of all its vertex positions.
- * @param tris Capture entries, at most OVERLAY_CARRY_MAX.
+ * @param tris Capture entries, at most the entries carry_scratch_fit sized.
  * @param key Content keys of the entries.
  * @param n Entry count.
  * @param r Receives the runs. */
@@ -4620,7 +4836,8 @@ static int carry_pair_content(const carry_key_map_t* m,
                               const scene_tri_t* prev, int prev_n,
                               const scene_tri_t* curr, int curr_n,
                               const carry_runs_t* cr, carry_match_t* mt) {
-    static uint16_t pcount[OVERLAY_CARRY_MAX], ccount[OVERLAY_CARRY_MAX];
+    uint16_t* pcount = s_carry.pcount;
+    uint16_t* ccount = s_carry.ccount;
     carry_key_counts(m->key, prev_n, pcount);
     carry_key_counts(mt->ckey, curr_n, ccount);
     int paired = 0;
@@ -4724,15 +4941,16 @@ static int carry_pair_all(const carry_key_map_t* m,
                           const scene_tri_t* prev, int prev_n,
                           const scene_tri_t* curr, int curr_n,
                           carry_match_t* mt, carry_run_stats_t* st) {
-    static carry_runs_t s_prun, s_crun;
+    carry_runs_t* prun = &s_carry.prun;
+    carry_runs_t* crun = &s_carry.crun;
     for (int j = 0; j < prev_n; j++) mt->prev_taken[j] = 0;
     for (int t = 0; t < curr_n; t++) { mt->match[t] = -1; mt->anchored[t] = 0; }
     carry_keys_build(curr, curr_n, mt->ckey);
-    carry_runs_build(prev, m->key, prev_n, &s_prun);
-    carry_runs_build(curr, mt->ckey, curr_n, &s_crun);
-    int paired = carry_pair_runs(prev, prev_n, &s_prun, curr, &s_crun, mt, st);
+    carry_runs_build(prev, m->key, prev_n, prun);
+    carry_runs_build(curr, mt->ckey, curr_n, crun);
+    int paired = carry_pair_runs(prev, prev_n, prun, curr, crun, mt, st);
     paired += carry_pair_occupancy(m, prev, curr, curr_n, mt);
-    paired += carry_pair_content(m, prev, prev_n, curr, curr_n, &s_crun, mt);
+    paired += carry_pair_content(m, prev, prev_n, curr, curr_n, crun, mt);
     return paired + carry_pair_snapshot(prev, prev_n, curr, curr_n, mt);
 }
 
@@ -4760,7 +4978,7 @@ static int carry_pair_all(const carry_key_map_t* m,
  * no translation at all, so every entry of them snapped. One line per present, zero counts
  * included, so a present that carried no 2D reads as no engagement rather than
  * as clean. */
-typedef struct {
+typedef struct carry_census {
     int      lerped;        /* carried tris paired with a previous entry, moved or not */
     int      far_both;      /* of those, > 2 px from both brackets */
     int      uv_mismatch;   /* pairs whose first-vertex UV region differs */
@@ -4950,113 +5168,161 @@ static void carry_census_flush(const carry_census_t* cz, int carried, int paired
             cz->worst_a[0], cz->worst_a[1]);
 }
 
-void openpete_native_scene_apply_overlay(double alpha) {
-    /* The passed `alpha` is the camera-bracket alpha - 0 when the camera ring
-     * dedupes (static camera). Animated 2D-UI (the logo drop-in) moves while the
-     * camera is still, so derive the overlay's own alpha from its capture cadence:
-     * 1-tick-lagged (now≈curr_ns => show prev, advance to curr over the next
-     * capture period), exactly the camera bracket's convention but from the
-     * overlay's timestamps. Falls back to the camera alpha if the timestamps
-     * aren't primed yet (first frames). */
-    double oalpha = alpha;
+/** @brief Return the overlay's sub-tick alpha from its own capture cadence.
+ *
+ * The passed alpha is the camera-bracket alpha, 0 when the camera ring
+ * dedupes (a static camera). Animated 2D-UI (the logo drop-in) moves while
+ * the camera is still, so the overlay's alpha comes from its capture
+ * timestamps, 1-tick-lagged like the camera bracket (now at curr_ns shows
+ * prev, advancing to curr over the next capture period). Under deterministic
+ * capture op_now() is not reproducible run to run, so the phase comes from
+ * the pinned present clock and the tick grid instead: the overlay captures
+ * roll one canonical tick apart, so this is the camera bracket's phase (0.5
+ * at the forced midpoint) and it still advances while nothing moves. The
+ * period is capped at one tick like the 3D brackets, so a carry resuming
+ * after a spine-off stretch sweeps its delta over one tick. Both read the
+ * virtual present clock, never op_now(): eager production extracts the scene
+ * well before the instant it displays, and the alpha is for the display
+ * instant. Falls back to the camera alpha until the timestamps are primed.
+ * @param alpha Camera-bracket alpha.
+ * @return The overlay alpha, clamped to 0..1. */
+static double overlay_alpha(double alpha) {
+    op_time_t curr = 0, period = 0;
     if (openpete_interp_deterministic()) {
-        /* Deterministic capture: op_now() is not reproducible run-to-run, so the
-         * wall-clock cadence below would make an animating overlay (a swimming
-         * text moby) flicker between captures. Derive the sub-tick phase from the
-         * PINNED present clock and the tick grid instead - the overlay captures
-         * roll one canonical tick apart, so this yields the same phase the camera
-         * bracket uses (0.5 at the forced midpoint) AND still advances when the
-         * camera/world is static, because ticks don't stop just because nothing
-         * moved. */
-        op_time_t curr = openpete_interp_curr_tick_ns();
-        op_time_t period = openpete_interp_det_period();
-        if (curr > 0 && period > 0) {
-            oalpha = (double)(openpete_interp_present_now() - curr) / (double)period;
-            if (oalpha < 0.0) oalpha = 0.0; else if (oalpha > 1.0) oalpha = 1.0;
-        }
-    } else if (s_overlay_curr_ns > s_overlay_prev_ns && s_overlay_prev_ns > 0) {
-        /* Interp spans one tick (1-tick lag, no extrapolation): cap the
-         * denominator at one tick like the 3D brackets, so a carry resuming
-         * after a spine-off stretch sweeps its delta over one tick instead of
-         * crawling for the length of the gap. */
-        op_time_t period = s_overlay_curr_ns - s_overlay_prev_ns;
-        if (period > g_openpete_tick_period_ns) period = g_openpete_tick_period_ns;
-        /* The VIRTUAL present clock, never op_now(): the scene may be extracted
-         * well before the instant it displays (eager production builds the
-         * whole span right after the tick), and the alpha is for the DISPLAY
-         * instant. Measured against extraction time every intermediate sat at
-         * alpha≈0 and the title logo's drop-in stepped at the tick rate. */
-        oalpha = (double)((int64_t)openpete_interp_present_now() - (int64_t)s_overlay_curr_ns) / (double)period;
-        if (oalpha < 0.0) oalpha = 0.0; else if (oalpha > 1.0) oalpha = 1.0;
+        curr = openpete_interp_curr_tick_ns();
+        period = openpete_interp_det_period();
+        if (curr <= 0 || period <= 0) return alpha;
+        double a = (double)(openpete_interp_present_now() - curr) / (double)period;
+        return a < 0.0 ? 0.0 : a > 1.0 ? 1.0 : a;
     }
-    /* OPENPETE_ALPHA_MAP_DBG: the overlay's present-time -> interp-time mapping
-     * beside the 3D bracket's line (reextract.c), so a 2D-UI slide
-     * stepping while the 3D scene glides is attributable in one log. */
-    {
-        static int s_oadbg = -1;
-        if (s_oadbg < 0) { const char* e = getenv("OPENPETE_ALPHA_MAP_DBG"); s_oadbg = (e && *e && *e != '0'); }
-        if (s_oadbg && s_overlay_carry_n > 0) {
-            extern int g_openpete_canon_lag_leg;
-            fprintf(stderr, "[overlay-alpha f=%u leg=%s] present_now=%.3fms now=%.3fms curr_ns=%.3fms prev_ns=%.3fms cam_alpha=%.3f oalpha=%.3f n=%d\n",
-                    s_scene_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
-                    (double)openpete_interp_present_now() / 1e6, (double)op_now() / 1e6, /* clock-guard: wall */ /* prints both */
-                    (double)s_overlay_curr_ns / 1e6, (double)s_overlay_prev_ns / 1e6, alpha, oalpha, s_overlay_carry_n);
-        }
+    if (!(s_overlay_curr_ns > s_overlay_prev_ns && s_overlay_prev_ns > 0)) return alpha;
+    period = s_overlay_curr_ns - s_overlay_prev_ns;
+    if (period > g_openpete_tick_period_ns) period = g_openpete_tick_period_ns;
+    double a = (double)((int64_t)openpete_interp_present_now() - (int64_t)s_overlay_curr_ns) / (double)period;
+    return a < 0.0 ? 0.0 : a > 1.0 ? 1.0 : a;
+}
+
+/** @brief Print the overlay's present-time to interp-time mapping under OPENPETE_ALPHA_MAP_DBG.
+ *
+ * Printed beside the 3D bracket's line (reextract.c), so a 2D-UI slide
+ * stepping while the 3D scene glides is attributable in one log.
+ * @param alpha Camera-bracket alpha.
+ * @param oalpha Overlay alpha. */
+static void overlay_alpha_trace(double alpha, double oalpha) {
+    static int s_oadbg = -1;
+    if (s_oadbg < 0) { const char* e = getenv("OPENPETE_ALPHA_MAP_DBG"); s_oadbg = (e && *e && *e != '0'); }
+    if (!s_oadbg || s_overlay_carry_n <= 0) return;
+    extern int g_openpete_canon_lag_leg;
+    fprintf(stderr, "[overlay-alpha f=%u leg=%s] present_now=%.3fms now=%.3fms curr_ns=%.3fms prev_ns=%.3fms cam_alpha=%.3f oalpha=%.3f n=%d\n",
+            s_scene_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
+            (double)openpete_interp_present_now() / 1e6, (double)op_now() / 1e6, /* clock-guard: wall */ /* prints both */
+            (double)s_overlay_curr_ns / 1e6, (double)s_overlay_prev_ns / 1e6, alpha, oalpha, s_overlay_carry_n);
+}
+
+/** @brief Pair the committed carry with the previous capture for this present.
+ *
+ * Pairing needs scratch for the larger capture; a present whose scratch
+ * cannot grow pairs nothing, is logged, and every entry snaps to the current
+ * tick.
+ * @param rst Receives the rigid-run pass's tallies.
+ * @param paired Receives the number of entries paired.
+ * @return The match (previous index per current entry, -1 for none), or NULL when nothing could be paired. */
+static const int32_t* carry_pair_present(carry_run_stats_t* rst, int* paired) {
+    const int pair_n = s_overlay_prev_n > s_overlay_carry_n ? s_overlay_prev_n : s_overlay_carry_n;
+    *paired = 0;
+    if (!carry_scratch_fit(pair_n)) {
+        OPL_ERROR_F("native", "2D carry pairing scratch cannot grow to %d entries at frame %u: "
+                    "this present draws its 2D unlerped", pair_n, s_scene_frame);
+        return NULL;
     }
-    static carry_key_map_t s_map;
-    static carry_match_t   s_mt;
-    carry_run_stats_t rst = {0};
-    carry_map_build(&s_map, s_overlay_prev, s_overlay_prev_n);
-    int paired = carry_pair_all(&s_map, s_overlay_prev, s_overlay_prev_n,
-                                s_overlay_carry, s_overlay_carry_n, &s_mt, &rst);
-    carry_census_t cz = {0};
-    int census = carry_census_on();
-    if (s_held_area >= 0)   /* the retained area's earlier ticks, under the carry */
-        scene_insert_before_2d(s_held[s_held_area].t, s_held_replay);
+    carry_map_build(&s_carry.map, s_overlay_prev, s_overlay_prev_n);
+    *paired = carry_pair_all(&s_carry.map, s_overlay_prev, s_overlay_prev_n,
+                             s_overlay_carry, s_overlay_carry_n, &s_carry.mt, rst);
+    return s_carry.mt.match;
+}
+
+/** @brief Append the committed carry to the live scene as re-applied copies, lerping each paired entry from its partner.
+ *
+ * The canonical capture and every sub-tick present compose the carry here.
+ * An entry is marked carry 2, so the next capture does not accumulate it
+ * again. The scene is grown first; entries past an allocation failure are
+ * not appended.
+ * @param match Previous-capture partner per entry, -1 for none, or NULL to lerp nothing.
+ * @param oalpha Overlay alpha a paired entry is lerped by.
+ * @param cz Carry census accumulating each lerped pair, or NULL. */
+static void carry_compose(const int32_t* match, double oalpha, carry_census_t* cz) {
     (void)scene_room(s_scene_n + s_overlay_carry_n);
     for (int t = 0; t < s_overlay_carry_n && s_scene_n < (int)s_scene_v.cap; t++) {
         scene_tri_t tri = s_overlay_carry[t];   /* curr; category already stamped */
-        int pi = s_mt.match[t];
+        const int pi = match ? match[t] : -1;
         if (pi >= 0) {
             const scene_tri_t *p = &s_overlay_prev[pi];
             for (int k = 0; k < 3; k++) {
                 tri.v[k].sx = (float)(p->v[k].sx + (tri.v[k].sx - p->v[k].sx) * oalpha);
                 tri.v[k].sy = (float)(p->v[k].sy + (tri.v[k].sy - p->v[k].sy) * oalpha);
             }
-            if (census) carry_census_pair(&cz, &s_map, &s_mt, t, &tri);
+            if (cz) carry_census_pair(cz, &s_carry.map, &s_carry.mt, t, &tri);
         }
-        tri.carry = 2;                             /* mark re-applied so the next capture skips it */
+        tri.carry = 2;
         s_scene[s_scene_n++] = tri;
     }
+}
+
+/** @brief Print one summary line of the committed carry: its seq range, unranked count, bounding box and per-layer counts.
+ *
+ * @param paired Entries the pairing matched this present. */
+static void carry_probe_summary(int paired) {
+    unsigned lo = 0xFFFFFFFFu, hi = 0; int cat[16] = {0}, nz = 0;
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    for (int t = 0; t < s_overlay_carry_n; t++) {
+        const scene_tri_t* q = &s_overlay_carry[t];
+        if (q->seq) { if (q->seq < lo) lo = q->seq; if (q->seq > hi) hi = q->seq; } else nz++;
+        if (q->category >= 0 && q->category < 16) cat[q->category]++;
+        for (int k = 0; k < 3; k++) {
+            x0 = fminf(x0, q->v[k].sx); x1 = fmaxf(x1, q->v[k].sx);
+            y0 = fminf(y0, q->v[k].sy); y1 = fmaxf(y1, q->v[k].sy);
+        }
+    }
+    fprintf(stderr, "[apply f=%u sort=%d] n=%d paired=%d seq=%u..%u zero=%d"
+                    " bbox=[%.0f,%.0f]x[%.0f,%.0f] cats:", s_scene_frame, seq_sort_on(),
+            s_overlay_carry_n, paired, lo, hi, nz, x0, x1, y0, y1);
+    for (int c = 0; c < 16; c++) if (cat[c]) fprintf(stderr, " %d=%d", c, cat[c]);
+    fprintf(stderr, "\n");
+}
+
+/** @brief Print the composed carry's summary, and on the probe's own frame every entry, under OPENPETE_APPLY_PROBE.
+ *
+ * Active within 4 frames of the frame the variable names.
+ * @param paired Entries the pairing matched this present. */
+static void carry_apply_probe(int paired) {
+    static int pf = -2;
+    if (pf == -2) { const char* e = getenv("OPENPETE_APPLY_PROBE"); pf = (e && *e) ? atoi(e) : -1; }
+    if (pf < 0 || (int)s_scene_frame < pf - 4 || (int)s_scene_frame > pf + 4) return;
+    carry_probe_summary(paired);
+    if ((int)s_scene_frame != pf) return;
+    for (int t = 0; t < s_overlay_carry_n; t++) {
+        const scene_tri_t* q = &s_overlay_carry[t];
+        fprintf(stderr, "[applytri %d] seq=%u prim=%08X cat=%d bl=%d tex=%d tp=(%d,%d) cl=(%d,%d) v=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f) rgba=%08X\n",
+                t, q->seq, q->prim, q->category, q->blend, q->textured,
+                q->tpage_x, q->tpage_y, q->clut_x, q->clut_y,
+                q->v[0].sx, q->v[0].sy, q->v[1].sx, q->v[1].sy, q->v[2].sx, q->v[2].sy, q->v[0].rgba);
+    }
+}
+
+void openpete_native_scene_apply_overlay(double alpha) {
+    const double oalpha = overlay_alpha(alpha);
+    overlay_alpha_trace(alpha, oalpha);
+    carry_run_stats_t rst = {0};
+    int paired = 0;
+    const int32_t* match = carry_pair_present(&rst, &paired);
+    carry_census_t cz = {0};
+    const int census = carry_census_on();
+    if (s_held_area >= 0)   /* the retained area's earlier ticks, under the carry */
+        scene_insert_before_2d(s_held[s_held_area].t, s_held_replay);
+    carry_compose(match, oalpha, census ? &cz : NULL);
     if (census) carry_census_flush(&cz, s_overlay_carry_n, paired, oalpha, &rst);
     letterbox_append(oalpha, "apply");
-    { static int pf = -2;
-      if (pf == -2) { const char* e = getenv("OPENPETE_APPLY_PROBE"); pf = (e && *e) ? atoi(e) : -1; }
-      if (pf >= 0 && (int)s_scene_frame >= pf - 4 && (int)s_scene_frame <= pf + 4) {
-        unsigned lo = 0xFFFFFFFFu, hi = 0; int cat[16] = {0}, nz = 0;
-        float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
-        for (int t = 0; t < s_overlay_carry_n; t++) {
-            const scene_tri_t* q = &s_overlay_carry[t];
-            if (q->seq) { if (q->seq < lo) lo = q->seq; if (q->seq > hi) hi = q->seq; } else nz++;
-            if (q->category >= 0 && q->category < 16) cat[q->category]++;
-            for (int k = 0; k < 3; k++) {
-                if (q->v[k].sx < x0) x0 = q->v[k].sx;
-                if (q->v[k].sx > x1) x1 = q->v[k].sx;
-                if (q->v[k].sy < y0) y0 = q->v[k].sy;
-                if (q->v[k].sy > y1) y1 = q->v[k].sy;
-            }
-        }
-        fprintf(stderr, "[apply f=%u sort=%d] n=%d paired=%d seq=%u..%u zero=%d"
-                        " bbox=[%.0f,%.0f]x[%.0f,%.0f] cats:", s_scene_frame, seq_sort_on(),
-                s_overlay_carry_n, paired, lo, hi, nz, x0, x1, y0, y1);
-        for (int c = 0; c < 16; c++) if (cat[c]) fprintf(stderr, " %d=%d", c, cat[c]);
-        fprintf(stderr, "\n");
-        if ((int)s_scene_frame == pf) for (int t = 0; t < s_overlay_carry_n; t++) {
-            const scene_tri_t* q = &s_overlay_carry[t];
-            fprintf(stderr, "[applytri %d] seq=%u prim=%08X cat=%d bl=%d tex=%d tp=(%d,%d) cl=(%d,%d) v=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f) rgba=%08X\n",
-                    t, q->seq, q->prim, q->category, q->blend, q->textured,
-                    q->tpage_x, q->tpage_y, q->clut_x, q->clut_y,
-                    q->v[0].sx, q->v[0].sy, q->v[1].sx, q->v[1].sy, q->v[2].sx, q->v[2].sy, q->v[0].rgba); } } }
+    carry_apply_probe(paired);
     s_scene_freeze = freeze_lerp(s_overlay_prev_freeze, s_overlay_carry_freeze, oalpha);
     s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, oalpha);
     fbwin_census("inter", oalpha);
@@ -9572,23 +9838,6 @@ static mod_fvec s_cz_codev;   /* uint32_t: one entry per triangle, the compose's
 static int s_cz_tris;    /* entries every index run holds */
 static int s_cz_verts;   /* vertices every vertex run and scene GPU buffer holds */
 static int compose_reserve(int scene_n);
-/** @brief Grow an instrument-only compose run to hold n elements, initializing it on first use.
- *
- * The run is initialized with SCENE_RUN_INIT capacity on its first call.
- * On failure mod_fvec_reserve_noted logs the refusal and the instrument
- * skips this present.
- * @param v The run.
- * @param elem Element size in bytes, used on first use.
- * @param name Census name, used on first use.
- * @param was Former fixed capacity for the census line, used on first use.
- * @param n Elements required; a negative value reserves 0.
- * @return 1 when the run holds @p n elements, 0 when it cannot. */
-static int cz_instrument_run(mod_fvec *v, size_t elem, const char *name,
-                             unsigned long was, int n)
-{
-    if (!v->elem_size) mod_fvec_init(v, elem, SCENE_RUN_INIT, name, was);
-    return mod_fvec_reserve_noted(v, (size_t)(n > 0 ? n : 0)) == 0;
-}
 
 /** @brief Create or grow opaque_depth, the world-opaque depth pre-pass target, to the larger of the reference and window sizes.
  *
@@ -11621,7 +11870,7 @@ static int moby_shell_draw(const scene_tri_t* scene, int scene_n, int full_exten
 {
     if (!s_nr.moby_shell_rt || !s_nr.moby_shell_intr_rt || !s_nr.moby_shell_pipe ||
         !s_nr.moby_shell_intr_pipe || !s_nr.moby_shell_vb) return 0;
-    if (!cz_instrument_run(&s_cz_shell, sizeof(rhi_vertex), "compose.shell_vb", 0, scene_n * 3))
+    if (!vec_run_fit(&s_cz_shell, sizeof(rhi_vertex), SCENE_RUN_INIT, "compose.shell_vb", 0, scene_n * 3))
         return 0;
     rhi_vertex* buf = (rhi_vertex*)s_cz_shell.data;
     const int m = pack_moby_shell_batch(scene, scene_n, full_extent, buf);
@@ -15665,8 +15914,8 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
     if (chk == -2) { const char* e = getenv("OPENPETE_PORTAL_COVER_CHECK");
                      chk = (e && *e) ? atol(e) : -1; }
     if (chk < 0 || s_scene_frame != (unsigned)chk || s_cvp_n <= 0) return;
-    if (!cz_instrument_run(&s_cz_cand, sizeof(int), "compose.portal_cover_cand",
-                           SCENE_TRIS_WAS, n)) return;
+    if (!vec_run_fit(&s_cz_cand, sizeof(int), SCENE_RUN_INIT, "compose.portal_cover_cand",
+                     SCENE_TRIS_WAS, n)) return;
     for (int pi = 0; pi < s_cvp_n; pi++) {
         const openpete_native_cover_plane* P = &s_cvp[pi];
         if (P->pn < 3) continue;
@@ -18512,8 +18761,8 @@ static void key_ident_check(const scene_tri_t* scene, int scene_n, bool full_ext
         s_ident = (e && *e && *e != '0'); }
     if (!s_ident || s_tk_last.m < 0 || !openpete_native_key_resolve_on()
         || s_tk_last.full_extent != (full_extent ? 1 : 0)
-        || !cz_instrument_run(&s_cz_ident, sizeof(rhi_vertex), "compose.key_ident",
-                              SCENE_VB_WAS, s_cz_verts)) return;
+        || !vec_run_fit(&s_cz_ident, sizeof(rhi_vertex), SCENE_RUN_INIT, "compose.key_ident",
+                        SCENE_VB_WAS, s_cz_verts)) return;
     rhi_vertex *ibuf = (rhi_vertex *)s_cz_ident.data;
     static keytex_span_t ispans[KEYTEX_MAX_SPANS];
     for (int cls = 0; cls < 3; cls++) {

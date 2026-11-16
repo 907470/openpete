@@ -1364,12 +1364,8 @@ core/renderer/native_render.c	-	s_osd_slots	static	-
 core/renderer/native_render.c	-	s_otag_area	static	-	
 core/renderer/native_render.c	-	s_otag_area_next	static	-	
 core/renderer/native_render.c	-	s_otag_scene	static	-	
-core/renderer/native_render.c	-	s_overlay_accum	static	-	
 core/renderer/native_render.c	-	s_overlay_accum_dropped	static	-	
-core/renderer/native_render.c	-	s_overlay_accum_epoch	static	-	
 core/renderer/native_render.c	-	s_overlay_accum_n	static	-	
-core/renderer/native_render.c	-	s_overlay_carry	static	-	
-core/renderer/native_render.c	-	s_overlay_carry_epoch	static	-	
 core/renderer/native_render.c	-	s_overlay_carry_freeze	static	-	
 core/renderer/native_render.c	-	s_overlay_carry_n	static	-	
 core/renderer/native_render.c	-	s_overlay_curr_ns	static	-	
@@ -1379,7 +1375,6 @@ core/renderer/native_render.c	-	s_overlay_glyph_stage_v	static	-
 core/renderer/native_render.c	-	s_overlay_glyph_verts	static	-	
 core/renderer/native_render.c	-	s_overlay_live	static	-	
 core/renderer/native_render.c	-	s_overlay_precapture	static	-	
-core/renderer/native_render.c	-	s_overlay_prev	static	-	
 core/renderer/native_render.c	-	s_overlay_prev_freeze	static	-	
 core/renderer/native_render.c	-	s_overlay_prev_n	static	-	
 core/renderer/native_render.c	-	s_overlay_prev_ns	static	-	
@@ -1597,14 +1592,6 @@ core/renderer/native_render.c	capture_freeze_from_offscreen	s_pt	local	-
 core/renderer/native_render.c	carry_census_flush	s_frame	local	-	
 core/renderer/native_render.c	carry_census_flush	s_ix	local	-	
 core/renderer/native_render.c	carry_census_on	v	local	once	= -1, one filler, first reference tests it
-core/renderer/native_render.c	carry_key_counts	slot_key	local	-	
-core/renderer/native_render.c	carry_key_counts	slot_n	local	-	
-core/renderer/native_render.c	carry_key_counts	slot_of	local	-	
-core/renderer/native_render.c	carry_key_counts	slot_used	local	-	
-core/renderer/native_render.c	carry_pair_all	s_crun	local	-	
-core/renderer/native_render.c	carry_pair_all	s_prun	local	-	
-core/renderer/native_render.c	carry_pair_content	ccount	local	-	
-core/renderer/native_render.c	carry_pair_content	pcount	local	-	
 core/renderer/native_render.c	compose_variant	s_fdbg	local	-	
 core/renderer/native_render.c	defer_census	on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	depth_prepass_debug	on	local	once	= -1, one filler, first reference tests it
@@ -1692,8 +1679,6 @@ core/renderer/native_render.c	openpete_native_render_screenshot_all	pz	local	-
 core/renderer/native_render.c	openpete_native_render_snapshot_fb_window	s_census	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	s_tw	local	-	
 core/renderer/native_render.c	openpete_native_scene_apply_overlay	pf	local	-	
-core/renderer/native_render.c	openpete_native_scene_apply_overlay	s_map	local	-	
-core/renderer/native_render.c	openpete_native_scene_apply_overlay	s_mt	local	-	
 core/renderer/native_render.c	openpete_native_scene_apply_overlay	s_oadbg	local	-	
 core/renderer/native_render.c	openpete_native_scene_capture_overlay	pz	local	-	
 core/renderer/native_render.c	openpete_native_scene_capture_overlay	s_c2ddbg	local	-	
@@ -4209,7 +4194,6 @@ games/common/renderer/tracers.c	tr_vtx_on	armed	local	-
 games/common/renderer/ui_game.h	-	ui_game	extern	-	
 games/common/renderer/ui_sprite.c	-	s_bbox	static	-	
 games/common/renderer/ui_sprite.c	-	s_cap_frame	static	-	
-games/common/renderer/ui_sprite.c	-	s_claim	static	-	
 games/common/renderer/ui_sprite.c	-	s_claim_at_capture	static	-	
 games/common/renderer/ui_sprite.c	-	s_claim_frame	static	-	
 games/common/renderer/ui_sprite.c	-	s_claim_late	static	-	
@@ -4250,7 +4234,6 @@ games/common/renderer/ui_sprite.c	-	s_unclaimed_tick	static	-
 games/common/renderer/ui_sprite.c	-	s_uvedge_bad	static	-	
 games/common/renderer/ui_sprite.c	-	s_uvedge_frame	static	-	
 games/common/renderer/ui_sprite.c	-	s_uvedge_tris	static	-	
-games/common/renderer/ui_sprite.c	-	s_verify	static	-	
 games/common/renderer/ui_sprite.c	-	s_verify_n	static	-	
 games/common/renderer/ui_sprite.c	-	s_verify_pending	static	-	
 games/common/renderer/ui_sprite.c	-	s_verify_stale	static	-	
@@ -4266,7 +4249,6 @@ games/common/renderer/ui_sprite.c	build_link_rank_map	got	local	-
 games/common/renderer/ui_sprite.c	build_link_rank_map	sorted	local	-	
 games/common/renderer/ui_sprite.c	build_ot_rank_map	pz	local	-	
 games/common/renderer/ui_sprite.c	defer_open_period_2d	cen	local	-	
-games/common/renderer/ui_sprite.c	defer_open_period_2d	kp	local	-	
 games/common/renderer/ui_sprite.c	on_fade_emitter	fc	local	-	
 games/common/renderer/ui_sprite.c	on_fade_emitter	s_in	local	-	
 games/common/renderer/ui_sprite.c	on_ot_insert	cen	local	-	
@@ -4277,9 +4259,6 @@ games/common/renderer/ui_sprite.c	period_defer_on	off	local	once	= -1, one fille
 games/common/renderer/ui_sprite.c	post_capture_report	tr	local	-	
 games/common/renderer/ui_sprite.c	rank_by_link_on	walk	local	-	
 games/common/renderer/ui_sprite.c	rank_scene_2d	fc	local	-	
-games/common/renderer/ui_sprite.c	rank_scene_2d	kn2	local	-	
-games/common/renderer/ui_sprite.c	rank_scene_2d	known	local	-	
-games/common/renderer/ui_sprite.c	rank_scene_2d	kp	local	-	
 games/common/renderer/ui_sprite.c	rank_scene_2d	pz2	local	-	
 games/common/renderer/ui_sprite.c	rank_scene_2d	tr2	local	-	
 games/common/renderer/ui_sprite.c	release_batch	s_tr	local	-	
