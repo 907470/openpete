@@ -112,8 +112,10 @@ void terrain_fog_step_words(int row, uint32_t w[2]);
  * its height to the lowest at which every vertex projects inside the frame at
  * the canonical H, plus 2%. The height is clamped to 30000 (world/16), under
  * the view-Z at which the game's 16-bit frustum stage rejects every sector, so
- * a level too wide for that height is cropped at the edges. Resolves the named
- * pose `topdown` of `--freecam-pose` and `--freecam-path`.
+ * a level too wide for that height is cropped at the edges. A table outside
+ * main RAM, or an entry naming no record wholly inside it (a table mid-load),
+ * is skipped, as in the sweep poses. Resolves the named pose `topdown` of
+ * `--freecam-pose` and `--freecam-path`.
  * @param cpu guest state holding the live sector table
  * @param v   receives {x, y, z, yaw, pitch}, the position in world units
  * @return 1 on success, 0 when no sector table is loaded or it holds no vertex */

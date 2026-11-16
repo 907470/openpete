@@ -335,6 +335,47 @@ static const void* tn_host_span(uint32_t a, uint32_t span) {
     return (o <= s_tsrc_terr_len && span <= s_tsrc_terr_len - o) ? s_tsrc_terr + o : NULL;
 }
 
+/** @brief Resolves a word-aligned guest span inside KSEG0 main RAM as a host pointer, without a guest bus access.
+ *
+ * The lookup is openpete_psx_to_host_span over canonical RAM: no bus
+ * accessor runs, so nothing is counted as a guest access that reached no
+ * device.
+ * @param a The span's first guest address.
+ * @param len The span's byte count.
+ * @return The host pointer, or NULL when the span is misaligned or leaves
+ *         KSEG0 main RAM. */
+static const uint8_t* tn_ram_span(uint32_t a, uint32_t len) {
+    if ((a & 3u) || a < OPENPETE_PSX_KSEG0_BASE || a >= OPENPETE_PSX_KSEG0_END ||
+        len > OPENPETE_PSX_KSEG0_END - a)
+        return NULL;
+    return (const uint8_t*)openpete_psx_to_host_span(a, len);
+}
+
+/** @brief Resolves a guest sector-table entry as a host pointer to the whole sector record.
+ *
+ * The table pointer and count are read from guest RAM at any tick; during a
+ * level load the level id can already name the new level while the table
+ * still names the old level's records and the load has overwritten them, so
+ * an entry is any word. An entry is a record only when its 7-word header lies
+ * in KSEG0 main RAM, word aligned, and so does the extent the header's counts
+ * give: the LP vertices, colours and 8-byte faces from +0x1C, and the HP
+ * vertices, near and far colours and 16-byte faces from +0x1C plus 4 times
+ * the HP word offset (tsc_decode_body's layout).
+ * @param sec The table entry.
+ * @param len_out Receives the record's byte count; may be NULL.
+ * @return The record's bytes, or NULL when the entry names no record. */
+static const uint8_t* tn_sector_rec(uint32_t sec, uint32_t* len_out) {
+    const uint8_t* h = tn_ram_span(sec, 0x1Cu);
+    if (!h) return NULL;
+    const uint32_t g3 = rd_host(h, 0x1Cu, 0x10u), g4 = rd_host(h, 0x1Cu, 0x14u);
+    const uint32_t lp = 0x1Cu + ((g3 & 0xFFu) + ((g3 >> 8) & 0xFFu)) * 4u + ((g3 >> 16) & 0xFFu) * 8u;
+    const uint32_t hp = 0x1Cu + ((g4 >> 24) & 0xFFu) * 4u +
+                        ((g4 & 0xFFu) + ((g4 >> 8) & 0xFFu) * 2u) * 4u + ((g4 >> 16) & 0xFFu) * 16u;
+    const uint32_t len = lp > hp ? lp : hp;
+    if (len_out) *len_out = len;
+    return tn_ram_span(sec, len);
+}
+
 /** @brief Tests whether an address names an imported source sector (TSRC_TERR_BASE window).
  * @param s The sector address.
  * @return 1 for an imported sector. */
@@ -7360,27 +7401,27 @@ static int tn_hf_within(uint32_t w, uint32_t med) {
     return within;
 }
 
-/** @brief Feeds one guest sector's HP colour pairs to the heavy-fog scan.
+/** @brief Feeds one sector record's HP colour pairs to the heavy-fog scan.
  *
  * The header layout is tsc_decode_body's: header word 5 holds the HP vertex
  * count (bits 0-7), colour count (8-15) and vertex offset (24-31); the near
  * colours follow the HP vertices and the far colours the near ones, pair c
  * at index c of each. Pass 0 adds each far colour to the channel
  * histograms; pass 1 counts the clustered far colours and the pulled pairs.
- * @param cpu The guest CPU state, read only.
- * @param sec The sector's guest address.
+ * @param rec The record's bytes (tn_sector_rec).
+ * @param len The record's byte count, which covers every pair.
  * @param pass 0 to build the histograms, 1 to count the clustered and pulled colours.
  * @param S The scan. */
-static void tn_hf_scan_sector(CPUState* cpu, uint32_t sec, int pass, tn_hf_scan* S) {
-    const uint32_t g4 = rd(cpu, sec + 0x14);
+static void tn_hf_scan_sector(const uint8_t* rec, uint32_t len, int pass, tn_hf_scan* S) {
+    const uint32_t g4 = rd_host(rec, len, 0x14u);
     const uint32_t nHpV = g4 & 0xFFu, nHpC = (g4 >> 8) & 0xFFu, off = (g4 >> 24) & 0xFFu;
-    const uint32_t nearA = sec + 0x1Cu + (off + nHpV) * 4u, far = nearA + nHpC * 4u;
+    const uint32_t nearO = 0x1Cu + (off + nHpV) * 4u, farO = nearO + nHpC * 4u;
     for (uint32_t c = 0; c < nHpC; c++) {
-        const uint32_t w = rd(cpu, far + c * 4u) & 0xFFFFFFu;
+        const uint32_t w = rd_host(rec, len, farO + c * 4u) & 0xFFFFFFu;
         if (pass) {
             const int within = tn_hf_within(w, S->med);
             S->near += within;
-            S->pulled += within && !tn_hf_within(rd(cpu, nearA + c * 4u) & 0xFFFFFFu, S->med);
+            S->pulled += within && !tn_hf_within(rd_host(rec, len, nearO + c * 4u) & 0xFFFFFFu, S->med);
             continue;
         }
         for (int k = 0; k < 3; k++) S->hist[k][(w >> (8 * k)) & 0xFFu]++;
@@ -7406,26 +7447,32 @@ static uint32_t tn_hf_median(const tn_hf_scan* S) {
  * changes and sets the verdict: heavy when at least TN_HF_PULLED_PCT percent
  * of the pairs are pulled, the far colour within TN_HF_SPREAD of the
  * per-channel far median on every channel and the near colour not. The
- * colour published is that median. It reads guest RAM only and runs before any walk of the level
- * draws, so the verdict depends on neither the view nor worker order. A scan
- * that finds no far colours (a table mid-load) leaves the verdict unset,
- * read as not heavy, and the next refresh scans again. One info line per
- * scan names the counts and the verdict. */
+ * colour published is that median. It reads canonical guest RAM through
+ * host lookups only (tn_ram_span, tn_sector_rec) and runs before any walk of
+ * the level draws, so the verdict depends on neither the view nor worker
+ * order, and no read is a guest bus access. The table and each record are
+ * resolved before they are read: during a level load the table can name
+ * records the load has overwritten, and an entry that names no record in
+ * main RAM is skipped. A scan that finds no far colours (a table mid-load)
+ * leaves the verdict unset, read as not heavy, and the next refresh scans
+ * again. One info line per scan names the counts and the verdict. */
 void terrain_heavy_fog_refresh(CPUState* cpu) {
     const uint32_t ptr = tenv_rd(cpu, game_layout.env.sector_ptr);
     const uint32_t cnt = tenv_rd(cpu, game_layout.env.sector_count);
-    const int live = ptr >= 0x80000000u && cnt > 0u;
+    const uint32_t n = cnt < 4096u ? cnt : 4096u;
+    const uint8_t* tab = n ? tn_ram_span(ptr, n * 4u) : NULL;
     const uint32_t sig[4] = { (uint32_t)rd(cpu, game_layout.level_id), ptr, cnt,
-                              live ? rd(cpu, ptr) : 0u };
+                              tab ? rd_host(tab, n * 4u, 0u) : 0u };
     if (s_hf_verdict >= 0 && !memcmp(sig, s_hf_sig, sizeof sig)) return;
     memcpy(s_hf_sig, sig, sizeof sig);
     tn_hf_scan S;
     memset(&S, 0, sizeof S);
     for (int pass = 0; pass < 2; pass++) {
         if (pass) S.med = tn_hf_median(&S);
-        for (uint32_t i = 0; live && i < cnt && i < 4096u; i++) {
-            const uint32_t sec = rd(cpu, ptr + i * 4u);
-            if (sec >= 0x80000000u) tn_hf_scan_sector(cpu, sec, pass, &S);
+        for (uint32_t i = 0; tab && i < n; i++) {
+            uint32_t len = 0u;
+            const uint8_t* rec = tn_sector_rec(rd_host(tab, n * 4u, i * 4u), &len);
+            if (rec) tn_hf_scan_sector(rec, len, pass, &S);
         }
     }
     s_hf_verdict = S.n == 0 ? -1 : (S.pulled * 100 >= S.n * TN_HF_PULLED_PCT) ? 1 : 0;
@@ -22550,13 +22597,13 @@ static void td_scan_verts(CPUState* cpu, uint32_t verts, int nv, int flat,
 int terrain_native_sweep_pose(CPUState* cpu, int corner, int32_t v[5]) {
     uint32_t sectorPtr = tenv_rd(cpu, game_layout.env.sector_ptr);
     uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);
-    if (!sectorPtr || !sectorCnt || sectorCnt > 1024) return 0;
+    if (!sectorCnt || sectorCnt > 1024 || !tn_ram_span(sectorPtr, sectorCnt * 4u)) return 0;
 
     double mm[5] = { 1e18, -1e18, 1e18, -1e18, -1e18 };  /* minx,maxx,miny,maxy,maxz */
     int seen = 0;
     for (uint32_t i = 0; i < sectorCnt; i++) {
         uint32_t s = rd(cpu, sectorPtr + i * 4);
-        if (!s) continue;
+        if (!tn_sector_rec(s, NULL)) continue;
         uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
         uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
         int flat = thdr_flat(rd(cpu, s + 0x04));
@@ -22597,7 +22644,7 @@ int terrain_native_sweep_pose(CPUState* cpu, int corner, int32_t v[5]) {
 int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
     uint32_t sectorPtr = tenv_rd(cpu, game_layout.env.sector_ptr);
     uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);
-    if (!sectorPtr || !sectorCnt || sectorCnt > 1024) return 0;
+    if (!sectorCnt || sectorCnt > 1024 || !tn_ram_span(sectorPtr, sectorCnt * 4u)) return 0;
     /* The pose is written into g_Camera by freecam, so it is derived at the
      * canonical H: a display FOV must not reach that write. */
     ngte_view pv, cv; ngte_view_build(cpu, &pv); ngte_view_canon(&pv, &cv);
@@ -22608,7 +22655,7 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
     int seen = 0;
     for (uint32_t i = 0; i < sectorCnt; i++) {
         uint32_t s = rd(cpu, sectorPtr + i * 4);
-        if (!s) continue;
+        if (!tn_sector_rec(s, NULL)) continue;
         uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
         uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
         int flat = thdr_flat(rd(cpu, s + 0x04));
@@ -22624,7 +22671,7 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
     td_acc acc = { (mm[0] + mm[1]) * 0.5, (mm[2] + mm[3]) * 0.5, H, mm[4] + 64.0 };
     for (uint32_t i = 0; i < sectorCnt; i++) {
         uint32_t s = rd(cpu, sectorPtr + i * 4);
-        if (!s) continue;
+        if (!tn_sector_rec(s, NULL)) continue;
         uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
         uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
         int flat = thdr_flat(rd(cpu, s + 0x04));

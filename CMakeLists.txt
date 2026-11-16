@@ -1423,6 +1423,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Host reads across a level load. One headless run per game through
+    # --skip-to-level under --render-paths moby, whose draw hooks run the
+    # heavy-fog scan on every tick of the load, asserting zero `reached no
+    # device` lines: a host-side scan that follows a sector-table entry the
+    # load overwrote reads off the bus. Fails as vacuous when no scan found a
+    # far colour. Spyro 3's row stays out while its reveal path
+    # (moby_pose_derive) reads an unmapped address on the same route.
+    foreach(_hfs_game spyro-1 spyro-2)
+        add_test(NAME heavy_fog_scan_${_hfs_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_heavy_fog_scan.sh
+                         --game ${_hfs_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(heavy_fog_scan_${_hfs_game} PROPERTIES
+            LABELS "presentation;terrain"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Runahead prediction contract. Per row of
     # games/<slug>/corpus/runahead-corpus.manifest, two headless replays of one bk2:
     # the native capture at the row's VBL under --runahead <depth>, and the
