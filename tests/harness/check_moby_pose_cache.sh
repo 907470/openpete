@@ -46,15 +46,22 @@
 # keeps it off and no sector is cache-owned): every chunk runs the full walk and the listed capture and compares each moby's planes
 # in order, the snap table rows, the carry rows, the snapped flags and the
 # contact census ([snap-listed-check] chunks_canon= chunks_rex= ...
-# mismatched_*= walks_full= walks_listed=).
+# mismatched_*= walks_full= walks_listed=). Under snap-rex-merge the same
+# walking rows run with OPENPETE_SNAP_REX_MERGE_CHECK=1 and the terrain cache
+# forced on: every sub-tick present resolves its snap queue once per walk
+# pass and then once for all passes (games/common/renderer/moby_snap.c,
+# ms_rm_check), and the packed snap table words and the table's
+# insertion-order digest are compared ([snap-rex-merge-check] presents=
+# presents_multi= ... mismatched_words= mismatched_digest=).
 #
 # Usage:
 #   tests/harness/check_moby_pose_cache.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
-#       [--instrument=pose-cache|push-fanout|snap-fanout|rec-fanout|rank-fanout|snap-listed]
+#       [--instrument=pose-cache|push-fanout|snap-fanout|rec-fanout|rank-fanout|snap-listed|snap-rex-merge]
 # Exit 0 PASS: engaged above zero (hits, emits compared, chunks of each leg
 # compared) and no mismatch. 1 FAIL: a mismatch, a missing capture or a
 # missing total. 2 VACUOUS: no hit, no emit, no chunk of a leg compared, or
-# no listed chunk compared on either leg or no walk saved.
+# no listed chunk compared on either leg or no walk saved, or no present
+# compared or none where two walk passes queued.
 # 64 SKIP (no binary or disc).
 set -u
 
@@ -95,7 +102,8 @@ case "$GAME" in
     spyro-3) ROW=(--skip-to-level sunrise_spring --freecam-pose topdown); VBLS=3000,3040;;
     *) echo "pose-cache: SKIP (no row for $GAME)"; exit 64;;
 esac
-if [[ "$INSTR" == snap-fanout || "$INSTR" == rec-fanout || "$INSTR" == rank-fanout || "$INSTR" == snap-listed ]]; then
+if [[ "$INSTR" == snap-fanout || "$INSTR" == rec-fanout || "$INSTR" == rank-fanout || "$INSTR" == snap-listed ||
+      "$INSTR" == snap-rex-merge ]]; then
     # A bk2 per game that walks the player through the captured VBLs.
     BK2=games/$GAME/bk2
     case "$GAME" in
@@ -118,6 +126,7 @@ case "$INSTR" in
     rec-fanout)  KNOB=(OPENPETE_MOBY_REC_FANOUT_CHECK=1 OPENPETE_MOBY_REC_FANOUT_MIN=0 OPENPETE_MOBY_POSE_CACHE=0);;
     rank-fanout) KNOB=(OPENPETE_MOBY_RANK_FANOUT_CHECK=1 OPENPETE_MOBY_RANK_FANOUT_MIN=0);;
     snap-listed)      KNOB=(OPENPETE_SNAP_LISTED_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
+    snap-rex-merge)   KNOB=(OPENPETE_SNAP_REX_MERGE_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
     *) echo "pose-cache: SKIP (no instrument $INSTR)"; exit 64;;
 esac
 PG_CAPTURE_ENV=("${KNOB[@]}" OPENPETE_INTERMEDIATE_ALPHA=0.5
@@ -128,6 +137,23 @@ pg_capture "$LOG" "$OUTS" -- --renderer vk --aspect 16:9 --lod extended --no-car
     --screenshot-output "${SHOT}__{n}.png" --frame-limit "$(( ${VBLS#*,} + 10 ))" ||
     { echo "$INSTR: FAIL (capture, see $LOG)"; exit 1; }
 
+if [[ "$INSTR" == snap-rex-merge ]]; then
+    line="$(grep '^\[snap-rex-merge-check\]' "$LOG" | tail -n 1)"
+    [[ -n "$line" ]] || { echo "snap-rex-merge: FAIL (no [snap-rex-merge-check] total in $LOG)"; exit 1; }
+    echo "snap-rex-merge: $GAME $line"
+    bad=0
+    for f in words digest; do
+        v="$(sed -n "s/.* mismatched_$f=\([0-9]*\).*/\1/p" <<<"$line")"
+        [[ "${v:-1}" == 0 ]] || { echo "snap-rex-merge: FAIL (mismatched_$f=${v:-missing})"; bad=1; }
+    done
+    [[ "$bad" == 0 ]] || exit 1
+    pr="$(sed -n 's/.*presents=\([0-9]*\) .*/\1/p' <<<"$line")"
+    mu="$(sed -n 's/.* presents_multi=\([0-9]*\).*/\1/p' <<<"$line")"
+    [[ "${pr:-0}" -gt 0 && "${mu:-0}" -gt 0 ]] ||
+        { echo "snap-rex-merge: VACUOUS (presents ${pr:-0}, presents with two queueing passes ${mu:-0})"; exit 2; }
+    echo "snap-rex-merge: PASS"
+    exit 0
+fi
 if [[ "$INSTR" == snap-listed ]]; then
     line="$(grep '^\[snap-listed-check\]' "$LOG" | tail -n 1)"
     [[ -n "$line" ]] || { echo "snap-listed: FAIL (no [snap-listed-check] total in $LOG)"; exit 1; }

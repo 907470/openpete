@@ -51,11 +51,13 @@ void moby_snap_note_ranked(const uint32_t* mids, int n, int base);
  * A canonical resolve stores its planes for the snap carry; a re-extract's
  * resolve carries the planes of the endpoint the phase selects
  * (OPENPETE_MOBY_SNAP_CARRY) and runs the carry verify
- * (OPENPETE_MOBY_SNAP_CARRY_VERIFY).
+ * (OPENPETE_MOBY_SNAP_CARRY_VERIFY). Leaving a re-extract (rex 0 after a
+ * nonzero call) resolves the queue of all its moby passes at once
+ * (OPENPETE_SNAP_REX_MERGE, default on) and emits the present's snap counts.
  * @param rex Nonzero for a sub-tick re-extract.
  * @param alpha The present's phase, 0 at tick T-1 and 1 at tick T; read when rex is nonzero. */
 void moby_snap_present(int rex, double alpha);
-/** @brief Resolve the queued mobys when the terrain of this scene has been built (after a moby pass). */
+/** @brief End a moby walk pass: resolve the queued mobys when the terrain of this scene has been built, except in a sub-tick re-extract with the merge on, where the queue waits for the re-extract's end (moby_snap_present). */
 void moby_snap_moby_fed(void);
 /** @brief Resolve the queued mobys after the terrain build that fed this scene.
  * @param cpu The guest CPU state, unused; the terrain feeder's call site signature. */

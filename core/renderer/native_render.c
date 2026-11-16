@@ -12300,6 +12300,16 @@ static uint32_t snap_table_pack(const nr_snap_table* t, const scene_fc_affine* f
     return (uint32_t)((3 + t->ne + 2 * t->np) * 16);
 }
 
+int openpete_native_snap_pack_live(uint32_t* w, int cap)
+{
+    const nr_snap_table* t = &s_snap_live;
+    const int words = (3 + t->ne + 2 * t->np) * 4;
+    if (!w || words > cap) return -1;
+    const scene_fc_affine fa = { 0 };
+    snap_table_pack(t, &fa, w);
+    return words;
+}
+
 /** @brief Bind the composed scene's snap table at set 7 of a snap stage.
  *
  * The block is rewritten on the first bind of each RHI frame and again

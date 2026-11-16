@@ -48,15 +48,17 @@ static inline double ms_max(double a, double b) { return b > a ? b : a; }
 
 /* One queued moby: its identity, ordinal, pull, run of s_q_tri and the
  * bounds of that run (screen x0, y0, x1, y1, view-Z z0, z1); its index in
- * the queue as collected (qi) and whether its planes go to the scene's
- * table (add; 0 for a moby the carry already placed). */
-typedef struct { uint32_t mid; int mord, dofs; float off; int t0, nt; float b[6]; int qi; int add; int path; float kr; } ms_moby;
+ * the queue as collected (qi), whether its planes go to the scene's table
+ * (add; 0 for a moby the carry already placed) and the walk pass of the
+ * scene that queued it (seg, counted by moby_snap_moby_fed). */
+typedef struct { uint32_t mid; int mord, dofs; float off; int t0, nt; float b[6]; int qi; int add; int path; float kr; int seg; } ms_moby;
 
 static ms_moby*   s_q_mob;  static int s_q_nm, s_q_capm;
 static float    (*s_q_tri)[3][3]; static int s_q_nt, s_q_capt;
 static float    (*s_q_bnd)[6]; static int s_q_capb;   /* per s_q_tri: its bounds */
 static uint32_t*  s_q_fk; static int s_q_capf;       /* per s_q_tri: its face key, while the probe is on */
 static unsigned   s_q_epoch = ~0u;
+static int        s_q_seg;   /* the walk pass now queueing, counted from 0 per scene */
 
 /* The planes one moby may own; more are counted as overflow. */
 #define MS_MAX_PLANES 64
@@ -120,7 +122,7 @@ static ms_ord s_sn[256];  static int s_sn_n;
 static void ms_scene_sync(void) {
     const unsigned ep = openpete_native_scene_epoch();
     if (ep == s_q_epoch) return;
-    s_q_epoch = ep; s_q_nm = s_q_nt = 0; s_rk_n = s_sn_n = 0;
+    s_q_epoch = ep; s_q_nm = s_q_nt = 0; s_rk_n = s_sn_n = 0; s_q_seg = 0;
 }
 
 void moby_snap_note_ranked(const uint32_t* mids, int n, int base) {
@@ -174,7 +176,7 @@ void moby_snap_queue(uint32_t mid, int mordinal, int dofs, float off_m,
     }
     ms_moby* m = &s_q_mob[s_q_nm++];
     m->mid = mid; m->mord = mordinal; m->dofs = dofs; m->off = off_m;
-    m->t0 = s_q_nt; m->nt = n; m->path = 0; m->kr = 0.0f;
+    m->t0 = s_q_nt; m->nt = n; m->path = 0; m->kr = 0.0f; m->seg = s_q_seg;
     memcpy(&s_q_tri[s_q_nt], v, (size_t)n * sizeof *s_q_tri);
     ms_bounds_tris(&s_q_tri[s_q_nt], &s_q_bnd[s_q_nt], n, m->b);
     s_q_nt += n;
@@ -1056,9 +1058,23 @@ static long     s_mc_rebuilds; /* tables emptied by a second scene build within 
  * that resolves, the per-present counts the profiler emits. */
 static int      s_rex;
 static double   s_rex_alpha = 1.0;
-static long     s_pc_carried, s_pc_fresh;
-static long     s_pc_refreshed;  /* mobys mc_refresh refused in the present */
-static long     s_pc_fsref;      /* of those, the ones refused on a face-verdict change (mc_faces_changed) */
+/* One sub-tick present's snap counts: mobys the carry placed and the ones
+ * resolved fresh; of those, the ones mc_refresh refused and, of these, the
+ * ones refused on a face-verdict change (mc_faces_changed); resolves run,
+ * terrain captures (one per chunk), cache-owned sectors the captures walked,
+ * walk passes that queued a moby and mobys queued; with the census on
+ * (OPENPETE_SNAP_REX_CENSUS) the resolves' and the captures' (chunk runs')
+ * CPU time; per walk pass (at most MS_PC_SEGS, the last holding the rest)
+ * its queued mobys, resolves and captures. */
+#define MS_PC_SEGS 6
+typedef struct {
+    long carried, fresh, refreshed, fsref, resolves, captures, walked, passes, queued;
+    uint64_t res_ns, chunk_ns;
+    long seg_q[MS_PC_SEGS], seg_res[MS_PC_SEGS], seg_cap[MS_PC_SEGS];
+} ms_pc;
+static ms_pc    s_pc;
+static int      s_pc_mark;       /* the queue length when the last walk pass ended */
+static void ms_rex_end(void);
 
 /* The resolve under way: the table a canonical resolve stores into, and the
  * walk camera it stores under. */
@@ -1269,9 +1285,14 @@ static int mc_verify_mode(void) {
 }
 
 void moby_snap_present(int rex, double alpha) {
+    if (!rex && s_rex) ms_rex_end();
     s_rex = rex;
     s_rex_alpha = rex ? alpha : 1.0;
-    if (rex) s_pc_carried = s_pc_fresh = s_pc_refreshed = s_pc_fsref = 0;
+    if (!rex) return;
+    memset(&s_pc, 0, sizeof s_pc);
+    ms_scene_sync();
+    s_q_seg = 0;
+    s_pc_mark = s_q_nm;
 }
 
 /** @brief Hash a moby identity to a table slot.
@@ -1832,7 +1853,7 @@ static int mc_map(const mc_tab* ep, const double L[3][3], const double P[3]) {
         s_vc_np[k] = -1; s_vc_ref[k] = 0; s_vc_inj[k] = 0;
         if (x < 0) continue;
         const int ref = mc_refresh(ep, &ep->e[x], &s_q_mob[k], k, same_cam);
-        if (ref) { s_vc_ref[k] = (uint8_t)ref; s_pc_refreshed++; s_pc_fsref += ref == 2; continue; }
+        if (ref) { s_vc_ref[k] = (uint8_t)ref; s_pc.refreshed++; s_pc.fsref += ref == 2; continue; }
         if (!mc_map_ent(ep, &ep->e[x], same, Q, Pm, k)) return 0;
     }
     return 1;
@@ -2513,7 +2534,19 @@ static int ms_compact(void) {
     return n;
 }
 
-/** @brief Add the carried planes of every queued moby the endpoint resolved, in queue order, and mark those mobys added.
+/* The carried mobys of the resolve under way whose planes wait for the
+ * table, in queue order: a copy of the queued moby (ms_compact reorders the
+ * queue) and its run of s_vc_pl. s_cr_pos counts those already added. */
+typedef struct { ms_moby mb; int p0, np; } ms_cr;
+static ms_cr* s_cr; static int s_cr_cap, s_cr_n, s_cr_pos;
+static int s_cr_late;   /* the merge check's calibration: carried planes go to the table after every fresh moby */
+
+/** @brief Note the carried planes of every queued moby the endpoint resolved, in queue order, for the table (ms_cr_flush), and mark those mobys added.
+ *
+ * The planes wait so that the table takes each walk pass's mobys in the
+ * order a resolve per pass gives (carried mobys of the pass, then its fresh
+ * ones) when one resolve serves several passes. On an allocation failure a
+ * moby's planes are added at once.
  * @param cs The census: carried and fresh mobys, overflow. */
 static void ms_carry_add(ms_census* cs) {
     for (int k = 0; k < s_q_nm; k++) {
@@ -2521,8 +2554,33 @@ static void ms_carry_add(ms_census* cs) {
         if (s_vc_np[k] < 0) { cs->fresh++; continue; }
         mb->add = 0;
         cs->carried++;
-        if (s_vc_np[k] > 0) ms_add(mb, &s_vc_pl[s_vc_p0[k]], s_vc_np[k], cs);
+        if (s_vc_np[k] <= 0) continue;
+        if (!ms_grow((void**)&s_cr, &s_cr_cap, s_cr_n + 1, sizeof *s_cr)) {
+            ms_add(mb, &s_vc_pl[s_vc_p0[k]], s_vc_np[k], cs);
+            continue;
+        }
+        ms_cr* c = &s_cr[s_cr_n++];
+        c->mb = *mb; c->p0 = s_vc_p0[k]; c->np = s_vc_np[k];
     }
+}
+
+/** @brief Add the waiting carried planes (ms_carry_add) of every walk pass up to and including seg to the table, in queue order.
+ * @param seg The last walk pass to add; INT_MAX adds all.
+ * @param cs The census: overflow. */
+static void ms_cr_flush(int seg, ms_census* cs) {
+    for (; s_cr_pos < s_cr_n && s_cr[s_cr_pos].mb.seg <= seg; s_cr_pos++)
+        ms_add(&s_cr[s_cr_pos].mb, &s_vc_pl[s_cr[s_cr_pos].p0], s_cr[s_cr_pos].np, cs);
+}
+
+/** @brief Add a freshly resolved moby's planes to the table after the waiting carried planes of its walk pass and the passes before it (ms_cr_flush).
+ * @param mb The moby.
+ * @param out Its planes.
+ * @param np Their count, > 0.
+ * @param cs The census.
+ * @return np when added, 0 when the table refused them. */
+static int ms_add_fresh(const ms_moby* mb, const openpete_snap_plane* out, int np, ms_census* cs) {
+    if (!s_cr_late) ms_cr_flush(mb->seg, cs);
+    return ms_add(mb, out, np, cs);
 }
 
 
@@ -2591,6 +2649,7 @@ static void rsp_flush(void) {
  * @return The count of queued mobys, from the front, the contact pass resolves. */
 static int ms_carry_begin(ms_census* cs) {
     s_store = NULL; s_vf_on = 0; s_rs_ep = NULL; s_rs_wb = 0;
+    s_cr_n = s_cr_pos = 0;
     for (int k = 0; k < s_q_nm; k++) { s_q_mob[k].qi = k; s_q_mob[k].add = 1; }
     ms_cb_begin();
     const int carry = mc_carry_on(), vm = mc_verify_mode();
@@ -2615,11 +2674,11 @@ static int ms_carry_begin(ms_census* cs) {
     s_vf_on = vm && mc_vf_begin();
     if (!carry) return s_q_nm;
     ms_carry_add(cs);
-    s_pc_carried += cs->carried; s_pc_fresh += cs->fresh;
+    s_pc.carried += cs->carried; s_pc.fresh += cs->fresh;
     return s_vf_on ? s_q_nm : ms_compact();
 }
 
-/** @brief Finish the carry of the resolve under way: the verify comparison, and the per-present counts for the profiler (carried, fresh, and refreshed: the fresh ones mc_refresh refused).
+/** @brief Finish the carry of the resolve under way: the verify comparison.
  *
  * A canonical store also records each moby's contact region and candidate
  * faces (mc_store_cands), the endpoint side of mc_faces_changed.
@@ -2628,16 +2687,6 @@ static void ms_carry_end(const ms_census* cs) {
     if (s_store && mc_refresh_on()) mc_store_cands(s_store);
     if (s_vf_on) { s_vs.ovf += cs->ovf; mc_vf_compare(s_rs_ep, s_rs_L, s_rs_P); }
     s_store = NULL; s_vf_on = 0;
-    if (s_rex && mc_carry_on() && op_prof_on()) {
-        static int id_c = -1, id_f = -1;
-        static int id_r = -1, id_s = -1;
-        if (id_c < 0) { id_c = op_prof_intern("mrexn.snap_carried"); id_f = op_prof_intern("mrexn.snap_fresh");
-                        id_r = op_prof_intern("mrexn.snap_refreshed"); id_s = op_prof_intern("mrexn.snap_refreshed_fs"); }
-        op_prof_count(id_c, (uint64_t)s_pc_carried);
-        op_prof_count(id_f, (uint64_t)s_pc_fresh);
-        op_prof_count(id_r, (uint64_t)s_pc_refreshed);
-        op_prof_count(id_s, (uint64_t)s_pc_fsref);
-    }
 }
 
 /* ---- the contact pass's fan-out ---------------------------------------------
@@ -2796,7 +2845,7 @@ static int ms_moby_contact(ms_ws* W, const ms_moby* mb, const terrain_snap_tri* 
     }
     ms_result(mb, out, id, np, prep ? wb : NULL, (const double (*)[3])kc);
     if (!np || !mb->add) return 0;
-    return ms_add(mb, out, np, cs);
+    return ms_add_fresh(mb, out, np, cs);
 }
 
 /** @brief Run one chunk's contact pass serially, moby by moby, on the calling thread.
@@ -2829,7 +2878,7 @@ static int ms_fo_parallel(const ms_fo_job* J, int nb, ms_census* cs, uint8_t* sn
         if (r->np < 0) continue;
         ms_result(mb, r->pl, r->id, r->np, J->prep ? s_fo_wb[k] : NULL,
                   J->prep ? (const double (*)[3])&s_kc[3 * mb->t0] : NULL);
-        if (r->np && mb->add) snapped[k] = ms_add(mb, r->pl, r->np, cs) > 0;
+        if (r->np && mb->add) snapped[k] = ms_add_fresh(mb, r->pl, r->np, cs) > 0;
     }
     return 1;
 }
@@ -2977,7 +3026,7 @@ static void ms_fo_check(const ms_fo_job* J, int nb, ms_census* cs, uint8_t* snap
     openpete_native_snap_mark_t sm;
     openpete_native_snap_mark(&sm);
     if (s_store) mc_tab_mark_take(s_store, &tm);
-    const int sn0 = s_sn_n;
+    const int sn0 = s_sn_n, cr0 = s_cr_pos;
     const ms_census cs0 = *cs;
     uint8_t fl_ser[128];
     s_ck_rec = &s_q_mob[J->g];
@@ -2990,7 +3039,7 @@ static void ms_fo_check(const ms_fo_job* J, int nb, ms_census* cs, uint8_t* snap
     const int carry_ok = !s_store || mc_tab_span_take(s_store, &tm, &sp_ser);
     openpete_native_snap_rewind(&sm);
     if (s_store) mc_tab_mark_back(s_store, &tm);
-    s_sn_n = sn0;
+    s_sn_n = sn0; s_cr_pos = cr0;
     *cs = cs0;
     const uint64_t t2 = ms_mono_ns();
     if (!ms_fo_parallel(J, nb, cs, snapped)) { s_foc.refused++; ms_fo_serial(J, nb, cs, snapped); return; }
@@ -3042,6 +3091,18 @@ static void ms_contact(const ms_fo_job* J, int nb, ms_census* cs, uint8_t* snapp
 
 static int ms_chunk_run(int g, int nb, const terrain_snap_box* box, const float view[3], ms_census* cs,
                         int listed, uint64_t tp);
+
+/** @brief The per-pass slot of the sub-tick census (ms_pc) for the walk pass now queueing: s_q_seg, the last slot holding the rest.
+ * @return The slot. */
+static int ms_pc_seg(void) { return s_q_seg < MS_PC_SEGS - 1 ? s_q_seg : MS_PC_SEGS - 1; }
+
+/** @brief Whether OPENPETE_SNAP_REX_CENSUS is set nonzero: the sub-tick census (ms_pc) is totalled and printed at exit, read once.
+ * @return 1 when on. */
+static int ms_rc_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SNAP_REX_CENSUS"); v = (e && *e && *e != '0'); }
+    return v;
+}
 
 /* ---- the listed capture --------------------------------------------------------
  * ms_moby_planes tests contacts between a moby's triangles at their stored
@@ -3150,7 +3211,7 @@ static int ms_lc_check(int g, int nb, const terrain_snap_box* box, const float v
     openpete_native_snap_mark_t sm;
     openpete_native_snap_mark(&sm);
     if (s_store) mc_tab_mark_take(s_store, &tm);
-    const int sn0 = s_sn_n;
+    const int sn0 = s_sn_n, cr0 = s_cr_pos;
     const ms_census cs0 = *cs;
     s_ck_rec = &s_q_mob[g];
     s_lc_serial = 1;
@@ -3163,7 +3224,7 @@ static int ms_lc_check(int g, int nb, const terrain_snap_box* box, const float v
     const int carry_ok = !s_store || mc_tab_span_take(s_store, &tm, &sp_full);
     openpete_native_snap_rewind(&sm);
     if (s_store) mc_tab_mark_back(s_store, &tm);
-    s_sn_n = sn0;
+    s_sn_n = sn0; s_cr_pos = cr0;
     *cs = cs0;
     const int ok = ms_chunk_run(g, nb, box, view, cs, 1, 0);
     s_ck_rec = NULL;
@@ -3204,7 +3265,10 @@ static int ms_resolve_chunk(int g, int nb, const float view[3], ms_census* cs) {
     tp = rsp_mark(RSP_BOX, tp);
     const int listed = ms_lc_on() && s_rs_wb;
     if (listed && ms_lc_check_on()) return ms_lc_check(g, nb, box, view, cs);
-    return ms_chunk_run(g, nb, box, view, cs, listed, tp);
+    const uint64_t c0 = s_rex && ms_rc_on() ? ms_cpu_ns() : 0;
+    const int ok = ms_chunk_run(g, nb, box, view, cs, listed, tp);
+    if (c0) s_pc.chunk_ns += ms_cpu_ns() - c0;
+    return ok;
 }
 
 /** @brief Capture the terrain of one chunk's boxes, by the listed capture (ms_lc_capture) or the full walk, find each moby's contact planes and add them to the table.
@@ -3225,6 +3289,7 @@ static int ms_chunk_run(int g, int nb, const terrain_snap_box* box, const float 
     if (cs->timed) cs->cap_ns += ms_cpu_ns() - c0;
     tp = rsp_mark(RSP_CAPTURE, tp);
     if (ntt < 0) return 0;
+    if (s_rex) { s_pc.captures++; s_pc.walked += tc.sectors; s_pc.seg_cap[ms_pc_seg()]++; }
     const uint64_t m0 = cs->timed ? ms_mono_ns() : 0;
     if (!ms_terrain_make(tt, ntt, view)) return 0;
     if (cs->timed) cs->near_ns += ms_mono_ns() - m0;
@@ -3252,6 +3317,7 @@ static int ms_chunk_run(int g, int nb, const terrain_snap_box* box, const float 
  * some mobys' planes first and leave the capture the rest. */
 static void ms_resolve(void) {
     if (!s_q_nm || s_q_epoch != openpete_native_scene_epoch() || !terrain_snap_ready()) return;
+    if (s_rex) { s_pc.resolves++; s_pc.seg_res[ms_pc_seg()]++; }
     const uint64_t t0 = ms_census_on() ? ms_cpu_ns() : 0;
     ms_census cs; memset(&cs, 0, sizeof cs);
     cs.zmin = 1e30f;
@@ -3268,6 +3334,7 @@ static void ms_resolve(void) {
         for (int g = 0; g < nrun; g += 128)
             if (!ms_resolve_chunk(g, nrun - g < 128 ? nrun - g : 128, view, &cs)) break;
         tp = rsp_now();
+        ms_cr_flush(INT_MAX, &cs);
         ms_carry_end(&cs);
         rsp_mark(RSP_END, tp);
         rsp_flush();
@@ -3279,11 +3346,216 @@ static void ms_resolve(void) {
 
 /** @brief Run ms_resolve inside the profiler scope of its leg: mrex.resolve in a sub-tick re-extract, else mcan.resolve. */
 static void ms_resolve_scoped(void) {
+    const uint64_t c0 = s_rex && ms_rc_on() ? ms_cpu_ns() : 0;
     if (s_rex) { OP_PROF_ACCUM_SCOPE("mrex.resolve"); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_SNAP_REX); ms_resolve(); }
     else       { OP_PROF_ACCUM_SCOPE("mcan.resolve"); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_SNAP_CANON); ms_resolve(); }
+    if (c0) s_pc.res_ns += ms_cpu_ns() - c0;
 }
 
-void moby_snap_moby_fed(void) { ms_resolve_scoped(); }
+/* ---- one resolve per sub-tick present ------------------------------------------
+ * A sub-tick re-extract feeds the terrain before the mobys, so the queue of
+ * each walk pass could resolve as soon as the pass pushed; instead every
+ * pass of the present queues (moby_snap_moby_fed counts the passes) and one
+ * resolve runs when the re-extract's moby passes end (moby_snap_present),
+ * as the canonical leg resolves once after its terrain feed. Its result is
+ * the per-pass resolves' table word for word: no stage reads the table
+ * before the scene is composed; the resolve reads only the queue, the
+ * terrain build and the carry tables, which no walk pass writes; each moby
+ * resolves from its own triangles and the terrain triangles its search box
+ * reaches, in capture order, whichever mobys share its chunk; and the table
+ * takes each pass's carried mobys and then its fresh ones (ms_carry_add,
+ * ms_add_fresh), the order the per-pass resolves added them, so the entry
+ * order, the plane runs and the cap refusals are theirs. A moby two passes
+ * queued stays two queue entries with their own ordinals, as before.
+ * OPENPETE_SNAP_REX_MERGE=0 resolves per pass; OPENPETE_SNAP_REX_MERGE_CHECK=1
+ * runs both on every present and compares (ms_rm_check). */
+
+/** @brief Whether one resolve serves a sub-tick present (OPENPETE_SNAP_REX_MERGE not 0), read once.
+ * @return 1 when on. */
+static int ms_rm_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SNAP_REX_MERGE"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/** @brief The merge check's mode (OPENPETE_SNAP_REX_MERGE_CHECK), read once: 0 off, 1 compare, 2 compare with the single resolve adding every carried moby after the fresh ones (the calibration: a pass order the check must refuse).
+ * @return The mode. */
+static int ms_rm_check_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SNAP_REX_MERGE_CHECK"); v = e && (*e == '1' || *e == '2') ? *e - '0' : 0; }
+    return v;
+}
+
+/* The merge check's totals: presents compared, those where two or more walk
+ * passes queued, mobys, table entries and planes compared, mismatches of the
+ * packed table words and of the insertion-order digest, and queued mobys
+ * whose identity another walk pass of the present also queued. */
+static struct { long presents, multi, mobys, ents, planes, bad_words, bad_digest, skipped, cross; } s_rmc;
+
+/** @brief Print the merge check's totals. */
+static void ms_rm_check_print(void) {
+    fprintf(stderr, "[snap-rex-merge-check] presents=%ld presents_multi=%ld mobys=%ld entries=%ld planes=%ld "
+                    "mismatched_words=%ld mismatched_digest=%ld skipped=%ld cross_pass_mobys=%ld\n",
+            s_rmc.presents, s_rmc.multi, s_rmc.mobys, s_rmc.ents, s_rmc.planes, s_rmc.bad_words,
+            s_rmc.bad_digest, s_rmc.skipped, s_rmc.cross);
+}
+
+/** @brief Count a saved queue's walk passes and the mobys whose identity another of its passes also queued.
+ * @param q The queue.
+ * @param nm Its moby count.
+ * @param cross Receives the count of such mobys.
+ * @return The pass count: the largest seg plus one. */
+static int ms_rm_passes(const ms_moby* q, int nm, long* cross) {
+    int nseg = 0;
+    *cross = 0;
+    for (int k = 0; k < nm; k++) {
+        if (q[k].seg + 1 > nseg) nseg = q[k].seg + 1;
+        for (int j = 0; j < nm; j++)
+            if (q[j].mid == q[k].mid && q[j].seg != q[k].seg) { (*cross)++; break; }
+    }
+    return nseg;
+}
+
+/** @brief Resolve a saved queue one walk pass at a time: each pass's mobys, in queue order, alone at the front of the queue.
+ * @param q The queue.
+ * @param nm Its moby count.
+ * @param nt Its triangle count.
+ * @param nseg Its pass count. */
+static void ms_rm_per_pass(const ms_moby* q, int nm, int nt, int nseg) {
+    for (int seg = 0; seg < nseg; seg++) {
+        int n = 0;
+        for (int k = 0; k < nm; k++) if (q[k].seg == seg) s_q_mob[n++] = q[k];
+        if (!n) continue;
+        s_q_nm = n; s_q_nt = nt;
+        ms_resolve_scoped();
+    }
+}
+
+/** @brief Resolve the present's queue pass by pass and then as one, and compare the snap tables.
+ *
+ * The per-pass leg moves each walk pass's mobys to the front of the queue in
+ * queue order and resolves them alone; the table it leaves is packed
+ * (openpete_native_snap_pack_live) and digested in insertion order
+ * (openpete_native_snap_digest); the table, the ordinal census and the
+ * present's counts then return to their marks and the whole queue resolves
+ * once. Compared: the packed words and the digests. The single resolve's
+ * table is kept; under mode 2 it is the calibration's. The per-pass leg's resolves, captures and walks are not
+ * counted in the present's census. */
+static void ms_rm_check(void) {
+    static int s_atexit;
+    static ms_moby* q; static int qcap;
+    enum { W_CAP = (3 + 128 + 2 * 2048) * 4 };
+    static uint32_t wa[W_CAP], wb[W_CAP];
+    if (!s_atexit) { s_atexit = 1; atexit(ms_rm_check_print); }
+    ms_scene_sync();
+    const int nm = s_q_nm, nt = s_q_nt;
+    if (!nm || !ms_grow((void**)&q, &qcap, nm, sizeof *q)) { s_rmc.skipped += nm > 0; ms_resolve_scoped(); return; }
+    memcpy(q, s_q_mob, (size_t)nm * sizeof *q);
+    openpete_native_snap_mark_t sm;
+    openpete_native_snap_mark(&sm);
+    const int sn0 = s_sn_n;
+    const ms_pc pc0 = s_pc;
+    long cross;
+    const int nseg = ms_rm_passes(q, nm, &cross);
+    s_rmc.cross += cross;
+    ms_rm_per_pass(q, nm, nt, nseg);
+    const int na = openpete_native_snap_pack_live(wa, W_CAP);
+    const uint64_t da = openpete_native_snap_digest(&sm);
+    openpete_native_snap_rewind(&sm);
+    s_sn_n = sn0;
+    s_pc = pc0;
+    memcpy(s_q_mob, q, (size_t)nm * sizeof *q);
+    s_q_nm = nm; s_q_nt = nt;
+    s_cr_late = ms_rm_check_on() == 2;
+    ms_resolve_scoped();
+    s_cr_late = 0;
+    const int nb = openpete_native_snap_pack_live(wb, W_CAP);
+    const long bw = na != nb || na < 0 || memcmp(wa, wb, (size_t)na * sizeof wa[0]) != 0;
+    const long bd = openpete_native_snap_digest(&sm) != da;
+    if ((bw || bd) && s_rmc.bad_words + s_rmc.bad_digest < 8)
+        fprintf(stderr, "[snap-rex-merge-check MISMATCH key=%u] mobys=%d passes=%d words=%d/%d digest=%ld\n",
+                openpete_feed_key_now(), nm, nseg, na, nb, bd);
+    s_rmc.presents++; s_rmc.multi += s_pc.passes >= 2; s_rmc.mobys += nm;
+    s_rmc.ents += nb > 0 ? (long)wb[8] : 0; s_rmc.planes += nb > 0 ? (long)wb[9] : 0;
+    s_rmc.bad_words += bw; s_rmc.bad_digest += bd;
+}
+
+/* The sub-tick census's run totals (OPENPETE_SNAP_REX_CENSUS): presents,
+ * those that queued a moby and those where two or more passes queued, and
+ * the sums of ms_pc over them. */
+static struct { long presents, queued_presents, multi; ms_pc sum; } s_rc;
+
+/** @brief Print the sub-tick census's totals and per-present means. */
+static void ms_rc_print(void) {
+    const double n = s_rc.queued_presents > 0 ? (double)s_rc.queued_presents : 1.0;
+    const ms_pc* p = &s_rc.sum;
+    fprintf(stderr, "[snap-rex-census] merge=%d presents=%ld queued_presents=%ld multi_pass=%ld per_queued_present: "
+                    "passes=%.2f queued=%.2f resolves=%.2f captures=%.2f walked=%.2f carried=%.2f fresh=%.2f "
+                    "refused=%.2f refused_fs=%.2f absent=%.2f resolve_us=%.1f chunk_us=%.1f seg_queued=",
+            ms_rm_on(), s_rc.presents, s_rc.queued_presents, s_rc.multi, p->passes / n, p->queued / n,
+            p->resolves / n, p->captures / n, p->walked / n, p->carried / n, p->fresh / n, p->refreshed / n,
+            p->fsref / n, (p->fresh - p->refreshed) / n, (double)p->res_ns / 1000.0 / n,
+            (double)p->chunk_ns / 1000.0 / n);
+    for (int k = 0; k < MS_PC_SEGS; k++) fprintf(stderr, "%s%.2f", k ? "/" : "", p->seg_q[k] / n);
+    fprintf(stderr, " seg_resolves=");
+    for (int k = 0; k < MS_PC_SEGS; k++) fprintf(stderr, "%s%.2f", k ? "/" : "", p->seg_res[k] / n);
+    fprintf(stderr, " seg_captures=");
+    for (int k = 0; k < MS_PC_SEGS; k++) fprintf(stderr, "%s%.2f", k ? "/" : "", p->seg_cap[k] / n);
+    fputc('\n', stderr);
+}
+
+/** @brief Add the present's counts to the census totals (OPENPETE_SNAP_REX_CENSUS). */
+static void ms_rc_add(void) {
+    static int s_atexit;
+    if (!s_atexit) { s_atexit = 1; atexit(ms_rc_print); }
+    s_rc.presents++;
+    if (!s_pc.queued) return;
+    s_rc.queued_presents++; s_rc.multi += s_pc.passes >= 2;
+    ms_pc* d = &s_rc.sum;
+    const long* a[] = { &s_pc.carried, &s_pc.fresh, &s_pc.refreshed, &s_pc.fsref, &s_pc.resolves,
+                        &s_pc.captures, &s_pc.walked, &s_pc.passes, &s_pc.queued };
+    long* b[] = { &d->carried, &d->fresh, &d->refreshed, &d->fsref, &d->resolves,
+                  &d->captures, &d->walked, &d->passes, &d->queued };
+    for (size_t k = 0; k < sizeof a / sizeof a[0]; k++) *b[k] += *a[k];
+    d->res_ns += s_pc.res_ns; d->chunk_ns += s_pc.chunk_ns;
+    for (int k = 0; k < MS_PC_SEGS; k++) {
+        d->seg_q[k] += s_pc.seg_q[k]; d->seg_res[k] += s_pc.seg_res[k]; d->seg_cap[k] += s_pc.seg_cap[k];
+    }
+}
+
+/** @brief Emit the present's snap counts to the profiler: mobys carried, fresh, refused (refreshed) and refused on a face-verdict change; resolves, terrain captures, cache-owned sectors walked and walk passes that queued. */
+static void ms_pc_emit(void) {
+    static int id[8] = { -1 };
+    if (id[0] < 0) {
+        static const char* const k_name[8] = { "mrexn.snap_carried", "mrexn.snap_fresh", "mrexn.snap_refreshed",
+                                               "mrexn.snap_refreshed_fs", "mrexn.snap_resolves", "mrexn.snap_captures",
+                                               "mrexn.snap_walked", "mrexn.snap_passes" };
+        for (int k = 0; k < 8; k++) id[k] = op_prof_intern(k_name[k]);
+    }
+    const long v[8] = { s_pc.carried, s_pc.fresh, s_pc.refreshed, s_pc.fsref, s_pc.resolves, s_pc.captures,
+                        s_pc.walked, s_pc.passes };
+    for (int k = 0; k < 8; k++) op_prof_count(id[k], (uint64_t)v[k]);
+}
+
+/** @brief End a sub-tick re-extract's moby passes: resolve the present's queue once when the merge is on (ms_rm_on), then emit and total the present's counts. */
+static void ms_rex_end(void) {
+    if (ms_rm_on()) {
+        if (ms_rm_check_on()) ms_rm_check();
+        else ms_resolve_scoped();
+    }
+    if (s_pc.queued && op_prof_on()) ms_pc_emit();
+    if (ms_rc_on()) ms_rc_add();
+}
+
+void moby_snap_moby_fed(void) {
+    if (!s_rex) { ms_resolve_scoped(); return; }
+    ms_scene_sync();
+    const int nq = s_q_nm - s_pc_mark;
+    if (nq > 0) { s_pc.passes++; s_pc.queued += nq; s_pc.seg_q[ms_pc_seg()] += nq; }
+    if (!ms_rm_on()) ms_resolve_scoped();
+    s_pc_mark = s_q_nm;
+    s_q_seg++;
+}
 
 void moby_snap_terrain_fed(struct CPUState* cpu) {
     s_vf_cpu = cpu;

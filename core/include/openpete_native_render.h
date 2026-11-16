@@ -2138,6 +2138,11 @@ void openpete_native_snap_rewind(const openpete_native_snap_mark_t *m);
  * @param m The mark.
  * @return The digest. */
 uint64_t openpete_native_snap_digest(const openpete_native_snap_mark_t *m);
+/** @brief Pack the current scene's snap table into the snap stage's word layout (psx_moby_snap.glsl) with a zero fragment affine: the words an upload of it would carry.
+ * @param w Receives the words.
+ * @param cap Room in @p w, in words.
+ * @return The words written, or -1 when they do not fit. */
+int openpete_native_snap_pack_live(uint32_t *w, int cap);
 
 /** @brief Set the sticky portal inner-rim mark stamped on the triangles added after it.
  *
