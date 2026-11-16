@@ -2276,11 +2276,14 @@ void main()
      * at a sum at fogscale of 0x6000 or more. Runs before the LOD handoff
      * drop, as in the walk. Under GF_HQPIN (terrain.c tn_water_hq) such a
      * face takes the HQ variant with that walk's colours and no facing
-     * test (waterHQ). ---- */
+     * test (waterHQ). Under GF_HPRAW (terrain.c tn_water_drop) the face
+     * is never dropped, and without GF_HPFOG (tn_water_raw) not faded
+     * (waterRaw). ---- */
     float wz3 = quad ? m3c.z : m2.z;
     bool waterFar = !lp && !fillPass && (ff & FF_WATER) != 0u
                  && sz3_sum(m0.z, m1.z, m2.z, wz3, 4.0) >= 0x2000;
-    if (waterFar && sz3_sum(m0.z, m1.z, m2.z, wz3, fogscale) >= 0x6000) { kill_vert(); return; }
+    bool waterRaw = (gf & GF_HPRAW) != 0 && (gf & GF_HPFOG) == 0;
+    if (waterFar && (gf & GF_HPRAW) == 0 && sz3_sum(m0.z, m1.z, m2.z, wz3, fogscale) >= 0x6000) { kill_vert(); return; }
     bool waterHQ = waterFar && (gf & GF_HQPIN) != 0;
 
     /* ---- the game's HP far model under extended LOD on a heavy-fog level
@@ -2884,7 +2887,7 @@ void main()
         cvx cin[3];
         for (int k = 0; k < 3; k++) {
             /* an HQ vertex bakes its true far colour; unfogged it draws near */
-            vec3 c = waterFar ? water_col(cn[k], tp[k].z, fogscale, fogOff)
+            vec3 c = waterFar ? water_col(cn[k], tp[k].z, fogscale, fogOff || waterRaw)
                    : terrain_col(tp[k].z, hpRaw ? (hpFog ? cf[k] : cn[k]) : ((hqv || (fogOff && !lp)) ? cn[k] : cf[k]), cn[k], doFog,
                                  fogRef, fogscale, doGrade, s.sec[slot].gp, s.sec[slot].gq);
             if (dbgraw) c = (dbgmode == 4) ? cn[k] : cf[k];
@@ -3186,7 +3189,7 @@ void main()
     vec3 cnear8 = op_unorm8(inColNear.rgb);
 #endif
     /* One vertex's colour at view-Z Z from its raw far and near colours. */
-#define TJ_SHADE(Z, CF, CN) (waterFar ? water_col(CN, Z, fogscale, fogOff) \
+#define TJ_SHADE(Z, CF, CN) (waterFar ? water_col(CN, Z, fogscale, fogOff || waterRaw) \
         : terrain_col(Z, hpRaw ? (hpFog ? CF : CN) : ((hqv || (fogOff && !lp)) ? CN : CF), CN, \
                       hpRaw ? hpFog : (!lp && !hqv && !fogOff), fogRef, fogscale, \
                       lp && (sf & SF_LPGRADE) != 0u, s.sec[slot].gp, s.sec[slot].gq))

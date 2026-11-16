@@ -12952,22 +12952,39 @@ static int tn_water_far(const double cz[4], int quad) {
     return tn_sz3_sum(cz, quad, tface_hqscale()) >= game_layout.terrain.near_band;
 }
 
-/** @brief Returns 1 when the second walk drops a far face: its corner-SZ3 sum is TN_WATER_DROP_SUM or more.
+/** @brief Returns 1 when second-walk faces draw without that walk's depth cue: under the always-HQ pin off a heavy-fog level.
+ *
+ * Extended LOD draws an HP face's near colour at every distance with no
+ * fade (terrain_color under s_hp_raw), so a second-walk face takes its
+ * sector colour unfaded, as far as the land beside it stays textured.
+ * Under s_hp_fog the land fades into the fog, and the second walk keeps
+ * the game's fade toward black. The retained cache mirrors the predicate
+ * in terrain.vert (waterRaw).
+ * @return 1 when the walk's fade is off, else 0. */
+static int tn_water_raw(void) {
+    return s_hp_raw && !s_hp_fog;
+}
+
+/** @brief Returns 1 when the second walk drops a far face: its corner-SZ3 sum is TN_WATER_DROP_SUM or more, off the always-HQ pin.
  *
  * SZ3 = m3 * s_fogscale, so the drop rides the --fog-scale curve with the
- * fade it hides in, as tn_hp_face_drop does.
+ * fade it hides in, as tn_hp_face_drop does. Under the pin (s_hp_raw) every
+ * face draws at every distance and the fade alone decides what it adds:
+ * past the drop sum the faded colour is black or near it, and a corner
+ * nearer than the others keeps its own fade instead of the face vanishing.
  * @param cz The corners' view-Z (m3) in i0..i3 order.
  * @param quad Nonzero for a quad.
  * @return 1 when the face is dropped, else 0. */
 static int tn_water_drop(const double cz[4], int quad) {
-    return tn_sz3_sum(cz, quad, s_fogscale) >= TN_WATER_DROP_SUM;
+    return !s_hp_raw && tn_sz3_sum(cz, quad, s_fogscale) >= TN_WATER_DROP_SUM;
 }
 
 /** @brief Returns 1 when a second-walk far face takes the near HQ path: exactly under the always-HQ pin.
  *
  * The extended mode draws every HQ-eligible face's HQ texture at every
- * distance; a second-walk face past the near split keeps that walk's fade,
- * drop and lack of NCLIP on the near path (tn_near_face). The retained
+ * distance; a second-walk face past the near split keeps that walk's lack
+ * of NCLIP on the near path (tn_near_face) and no drop (tn_water_drop), and
+ * its fade only on a heavy-fog level (tn_water_raw). The retained
  * cache mirrors the verdict in terrain.vert (waterFar under GF_HQPIN).
  * @param waterFar 1 for a second-walk far face (tn_face_water, tn_water_far).
  * @return 1 when the face takes the near path's HQ texture, else 0. */
@@ -13008,14 +13025,15 @@ static int tn_water_ir0(double m3) {
  *
  * The walk zeroes FC (environment.s 800257B0-800257B8) and runs DPCS on the
  * sector's colour with each corner's IR0 (tn_water_ir0), so the colour is
- * ngte_dpcs_ch(c, 0, ir0) per channel; fog mode off leaves it unfaded. The
- * fade is linear in depth and the scene interpolates vertex colours
- * perspective-correct, so the per-pixel fog mode draws this same form.
+ * ngte_dpcs_ch(c, 0, ir0) per channel; fog mode off and tn_water_raw
+ * leave it unfaded. The fade is linear in depth and the scene interpolates
+ * vertex colours perspective-correct, so the per-pixel fog mode draws this
+ * same form.
  * @param c The sector colour, 0x00BBGGRR.
  * @param m3 The corner's view-Z in world/16.
  * @return The colour, 0x00BBGGRR. */
 static uint32_t tn_water_rgb(uint32_t c, double m3) {
-    if (s_fog_mode == OPENPETE_FOG_OFF) return c;   /* no depth cue */
+    if (s_fog_mode == OPENPETE_FOG_OFF || tn_water_raw()) return c;   /* no depth cue */
     const int ir0 = tn_water_ir0(m3);
     uint32_t out = 0u;
     for (int k = 0; k < 3; k++)
