@@ -275,3 +275,5 @@ ocean_speedway | pos=(51802, 81753, 36334) yaw=-160 pitch=356
 ocean_speedway@fogorig | pos=(51802, 81753, 36334) yaw=-160 pitch=356 | | --fog original
 ocean_speedway@fogpp | pos=(51802, 81753, 36334) yaw=-160 pitch=356 | | --fog per-pixel
 ocean_speedway@fogoff | pos=(51802, 81753, 36334) yaw=-160 pitch=356 | | --fog off
+# Metropolis across the pool: the hole-fill pass draws back-facing low-detail faces the world pass drops.
+metropolis@fillcull | pos=(47022, 108954, 39776) yaw=-211 pitch=81
