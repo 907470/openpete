@@ -29,6 +29,20 @@ struct CPUState;
  * @param n Triangle count. */
 void moby_snap_queue(uint32_t mid, int mordinal, int dofs, float off_m,
                      const float (*v)[3][3], int n);
+/** @brief The lean queue's mode (OPENPETE_SNAP_QUEUE_LEAN, OPENPETE_SNAP_QUEUE_LEAN_CHECK), read once.
+ *
+ * On, a queued moby's bounds are computed when its chunk resolves and the
+ * collect gathers its corners into moby_snap_queue_room; under the check
+ * both are also done the old way and compared.
+ * @return 0 off, 1 on (the default), 2 on and checked. */
+int moby_snap_queue_lean(void);
+/** @brief Room for n triangles at the end of the queue of the scene now accumulating, to gather one moby's corners into before moby_snap_queue takes them in place.
+ *
+ * Starts a new queue when the scene changed. The room holds until the next
+ * call into the queue; moby_snap_queue given this pointer copies nothing.
+ * @param n The most triangles the caller writes.
+ * @return The room, or NULL when the lean queue is off or on an allocation failure. */
+float (*moby_snap_queue_room(int n))[3][3];
 /** @brief Whether the carry verify's corner probe is on (OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV=1), read once.
  * @return 1 when on, else 0. */
 int moby_snap_probe_on(void);

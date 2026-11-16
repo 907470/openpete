@@ -12095,7 +12095,28 @@ static int moby_snap_ordinal(const moby_rank_ordinals_t* rord, uint32_t mob) {
     return 0;
 }
 
-/** @brief Copy one moby's eligible walk triangles, [i0, i1), into a growable buffer at (sx, sy, kvz).
+/** @brief Copy one moby's eligible walk triangles, [i0, i1), at (sx, sy, kvz) into room for i1 - i0 triangles.
+ * @param i0 The moby's first walk triangle.
+ * @param i1 One past its last.
+ * @param dst The room.
+ * @param first Receives the first eligible triangle's index.
+ * @return The triangles copied. */
+static int moby_snap_gather_into(int i0, int i1, float (*dst)[3][3], int* first) {
+    int n = 0;
+    for (int j = i0; j < i1; j++) {
+        if (!moby_snap_face(j)) continue;
+        for (int k = 0; k < 3; k++) {
+            dst[n][k][0] = s_wtri[j].v[k].sx;
+            dst[n][k][1] = s_wtri[j].v[k].sy;
+            dst[n][k][2] = s_wtri[j].v[k].kvz;
+        }
+        if (!n) *first = j;
+        n++;
+    }
+    return n;
+}
+
+/** @brief Copy one moby's eligible walk triangles, [i0, i1), into a growable buffer at (sx, sy, kvz) (moby_snap_gather_into).
  * @param i0 The moby's first walk triangle.
  * @param i1 One past its last.
  * @param buf The buffer, grown as needed.
@@ -12103,22 +12124,47 @@ static int moby_snap_ordinal(const moby_rank_ordinals_t* rord, uint32_t mob) {
  * @param first Receives the first eligible triangle's index.
  * @return The triangles copied; 0 also on an allocation failure. */
 static int moby_snap_gather(int i0, int i1, float (**buf)[3][3], int* cap, int* first) {
-    int n = 0;
-    for (int j = i0; j < i1; j++) {
-        if (!moby_snap_face(j)) continue;
-        if (n >= *cap) {
-            const int nc = *cap ? *cap * 2 : 1024;
-            void* q = realloc(*buf, (size_t)nc * sizeof **buf);
-            if (!q) return 0;
-            *buf = q; *cap = nc;
-        }
-        for (int k = 0; k < 3; k++) {
-            (*buf)[n][k][0] = s_wtri[j].v[k].sx;
-            (*buf)[n][k][1] = s_wtri[j].v[k].sy;
-            (*buf)[n][k][2] = s_wtri[j].v[k].kvz;
-        }
-        if (!n) *first = j;
-        n++;
+    if (i1 - i0 > *cap) {
+        int nc = *cap ? *cap : 1024;
+        while (nc < i1 - i0) nc *= 2;
+        void* q = realloc(*buf, (size_t)nc * sizeof **buf);
+        if (!q) return 0;
+        *buf = q; *cap = nc;
+    }
+    return moby_snap_gather_into(i0, i1, *buf, first);
+}
+
+/* The lean queue check's gather totals: mobys gathered both ways and those whose two copies differ. */
+static struct { long mobys, bad; } s_sgc;
+
+/** @brief Print the lean queue check's gather totals. */
+static void moby_snap_gather_print(void) {
+    fprintf(stderr, "[snap-queue-lean-gather] mobys=%ld mismatched=%ld\n", s_sgc.mobys, s_sgc.bad);
+}
+
+/** @brief Gather one moby's eligible walk triangles, [i0, i1), into the snap queue's room when the lean queue gives one, else into the collect's buffer; under the lean queue's check into both, compared.
+ * @param i0 The moby's first walk triangle.
+ * @param i1 One past its last.
+ * @param out Receives where the triangles are, for moby_snap_queue.
+ * @param first Receives the first eligible triangle's index.
+ * @return The triangles gathered; 0 also on an allocation failure. */
+static int moby_snap_gather_to(int i0, int i1, const float (**out)[3][3], int* first) {
+    static float (*s_buf)[3][3]; static int s_cap;
+    float (*room)[3][3] = moby_snap_queue_room(i1 - i0);
+    if (!room) {
+        const int n = moby_snap_gather(i0, i1, &s_buf, &s_cap, first);
+        *out = (const float (*)[3][3])s_buf;
+        return n;
+    }
+    const int n = moby_snap_gather_into(i0, i1, room, first);
+    *out = (const float (*)[3][3])room;
+    if (moby_snap_queue_lean() == 2) {
+        static int s_atexit;
+        if (!s_atexit) { s_atexit = 1; atexit(moby_snap_gather_print); }
+        int f2 = *first;
+        const int n2 = moby_snap_gather(i0, i1, &s_buf, &s_cap, &f2);
+        s_sgc.mobys++;
+        s_sgc.bad += n2 != n || (n > 0 && (f2 != *first || memcmp(s_buf, room, (size_t)n * sizeof *room) != 0));
     }
     return n;
 }
@@ -12155,7 +12201,6 @@ static void moby_snap_probe_tags(uint32_t mob, int i0, int i1, int n) {
  * walk ranked any of its faces.
  * @param rord The walk's ranked-moby ordinals. */
 static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
-    static float (*s_buf)[3][3]; static int s_cap;
     if (!openpete_native_moby_snap_on()) return;
     uint32_t ids[256];
     for (int o = 0; o < rord->n; o++) ids[o] = moby_scene_identity(rord->moby[o]);
@@ -12165,10 +12210,11 @@ static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
         int j = i;
         while (j < s_gout.n && s_wtri_moby[j] == mob) j++;
         int f = i;
-        const int n = moby_snap_gather(i, j, &s_buf, &s_cap, &f);
+        const float (*tri)[3][3] = NULL;
+        const int n = moby_snap_gather_to(i, j, &tri, &f);
         if (n) {
             moby_snap_queue(moby_scene_identity(mob), moby_snap_ordinal(rord, mob), s_wtri_dofs[f],
-                            s_wtri[f].v[0].kvz - s_wtri[f].v[0].vz, (const float (*)[3][3])s_buf, n);
+                            s_wtri[f].v[0].kvz - s_wtri[f].v[0].vz, tri, n);
             if (moby_snap_probe_on()) moby_snap_probe_tags(mob, i, j, n);
         }
         i = j;

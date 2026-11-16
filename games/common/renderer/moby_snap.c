@@ -50,8 +50,9 @@ static inline double ms_max(double a, double b) { return b > a ? b : a; }
  * bounds of that run (screen x0, y0, x1, y1, view-Z z0, z1); its index in
  * the queue as collected (qi), whether its planes go to the scene's table
  * (add; 0 for a moby the carry already placed) and the walk pass of the
- * scene that queued it (seg, counted by moby_snap_moby_fed). */
-typedef struct { uint32_t mid; int mord, dofs; float off; int t0, nt; float b[6]; int qi; int add; int path; float kr; int seg; } ms_moby;
+ * scene that queued it (seg, counted by moby_snap_moby_fed); bok is 1 once b
+ * and the run's s_q_bnd hold (ms_bounds_ensure). */
+typedef struct { uint32_t mid; int mord, dofs; float off; int t0, nt; float b[6]; int qi; int add; int path; float kr; int seg; int bok; } ms_moby;
 
 static ms_moby*   s_q_mob;  static int s_q_nm, s_q_capm;
 static float    (*s_q_tri)[3][3]; static int s_q_nt, s_q_capt;
@@ -157,10 +158,67 @@ static void ms_bounds_tris(const float (*t)[3][3], float (*b)[6], int n, float u
     }
 }
 
+/* ---- the lean queue ------------------------------------------------------
+ * A queued moby's bounds (ms_moby.b and its run of s_q_bnd) are read only by
+ * the contact pass (ms_box, ms_moby_planes) and the carry verify's detail
+ * lines, which run on the mobys a resolve sends to the capture. In a sub-tick
+ * resolve the carry places most of the queue and those never reach it, so
+ * the bounds are computed when the moby's chunk resolves (ms_bounds_ensure)
+ * instead of when it is queued. ms_bounds_tris reads only the moby's run of
+ * s_q_tri, which nothing writes between the queue and the resolve, so the
+ * bounds are those the queue would have computed. The collect also gathers
+ * a moby's corners straight into the queue (moby_snap_queue_room) instead
+ * of into its own buffer for moby_snap_queue to copy. OPENPETE_SNAP_QUEUE_LEAN=0
+ * computes the bounds at the queue and copies the corners;
+ * OPENPETE_SNAP_QUEUE_LEAN_CHECK=1 computes the bounds at the queue and again
+ * at the resolve, comparing bit for bit (ms_bounds_ensure), and has the
+ * collect gather each moby both ways and compare. */
+static struct { long mobys, bounded, compared, bad; } s_lbc;   /* the check's totals */
+
+int moby_snap_queue_lean(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("OPENPETE_SNAP_QUEUE_LEAN");
+        const char* c = getenv("OPENPETE_SNAP_QUEUE_LEAN_CHECK");
+        v = (c && *c && *c != '0') ? 2 : !(e && *e == '0');
+    }
+    return v;
+}
+
+/** @brief Print the lean queue check's bounds totals: mobys queued, those whose chunk resolved, those compared and the mismatches. */
+static void ms_lb_print(void) {
+    fprintf(stderr, "[snap-queue-lean-check] queued=%ld resolved=%ld compared=%ld mismatched=%ld\n",
+            s_lbc.mobys, s_lbc.bounded, s_lbc.compared, s_lbc.bad);
+}
+
+/** @brief Make a queued moby's bounds hold before its chunk resolves: compute them when deferred, or under the check compare a fresh computation with the queue's.
+ * @param m The moby. */
+static void ms_bounds_ensure(ms_moby* m) {
+    s_lbc.bounded++;
+    if (!m->bok) {
+        ms_bounds_tris(&s_q_tri[m->t0], &s_q_bnd[m->t0], m->nt, m->b);
+        m->bok = 1;
+        return;
+    }
+    if (moby_snap_queue_lean() != 2) return;
+    static float (*tb)[6]; static int tcap;
+    if (!ms_grow((void**)&tb, &tcap, m->nt, sizeof *tb)) return;
+    float u[6];
+    ms_bounds_tris(&s_q_tri[m->t0], tb, m->nt, u);
+    s_lbc.compared++;
+    s_lbc.bad += memcmp(u, m->b, sizeof u) != 0 || memcmp(tb, &s_q_bnd[m->t0], (size_t)m->nt * sizeof *tb) != 0;
+}
+
 int moby_snap_probe_on(void) {
     static int s_on = -1;
     if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV"); s_on = e && *e == '1'; }
     return s_on;
+}
+
+float (*moby_snap_queue_room(int n))[3][3] {
+    ms_scene_sync();
+    if (!moby_snap_queue_lean() || n <= 0 || !ms_grow((void**)&s_q_tri, &s_q_capt, s_q_nt + n, sizeof *s_q_tri)) return NULL;
+    return &s_q_tri[s_q_nt];
 }
 
 void moby_snap_queue(uint32_t mid, int mordinal, int dofs, float off_m,
@@ -177,8 +235,14 @@ void moby_snap_queue(uint32_t mid, int mordinal, int dofs, float off_m,
     ms_moby* m = &s_q_mob[s_q_nm++];
     m->mid = mid; m->mord = mordinal; m->dofs = dofs; m->off = off_m;
     m->t0 = s_q_nt; m->nt = n; m->path = 0; m->kr = 0.0f; m->seg = s_q_seg;
-    memcpy(&s_q_tri[s_q_nt], v, (size_t)n * sizeof *s_q_tri);
-    ms_bounds_tris(&s_q_tri[s_q_nt], &s_q_bnd[s_q_nt], n, m->b);
+    if (v != (const float (*)[3][3])&s_q_tri[s_q_nt]) memcpy(&s_q_tri[s_q_nt], v, (size_t)n * sizeof *s_q_tri);
+    m->bok = moby_snap_queue_lean() != 1;
+    if (m->bok) ms_bounds_tris(&s_q_tri[s_q_nt], &s_q_bnd[s_q_nt], n, m->b);
+    if (moby_snap_queue_lean() == 2) {
+        static int s_atexit;
+        if (!s_atexit) { s_atexit = 1; atexit(ms_lb_print); }
+        s_lbc.mobys++;
+    }
     s_q_nt += n;
 }
 
@@ -1023,10 +1087,11 @@ typedef struct { int16_t sec; uint8_t pass, verd; uint16_t face; } mc_fc;
  * guest state at the store (sig, valid when sig_ok: mc_moby_sig), and its
  * contact region (rb: ms_moby_cbox widened by MC_CAND) with the faces of the visible
  * sectors in it and their verdicts (nf from f0 in the table's fc; fc_ok 0
- * when they were not read: mc_store_cands). */
+ * when they were not read: mc_store_cands), and the resolve's H, ofx, ofy
+ * (kv) the corners were unprojected with. */
 typedef struct { uint32_t mid; int p0, np; float wb[6]; int wb_ok; int wc0, nwc; uint32_t sig; int sig_ok;
                  float rb[6]; int f0, nf, fc_ok;
-                 int path; float off, kr; } mc_ent;   /* path, off: the probe's (moby_snap_queue_probe) */
+                 int path; float off, kr; float kv[3]; } mc_ent;   /* path, off: the probe's (moby_snap_queue_probe) */
 #define MC_HBITS 10
 #define MC_HSIZE (1 << MC_HBITS)
 typedef struct {
@@ -1040,6 +1105,7 @@ typedef struct {
     openpete_snap_plane* c; int cap_c;   /* parallel to w: the plane as resolved */
     ms_pid*   id;  int cap_id;           /* parallel to w: the plane's source face */
     double  (*wc)[3]; int nwc, cap_wc;   /* the stored mobys' world corners (verify) */
+    float   (*rc)[3]; int cap_rc;        /* parallel to wc: each corner as queued (screen x, y, key depth) */
     uint32_t* fk;  int cap_fk;           /* parallel to wc while the probe is on: the corner's face key */
     uint64_t  vis[16];                   /* the stores' build's visible sectors (terrain_snap_visible) */
     int       vis_ok;
@@ -1373,11 +1439,14 @@ static void mc_cam_note(mc_tab* t, const double L[3][3], const double P[3]) {
 static void mc_store_geom(mc_tab* t, mc_ent* e, const ms_moby* mb, const float* wb, const double (*kc)[3]) {
     const int n = 3 * mb->nt;
     memcpy(e->wb, wb, sizeof e->wb);
+    memcpy(e->kv, s_rs_view, sizeof e->kv);
     e->path = mb->path; e->off = mb->off; e->kr = mb->kr;
-    if (!kc || !ms_grow((void**)&t->wc, &t->cap_wc, t->nwc + n, sizeof *t->wc)) return;
+    if (!kc || !ms_grow((void**)&t->wc, &t->cap_wc, t->nwc + n, sizeof *t->wc) ||
+        !ms_grow((void**)&t->rc, &t->cap_rc, t->nwc + n, sizeof *t->rc)) return;
     if (moby_snap_probe_on() && ms_grow((void**)&t->fk, &t->cap_fk, t->nwc + n, sizeof *t->fk))
         for (int i = 0; i < n; i++) t->fk[t->nwc + i] = s_q_fk[mb->t0 + i / 3];
     memcpy(t->wc[t->nwc], kc, (size_t)n * sizeof *t->wc);
+    memcpy(t->rc[t->nwc], s_q_tri[mb->t0], (size_t)n * sizeof *t->rc);
     t->nwc += n;
     e->nwc = n;
 }
@@ -1412,6 +1481,7 @@ static void mc_store(mc_tab* t, const ms_moby* mb, const openpete_snap_plane* ou
     e->wb_ok = s_rs_wb;
     e->wc0 = t->nwc; e->nwc = 0;
     e->f0 = e->nf = e->fc_ok = 0;
+    e->kv[0] = e->kv[1] = e->kv[2] = 0.0f;
     e->sig_ok = mc_moby_sig(mid, &e->sig);
     if (wb) mc_store_geom(t, e, mb, wb, kc);
     for (int k = 0; k < np; k++) {
@@ -1729,6 +1799,70 @@ static int mc_still(uint32_t mid) {
     return lt->e[a].sig == pv->e[b].sig;
 }
 
+/* ---- the corner comparison's input test -----------------------------------
+ * Under a camera bit-equal to the endpoint's, mc_refresh compares a moby's
+ * key-depth world corners with the stored ones (mc_corner_delta): each is
+ * ms_moby_corner_at of the queued corner (screen x, y and key depth) under
+ * the resolve's H, ofx, ofy, the inverse of the camera's linear part and
+ * its position. The camera is the endpoint's (the caller's same), and the
+ * inverse is computed from it by the same arithmetic, so when the queued
+ * corners and H, ofx, ofy also equal the stored ones bit for bit every
+ * recomputed corner equals its stored corner and the distance is 0; the
+ * transforms are skipped (mc_corners_same). Any other input takes the
+ * comparison. OPENPETE_SNAP_CORNER_EQ=0 always compares;
+ * OPENPETE_SNAP_CORNER_EQ_CHECK=1 runs the input test and the comparison on
+ * every such moby and counts the mobys the test passes whose comparison
+ * refreshes them (ms_ce_print). */
+static struct { long resolves, mobys, same, bad; } s_cec;   /* the check's totals */
+
+/** @brief The corner input test's mode (OPENPETE_SNAP_CORNER_EQ, OPENPETE_SNAP_CORNER_EQ_CHECK), read once.
+ * @return 0 off, 1 on (the default), 2 on and checked against the comparison. */
+static int mc_ce_mode(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("OPENPETE_SNAP_CORNER_EQ");
+        const char* c = getenv("OPENPETE_SNAP_CORNER_EQ_CHECK");
+        v = (c && *c && *c != '0') ? 2 : !(e && *e == '0');
+    }
+    return v;
+}
+
+/** @brief Print the corner input test check's totals: resolves and mobys compared, mobys whose inputs were equal, and those of them the comparison refreshed. */
+static void ms_ce_print(void) {
+    fprintf(stderr, "[snap-corner-eq-check] resolves=%ld mobys=%ld inputs_equal=%ld mismatched=%ld\n",
+            s_cec.resolves, s_cec.mobys, s_cec.same, s_cec.bad);
+}
+
+/** @brief Whether a queued moby's corners and the resolve's H, ofx, ofy equal, bit for bit, those its endpoint entry was stored from.
+ * @param ep The endpoint.
+ * @param e The moby's entry in it, its corner count equal to the moby's.
+ * @param mb The queued moby.
+ * @return 1 when they do, else 0. */
+static int mc_corners_same(const mc_tab* ep, const mc_ent* e, const ms_moby* mb) {
+    return memcmp(e->kv, s_rs_view, sizeof e->kv) == 0 &&
+           memcmp(ep->rc[e->wc0], s_q_tri[mb->t0], (size_t)e->nwc * sizeof *ep->rc) == 0;
+}
+
+/** @brief Whether a queued moby's key-depth world corners differ from its endpoint entry's under a camera bit-equal to the endpoint's: the input test (mc_corners_same), else the comparison (mc_corner_delta).
+ * @param ep The endpoint.
+ * @param e The moby's entry in it, with corners and as many as the moby's.
+ * @param mb The queued moby.
+ * @return 1 when they differ or cannot be compared, else 0. */
+static int mc_corners_moved(const mc_tab* ep, const mc_ent* e, const ms_moby* mb) {
+    const int mode = mc_ce_mode();
+    const int eq = mode && mc_corners_same(ep, e, mb);
+    if (eq && mode == 1) return 0;
+    int topo = 0;
+    const double d = mc_corner_delta(ep, e, mb, &topo);
+    const int moved = topo || d != 0.0;
+    if (mode == 2) {
+        static int s_atexit;
+        if (!s_atexit) { s_atexit = 1; atexit(ms_ce_print); }
+        s_cec.mobys++; s_cec.same += eq; s_cec.bad += eq && moved;
+    }
+    return moved;
+}
+
 /** @brief Whether a queued moby must resolve fresh instead of taking the endpoint's planes.
  *
  * It must when its guest state changed between the T-1 and T stores
@@ -1760,9 +1894,8 @@ static int mc_refresh(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int 
     if (mc_faces_changed(ep, e, mb, k, same)) return 2;
     if (!same) return s_rs_wb && e->wb_ok && e->nwc != 3 * mb->nt;
     if (e->nwc != 3 * mb->nt) return 1;   /* changed triangle count: mc_corner_delta reports topo or no corners */
-    int topo = 0;
-    const double d = s_rs_wb && e->wb_ok ? mc_corner_delta(ep, e, mb, &topo) : -1.0;
-    return topo || d != 0.0;
+    if (!s_rs_wb || !e->wb_ok) return 1;
+    return mc_corners_moved(ep, e, mb);
 }
 
 /** @brief The verify's calibration injection (OPENPETE_MOBY_SNAP_CARRY_VERIFY_INJECT: 1 a stale plane, 2 a dropped plane), read once; 0 unless the verify runs.
@@ -1847,6 +1980,7 @@ static int mc_map(const mc_tab* ep, const double L[3][3], const double P[3]) {
     double Q[3][3];
     const int inv = ep && mc_inv_t(Lm, Q);
     s_fv_cur = terrain_snap_build();
+    s_cec.resolves += same_cam && mc_ce_mode() == 2;
     if (ep && mc_refresh_on() && !mc_present_sectors(ep)) return 0;
     for (int k = 0; k < s_q_nm; k++) {
         const int x = inv || same ? mc_find(ep, s_q_mob[k].mid) : -1;
@@ -2906,11 +3040,12 @@ static void mc_tab_mark_back(mc_tab* t, const mc_tab_mark* m) {
 }
 
 /* What one commit appended to the carry table: its entries, world planes,
- * resolved planes, source faces, corners and corner face keys, copied out. */
+ * resolved planes, source faces, corners, queued corners and corner face
+ * keys, copied out. */
 typedef struct {
     mc_ent* e; int ne, cap_e;
     mc_wplane* w; openpete_snap_plane* c; ms_pid* id; int npl, cap_p;
-    double (*wc)[3]; uint32_t* fk; int nwc, cap_wc;
+    double (*wc)[3]; float (*rc)[3]; uint32_t* fk; int nwc, cap_wc;
     long dup, full; unsigned hg[MC_HSIZE]; int hi[MC_HSIZE];
 } mc_tab_span;
 
@@ -2926,12 +3061,14 @@ static int mc_tab_span_take(const mc_tab* t, const mc_tab_mark* m, mc_tab_span* 
         !(o->c = (openpete_snap_plane*)realloc(o->c, (size_t)o->cap_p * sizeof *o->c)) ||
         !(o->id = (ms_pid*)realloc(o->id, (size_t)o->cap_p * sizeof *o->id)) ||
         !ms_grow((void**)&o->wc, &o->cap_wc, o->nwc + 1, sizeof *o->wc) ||
+        !(o->rc = (float (*)[3])realloc(o->rc, (size_t)o->cap_wc * sizeof *o->rc)) ||
         !(o->fk = (uint32_t*)realloc(o->fk, (size_t)o->cap_wc * sizeof *o->fk))) return 0;
     memcpy(o->e, t->e + m->ne, (size_t)o->ne * sizeof *o->e);
     memcpy(o->w, t->w + m->npl, (size_t)o->npl * sizeof *o->w);
     memcpy(o->c, t->c + m->npl, (size_t)o->npl * sizeof *o->c);
     memcpy(o->id, t->id + m->npl, (size_t)o->npl * sizeof *o->id);
     memcpy(o->wc, t->wc + m->nwc, (size_t)o->nwc * sizeof *o->wc);
+    if (o->nwc) memcpy(o->rc, t->rc + m->nwc, (size_t)o->nwc * sizeof *o->rc);
     const int probe = moby_snap_probe_on() && t->fk;
     for (int i = 0; i < o->nwc; i++) o->fk[i] = probe ? t->fk[m->nwc + i] : 0u;
     o->dup = t->dup; o->full = t->full;
@@ -2952,13 +3089,15 @@ static long mc_tab_span_diff(const mc_tab_span* a, const mc_tab_span* b) {
         bad += x->mid != y->mid || x->p0 != y->p0 || x->np != y->np || x->wb_ok != y->wb_ok ||
                memcmp(x->wb, y->wb, sizeof x->wb) != 0 || x->wc0 != y->wc0 || x->nwc != y->nwc ||
                x->sig_ok != y->sig_ok || (x->sig_ok && x->sig != y->sig) || x->path != y->path ||
-               memcmp(&x->off, &y->off, sizeof x->off) != 0 || memcmp(&x->kr, &y->kr, sizeof x->kr) != 0;
+               memcmp(&x->off, &y->off, sizeof x->off) != 0 || memcmp(&x->kr, &y->kr, sizeof x->kr) != 0 ||
+               memcmp(x->kv, y->kv, sizeof x->kv) != 0;
     }
     for (int i = 0; i < a->npl; i++)
         bad += memcmp(&a->w[i], &b->w[i], sizeof a->w[i]) != 0 || memcmp(&a->c[i], &b->c[i], sizeof a->c[i]) != 0 ||
                memcmp(&a->id[i], &b->id[i], sizeof a->id[i]) != 0;
     for (int i = 0; i < a->nwc; i++)
-        bad += memcmp(a->wc[i], b->wc[i], sizeof a->wc[i]) != 0 || a->fk[i] != b->fk[i];
+        bad += memcmp(a->wc[i], b->wc[i], sizeof a->wc[i]) != 0 || memcmp(a->rc[i], b->rc[i], sizeof a->rc[i]) != 0 ||
+               a->fk[i] != b->fk[i];
     return bad;
 }
 
@@ -3261,7 +3400,7 @@ static int ms_lc_check(int g, int nb, const terrain_snap_box* box, const float v
 static int ms_resolve_chunk(int g, int nb, const float view[3], ms_census* cs) {
     terrain_snap_box box[128];
     uint64_t tp = rsp_now();
-    for (int k = 0; k < nb; k++) ms_box(&s_q_mob[g + k], &box[k]);
+    for (int k = 0; k < nb; k++) { ms_bounds_ensure(&s_q_mob[g + k]); ms_box(&s_q_mob[g + k], &box[k]); }
     tp = rsp_mark(RSP_BOX, tp);
     const int listed = ms_lc_on() && s_rs_wb;
     if (listed && ms_lc_check_on()) return ms_lc_check(g, nb, box, view, cs);

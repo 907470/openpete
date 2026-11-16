@@ -1338,6 +1338,29 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             TIMEOUT 900
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        # The snap carry's corner input test against the corner comparison it
+        # skips, on the still-camera rows: every moby compared under a camera
+        # bit-equal to its endpoint's takes both.
+        add_test(NAME moby_snap_corner_eq_${_pc_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_pose_cache.sh
+                         --game ${_pc_game} --build-dir=${CMAKE_BINARY_DIR} --instrument=snap-corner-eq)
+        set_tests_properties(moby_snap_corner_eq_${_pc_game} PROPERTIES
+            LABELS "presentation;moby"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        # The lean snap queue against the queue as before, on a walking bk2
+        # with the terrain cache forced on: every resolved moby's triangle and
+        # union bounds computed at the resolve against those of the queue, and
+        # every moby's corners gathered into the queue against the copy.
+        add_test(NAME moby_snap_queue_lean_${_pc_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_pose_cache.sh
+                         --game ${_pc_game} --build-dir=${CMAKE_BINARY_DIR} --instrument=snap-queue-lean)
+        set_tests_properties(moby_snap_queue_lean_${_pc_game} PROPERTIES
+            LABELS "presentation;moby"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
     # Moby occlusion census. Per row of

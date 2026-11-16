@@ -52,16 +52,31 @@
 # pass and then once for all passes (games/common/renderer/moby_snap.c,
 # ms_rm_check), and the packed snap table words and the table's
 # insertion-order digest are compared ([snap-rex-merge-check] presents=
-# presents_multi= ... mismatched_words= mismatched_digest=).
+# presents_multi= ... mismatched_words= mismatched_digest=). Under
+# snap-corner-eq the still-camera rows run with OPENPETE_SNAP_CORNER_EQ_CHECK=1:
+# every moby whose key-depth corners the snap carry compares under a camera
+# bit-equal to its endpoint's takes both the input test and the comparison
+# (moby_snap.c, mc_corners_moved), and a moby the test passes that the
+# comparison would refresh is a mismatch ([snap-corner-eq-check] resolves=
+# mobys= inputs_equal= mismatched=). Under snap-queue-lean the walking rows
+# run with OPENPETE_SNAP_QUEUE_LEAN_CHECK=1 and the terrain cache forced on:
+# every queued moby's bounds are computed at the queue and again when its
+# chunk resolves (ms_bounds_ensure), compared bit for bit
+# ([snap-queue-lean-check] queued= resolved= compared= mismatched=), and the
+# collect gathers each moby's corners into the queue and into its own buffer
+# and compares them (moby.c, moby_snap_gather_to;
+# [snap-queue-lean-gather] mobys= mismatched=).
 #
 # Usage:
 #   tests/harness/check_moby_pose_cache.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
-#       [--instrument=pose-cache|push-fanout|snap-fanout|rec-fanout|rank-fanout|snap-listed|snap-rex-merge]
+#       [--instrument=pose-cache|push-fanout|snap-fanout|rec-fanout|rank-fanout|snap-listed|snap-rex-merge
+#        |snap-corner-eq|snap-queue-lean]
 # Exit 0 PASS: engaged above zero (hits, emits compared, chunks of each leg
 # compared) and no mismatch. 1 FAIL: a mismatch, a missing capture or a
 # missing total. 2 VACUOUS: no hit, no emit, no chunk of a leg compared, or
 # no listed chunk compared on either leg or no walk saved, or no present
-# compared or none where two walk passes queued.
+# compared or none where two walk passes queued, or no moby with equal
+# corner inputs, or no moby resolved or none left unresolved.
 # 64 SKIP (no binary or disc).
 set -u
 
@@ -103,7 +118,7 @@ case "$GAME" in
     *) echo "pose-cache: SKIP (no row for $GAME)"; exit 64;;
 esac
 if [[ "$INSTR" == snap-fanout || "$INSTR" == rec-fanout || "$INSTR" == rank-fanout || "$INSTR" == snap-listed ||
-      "$INSTR" == snap-rex-merge ]]; then
+      "$INSTR" == snap-rex-merge || "$INSTR" == snap-queue-lean ]]; then
     # A bk2 per game that walks the player through the captured VBLs.
     BK2=games/$GAME/bk2
     case "$GAME" in
@@ -127,6 +142,8 @@ case "$INSTR" in
     rank-fanout) KNOB=(OPENPETE_MOBY_RANK_FANOUT_CHECK=1 OPENPETE_MOBY_RANK_FANOUT_MIN=0);;
     snap-listed)      KNOB=(OPENPETE_SNAP_LISTED_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
     snap-rex-merge)   KNOB=(OPENPETE_SNAP_REX_MERGE_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
+    snap-corner-eq)   KNOB=(OPENPETE_SNAP_CORNER_EQ_CHECK=1);;
+    snap-queue-lean)  KNOB=(OPENPETE_SNAP_QUEUE_LEAN_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
     *) echo "pose-cache: SKIP (no instrument $INSTR)"; exit 64;;
 esac
 PG_CAPTURE_ENV=("${KNOB[@]}" OPENPETE_INTERMEDIATE_ALPHA=0.5
@@ -137,6 +154,36 @@ pg_capture "$LOG" "$OUTS" -- --renderer vk --aspect 16:9 --lod extended --no-car
     --screenshot-output "${SHOT}__{n}.png" --frame-limit "$(( ${VBLS#*,} + 10 ))" ||
     { echo "$INSTR: FAIL (capture, see $LOG)"; exit 1; }
 
+if [[ "$INSTR" == snap-corner-eq ]]; then
+    line="$(grep '^\[snap-corner-eq-check\]' "$LOG" | tail -n 1)"
+    [[ -n "$line" ]] || { echo "snap-corner-eq: FAIL (no [snap-corner-eq-check] total in $LOG)"; exit 1; }
+    echo "snap-corner-eq: $GAME $line"
+    v="$(sed -n 's/.* mismatched=\([0-9]*\).*/\1/p' <<<"$line")"
+    [[ "${v:-1}" == 0 ]] || { echo "snap-corner-eq: FAIL (mismatched=${v:-missing})"; exit 1; }
+    eq="$(sed -n 's/.* inputs_equal=\([0-9]*\).*/\1/p' <<<"$line")"
+    [[ "${eq:-0}" -gt 0 ]] || { echo "snap-corner-eq: VACUOUS (no moby with equal corner inputs)"; exit 2; }
+    echo "snap-corner-eq: PASS"
+    exit 0
+fi
+if [[ "$INSTR" == snap-queue-lean ]]; then
+    line="$(grep '^\[snap-queue-lean-check\]' "$LOG" | tail -n 1)"
+    gline="$(grep '^\[snap-queue-lean-gather\]' "$LOG" | tail -n 1)"
+    [[ -n "$line" && -n "$gline" ]] || { echo "snap-queue-lean: FAIL (no [snap-queue-lean-check] or -gather total in $LOG)"; exit 1; }
+    echo "snap-queue-lean: $GAME $line"
+    echo "snap-queue-lean: $GAME $gline"
+    v="$(sed -n 's/.* mismatched=\([0-9]*\).*/\1/p' <<<"$line")"
+    gv="$(sed -n 's/.* mismatched=\([0-9]*\).*/\1/p' <<<"$gline")"
+    [[ "${v:-1}" == 0 && "${gv:-1}" == 0 ]] ||
+        { echo "snap-queue-lean: FAIL (bounds mismatched=${v:-missing}, gather mismatched=${gv:-missing})"; exit 1; }
+    q="$(sed -n 's/.*queued=\([0-9]*\).*/\1/p' <<<"$line")"
+    c="$(sed -n 's/.* compared=\([0-9]*\).*/\1/p' <<<"$line")"
+    r="$(sed -n 's/.* resolved=\([0-9]*\).*/\1/p' <<<"$line")"
+    gm="$(sed -n 's/.* mobys=\([0-9]*\).*/\1/p' <<<"$gline")"
+    [[ "${c:-0}" -gt 0 && "${r:-0}" -lt "${q:-0}" && "${gm:-0}" -gt 0 ]] ||
+        { echo "snap-queue-lean: VACUOUS (compared ${c:-0}, resolved ${r:-0} of ${q:-0} queued, gathered ${gm:-0})"; exit 2; }
+    echo "snap-queue-lean: PASS"
+    exit 0
+fi
 if [[ "$INSTR" == snap-rex-merge ]]; then
     line="$(grep '^\[snap-rex-merge-check\]' "$LOG" | tail -n 1)"
     [[ -n "$line" ]] || { echo "snap-rex-merge: FAIL (no [snap-rex-merge-check] total in $LOG)"; exit 1; }
