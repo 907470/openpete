@@ -182,8 +182,10 @@ BUILD_ARG=""
 ENV_ACCEPT=""
 VERDICT_ONLY=""     # candidate directory decided without a capture
 next_verdict=0
+pending=""          # a value option given as two words (--filter SUBSTR): the option awaiting its value
 for a in "$@"; do
   if (( next_verdict )); then VERDICT_ONLY="$a"; next_verdict=0; continue; fi
+  if [[ -n "$pending" ]]; then a="$pending=$a"; pending=""; fi
   case "$a" in
   --bless) BLESS=1;;
   --filter=*) FILTER="${a#--filter=}";;
@@ -194,7 +196,13 @@ for a in "$@"; do
   --environment-accept=*) ENV_ACCEPT="${a#--environment-accept=}";;
   --verdict-only) next_verdict=1;;
   --verdict-only=*) VERDICT_ONLY="${a#--verdict-only=}";;
+  --game=*) ;;        # read by pg_parse_game below
+  --filter|--freecam-filter|--repeat|--build-dir|--environment-accept|--game) pending="$a";;
+  *) echo "[presentation-golden] FAIL: unknown argument '$a' (an ignored --filter would capture the whole corpus)"; exit 64;;
 esac; done
+if [[ -n "$pending" ]]; then
+  echo "[presentation-golden] FAIL: $pending takes a value"; exit 64
+fi
 if (( next_verdict )) || [[ "$*" == *--verdict-only* && -z "$VERDICT_ONLY" ]]; then
   echo "[presentation-golden] FAIL: --verdict-only takes a candidate directory"; exit 1
 fi
