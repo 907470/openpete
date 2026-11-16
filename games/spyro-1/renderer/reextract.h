@@ -71,7 +71,10 @@ void dragonstar_native_set_rot_interp(const double* ang_zxy);
  * On a held camera cut the replay shows tick N-1's capture set and dome matrix
  * (cut_held_sets_enter), no set when RenderPortals captured none in that
  * epoch. The set stays selected for the terrain feeder's plane provider until
- * portal_reextract_leave.
+ * portal_reextract_leave. Each replayed capture, with the triangles it
+ * emitted, and each refused replay is recorded in the bug-report sub-tick
+ * ring (openpete_bugrec_subtick_portal) and, under
+ * OPENPETE_PORTAL_PRESENT_DBG=1, printed as a [portal-present] line.
  * @param cpu       guest state, the sub-tick view staged
  * @param alpha     sub-tick fraction between the previous and current tick
  * @param interp_on 1 = camera bracketed, else snap to curr

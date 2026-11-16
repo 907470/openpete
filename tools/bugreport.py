@@ -30,12 +30,17 @@ Subcommands:
       value applied at the anchor load or at its tick, or not applied and
       why) and its verdict line.
   subtick BUNDLE [--class C] [--key K] [--last N] [--tol-px PX] [--tol-world W]
+          [--portals N] [--flick-gap G]
       The sub-tick present ring (subtick.bin): per object class the records
       drawn over the held presents, then per record the drawn screen and
       world positions present by present against the position its snapshot
       pair lerps to. Flags a record drawn at more than one screen position
       within one present (MULTI) and a paired record drawn off its lerp
-      (OFFLERP). BUNDLE may also be an extracted subtick.bin.
+      (OFFLERP). From layout version 2 also the Spyro 1 portal previews each
+      present replayed (capture set, leaf or reveal, triangles), flagging a
+      portal drawn, absent on 1..G presents and drawn again (FLICK);
+      --portals N lists the last N presents' entries. BUNDLE may also be an
+      extracted subtick.bin.
   perf BUNDLE
       The performance records: the 30 s pace ring's present and sim
       rollups, the per-tick CPU split (TICK_SPLIT), the eager planner's
@@ -146,6 +151,11 @@ SUB_MAGIC = b"OPSUBTK1"
 SUB_HEADER = struct.Struct("<8sIIIIIIQQ")
 SUB_PRESENT = struct.Struct("<QqqqqIIIIfBBBBiIQIIq")
 SUB_OBJ = struct.Struct("<IIHBB3i3i3B3BH3f3fiif")
+SUB_VERSIONS = (1, 2)
+SUB_PORTAL_MAGIC = b"OPSUBPT1"
+SUB_PORTAL_HEADER = struct.Struct("<8sIIQ")
+SUB_PORTAL = struct.Struct("<QIIIHHBBbBhh")
+SUB_PORTAL_SRC = {0: "leaf", 1: "reveal", 2: "none-empty", 3: "none-gate"}
 SUB_PATHS = {0: "eager", 1: "inline", 2: "repeat"}
 SUB_VERDICTS = {0: "paired", 1: "newborn", 2: "dying", 3: "held"}
 SUB_F_SPEC, SUB_F_GHOST, SUB_F_REFPREV, SUB_F_NOOBJ, SUB_F_WORLD, SUB_F_UNSHOWN = 1, 2, 4, 8, 16, 32
@@ -652,13 +662,15 @@ def subtick_parse(data):
     magic, ver, psz, osz, npres, nobj, pdrop, base, outside = SUB_HEADER.unpack_from(data, 0)
     if magic != SUB_MAGIC:
         raise BundleError("subtick.bin: bad magic")
+    if ver not in SUB_VERSIONS:
+        raise BundleError(f"subtick.bin: version {ver}, this reader knows {SUB_VERSIONS}")
     if psz != SUB_PRESENT.size or osz != SUB_OBJ.size:
         raise BundleError(f"subtick.bin: version {ver} record sizes {psz}/{osz}, this reader knows "
                           f"{SUB_PRESENT.size}/{SUB_OBJ.size}")
     if len(data) < SUB_HEADER.size + npres * psz + nobj * osz:
         raise BundleError("subtick.bin: shorter than its counts")
     hdr = {"version": ver, "presents": npres, "entries": nobj, "presents_dropped": pdrop,
-           "first_entry": base, "outside": outside}
+           "first_entry": base, "outside": outside, "portals": None, "portals_dropped": 0}
     names = ("seq", "present_ns", "target_ns", "tick_prev_ns", "tick_curr_ns", "tick_prev", "tick_curr",
              "feed_key", "vbl", "alpha", "kind", "paired", "path", "late", "slot", "scene_id",
              "obj_first", "obj_n", "stamp", "period_ns")
@@ -674,13 +686,68 @@ def subtick_parse(data):
                      "prev_pos": v[5:8], "curr_pos": v[8:11], "prev_rot": v[11:14], "curr_rot": v[14:17],
                      "nverts": v[17], "world": v[18:21], "sx": v[21], "sy": v[22], "vz": v[23],
                      "prev_dt_us": v[24], "curr_dt_us": v[25], "kf_alpha": v[26]})
+    off += nobj * osz
     for p in pres:
         lo = p["obj_first"] - base
         p["truncated"] = lo < 0 or lo + p["obj_n"] > nobj
         p["objs"] = [] if p["truncated"] else objs[lo:lo + p["obj_n"]]
         for e in p["objs"]:
             e["present"] = p
+        p["portals"] = []
+    if ver >= 2:
+        subtick_parse_portals(data, off, hdr, pres)
     return hdr, pres, objs
+
+
+def subtick_parse_portals(data, off, hdr, pres):
+    """Parse the version-2 portal section at off into hdr["portals"] and each present's "portals" list."""
+    if len(data) < off + SUB_PORTAL_HEADER.size:
+        raise BundleError("subtick.bin: shorter than its portal header")
+    magic, psz, npt, dropped = SUB_PORTAL_HEADER.unpack_from(data, off)
+    if magic != SUB_PORTAL_MAGIC or psz != SUB_PORTAL.size:
+        raise BundleError(f"subtick.bin: portal section magic {magic!r} size {psz}, this reader knows "
+                          f"{SUB_PORTAL_MAGIC!r} {SUB_PORTAL.size}")
+    off += SUB_PORTAL_HEADER.size
+    if len(data) < off + npt * psz:
+        raise BundleError("subtick.bin: shorter than its portal count")
+    names = ("seq", "portal", "cap_frame", "cap_epoch", "tris", "mask_tris", "src", "dome", "pick", "pad",
+             "x0", "x1")
+    by_seq = {p["seq"]: p for p in pres}
+    ents = []
+    for i in range(npt):
+        e = dict(zip(names, SUB_PORTAL.unpack_from(data, off + i * psz)))
+        ents.append(e)
+        p = by_seq.get(e["seq"])
+        if p is not None:
+            p["portals"].append(e)
+            e["present"] = p
+    hdr["portals"] = ents
+    hdr["portals_dropped"] = dropped
+
+
+def subtick_portal_flicks(hdr, pres, gap):
+    """Per portal, each run of at most gap presents without a drawn entry between two presents that drew it (FLICK).
+
+    The window is the presents from the oldest one the portal section holds; a present inside it with no
+    entry for the portal, or with one that emitted no colour triangle, counts as absent.
+    @return A list of (portal, last present drawn, absent presents, present drawn again)."""
+    ents = hdr.get("portals") or []
+    if not ents:
+        return []
+    first = min(e["seq"] for e in ents)
+    win = [p for p in pres if p["seq"] >= first]
+    out = []
+    for portal in sorted({e["portal"] for e in ents if e["portal"]}):
+        last, absent = None, []
+        for p in win:
+            drawn = any(e["portal"] == portal and e["tris"] > 0 for e in p["portals"])
+            if drawn:
+                if last is not None and absent and len(absent) <= gap:
+                    out.append((portal, last, absent, p))
+                last, absent = p, []
+            elif last is not None:
+                absent.append(p)
+    return out
 
 
 def subtick_expected(e, period_ns):
@@ -751,9 +818,11 @@ def subtick_line(b):
     span = (pres[-1]["present_ns"] - pres[0]["present_ns"]) / 1e9
     multi, off = subtick_findings(pres, 2.0, 2.0)
     trunc = sum(1 for p in pres if p["truncated"])
+    portals = "" if hdr["portals"] is None else \
+        f", {len(hdr['portals'])} portal entries, FLICK {len(subtick_portal_flicks(hdr, pres, 8))}"
     return (f"subtick: {len(pres)} presents over {span:.2f} s ("
             + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) + f"), {len(objs)} drawn records"
-            + (f", {trunc} presents truncated" if trunc else "")
+            + (f", {trunc} presents truncated" if trunc else "") + portals
             + f"; MULTI {len(multi)} OFFLERP {len(off)} (python3 -I tools/bugreport.py subtick)")
 
 
@@ -1565,8 +1634,54 @@ def cmd_subtick(args):
               f" {p['alpha']:6.3f} {SUB_VERDICTS.get(e['verdict'], '?'):7s} {SUB_KF[(e['flags'] >> 6) & 3]:4s}"
               f" {t if t is not None else float('nan'):5.3f} {e['sx']:7.1f} {e['sy']:7.1f} {e['vz']:8.1f}"
               f"   {wx:24s} {lx} {tag}")
+    flicks = subtick_portal_report(w, hdr, pres, args)
     print("\n".join(o))
-    return EXIT_DIVERGED if (multi or off) else EXIT_OK
+    return EXIT_DIVERGED if (multi or off or flicks) else EXIT_OK
+
+
+def subtick_portal_absence(p, portal):
+    """Why a present did not draw a portal: its status entry's reason, zero-tris, not-in-set, or no-replay."""
+    if not p["portals"]:
+        return "no-replay"
+    for e in p["portals"]:
+        if e["portal"] == portal:
+            return "zero-tris"
+    for e in p["portals"]:
+        if e["portal"] == 0:
+            return SUB_PORTAL_SRC.get(e["src"], "?")
+    return "not-in-set"
+
+
+def subtick_portal_report(w, hdr, pres, args):
+    """Write the portal section's summary, its FLICK lines and, with --portals N, the last N presents' portal entries.
+
+    @return The FLICK findings; none for a version-1 ring, which holds no portal section."""
+    if hdr["portals"] is None:
+        w(f"portals: none recorded (subtick.bin v{hdr['version']} predates the portal section)")
+        return []
+    ents = hdr["portals"]
+    w(f"portals: {len(ents)} entries, ring dropped {hdr['portals_dropped']}; "
+      + ", ".join(f"{SUB_PORTAL_SRC.get(k, '?')} {sum(1 for e in ents if e['src'] == k)}"
+                  for k in sorted({e['src'] for e in ents})))
+    flicks = subtick_portal_flicks(hdr, pres, args.flick_gap)
+    w(f"FLICK (a portal drawn on a present, absent on 1..{args.flick_gap} presents, drawn again): {len(flicks)}")
+    for portal, a, gap, b in flicks[:args.flag_lines]:
+        why = ",".join(sorted({subtick_portal_absence(p, portal) for p in gap}))
+        w(f"  portal {portal:08x} drawn seq {a['seq']} a={a['alpha']:.3f}, absent "
+          f"seq {gap[0]['seq']}..{gap[-1]['seq']} ({len(gap)}; {why}), drawn seq {b['seq']} a={b['alpha']:.3f}")
+    if args.portals:
+        first = min(e["seq"] for e in ents) if ents else 0
+        w("     seq  feed  kind path    alpha  portal    src        cap_frame cap_epoch pick dome  tris  mask      x0..x1")
+        for p in [p for p in pres if p["seq"] >= first][-args.portals:]:
+            head = (f"  {p['seq']:6d} {p['feed_key']:5d} {'C' if p['kind'] == 0 else 'I'}    "
+                    f"{SUB_PATHS.get(p['path'], '?'):6s} {p['alpha']:6.3f}")
+            if not p["portals"]:
+                w(head + "  (no portal replay)")
+            for e in p["portals"]:
+                w(head + f"  {e['portal']:08x}  {SUB_PORTAL_SRC.get(e['src'], '?'):10s} {e['cap_frame']:9d}"
+                  f" {e['cap_epoch']:9d} {e['pick']:4d} {e['dome']:4d} {e['tris']:5d} {e['mask_tris']:5d}"
+                  f"  {e['x0']:6d}..{e['x1']}")
+    return flicks
 
 
 def cmd_audio(args):
@@ -1923,6 +2038,9 @@ def main(argv=None):
     p.add_argument("--flag-lines", type=int, default=20, help="flag lines listed per kind (default 20)")
     p.add_argument("--tol-px", type=float, default=2.0, help="MULTI screen tolerance (default 2 px)")
     p.add_argument("--tol-world", type=float, default=2.0, help="OFFLERP world tolerance (default 2 units)")
+    p.add_argument("--portals", type=int, default=0, help="list the portal entries of the last N presents")
+    p.add_argument("--flick-gap", type=int, default=8,
+                   help="FLICK: most absent presents between two drawn ones (default 8)")
     p = sub.add_parser("perf", help="performance records: pace rollups, CPU split, planner, GPU, coarse rows")
     p.add_argument("bundle", help="a bundle, or an extracted pace.oppl")
     p.add_argument("--rows", action="store_true", help="also print the coarse rows as TSV")

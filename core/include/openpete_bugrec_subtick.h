@@ -1,8 +1,10 @@
 /* core/include/openpete_bugrec_subtick.h - the bug-report recorder's
  * sub-tick present ring: per composed present its kind, alpha, the tick
  * stamps the present lerps between and the scene ring slot it was
- * published into, and per drawn object record the pairing state the
- * sub-tick interpolation read and the position it was drawn at.
+ * published into, per drawn object record the pairing state the
+ * sub-tick interpolation read and the position it was drawn at, and per
+ * portal preview the re-extract replayed the capture set it came from and
+ * the triangles it emitted.
  *
  * A present opens with openpete_bugrec_subtick_begin at the host site that
  * runs the scene re-extract for a displayed present (an eager ring scene,
@@ -39,8 +41,13 @@ extern "C" {
  * the presents before it keep their headers. */
 #define OPENPETE_BUGREC_SUB_OBJS (32u * OPENPETE_BUGREC_SUB_PRESENTS)
 
-/* The member's layout version (subtick.bin). */
-#define OPENPETE_BUGREC_SUB_VERSION 1u
+/* Portal entries held: 8 per present over the present ring (256 KiB). */
+#define OPENPETE_BUGREC_SUB_PORTALS (8u * OPENPETE_BUGREC_SUB_PRESENTS)
+
+/* The member's layout version (subtick.bin). Version 2 appends the portal
+ * section after the entries; the header, present and entry layouts are
+ * those of version 1. */
+#define OPENPETE_BUGREC_SUB_VERSION 2u
 
 /* How a present was produced. */
 enum {
@@ -111,6 +118,30 @@ typedef struct {
     float    kf_alpha;       /* the keyframe colour crossfade alpha the walk read */
 } openpete_bugrec_sub_obj_t;
 
+/* How a portal entry's set was made, or why a present replayed none
+ * (portal 0). */
+enum {
+    BUGREC_SUB_PORTAL_LEAF = 0,     /* a RenderPortals leaf fed it (on the 4:3 frame) */
+    BUGREC_SUB_PORTAL_REVEAL,       /* the off-4:3 or --no-lod reveal fed it */
+    BUGREC_SUB_PORTAL_NONE_EMPTY,   /* portal 0: the set replayed holds no capture */
+    BUGREC_SUB_PORTAL_NONE_GATE,    /* portal 0: the staleness or held-empty gate refused the replay */
+};
+
+/* One portal a present's re-extract replayed, or one status entry (32 B). */
+typedef struct {
+    uint64_t seq;            /* the present's seq (openpete_bugrec_sub_present_t) */
+    uint32_t portal;         /* the Portal* address, 0 for a status entry */
+    uint32_t cap_frame;      /* openpete_frame of the RenderPortals run whose set was replayed */
+    uint32_t cap_epoch;      /* that set's canonical-render epoch */
+    uint16_t tris;           /* colour triangles emitted for it on this present */
+    uint16_t mask_tris;      /* mask triangles emitted for it on this present */
+    uint8_t  src;            /* BUGREC_SUB_PORTAL_* */
+    uint8_t  dome;           /* 1 when the capture draws a dome */
+    int8_t   pick;           /* the held set shown (cut_held_pick_t), -1 outside a hold */
+    uint8_t  pad;
+    int16_t  x0, x1;         /* the replay's base clip rect x range, PSX screen px */
+} openpete_bugrec_sub_portal_t;
+
 /** @brief Open a present's record in the ring.
  *
  * Reads the present clock, the interpolation ring's two newest stamps, the
@@ -132,6 +163,10 @@ int64_t openpete_bugrec_subtick_present_ns(void);
  * @param e The entry, copied. */
 void openpete_bugrec_subtick_obj(const openpete_bugrec_sub_obj_t* e);
 
+/** @brief Append one portal entry to the open present, stamping its seq; dropped when none is open.
+ * @param e The entry, copied; its seq is overwritten. */
+void openpete_bugrec_subtick_portal(const openpete_bugrec_sub_portal_t* e);
+
 /** @brief Mark the open present as one that showed tick N-1's record set.
  * @param late Nonzero for a late present. */
 void openpete_bugrec_subtick_late(int late);
@@ -151,7 +186,11 @@ void openpete_bugrec_subtick_end(double alpha, int paired, int slot, uint32_t sc
  * Layout, little-endian: "OPSUBTK1", u32 version, u32 present size,
  * u32 entry size, u32 presents, u32 entries, u32 presents dropped by the
  * ring, u64 the absolute index of the first entry held, u64 entries
- * appended outside an open present, then the presents, then the entries.
+ * appended outside an open present, then the presents, then the entries;
+ * from version 2 then "OPSUBPT1", u32 portal entry size, u32 portal
+ * entries, u64 portal entries the ring dropped, then the portal entries,
+ * oldest first. A version 1 reader reads the first three parts and
+ * ignores the rest.
  * A present's obj_first stays absolute: its entries sit at obj_first less
  * the first held index, and one whose entries were overwritten has
  * obj_first below that index, which the reader reports as truncated.

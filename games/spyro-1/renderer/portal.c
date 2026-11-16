@@ -55,6 +55,10 @@
 #include "psx_runtime_internal.h"
 #include "openpete_subtick_view.h"
 #include "openpete_native_render.h"
+#include "openpete_bugrec_subtick.h"
+#include "openpete_fiber.h"        /* openpete_feed_key_now */
+#include "openpete_interp.h"
+#include "openpete_interp_objs.h"   /* g_openpete_tick_period_ns */
 #include "renderer/render_paths.h"
 #include "renderer/hook_bracket.h"   /* hook_reextract_ready_held */
 #include "renderer/cut_guard.h"      /* cut_held_sets_t: the held cut's tick N-1 set */
@@ -550,6 +554,8 @@ typedef struct {
     int      far_fog;       /* fog_rgb / fog_t are RenderPortals' far-leaf term
                              * (portal_far_fog_t), re-evaluated for `portal`
                              * under each present's camera                       */
+    int      src;           /* BUGREC_SUB_PORTAL_LEAF or _REVEAL: which feed made it */
+    unsigned frame;         /* openpete_frame of the RenderPortals run that made it */
 } portal_cap_t;
 /* The rule a replay rebuilds a capture's base clip rect by, under the camera
  * of the present being built. */
@@ -1585,6 +1591,10 @@ int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_porta
  * @return Non-zero when portal triangles are emitted. */
 static int portal_scene_emit_enabled(void) { return render_path_enabled(RP_PORTAL); }
 
+/* Portal triangles emitted since startup, colour and mask; a replay
+ * differences them around each capture's feed for the sub-tick record. */
+static unsigned s_tri_col, s_tri_mask;
+
 /** @brief Adds one portal triangle to the scene in the current portal group.
  *
  * Every portal triangle lies on, or is constructed against, the opening
@@ -1593,6 +1603,7 @@ static int portal_scene_emit_enabled(void) { return render_path_enabled(RP_PORTA
  * @param t The triangle.
  * @param category The scene category (mask or cyclorama). */
 static void portal_add_tri(const openpete_scene_tri* t, int category) {
+    if (category == OPENPETE_SCENE_PORTAL_MASK) s_tri_mask++; else s_tri_col++;
     openpete_scene_tri w = *t;
     for (int k = 0; k < 3; k++) w.v[k].pvz = w.v[k].z;
     openpete_native_scene_add_tri_grouped(&w, category, 0, s_portal_group);
@@ -3095,6 +3106,8 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 c->far_fog       = (forced_fp != 0);
                 c->clip[0] = ry0; c->clip[1] = ry1; c->clip[2] = rx0; c->clip[3] = rx1;
                 c->rect_rule     = portal_rect_rule_for(cpu, owner, kind, c->clip);
+                c->src           = BUGREC_SUB_PORTAL_LEAF;
+                c->frame         = openpete_frame;
                 /* Snapshot the shared dome matrix (same for every dome leaf this
                  * frame); the prev copy was rolled in on_80050BE0. */
                 c->derived_dome  = forced_dome;
@@ -3281,6 +3294,8 @@ static void feed_revealed_portals(CPUState* cpu) {
             c->fog_rgb       = rev_fog;
             c->fog_t         = rev_fog_t;
             c->far_fog       = rev_nolod;
+            c->src           = BUGREC_SUB_PORTAL_REVEAL;
+            c->frame         = openpete_frame;
             memcpy(c->clip, rev_rc, sizeof c->clip);
         }
     }
@@ -3419,16 +3434,54 @@ static void portal_replay_derived_matrix(CPUState* cpu, double alpha, int interp
     derive_dome_matrix_cam(cam, yaw, pitch, M);
 }
 
+/** @brief Whether a clip rect in either x order is empty: the feeders draw nothing for it.
+ * @param rc The rect: min y, max y, then the x pair in either order.
+ * @return 1 when empty, else 0. */
+static int portal_rect_empty(const int rc[4]) {
+    const int xl = rc[2] < rc[3] ? rc[2] : rc[3], xh = rc[2] < rc[3] ? rc[3] : rc[2];
+    return xh <= xl || rc[1] <= rc[0];
+}
+
+/** @brief The outline rule's rect (feed_revealed_portals' rect) of a portal under the present's view, when its outline reaches the view.
+ *
+ * The outline is near-clipped (portal_outline_clipped, corrected) and its
+ * bbox stored as portal_outline_rect stores it. Refused, with `rc`
+ * untouched, when no part of the outline lies in front of the camera or its
+ * bbox misses the widened view, the cases the reveal skips.
+ * @param cpu The guest CPU state.
+ * @param p The Portal* guest address.
+ * @param rc Receives the rect: min y, max y, min x, max x.
+ * @return 1 with `rc` written, else 0. */
+static int portal_view_outline_rect(CPUState* cpu, uint32_t p, int rc[4]) {
+    ppt rp[PORTAL_POLY_MAX];
+    int clipped = 0;
+    const int rn = portal_outline_clipped(cpu, &s_view, p, 1, rp, PORTAL_POLY_MAX, &clipped);
+    if (rn < 3) return 0;
+    int r[4];
+    portal_outline_rect(&s_view, rp, rn, clipped, 1, r);
+    if ((float)r[3] < s_view.xlo || (float)r[2] > s_view.xhi || r[1] < 0 || r[0] > PORTAL_SCREEN_H) return 0;
+    for (int k = 0; k < 4; k++) rc[k] = r[k];
+    return 1;
+}
+
 /** @brief A capture's base clip rect under the present's view (s_view), by the capture's rect rule.
  *
  * `rc` holds the captured rect on entry and keeps it when the rule cannot be
- * evaluated. */
+ * evaluated. A leaf capture (FLAT, DOME) takes RenderPortals' rect mirror,
+ * which clamps to the 4:3 frame and seeds its max x at 0 and, for a dome, its
+ * min x at 512: an outline wholly in a Hor+ side strip under this present's
+ * camera, such as on the tick the leaf first takes a portal from the reveal,
+ * gives an empty rect, on which the feeders draw nothing. In an extended view
+ * such a rect is replaced by the outline rule's rect, the one the reveal
+ * draws the same outline with; a non-empty game rect and every rect of a
+ * canonical (4:3) view are kept. */
 static void portal_replay_rect(CPUState* cpu, const portal_cap_t* c, int rc[4]) {
     if (!c->portal) return;
     if (c->rect_rule == PORTAL_RECT_FLAT || c->rect_rule == PORTAL_RECT_DOME) {
         int m[4];
         if (portal_game_rect(cpu, &s_view, c->portal, c->rect_rule == PORTAL_RECT_DOME, m))
             for (int k = 0; k < 4; k++) rc[k] = m[k];
+        if (s_view.extended && portal_rect_empty(rc)) portal_view_outline_rect(cpu, c->portal, rc);
         return;
     }
     if (c->rect_rule != PORTAL_RECT_OUTLINE) return;
@@ -3500,12 +3553,231 @@ static int portal_replay_dome_matrix(double alpha, int interp_on, int M[3][3]) {
     return 1;
 }
 
+/** @brief Whether OPENPETE_PORTAL_PRESENT_DBG prints one [portal-present] line per replayed portal and per refused replay, read once.
+ * @return Nonzero when on. */
+static int portal_present_dbg(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_PORTAL_PRESENT_DBG"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
+/* OPENPETE_PORTAL_PRESENT_CENSUS=<first key>,<last key>: per re-extract in
+ * that feed-key range, the present and every portal it replayed, held in
+ * memory and printed at exit. One present record per portal_reextract call,
+ * its portals following it in s_pcen_port. */
+#define PCEN_PRESENTS (1u << 16)
+#define PCEN_PORTALS  (1u << 18)
+typedef struct {
+    unsigned key, vbl;       /* feed key and VBL at production */
+    float    alpha;          /* the present's sub-tick alpha */
+    uint8_t  canon;          /* 1 on the canonical leg (g_openpete_canon_lag_leg) */
+    uint8_t  status;         /* 0 replayed, else BUGREC_SUB_PORTAL_NONE_EMPTY or _NONE_GATE */
+    int8_t   pick;           /* the held set shown, -1 outside a hold */
+    uint32_t tick_curr;      /* openpete_frame of the interp ring's newest snapshot, 0 unpaired */
+    uint32_t rp_frame;       /* openpete_frame of the newest RenderPortals run at production */
+    uint32_t first, n;       /* its portal records in s_pcen_port */
+} pcen_present_t;
+typedef struct {
+    uint32_t portal, cap_frame;
+    uint16_t tris, mask_tris;
+    uint8_t  src, dome;
+    int16_t  x0, x1;
+} pcen_portal_t;
+static pcen_present_t* s_pcen_pres;
+static pcen_portal_t*  s_pcen_port;
+static unsigned        s_pcen_np, s_pcen_nt;   /* records held */
+static unsigned long   s_pcen_lost;            /* records past either buffer's end */
+static int             s_pcen_k0 = -2, s_pcen_k1;
+static int             s_pcen_open;            /* the current re-extract is recorded */
+
+/** @brief Whether a portal is drawn (colour triangles emitted) on a census present.
+ * @param pr The present.
+ * @param portal The Portal* address.
+ * @return 1 when drawn, else 0. */
+static int pcen_drawn(const pcen_present_t* pr, uint32_t portal) {
+    for (uint32_t k = 0; k < pr->n; k++)
+        if (s_pcen_port[pr->first + k].portal == portal && s_pcen_port[pr->first + k].tris > 0) return 1;
+    return 0;
+}
+
+/** @brief A census present's production order against RenderPortals: tick_curr less rp_frame.
+ *
+ * RenderPortals runs in the tick's draw, one VBL before the interp ring
+ * stamps that tick's snapshot, so the value is 1 when the replayed set is the
+ * newest snapshot's tick's, above 1 when the present was produced before that
+ * tick's RenderPortals ran, and below 1 when the next tick's RenderPortals ran
+ * before the present was produced (a set one tick newer than the span it
+ * interpolates). An unpaired present reads 1.
+ * @param pr The present.
+ * @return The difference. */
+static long pcen_order(const pcen_present_t* pr) {
+    return pr->tick_curr ? (long)pr->tick_curr - (long)pr->rp_frame : 1;
+}
+
+/** @brief The census name of a present's replay status.
+ * @param status 0, BUGREC_SUB_PORTAL_NONE_EMPTY or BUGREC_SUB_PORTAL_NONE_GATE.
+ * @return "replayed", "empty" or "gate". */
+static const char* pcen_status_name(int status) {
+    if (status == BUGREC_SUB_PORTAL_NONE_EMPTY) return "empty";
+    return status == BUGREC_SUB_PORTAL_NONE_GATE ? "gate" : "replayed";
+}
+
+/** @brief Print one census present's line, then one line per portal it replayed.
+ * @param i The present's index. */
+static void pcen_print_present(unsigned i) {
+    const pcen_present_t* pr = &s_pcen_pres[i];
+    const long d = pcen_order(pr);
+    fprintf(stderr, "[portal-census p] i=%u key=%u vbl=%u leg=%s alpha=%.4f tick_curr=%u rp_frame=%u d=%ld%s "
+            "pick=%d status=%s n=%u\n", i, pr->key, pr->vbl, pr->canon ? "canon" : "inter", pr->alpha,
+            pr->tick_curr, pr->rp_frame, d, d > 1 ? " before" : d < 1 ? " ahead" : "", pr->pick,
+            pcen_status_name(pr->status), pr->n);
+    for (uint32_t k = 0; k < pr->n; k++) {
+        const pcen_portal_t* e = &s_pcen_port[pr->first + k];
+        fprintf(stderr, "[portal-census t] i=%u portal=%08X src=%s dome=%u cap_frame=%u tris=%u mask=%u x=[%d,%d]\n",
+                i, e->portal, e->src == BUGREC_SUB_PORTAL_REVEAL ? "reveal" : "leaf", e->dome, e->cap_frame,
+                e->tris, e->mask_tris, e->x0, e->x1);
+    }
+}
+
+/** @brief Collect the distinct portals the census recorded, in first-seen order.
+ * @param ids Receives at most `max` Portal* addresses.
+ * @param max The capacity of `ids`.
+ * @return The count written. */
+static int pcen_portal_ids(uint32_t* ids, int max) {
+    int n = 0;
+    for (unsigned t = 0; t < s_pcen_nt; t++) {
+        int j = 0;
+        while (j < n && ids[j] != s_pcen_port[t].portal) j++;
+        if (j == n && n < max) ids[n++] = s_pcen_port[t].portal;
+    }
+    return n;
+}
+
+/** @brief Count, and print, one portal's FLICKs: drawn on a present, absent on 1 to 32 later presents, drawn again.
+ * @param portal The Portal* address.
+ * @return The FLICKs found. */
+static unsigned pcen_flicks(uint32_t portal) {
+    unsigned n = 0;
+    long last = -1;
+    for (unsigned i = 0; i < s_pcen_np; i++) {
+        if (!pcen_drawn(&s_pcen_pres[i], portal)) continue;
+        const long gap = last < 0 ? 0 : (long)i - last - 1;
+        if (gap >= 1 && gap <= 32) {
+            n++;
+            fprintf(stderr, "[portal-census flick] portal=%08X drawn i=%ld absent %ld presents drawn i=%u\n",
+                    portal, last, gap, i);
+        }
+        last = (long)i;
+    }
+    return n;
+}
+
+/** @brief Print the census at exit: one line per present and per replayed portal, the FLICKs, then the summary.
+ *
+ * The summary counts the FLICKs over every portal and the presents produced
+ * before or ahead of their tick's RenderPortals run (pcen_order). */
+static void pcen_report(void) {
+    fprintf(stderr, "[portal-census] presents=%u portals=%u lost=%lu keys=[%d,%d]\n",
+            s_pcen_np, s_pcen_nt, s_pcen_lost, s_pcen_k0, s_pcen_k1);
+    unsigned before = 0, ahead = 0;
+    for (unsigned i = 0; i < s_pcen_np; i++) {
+        pcen_print_present(i);
+        const long d = pcen_order(&s_pcen_pres[i]);
+        before += d > 1; ahead += d < 1;
+    }
+    uint32_t ids[8];
+    const int nid = pcen_portal_ids(ids, 8);
+    unsigned flicks = 0;
+    for (int j = 0; j < nid; j++) flicks += pcen_flicks(ids[j]);
+    fprintf(stderr, "[portal-census summary] presents=%u portals_seen=%d flicks=%u (drawn, absent 1..32 presents, drawn) "
+            "before=%u ahead=%u\n", s_pcen_np, nid, flicks, before, ahead);
+}
+
+/** @brief Open the census record of one re-extract when OPENPETE_PORTAL_PRESENT_CENSUS names its feed key.
+ *
+ * Reads the variable once ("<first key>,<last key>"), allocates both buffers
+ * then and registers pcen_report at exit.
+ * @param alpha The present's sub-tick alpha. */
+static void pcen_begin(double alpha) {
+    s_pcen_open = 0;
+    if (s_pcen_k0 == -2) {
+        const char* e = getenv("OPENPETE_PORTAL_PRESENT_CENSUS");
+        s_pcen_k0 = -1;
+        if (e && sscanf(e, "%d,%d", &s_pcen_k0, &s_pcen_k1) == 2 && s_pcen_k0 >= 0) {
+            s_pcen_pres = (pcen_present_t*)calloc(PCEN_PRESENTS, sizeof *s_pcen_pres);
+            s_pcen_port = (pcen_portal_t*)calloc(PCEN_PORTALS, sizeof *s_pcen_port);
+            if (s_pcen_pres && s_pcen_port) atexit(pcen_report); else s_pcen_k0 = -1;
+        } else {
+            s_pcen_k0 = -1;
+        }
+    }
+    if (s_pcen_k0 < 0) return;
+    const int key = (int)openpete_feed_key_now();
+    if (key < s_pcen_k0 || key > s_pcen_k1) return;
+    if (s_pcen_np >= PCEN_PRESENTS) { s_pcen_lost++; return; }
+    pcen_present_t* pr = &s_pcen_pres[s_pcen_np++];
+    memset(pr, 0, sizeof *pr);
+    pr->key = (unsigned)key; pr->vbl = openpete_frame; pr->alpha = (float)alpha;
+    pr->canon = (uint8_t)(g_openpete_canon_lag_leg != 0);
+    pr->pick = (int8_t)s_pcap_pick;
+    pr->rp_frame = s_rp_frame;
+    pr->first = s_pcen_nt;
+    double a = 0.0;
+    const openpete_interp_snapshot_t *prev = NULL, *curr = NULL;
+    if (openpete_interp_query(openpete_interp_present_now(), g_openpete_tick_period_ns, &a, &prev, &curr) && curr)
+        pr->tick_curr = curr->tick;
+    s_pcen_open = 1;
+}
+
+/** @brief Record one portal a re-extract replayed, or why it replayed none, in the sub-tick ring and on the debug line.
+ *
+ * @param c The capture replayed, or NULL for a status entry.
+ * @param src BUGREC_SUB_PORTAL_NONE_EMPTY or _NONE_GATE for a status entry; ignored with a capture.
+ * @param alpha The present's sub-tick alpha.
+ * @param rc The replay's base clip rect (min y, max y, x pair), or NULL.
+ * @param tris The colour triangles the capture's feed emitted.
+ * @param mask_tris The mask triangles it emitted. */
+static void portal_present_note(const portal_cap_t* c, int src, double alpha, const int* rc,
+                                unsigned tris, unsigned mask_tris) {
+    openpete_bugrec_sub_portal_t e;
+    memset(&e, 0, sizeof e);
+    e.portal    = c ? c->portal : 0u;
+    e.cap_frame = c ? c->frame : s_pcap_frame;
+    e.cap_epoch = s_sets.epoch[0];
+    e.tris      = (uint16_t)(tris > 0xFFFFu ? 0xFFFFu : tris);
+    e.mask_tris = (uint16_t)(mask_tris > 0xFFFFu ? 0xFFFFu : mask_tris);
+    e.src       = (uint8_t)(c ? c->src : src);
+    e.dome      = (uint8_t)(c && c->is_dome);
+    e.pick      = (int8_t)s_pcap_pick;
+    if (rc) {
+        e.x0 = (int16_t)(rc[2] < rc[3] ? rc[2] : rc[3]);
+        e.x1 = (int16_t)(rc[2] < rc[3] ? rc[3] : rc[2]);
+    }
+    openpete_bugrec_subtick_portal(&e);
+    if (s_pcen_open) {
+        pcen_present_t* pr = &s_pcen_pres[s_pcen_np - 1];
+        if (!c) pr->status = (uint8_t)src;
+        else if (s_pcen_nt >= PCEN_PORTALS) s_pcen_lost++;
+        else {
+            s_pcen_port[s_pcen_nt++] = (pcen_portal_t){ e.portal, e.cap_frame, e.tris, e.mask_tris,
+                                                         e.src, e.dome, e.x0, e.x1 };
+            pr->n++;
+        }
+    }
+    if (portal_present_dbg())
+        fprintf(stderr, "[portal-present] vbl=%u alpha=%.4f leg=%s portal=%08X src=%u cap_frame=%u "
+                "cap_epoch=%u pick=%d dome=%u tris=%u mask=%u x=[%d,%d]\n",
+                openpete_frame, alpha, g_openpete_canon_lag_leg ? "canon" : "inter", e.portal, e.src,
+                e.cap_frame, e.cap_epoch, e.pick, e.dome, tris, mask_tris, e.x0, e.x1);
+}
+
 /* ---- sub-tick re-extract; documented in reextract.h ---- */
 void portal_reextract(CPUState* cpu, double alpha, int interp_on, int hold) {
     s_pcap_pick = cut_held_sets_enter(&s_sets, hold);
     /* A hold whose set is the current one has no tick before it to lerp from. */
     if (s_pcap_pick == CUT_HELD_CURR) interp_on = 0;
-    if (s_pcap_n == 0) return;
+    pcen_begin(alpha);
+    if (s_pcap_n == 0) { portal_present_note(NULL, BUGREC_SUB_PORTAL_NONE_EMPTY, alpha, NULL, 0u, 0u); return; }
     /* Don't replay a STALE capture. During a level-load transition (e.g. warping
      * THROUGH a portal) the normal draw loop stops, so canonical RenderPortals
      * (on_80050BE0) no longer runs and s_pcap freezes at the last homeworld
@@ -3520,7 +3792,10 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on, int hold) {
      * - exactly the staleness signal we need. The gate also holds the native
      * scene on and the path selected. On a held cut the set's own epoch stands
      * in for the canon-drawn term. */
-    if (!hook_reextract_ready_held(RP_PORTAL, s_pcap_pick)) return;
+    if (!hook_reextract_ready_held(RP_PORTAL, s_pcap_pick)) {
+        portal_present_note(NULL, BUGREC_SUB_PORTAL_NONE_GATE, alpha, NULL, 0u, 0u);
+        return;
+    }
     ngte_view_build(cpu, &s_view);
     {   /* OPENPETE_LOAD_CENSUS: replay-fire census (liveness-gate verification). */
         static int cen = -1;
@@ -3619,11 +3894,13 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on, int hold) {
          * inside feed_portal_quad/_dome. */
         uint32_t fog_rgb = 0;
         const double fog_t = portal_cap_fog(cpu, c, &fog_rgb);
+        const unsigned col0 = s_tri_col, mask0 = s_tri_mask;
         feed_portal_quad(cpu, c->flat_a0, 0 /* rgb_override set */, c->portal, c->flat_rgb, c->ot_b,
                          fog_rgb, fog_t);
         if (c->is_dome)
             feed_portal_dome(cpu, c->skybox, c->ot_b, /*canonical=*/0,
                              fog_rgb, fog_t);
+        portal_present_note(c, 0, alpha, rc, s_tri_col - col0, s_tri_mask - mask0);
     }
 
     s_clip_replay = 0;
