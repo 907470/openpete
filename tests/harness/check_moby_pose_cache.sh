@@ -66,17 +66,30 @@
 # collect gathers each moby's corners into the queue and into its own buffer
 # and compares them (moby.c, moby_snap_gather_to;
 # [snap-queue-lean-gather] mobys= mismatched=).
+# Under rank-absent the same walking rows run with
+# OPENPETE_MOBY_RANK_ABSENT_SKIP=check: every sub-tick moby run whose faces
+# absent from the carry table contest no face (rank_absent_contests) is also
+# re-ranked in full, and the contested order the select reads is compared
+# ([rank-absent-check final] skipped= reranked= compared= mismatched=).
+# Under occl-held the same walking rows at eight VBLs capture the sub-tick
+# present at alpha 0.95 twice, with the re-confirm of held provisional
+# occlusion admissions on (OPENPETE_OCCL_HELD_CONFIRM=log) and off: every
+# capture pair must match byte for byte while the captured presents dropped
+# a moby ([occl-held] ... dropped=, matched to the captures by their
+# "wrote intermediate ... on frame" lines).
 #
 # Usage:
 #   tests/harness/check_moby_pose_cache.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
 #       [--instrument=pose-cache|push-fanout|snap-fanout|rec-fanout|rank-fanout|snap-listed|snap-rex-merge
-#        |snap-corner-eq|snap-queue-lean]
+#        |snap-corner-eq|snap-queue-lean
+#        |rank-absent|occl-held]
 # Exit 0 PASS: engaged above zero (hits, emits compared, chunks of each leg
 # compared) and no mismatch. 1 FAIL: a mismatch, a missing capture or a
 # missing total. 2 VACUOUS: no hit, no emit, no chunk of a leg compared, or
 # no listed chunk compared on either leg or no walk saved, or no present
 # compared or none where two walk passes queued, or no moby with equal
-# corner inputs, or no moby resolved or none left unresolved.
+# corner inputs, or no moby resolved or none left unresolved, no kept or
+# no re-ranked run, or no moby dropped on a captured present.
 # 64 SKIP (no binary or disc).
 set -u
 
@@ -118,7 +131,8 @@ case "$GAME" in
     *) echo "pose-cache: SKIP (no row for $GAME)"; exit 64;;
 esac
 if [[ "$INSTR" == snap-fanout || "$INSTR" == rec-fanout || "$INSTR" == rank-fanout || "$INSTR" == snap-listed ||
-      "$INSTR" == snap-rex-merge || "$INSTR" == snap-queue-lean ]]; then
+      "$INSTR" == snap-rex-merge || "$INSTR" == snap-queue-lean ||
+      "$INSTR" == rank-absent || "$INSTR" == occl-held ]]; then
     # A bk2 per game that walks the player through the captured VBLs.
     BK2=games/$GAME/bk2
     case "$GAME" in
@@ -127,6 +141,12 @@ if [[ "$INSTR" == snap-fanout || "$INSTR" == rec-fanout || "$INSTR" == rank-fano
                       --bk2 "$BK2/colossus-ice-skating.bk2"); VBLS=1460,1500;;
         spyro-3) ROW=(--skip-to-level dino_mines --bk2 "$BK2/dino-mines-walk-scan.bk2"); VBLS=1920,1960;;
     esac
+    # The re-confirm drops mobys near the tick's own camera: eight VBLs from
+    # the first, captured at alpha 0.95.
+    if [[ "$INSTR" == occl-held ]]; then
+        v0=${VBLS%,*}; VBLS=$v0
+        for k in 1 2 3 4 5 6 7; do VBLS+=",$(( v0 + 10 * k ))"; done
+    fi
 fi
 
 [[ -n "$OUT" ]] || OUT="$OPENPETE_SANDBOX/pose-cache"
@@ -144,15 +164,62 @@ case "$INSTR" in
     snap-rex-merge)   KNOB=(OPENPETE_SNAP_REX_MERGE_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
     snap-corner-eq)   KNOB=(OPENPETE_SNAP_CORNER_EQ_CHECK=1);;
     snap-queue-lean)  KNOB=(OPENPETE_SNAP_QUEUE_LEAN_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
+    rank-absent) KNOB=(OPENPETE_MOBY_RANK_ABSENT_SKIP=check);;
+    occl-held)   KNOB=(OPENPETE_OCCL_HELD_CONFIRM=log);;
     *) echo "pose-cache: SKIP (no instrument $INSTR)"; exit 64;;
 esac
-PG_CAPTURE_ENV=("${KNOB[@]}" OPENPETE_INTERMEDIATE_ALPHA=0.5
-    OPENPETE_INTERMEDIATE_PRE_ALPHA=0.06,0.12,0.18,0.25,0.31,0.37,0.43,0.56,0.62,0.68,0.75,0.81,0.87,0.93,0.97)
+ALPHA=0.5
+PRE=0.06,0.12,0.18,0.25,0.31,0.37,0.43,0.56,0.62,0.68,0.75,0.81,0.87,0.93,0.97
+if [[ "$INSTR" == occl-held ]]; then
+    ALPHA=0.95
+    PRE=0.06,0.12,0.18,0.25,0.31,0.37,0.43,0.5,0.56,0.62,0.68,0.75,0.81,0.87,0.93,0.97
+    OUTS=""
+    for v in ${VBLS//,/ }; do OUTS+="${OUTS:+,}${SHOT}__$v-vk.png"; done
+fi
 PG_CAPTURE_TIMEOUT=600
-pg_capture "$LOG" "$OUTS" -- --renderer vk --aspect 16:9 --lod extended --no-card --mute 1 \
-    "${ROW[@]}" --screenshot-native-only --screenshot-intermediate-on-frame "$VBLS" \
-    --screenshot-output "${SHOT}__{n}.png" --frame-limit "$(( ${VBLS#*,} + 10 ))" ||
-    { echo "$INSTR: FAIL (capture, see $LOG)"; exit 1; }
+# capture LOG SHOT: one headless run of the row with KNOB at the leg's alpha.
+capture() {
+    local outs="${OUTS//"$SHOT"/"$2"}"
+    PG_CAPTURE_ENV=("${KNOB[@]}" OPENPETE_INTERMEDIATE_ALPHA=$ALPHA OPENPETE_INTERMEDIATE_PRE_ALPHA=$PRE)
+    pg_capture "$1" "$outs" -- --renderer vk --aspect 16:9 --lod extended --no-card --mute 1 \
+        "${ROW[@]}" --screenshot-native-only --screenshot-intermediate-on-frame "$VBLS" \
+        --screenshot-output "$2__{n}.png" --frame-limit "$(( ${VBLS##*,} + 10 ))"
+}
+capture "$LOG" "$SHOT" || { echo "$INSTR: FAIL (capture, see $LOG)"; exit 1; }
+
+if [[ "$INSTR" == occl-held ]]; then
+    KNOB=(OPENPETE_OCCL_HELD_CONFIRM=0)
+    capture "$LOG.off" "$SHOT-off" || { echo "occl-held: FAIL (off capture, see $LOG.off)"; exit 1; }
+    bad=0 drop=0
+    for v in ${VBLS//,/ }; do
+        f="$(sed -n "s/.*wrote intermediate alpha=${ALPHA}0 .* on frame \([0-9]*\) (target=$v,.*/\1/p" "$LOG" | head -n 1)"
+        d="$(sed -n "s/^\[occl-held\] vbl=$f alpha=${ALPHA}0 .* dropped=\([0-9]*\).*/\1/p" "$LOG" | head -n 1)"
+        same=1
+        cmp -s "${SHOT}__$v-vk.png" "${SHOT}-off__$v-vk.png" || { same=0; bad=1; }
+        echo "occl-held: $GAME vbl=$v frame=${f:-?} dropped=${d:-0} identical=$same"
+        drop=$(( drop + ${d:-0} ))
+    done
+    grep '^\[occl-held final\]' "$LOG" | sed "s/^/occl-held: $GAME /"
+    [[ "$bad" == 0 ]] || { echo "occl-held: FAIL (a capture differs with the re-confirm off)"; exit 1; }
+    [[ "$drop" -gt 0 ]] || { echo "occl-held: VACUOUS (no moby dropped on a captured present)"; exit 2; }
+    echo "occl-held: PASS"
+    exit 0
+fi
+if [[ "$INSTR" == rank-absent ]]; then
+    line="$(grep -m1 '^\[rank-absent-check final\]' "$LOG")"
+    [[ -n "$line" ]] || { echo "rank-absent: FAIL (no [rank-absent-check final] total in $LOG)"; exit 1; }
+    echo "rank-absent: $GAME $line"
+    sk="$(sed -n 's/.* skipped=\([0-9]*\).*/\1/p' <<<"$line")"
+    rr="$(sed -n 's/.* reranked=\([0-9]*\).*/\1/p' <<<"$line")"
+    cm="$(sed -n 's/.* compared=\([0-9]*\).*/\1/p' <<<"$line")"
+    bd="$(sed -n 's/.* mismatched=\([0-9]*\).*/\1/p' <<<"$line")"
+    [[ "${bd:-1}" == 0 && "${cm:-0}" == "${sk:-x}" ]] ||
+        { echo "rank-absent: FAIL (${bd:-?} mismatched of ${cm:-?} compared, ${sk:-?} kept)"; exit 1; }
+    [[ "${sk:-0}" -gt 0 && "${rr:-0}" -gt 0 ]] ||
+        { echo "rank-absent: VACUOUS (kept runs ${sk:-0}, re-ranked runs ${rr:-0})"; exit 2; }
+    echo "rank-absent: PASS"
+    exit 0
+fi
 
 if [[ "$INSTR" == snap-corner-eq ]]; then
     line="$(grep '^\[snap-corner-eq-check\]' "$LOG" | tail -n 1)"

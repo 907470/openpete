@@ -10109,13 +10109,17 @@ typedef struct { double x; int k; } isect_xkey;
  * longest moby run it has met: the census's faces, their walk indices, sweep
  * keys, sorted boxes and box hits; the rank's paint-order entries, order and
  * decal bases; the sub-tick re-rank's carried and fresh ranks, carried
- * contest flags and merge entries. Worker 0 is the calling thread, and every
- * serial census and rank. */
+ * contest flags and merge entries; and the sub-tick runs this worker kept on
+ * the carried verdict (rank_absent_contests) and re-ranked, and under
+ * OPENPETE_MOBY_RANK_ABSENT_SKIP=check the kept runs compared against a full
+ * re-rank and those whose contested order differed. Worker 0 is the calling
+ * thread, and every serial census and rank. */
 typedef struct {
     OPENPETE_WORKER_ALIGN isect_tri* T; int cap;
     int* idx; isect_xkey* X; isect_box* K; int* hit;
     moby_otk_ord_t* E; int* order; int* under;
     int* keep_rank; int* fresh_rank; uint8_t* keep_cont; rmix_e* M;
+    long ab_skip, ab_redo, ab_cmp, ab_bad;
 } rk_ws;
 OPENPETE_WORKER_ELEM(rk_ws);
 static rk_ws s_rkw[MN_MAX_WORKERS];
@@ -10183,42 +10187,56 @@ static void isect_prim_contest(const int* idx, int n) {
         s_wtri_contest[i] = f; s_wtri_contest[i - 1] = f;
     }
 }
+/* Per walk triangle of a sub-tick feed: RF_ABSENT for an eligible face the
+ * carry table did not walk. */
+#define RF_ABSENT  1u
+static uint8_t s_rf_flag[MAX_NTRI];
+/** @brief Test the pairs of one moby's faces whose bounding boxes overlap, every such pair or those with a face carrying a probe flag.
+ *
+ * Sort and sweep on x: each box against the following boxes whose minimum
+ * does not pass its maximum, which enumerates exactly the pairs overlapping
+ * in x; the pairs that also overlap in y and depth (and, with a probe, have a
+ * face whose s_rf_flag carries it) are collected without a branch per pair,
+ * then tested, lower face-list position first, so the floating-point result
+ * does not depend on the enumeration order.
+ * @param x The moby's faces, their walk indices and the counts.
+ * @param K The faces' boxes in ascending order of x minimum.
+ * @param n The face count.
+ * @param hit Scratch for n box positions.
+ * @param probe 0 to test every pair, else the s_rf_flag bits one face of a tested pair carries. */
+static void isect_sweep(const isect_ctx* x, const isect_box* K, int n, int* hit, uint8_t probe) {
+    for (int s = 0; s < n; s++) {
+        const isect_box* A = &K[s];
+        const int pa = !probe || (s_rf_flag[x->idx[A->k]] & probe);
+        int m = 0;
+        for (int t = s + 1; t < n && K[t].lo[0] <= A->hi[0]; t++) {
+            const isect_box* B = &K[t];
+            hit[m] = t;
+            m += (B->lo[1] <= A->hi[1]) & (A->lo[1] <= B->hi[1]) &
+                 (B->lo[2] <= A->hi[2]) & (A->lo[2] <= B->hi[2]) &
+                 (pa || (s_rf_flag[x->idx[B->k]] & probe));
+        }
+        for (int j = 0; j < m; j++) {
+            const int b = K[hit[j]].k;
+            isect_test(x, A->k < b ? A->k : b, A->k < b ? b : A->k);
+        }
+    }
+}
 /** @brief Test the pairs of one moby's eligible faces whose bounding boxes overlap.
  *
- * Sets the intersecting faces' contest flags and records the pairs. Sort and
- * sweep on x: the boxes sorted by x minimum, each against the
- * following boxes whose minimum does not pass its maximum, which enumerates
- * exactly the pairs overlapping in x; the pairs that also overlap in y and
- * depth are collected without a branch per pair, then tested. The pair test
- * takes the lower face-list position first, so its floating-point result does
- * not depend on the enumeration order.
+ * Sets the intersecting faces' contest flags and records the pairs: the
+ * boxes sorted by x minimum, then every overlapping pair (isect_sweep).
  * @param w The worker's scratch: T holds the faces in intersection space and
  *        idx each face's walk triangle index; the sweep's keys, boxes and hits
  *        are written to it.
  * @param n The face count.
  * @param c Accumulates the moby's counts. */
 static void isect_moby(rk_ws* w, int n, isect_count* c) {
-    const isect_tri* T = w->T;
     const int* idx = w->idx;
-    isect_box* K = w->K;
-    int* hit = w->hit;
-    isect_boxes_sorted(T, n, w->X, K);
+    isect_boxes_sorted(w->T, n, w->X, w->K);
     for (int a = 0; a < n; a++) s_wtri_under[idx[a]] = -1;
-    const isect_ctx x = { T, idx, c, isect_instrumented() };
-    for (int s = 0; s < n; s++) {
-        const isect_box* A = &K[s];
-        int m = 0;
-        for (int t = s + 1; t < n && K[t].lo[0] <= A->hi[0]; t++) {
-            const isect_box* B = &K[t];
-            hit[m] = t;
-            m += (B->lo[1] <= A->hi[1]) & (A->lo[1] <= B->hi[1]) &
-                 (B->lo[2] <= A->hi[2]) & (A->lo[2] <= B->hi[2]);
-        }
-        for (int j = 0; j < m; j++) {
-            const int b = K[hit[j]].k;
-            isect_test(&x, A->k < b ? A->k : b, A->k < b ? b : A->k);
-        }
-    }
+    const isect_ctx x = { w->T, idx, c, isect_instrumented() };
+    isect_sweep(&x, w->K, n, w->hit, 0u);
     if (moby_rank_tie_mode() & MOBY_RANK_TIE_CONTEST) isect_prim_contest(idx, n);
     for (int a = 0; a < n; a++) c->contested += s_wtri_contest[idx[a]];
     c->faces += n;
@@ -10646,6 +10664,18 @@ static int rkf_check_on(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_FANOUT_CHECK"); v = (e && *e && *e != '0'); }
     return v;
 }
+/** @brief The sub-tick absent-face skip mode from OPENPETE_MOBY_RANK_ABSENT_SKIP, read once.
+ *
+ * Off for a value starting with '0'; 'c' (check) for a value starting with
+ * 'c': a run the skip keeps is also re-ranked in full, the full result
+ * applied, and the two contested orders compared; else on.
+ * @return 0 off, 'c' check, 1 on. */
+static int rank_absent_skip_mode(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_ABSENT_SKIP");
+                 v = (e && *e == '0') ? 0 : (e && *e == 'c') ? 'c' : 1; }
+    return v;
+}
 
 /* Per leg (0 the canonical census and rank, 1 the sub-tick re-rank): the
  * fan-out's sets of runs run on the pool and their runs; the check's sets,
@@ -10667,6 +10697,7 @@ static int rkf_allowed(void) {
         first = 0;
         (void)moby_rank_tie_mode(); (void)isect_stacked_on(); (void)native_rank_negctl();
         (void)isect_instrumented(); (void)rkf_min(); (void)rkf_check_on();
+        (void)rank_absent_skip_mode();
         return 0;
     }
     if (!rkf_on() || openpete_workpool_threads() <= 1) return 0;
@@ -10947,13 +10978,14 @@ static int rank_fresh_on(void) { const int m = rank_ep_mode(); return m != 'o' &
  * differs; misses by cause (no table, moby not walked at the endpoint, tier
  * block changed, face not walked); misses the latest table ranks; hits whose
  * latest rank differs; eligible absent faces, those left to true depth
- * (fallback), runs re-ranked; and rank_mix_census's intersecting pairs with
- * an absent face, those the mixed ranks order against the present walk's
- * order, those also against the T-1 order, and those the mixed ranks leave
- * unordered where the present walk orders them. */
+ * (fallback), runs re-ranked, runs kept on the carried verdict; and
+ * rank_mix_census's intersecting pairs with an absent face, those the mixed
+ * ranks order against the present walk's order, those also against the T-1
+ * order, and those the mixed ranks leave unordered where the present walk
+ * orders them. */
 static long s_ep_faces, s_ep_hit, s_ep_hit_tier, s_ep_notab, s_ep_queue, s_ep_tier,
             s_ep_face, s_ep_miss_ranked, s_ep_hit_rdiff, s_ep_miss_nolat;
-static long s_ep_absent, s_ep_fallback, s_ep_fresh;
+static long s_ep_absent, s_ep_fallback, s_ep_fresh, s_ep_kept;
 static long s_ep_mix_pairs, s_ep_mix_vs_now, s_ep_mix_vs_both, s_ep_mix_unord;
 static rcm_ent  s_ep_cur[RCM_SIZE];  /* this walk's moby -> tier block */
 static uint32_t s_ep_cur_gen;
@@ -11182,10 +11214,6 @@ static const rc_tab* rank_carry_endpoint(void) {
     s_rc_prev_used = 1;
     return (prev->valid && prev->epoch + 1u == latest->epoch) ? prev : NULL;
 }
-/* Per walk triangle of a sub-tick feed: RF_ABSENT for an eligible face the
- * carry table did not walk. */
-#define RF_ABSENT  1u
-static uint8_t s_rf_flag[MAX_NTRI];
 /** @brief Count one face of a sub-tick feed into the endpoint census, and return the entry the feed applies.
  *
  * A face the table holds is a hit (and a tier-changed hit when its moby's
@@ -11334,6 +11362,87 @@ static void rank_mix_census(int i0, int i1, const int* cr, const uint8_t* cc, co
                 s_wtri_fkey[f[0]], s_wtri_fkey[f[1]], x[0], x[1], m[0], m[1], fa, fb, t[0], t[1]);
     }
 }
+/** @brief Whether a face of a moby run absent from the carry table contests another face of the run in this present's walk.
+ *
+ * The run's contest test (isect_moby) restricted to the pairs with an absent
+ * face (isect_sweep with RF_ABSENT): the same sweep over the same boxes, each
+ * pair tested lower face-list position first with the run's contest flags
+ * cleared, as the full re-rank tests it. The full test flags an absent face only from a pair
+ * that contains it, and its early-out skips a pair only when both faces
+ * contest already, so an absent face contests here exactly when it contests
+ * in the full test. The run's contest flags and the pair list are restored.
+ * A tie mode (OPENPETE_RANK_TIE), whose prim-partner contest and decal
+ * ordering reach an absent face through pairs without it, answers 1, and so
+ * does a run whose every eligible face is absent, where the restricted test
+ * is the full one and a contest would run it twice.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @param w The worker's scratch, grown to the run.
+ * @return 1 when an absent face contests or the test is not run, else 0. */
+static int rank_absent_contests(int i0, int i1, rk_ws* w) {
+    if (moby_rank_tie_mode()) return 1;
+    int n = 0, hit_faces = 0;
+    for (int i = i0; i < i1; i++) hit_faces += isect_eligible(i) && !(s_rf_flag[i] & RF_ABSENT);
+    if (!hit_faces) return 1;
+    for (int i = i0; i < i1; i++)
+        if (isect_eligible(i)) { isect_tri_of(i, &w->T[n]); w->idx[n++] = i; }
+    isect_boxes_sorted(w->T, n, w->X, w->K);
+    memcpy(w->keep_cont, &s_wtri_contest[i0], (size_t)(i1 - i0));
+    memset(&s_wtri_contest[i0], 0, (size_t)(i1 - i0));
+    const int ip = s_ip_n;
+    isect_count c = {0};
+    const isect_ctx x = { w->T, w->idx, &c, isect_instrumented() };
+    isect_sweep(&x, w->K, n, w->hit, RF_ABSENT);
+    int hit = 0;
+    for (int i = i0; i < i1; i++) hit |= (s_rf_flag[i] & RF_ABSENT) && s_wtri_contest[i];
+    memcpy(&s_wtri_contest[i0], w->keep_cont, (size_t)(i1 - i0));
+    s_ip_n = ip;
+    return hit;
+}
+
+/** @brief The rank a run's face carries into the select (moby_face_rank) from given contest flags and ranks.
+ * @param i The walk triangle.
+ * @param cont Its contest flag.
+ * @param rank Its rank.
+ * @return The rank while the face is eligible and contests, else 0. */
+static int rank_select_value(int i, int cont, int rank) { return (isect_eligible(i) && cont) ? rank : 0; }
+
+/** @brief Count a kept run whose contested order differs from its full re-rank (OPENPETE_MOBY_RANK_ABSENT_SKIP=check).
+ *
+ * The kept verdict is the carried one with every absent face at rank 0 and
+ * contest 0, held in the worker's keep_rank and keep_cont; the full re-rank's
+ * is in s_nrank and s_wtri_contest. The select compares ranks only between
+ * faces of one moby, so the two agree when the same faces carry a positive
+ * select rank and every pair of them is ordered alike, ties included.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @param w The worker's scratch. */
+static void rank_absent_compare(int i0, int i1, rk_ws* w) {
+    int bad = 0;
+    for (int i = i0; i < i1 && !bad; i++) {
+        const int ka = rank_select_value(i, w->keep_cont[i - i0], w->keep_rank[i - i0]);
+        const int fa = rank_select_value(i, s_wtri_contest[i], s_nrank[i]);
+        bad = (ka > 0) != (fa > 0);
+        for (int j = i0; j < i && ka > 0 && !bad; j++) {
+            const int kb = rank_select_value(j, w->keep_cont[j - i0], w->keep_rank[j - i0]);
+            const int fb = rank_select_value(j, s_wtri_contest[j], s_nrank[j]);
+            bad = kb > 0 && ((ka > kb) - (ka < kb)) != ((fa > fb) - (fa < fb));
+        }
+    }
+    w->ab_cmp++;
+    w->ab_bad += bad;
+}
+
+/** @brief Print the absent-face skip's totals over every worker as a [rank-absent-check final] line. */
+static void rank_absent_final(void) {
+    long sk = 0, rd = 0, cm = 0, bd = 0;
+    for (int k = 0; k < MN_MAX_WORKERS; k++) {
+        sk += s_rkw[k].ab_skip; rd += s_rkw[k].ab_redo; cm += s_rkw[k].ab_cmp; bd += s_rkw[k].ab_bad;
+    }
+    fprintf(stderr, "[rank-absent-check final] skipped=%ld reranked=%ld compared=%ld mismatched=%ld\n",
+            sk, rd, cm, bd);
+}
+
 /** @brief Give the absent faces of one moby run the ranks and contest flags of this present's walk, placed into the carried order.
  *
  * The canonical feed's two stages on walk triangles i0..i1-1 only: the
@@ -11347,11 +11456,25 @@ static void rank_mix_census(int i0, int i1, const int* cr, const uint8_t* cc, co
  * census then checks the applied order (rank_mix_census). Writes only the
  * run's faces, and with the pair list off (s_ip_off) nothing shared. A run
  * longer than the scratch can be grown to keeps its carried verdict.
+ *
+ * A run none of whose absent faces contests (rank_absent_contests) keeps the
+ * carried verdict as rank_carry_apply left it, absent faces at rank 0 and
+ * contest 0, unless OPENPETE_MOBY_RANK_ABSENT_SKIP is 0. The full re-rank
+ * gives such a run the same contested order: its absent faces end
+ * uncontested, so the select reads no rank of theirs; its hit faces take
+ * their carried contest flags back and rank_mix_place renumbers their carried
+ * ranks in carried order, ties kept; the decal bases it writes feed only
+ * native_rank_moby; and the set of ranked faces, which sets the moby's ordinal
+ * (moby_rank_ordinal), is the same.
  * @param i0 The run's first walk triangle.
  * @param i1 One past its last.
  * @param w The worker's scratch. */
 static void rank_fresh_moby(int i0, int i1, rk_ws* w) {
     if (!rk_ws_grow(w, i1 - i0)) return;
+    const int mode = rank_absent_skip_mode();
+    const int keep = mode && !rank_absent_contests(i0, i1, w);
+    w->ab_skip += keep; w->ab_redo += !keep;
+    if (keep && mode != 'c') return;
     int *keep_rank = w->keep_rank, *fresh_rank = w->fresh_rank;
     uint8_t* keep_cont = w->keep_cont;
     memcpy(keep_rank, &s_nrank[i0], (size_t)(i1 - i0) * sizeof s_nrank[0]);
@@ -11366,6 +11489,7 @@ static void rank_fresh_moby(int i0, int i1, rk_ws* w) {
         if (!(s_rf_flag[i] & RF_ABSENT)) { s_nrank[i] = keep_rank[i - i0]; s_wtri_contest[i] = keep_cont[i - i0]; }
     rank_mix_place(i0, i1, keep_rank, fresh_rank, w->M);
     if (rank_ep_mode()) rank_mix_census(i0, i1, keep_rank, keep_cont, fresh_rank, ip0);
+    if (keep) rank_absent_compare(i0, i1, w);
 }
 /** @brief Rank from this present's walk the faces of every moby run that the carry table did not walk.
  *
@@ -11373,13 +11497,18 @@ static void rank_fresh_moby(int i0, int i1, rk_ws* w) {
  * unit native_rank_build ranks. A run with an eligible face absent from the
  * table goes through rank_fresh_moby, those runs fanned out over the work
  * pool where rkf_allowed lets them (rkf_run); a run whose faces all hit keeps
- * the carried verdict. Counts the census's absent, fallback and re-ranked
- * terms when the census is on.
+ * the carried verdict. Counts the census's absent, fallback, re-ranked and
+ * kept terms when the census is on: a run rank_fresh_moby keeps on the
+ * carried verdict counts as kept, and also as re-ranked under
+ * OPENPETE_MOBY_RANK_ABSENT_SKIP=check, which re-ranks it.
  * @param fresh 1 to rank, 0 to count only. */
 static void rank_fresh_pass(int fresh) {
+    static int armed;
+    if (!armed && rank_absent_skip_mode() == 'c') { armed = 1; atexit(rank_absent_final); }
     const int fan = fresh && rkf_allowed();
     int nr = 0;
-    long faces = 0;
+    long faces = 0, kept0 = 0, kept1 = 0;
+    for (int k = 0; k < MN_MAX_WORKERS; k++) kept0 += s_rkw[k].ab_skip;
     for (int i0 = 0; i0 < s_gout.n; ) {
         const uint32_t mob = s_wtri_moby[i0];
         int i1 = i0, na = 0;
@@ -11392,6 +11521,9 @@ static void rank_fresh_pass(int fresh) {
         i0 = i1;
     }
     if (fan) rkf_run(rkf_fresh_item, nr, faces, 1);
+    for (int k = 0; k < MN_MAX_WORKERS; k++) kept1 += s_rkw[k].ab_skip;
+    s_ep_kept += kept1 - kept0;
+    if (rank_absent_skip_mode() != 'c') s_ep_fresh -= kept1 - kept0;
 }
 /** @brief The world bucket a carry entry gives its face at this present's camera.
  *
@@ -11603,15 +11735,15 @@ static void rank_ep_report(void) {
         fprintf(stderr, "[rank-ep] vbl=%u mat=%s alpha=%.3f endpoint=%s faces=%ld hit=%ld hit_tier=%ld "
                         "hit_rdiff=%ld notab=%ld queue=%ld tier=%ld face=%ld miss_ranked=%ld "
                         "miss_nolat=%ld absent=%ld fallback=%ld fresh=%ld mix_pairs=%ld "
-                        "mix_vs_now=%ld mix_vs_both=%ld mix_unord=%ld tabn=%d/%d\n",
+                        "mix_vs_now=%ld mix_vs_both=%ld mix_unord=%ld kept=%ld tabn=%d/%d\n",
                 openpete_frame, s_cur_mat, s_rc_alpha, s_rc_prev_used ? "prev" : "latest", s_ep_faces,
                 s_ep_hit, s_ep_hit_tier, s_ep_hit_rdiff, s_ep_notab, s_ep_queue, s_ep_tier, s_ep_face,
                 s_ep_miss_ranked, s_ep_miss_nolat, s_ep_absent, s_ep_fallback, s_ep_fresh,
-                s_ep_mix_pairs, s_ep_mix_vs_now, s_ep_mix_vs_both, s_ep_mix_unord,
+                s_ep_mix_pairs, s_ep_mix_vs_now, s_ep_mix_vs_both, s_ep_mix_unord, s_ep_kept,
                 s_rc_tab[s_rc_cur ^ 1].n, s_rc_tab[s_rc_cur].n);
     s_ep_faces = s_ep_hit = s_ep_hit_tier = s_ep_hit_rdiff = s_ep_notab = s_ep_queue = s_ep_tier =
         s_ep_face = s_ep_miss_ranked = s_ep_miss_nolat = 0;
-    s_ep_absent = s_ep_fallback = s_ep_fresh = 0;
+    s_ep_absent = s_ep_fallback = s_ep_fresh = s_ep_kept = 0;
     s_ep_mix_pairs = s_ep_mix_vs_now = s_ep_mix_vs_both = s_ep_mix_unord = 0;
 }
 
@@ -16798,9 +16930,14 @@ static long s_occl_f[4];   /* feeder-side pre-query outcomes: ui-exempt / no-cac
  * once they age: left unconfirmed, the verdict alternates on a host-timed
  * period. */
 static int s_occl_fallback;
-/* The provisional admission occl_confirm may still overturn. */
+/* The provisional admission occl_confirm may still overturn, and whether it
+ * is a held verdict (occl_verdict's re-confirm) rather than a fresh one. */
 static uint32_t s_occl_prov_moby;
+static int s_occl_prov_held;
 static long s_occl_confirmed;   /* provisional admissions a decode's bounds culled */
+/* Held provisional admissions a sub-tick present re-confirmed, and those its
+ * decode's bounds culled: since the last [occl-held] line, and in total. */
+static long s_occl_held_n, s_occl_held_drop, s_occl_held_n_tot, s_occl_held_drop_tot;
 
 /* Per-leg cull census (OPENPETE_REEXTRACT_FEEDDBG), index 1 = the canonical
  * re-extract leg, 0 = an intermediate one. Both legs of one canonical epoch
@@ -17049,7 +17186,7 @@ static void oic_report(void) {
  * runs under the in-flight epoch the lag leg's scene still carries. */
 #define OCCL_HOLD_N 2048
 typedef struct {
-    struct { uint32_t moby, epoch; uint8_t culled; } e[OCCL_HOLD_N];
+    struct { uint32_t moby, epoch; uint8_t culled, prov; } e[OCCL_HOLD_N];
     uint32_t epoch;
 } occl_hold_t;
 static occl_hold_t s_hold_hook, s_hold_rex;
@@ -17075,6 +17212,10 @@ static int occl_hold_find(const occl_hold_t* t, uint32_t moby, int* found) {
 }
 
 /** @brief Store a verdict in a hold table, starting the table at @p epoch when it holds another one.
+ *
+ * The verdict is marked provisional when it is an admission that
+ * occl_record_decide's fallback took (s_occl_fallback), the admission
+ * occl_confirm re-decides on a decode's bounds.
  * @param t The table.
  * @param moby The Moby address.
  * @param epoch The canonical epoch stamp the verdict belongs to.
@@ -17085,6 +17226,20 @@ static void occl_hold_put(occl_hold_t* t, uint32_t moby, uint32_t epoch, int cul
     const int i = occl_hold_find(t, moby, &found);
     if (i < 0) return;
     t->e[i].moby = moby; t->e[i].epoch = epoch; t->e[i].culled = (uint8_t)(culled != 0);
+    t->e[i].prov = (uint8_t)(!culled && s_occl_fallback);
+}
+
+/** @brief The held-admission re-confirm mode from OPENPETE_OCCL_HELD_CONFIRM, read once.
+ *
+ * Off for a value starting with '0', 'l' (log: on, and one [occl-held] line
+ * per sub-tick present that re-confirmed a held admission) for a value
+ * starting with 'l', else on.
+ * @return 0 off, 'l' log, 1 on. */
+static int occl_held_confirm_mode(void) {
+    static int m = -1;
+    if (m < 0) { const char* e = getenv("OPENPETE_OCCL_HELD_CONFIRM");
+                 m = (e && *e == '0') ? 0 : (e && *e == 'l') ? 'l' : 1; }
+    return m;
 }
 
 /** @brief One record's fresh verdict: from explicit bounds when given, else from the occlusion cache.
@@ -17117,14 +17272,18 @@ static int occl_decide(CPUState* cpu, uint32_t moby, const occl_box_t* b) {
  * @param hook The hold table of the game-hook pass's scene.
  * @param rex The hold table of the lag leg's re-extract.
  * A fresh visible verdict from occl_record_decide's fallback is marked
- * provisional (s_occl_prov_moby) for occl_confirm.
+ * provisional (s_occl_prov_moby) for occl_confirm, and held with that mark.
+ * A sub-tick present that takes a held provisional admission marks it
+ * provisional again (s_occl_prov_held set), so occl_confirm re-decides it on
+ * this present's decode as the present that held it did on its own;
+ * OPENPETE_OCCL_HELD_CONFIRM=0 takes the held admission as final.
  * @return 1 when culled, else 0. */
 static int occl_verdict(CPUState* cpu, uint32_t moby, const occl_box_t* b,
                         occl_hold_t* hook, occl_hold_t* rex) {
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
     const int leg = g_openpete_canon_lag_leg ? 1 : 0;
     const int canon = leg || !s_in_reextract;
-    int culled, found = 0;
+    int culled, found = 0, held_prov = 0;
     occl_hold_t* held = NULL;   /* the table a fresh verdict went into */
     s_occl_fallback = 0;
     if (canon) {
@@ -17134,16 +17293,20 @@ static int occl_verdict(CPUState* cpu, uint32_t moby, const occl_box_t* b,
     } else if (rex->epoch == epoch) {
         const int i = occl_hold_find(rex, moby, &found);
         culled = found ? (int)rex->e[i].culled : occl_decide(cpu, moby, b);
+        held_prov = found && rex->e[i].prov;
         if (!found) { held = rex; occl_hold_put(rex, moby, epoch, culled); }
     } else if (spyro_native_canon_epoch_fresh(hook->epoch)) {
         const int i = occl_hold_find(hook, moby, &found);
         culled = found ? (int)hook->e[i].culled : 0;
+        held_prov = found && hook->e[i].prov;
     } else {
         culled = occl_decide(cpu, moby, b);
         held = rex;
         occl_hold_put(rex, moby, epoch, culled);
     }
-    s_occl_prov_moby = (held && !culled && s_occl_fallback) ? moby : 0u;
+    held_prov = held_prov && occl_held_confirm_mode();
+    s_occl_prov_moby = ((held && !culled && s_occl_fallback) || held_prov) ? moby : 0u;
+    s_occl_prov_held = held_prov;
     s_occl_leg_seen[leg]++;
     if (culled) s_occl_leg_culled[leg]++;
     if (oic_on()) oic_note(moby, epoch, canon, culled);
@@ -17173,13 +17336,15 @@ static int occl_confirm_on(void) {
  * are stored in the cache as at any extraction (occl_cache_update) and the
  * moby is decided again on them: the rect a hidden moby's decode measures
  * culls it, and it is dropped from the scene this decode feeds. The verdict
- * held for the epoch (occl_verdict) stays the admission: it also serves
- * presents under another camera, such as a held cut replaying tick N-1's
- * queue under tick N-1's view, where the moby can be on screen, and the
- * decode's bounds describe this present's camera only. The next decision
- * reads the bounds stored here. A grid refusal (none, suspended, stale,
- * camera out of bound) culls nothing. OPENPETE_OCCL_CONFIRM=0 leaves every
- * admission as it is.
+ * held for the epoch (occl_verdict) stays the provisional admission: it also
+ * serves presents under another camera, such as a held cut replaying tick
+ * N-1's queue under tick N-1's view, where the moby can be on screen, and the
+ * decode's bounds describe this present's camera only, so each sub-tick
+ * present that takes it confirms it again on its own decode. The next
+ * decision reads the bounds stored here. A grid refusal (none, suspended,
+ * stale, camera out of bound) culls nothing. OPENPETE_OCCL_CONFIRM=0 leaves
+ * every admission as it is. Counts a held admission's confirm and its cull
+ * (s_occl_held_n, s_occl_held_drop).
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param p The decode's projected vertices.
@@ -17190,12 +17355,37 @@ static int occl_confirm_on(void) {
 static int occl_confirm(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
                         const double tr[3], uint32_t header) {
     const int prov = s_occl_prov_moby == moby && moby != 0u;
+    const int held = prov && s_occl_prov_held;
     s_occl_prov_moby = 0u;
+    s_occl_prov_held = 0;
     if (!prov || n <= 0 || !occl_confirm_on()) return 0;
     occl_cache_update(cpu, moby, p, n, tr, header);
+    s_occl_held_n += held;
     if (!occl_record_decide(cpu, moby)) return 0;
     s_occl_confirmed++;
+    s_occl_held_drop += held;
     return 1;
+}
+
+/** @brief Print the run's held-admission re-confirm totals as an [occl-held final] line. */
+static void occl_held_final(void) {
+    fprintf(stderr, "[occl-held final] confirmed=%ld dropped=%ld\n", s_occl_held_n_tot + s_occl_held_n,
+            s_occl_held_drop_tot + s_occl_held_drop);
+}
+
+/** @brief Print the held-admission re-confirm counts of this sub-tick present as an [occl-held] line (OPENPETE_OCCL_HELD_CONFIRM=log), and fold them into the totals.
+ *
+ * Prints only when the present re-confirmed a held admission; the totals
+ * print at exit. */
+static void occl_held_report(void) {
+    static int armed;
+    if (occl_held_confirm_mode() != 'l') return;
+    if (!armed) { armed = 1; atexit(occl_held_final); }
+    if (s_occl_held_n)
+        fprintf(stderr, "[occl-held] vbl=%u alpha=%.3f leg=%s confirmed=%ld dropped=%ld\n", openpete_frame,
+                s_rc_alpha, g_openpete_canon_lag_leg ? "canon" : "inter", s_occl_held_n, s_occl_held_drop);
+    s_occl_held_n_tot += s_occl_held_n; s_occl_held_drop_tot += s_occl_held_drop;
+    s_occl_held_n = s_occl_held_drop = 0;
 }
 
 /** @brief Whether the simple-model occlusion test runs: on unless OPENPETE_MOBY_SIMPLE_OCCL is 0, read once.
@@ -18981,6 +19171,7 @@ typedef struct {
     int state;
     int ver_check;         /* the occlusion verifier audits it (occl_verify_begin) */
     uint32_t prov;         /* s_occl_prov_moby after its verdict, for occl_confirm */
+    int prov_held;         /* s_occl_prov_held after its verdict */
     moby_fields f;
     moby_prev_decode pd;   /* holds pointers into itself: used in place */
     double gpf_frac, depth_k;
@@ -19153,6 +19344,7 @@ static int rex_rec_prepare(CPUState* cpu, uint32_t rec, uint32_t moby, long* rot
         if (!J->ver_check) { J->state = RJ_CULLED; return 0; }
     }
     J->prov = s_occl_prov_moby;
+    J->prov_held = s_occl_prov_held;
     J->gpf_frac = -1.0;
     if (!rex_rec_fields(cpu, rec, moby, &J->f, rot_bins, &J->gpf_frac)) return 0;
     if (check_cap && (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ)) return -1;
@@ -19216,6 +19408,7 @@ static void rex_rec_commit(CPUState* cpu, int is_spec, uint32_t rec, uint32_t mo
     rex_screen_trace(cpu, moby, f, s_proj + off, got);
     moby_late_trace(cpu, moby, s_proj + off, got);
     s_occl_prov_moby = J->prov;
+    s_occl_prov_held = J->prov_held;
     if (!J->ver_check && occl_confirm(cpu, moby, s_proj + off, got, f->TR_frac, f->header)) {
         occl_pass_culled(moby, is_spec, culled, culled_n);
         return;
@@ -19785,6 +19978,7 @@ static void moby_reextract_body(CPUState* cpu) {
     }
     occl_leg_census_report();
     oic_report();
+    occl_held_report();
     static int animswdbg = -1;
     if (animswdbg < 0) { const char* e = getenv("OPENPETE_MOBY_ANIMSW_DBG"); animswdbg = (e && *e && *e != '0'); }
     if (animswdbg) {
