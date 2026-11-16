@@ -9939,12 +9939,16 @@ static void isect_tri_of(int i, isect_tri* t) {
 static int isect_instrumented(void) { return isect_log_on() || moby_rank_cal_on() || rank_ep_mode(); }
 typedef struct { long faces, contested, pairs, coplanar, shared, stacked; } isect_count;
 typedef struct { const isect_tri* T; const int* idx; isect_count* c; int all; } isect_ctx;
-/** @brief Set a contesting pair's flags and record it in the pair list while the list has room.
+/* Set while the census runs on the work pool, where the pair list is not
+ * kept: only an instrument reads it, and an instrument keeps the census on
+ * the calling thread. */
+static int s_ip_off;
+/** @brief Set a contesting pair's flags and record it in the pair list while the list has room and is kept (s_ip_off clear).
  * @param ia The first face's walk index.
  * @param ib The second face's walk index. */
 static void isect_contest(int ia, int ib) {
     s_wtri_contest[ia] = 1; s_wtri_contest[ib] = 1;
-    if (s_ip_n < ISECT_PAIRS_MAX) { s_ip_a[s_ip_n] = ia; s_ip_b[s_ip_n] = ib; s_ip_n++; }
+    if (!s_ip_off && s_ip_n < ISECT_PAIRS_MAX) { s_ip_a[s_ip_n] = ia; s_ip_b[s_ip_n] = ib; s_ip_n++; }
 }
 /** @brief Print one same-side shared-edge pair as an [isect-stack] line.
  * @param ia The first face's walk index.
@@ -10094,15 +10098,69 @@ static void isect_box_of(const isect_tri* t, int k, isect_box* o) {
     }
     o->k = k;
 }
+/* A ranked face of a re-ranked run on the merged scale: the carried rank it
+ * follows (a hit face's own), 1 when it sits just after that rank (an absent
+ * face), its fresh rank to order absent faces sharing a slot, and its walk
+ * triangle. */
+typedef struct { int c, after, f, i; } rmix_e;
+/* A face's sweep key: its box's x minimum and its position in the face list. */
+typedef struct { double x; int k; } isect_xkey;
+/* One rank worker's scratch, every array grown on demand to cap faces, the
+ * longest moby run it has met: the census's faces, their walk indices, sweep
+ * keys, sorted boxes and box hits; the rank's paint-order entries, order and
+ * decal bases; the sub-tick re-rank's carried and fresh ranks, carried
+ * contest flags and merge entries. Worker 0 is the calling thread, and every
+ * serial census and rank. */
+typedef struct {
+    OPENPETE_WORKER_ALIGN isect_tri* T; int cap;
+    int* idx; isect_xkey* X; isect_box* K; int* hit;
+    moby_otk_ord_t* E; int* order; int* under;
+    int* keep_rank; int* fresh_rank; uint8_t* keep_cont; rmix_e* M;
+} rk_ws;
+OPENPETE_WORKER_ELEM(rk_ws);
+static rk_ws s_rkw[MN_MAX_WORKERS];
+/** @brief Grow one rank array to c elements.
+ * @param p The array; replaced on success.
+ * @param c The element count.
+ * @param sz One element's size.
+ * @return 1 when it holds c elements, 0 when the allocation failed. */
+static int rk_re(void** p, int c, size_t sz) {
+    void* q = realloc(*p, (size_t)c * sz);
+    if (!q) return 0;
+    *p = q;
+    return 1;
+}
+/** @brief Grow every scratch array of one rank worker to hold a moby run of n faces.
+ *
+ * Grows by doubling from 256 and only when n exceeds the capacity, so the
+ * arrays settle at the longest run.
+ * @param w The worker's scratch.
+ * @param n The run's face count.
+ * @return 1 when every array holds n, 0 when an allocation failed (cap unchanged). */
+static int rk_ws_grow(rk_ws* w, int n) {
+    if (n <= w->cap) return 1;
+    int c = w->cap ? w->cap : 256;
+    while (c < n) c *= 2;
+    if (!(rk_re((void**)&w->T, c, sizeof *w->T) && rk_re((void**)&w->idx, c, sizeof *w->idx) &&
+          rk_re((void**)&w->X, c, sizeof *w->X) && rk_re((void**)&w->K, c, sizeof *w->K) &&
+          rk_re((void**)&w->hit, c, sizeof *w->hit) && rk_re((void**)&w->E, c, sizeof *w->E) &&
+          rk_re((void**)&w->order, c, sizeof *w->order) && rk_re((void**)&w->under, c, sizeof *w->under) &&
+          rk_re((void**)&w->keep_rank, c, sizeof *w->keep_rank) &&
+          rk_re((void**)&w->fresh_rank, c, sizeof *w->fresh_rank) &&
+          rk_re((void**)&w->keep_cont, c, sizeof *w->keep_cont) && rk_re((void**)&w->M, c, sizeof *w->M)))
+        return 0;
+    w->cap = c;
+    return 1;
+}
 /** @brief The bounding boxes of a moby's faces in ascending order of x minimum.
  *
  * An insertion sort on a compact key: a moby's face count is small and the
  * sort runs per tick. A NaN x minimum sorts as minus infinity.
  * @param T The faces.
  * @param n Their count.
+ * @param X Scratch for n sweep keys.
  * @param K Receives the n boxes in sweep order. */
-static void isect_boxes_sorted(const isect_tri* T, int n, isect_box* K) {
-    static struct { double x; int k; } X[MAX_NTRI];
+static void isect_boxes_sorted(const isect_tri* T, int n, isect_xkey* X, isect_box* K) {
     for (int a = 0; a < n; a++) {
         const double x = isnan(T[a].lo[0]) ? -INFINITY : T[a].lo[0];
         int j = a;
@@ -10134,14 +10192,17 @@ static void isect_prim_contest(const int* idx, int n) {
  * depth are collected without a branch per pair, then tested. The pair test
  * takes the lower face-list position first, so its floating-point result does
  * not depend on the enumeration order.
- * @param T The faces in intersection space.
- * @param idx Each face's walk triangle index.
+ * @param w The worker's scratch: T holds the faces in intersection space and
+ *        idx each face's walk triangle index; the sweep's keys, boxes and hits
+ *        are written to it.
  * @param n The face count.
  * @param c Accumulates the moby's counts. */
-static void isect_moby(const isect_tri* T, const int* idx, int n, isect_count* c) {
-    static isect_box K[MAX_NTRI];
-    static int hit[MAX_NTRI];
-    isect_boxes_sorted(T, n, K);
+static void isect_moby(rk_ws* w, int n, isect_count* c) {
+    const isect_tri* T = w->T;
+    const int* idx = w->idx;
+    isect_box* K = w->K;
+    int* hit = w->hit;
+    isect_boxes_sorted(T, n, w->X, K);
     for (int a = 0; a < n; a++) s_wtri_under[idx[a]] = -1;
     const isect_ctx x = { T, idx, c, isect_instrumented() };
     for (int s = 0; s < n; s++) {
@@ -10424,6 +10485,24 @@ static int rr_rank_reused(int i0) {
     return 1;
 }
 
+/** @brief Run the contest census over one moby run's eligible faces with one worker's scratch.
+ *
+ * Writes the contest flags and decal bases of the run's faces only. A run
+ * longer than the scratch can be grown to keeps every flag clear, so its
+ * faces sort by true depth.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @param w The worker's scratch.
+ * @param c Accumulates the run's counts.
+ * @return The run's eligible face count, 0 when the scratch could not grow. */
+static int isect_run(int i0, int i1, rk_ws* w, isect_count* c) {
+    if (!rk_ws_grow(w, i1 - i0)) return 0;
+    int n = 0;
+    for (int i = i0; i < i1; i++)
+        if (isect_eligible(i)) { isect_tri_of(i, &w->T[n]); w->idx[n++] = i; }
+    isect_moby(w, n, c);
+    return n;
+}
 /** @brief Fill s_wtri_contest[] and the intersecting-pair list for the whole walk.
  *
  * Groups the walk's contiguous triangles by moby and runs isect_moby over each
@@ -10431,8 +10510,6 @@ static int rr_rank_reused(int i0) {
  * (rr_census_reused). With the intersection log on and the VBL nonzero it
  * prints one line per moby with faces and a summary line. */
 static void isect_census(void) {
-    static isect_tri T[MAX_NTRI];
-    static int idx[MAX_NTRI];
     memset(s_wtri_contest, 0, (size_t)s_gout.n);
     s_ip_n = 0;
     int logit = isect_log_on() && openpete_frame != 0;
@@ -10443,10 +10520,8 @@ static void isect_census(void) {
         while (i1 < s_gout.n && s_wtri_moby[i1] == mob) i1++;
         if (rr_census_reused(i0, i1, mob)) { i0 = i1; continue; }
         const uint64_t t0 = rr_clock();
-        for (int i = i0; i < i1; i++)
-            if (mob && isect_eligible(i)) { isect_tri_of(i, &T[n]); idx[n++] = i; }
         isect_count c = {0};
-        isect_moby(T, idx, n, &c);
+        n = isect_run(i0, i1, &s_rkw[0], &c);
         rr_charge(t0, i0);
         if (logit && n > 0) isect_log_moby(mob, i0, &c);
         tot.faces += c.faces; tot.contested += c.contested; tot.pairs += c.pairs;
@@ -10485,10 +10560,11 @@ static int native_rank_negctl(void) {
  * full-key order into s_tie_cnt while the calibration is on.
  * @param i0 The first walk triangle of the moby.
  * @param i1 One past its last.
- * @param neg Nonzero reverses the rank order. */
-static void native_rank_moby(int i0, int i1, int neg) {
-    static moby_otk_ord_t E[MAX_NTRI];
-    static int order[MAX_NTRI], under[MAX_NTRI];
+ * @param neg Nonzero reverses the rank order.
+ * @param w The worker's scratch, grown to the run (rk_ws_grow). */
+static void native_rank_moby(int i0, int i1, int neg, rk_ws* w) {
+    moby_otk_ord_t* E = w->E;
+    int *order = w->order, *under = w->under;
     const int n = i1 - i0;
     for (int k = 0; k < n; k++) {
         const int i = i0 + k, u = s_wtri_under[i];
@@ -10502,6 +10578,20 @@ static void native_rank_moby(int i0, int i1, int neg) {
     for (int i = i0 + 1; i < i1; i++)
         if (s_wtri_otk[i] >= 0 && (s_wtri_otk[i] & MOBY_OTK_Q2)) s_nrank[i] = s_nrank[i - 1];
 }
+/** @brief Rank one moby run's faces in the draw's paint order when one contests or all is set, else give them rank 0.
+ *
+ * Writes the ranks of the run's faces only. A run longer than the scratch
+ * can be grown to takes rank 0.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @param all Nonzero ranks the run whatever its contest flags.
+ * @param w The worker's scratch. */
+static void rank_run(int i0, int i1, int all, rk_ws* w) {
+    int cont = 0;
+    for (int i = i0; i < i1; i++) cont |= s_wtri_contest[i];
+    if ((all || cont) && rk_ws_grow(w, i1 - i0)) native_rank_moby(i0, i1, native_rank_negctl(), w);
+    else memset(&s_nrank[i0], 0, (size_t)(i1 - i0) * sizeof s_nrank[0]);
+}
 /** @brief Rank the faces of every moby with a contested face in the draw's paint order.
  *
  * The select reads a rank only on a contested face, so the faces of the other
@@ -10512,13 +10602,204 @@ static void native_rank_moby(int i0, int i1, int neg) {
 static void native_rank_build(void) {
     const int all = isect_instrumented();
     for (int i0 = 0; i0 < s_gout.n; ) {
-        int i1 = i0, cont = 0;
-        for (; i1 < s_gout.n && s_wtri_moby[i1] == s_wtri_moby[i0]; i1++) cont |= s_wtri_contest[i1];
-        if (rr_rank_reused(i0)) { i0 = i1; continue; }
-        if (all || cont) native_rank_moby(i0, i1, native_rank_negctl());
-        else memset(&s_nrank[i0], 0, (size_t)(i1 - i0) * sizeof s_nrank[0]);
+        int i1 = i0;
+        while (i1 < s_gout.n && s_wtri_moby[i1] == s_wtri_moby[i0]) i1++;
+        if (!rr_rank_reused(i0)) rank_run(i0, i1, all, &s_rkw[0]);
         i0 = i1;
     }
+}
+
+/* ---- the rank's fan-out ---------------------------------------------------------
+ * The census and the rank of one moby run read the walk records of that run
+ * and write the contest flags, decal bases and ranks of that run only, so the
+ * runs of one feed are independent and run on the work pool in any order, each
+ * with its worker's scratch (s_rkw). What the runs share stays on the calling
+ * thread: the reuse store's matching and appends (rr_census_reused,
+ * rr_rank_reused) in walk order before the pool runs, and the intersecting
+ * pair list, which only an instrument reads and which an instrument keeps on
+ * the calling thread. The canonical feed fans out its census and rank
+ * (rkf_canon); a sub-tick feed fans out the re-rank of the runs the carry
+ * table misses (rank_fresh_pass). */
+
+/* The fan-out's face bound: below it the runs go through on the calling
+ * thread. OPENPETE_MOBY_RANK_FANOUT_MIN re-derives it on another machine. */
+#define RKF_MIN_FACES 3000
+
+/** @brief Whether OPENPETE_MOBY_RANK_FANOUT is not 0: the census and rank may fan out (default on), read once.
+ * @return 1 when they may. */
+static int rkf_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_FANOUT"); v = !(e && *e == '0'); }
+    return v;
+}
+/** @brief The fan-out's face bound: OPENPETE_MOBY_RANK_FANOUT_MIN, else RKF_MIN_FACES, read once.
+ * @return The bound. */
+static long rkf_min(void) {
+    static long v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_FANOUT_MIN"); v = (e && *e) ? atol(e) : RKF_MIN_FACES; }
+    return v;
+}
+/** @brief Whether OPENPETE_MOBY_RANK_FANOUT_CHECK is set nonzero: each fanned-out set of runs also runs serially and the two are compared, read once.
+ * @return 1 when on. */
+static int rkf_check_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_FANOUT_CHECK"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/* Per leg (0 the canonical census and rank, 1 the sub-tick re-rank): the
+ * fan-out's sets of runs run on the pool and their runs; the check's sets,
+ * runs, faces and faces whose contest flag, rank or decal base differ. */
+static long s_rkf_sets[2], s_rkf_runs[2];
+static struct { long sets, runs, faces, bad; } s_rkc[2];
+
+/** @brief Whether this feed's census or re-rank may fan out: on, two workers, not the first call, and no instrument that reads the pair list or times the stages.
+ *
+ * The first call runs serially and latches every switch the census and rank
+ * read, so no latch first resolves on a worker. Kept serial by the
+ * intersection log, the rank calibration and the endpoint census
+ * (isect_instrumented), the rank timing (rank_time_on), and the reuse's
+ * count mode, which charges census time per run.
+ * @return 1 when it may. */
+static int rkf_allowed(void) {
+    static int first = 1;
+    if (first) {
+        first = 0;
+        (void)moby_rank_tie_mode(); (void)isect_stacked_on(); (void)native_rank_negctl();
+        (void)isect_instrumented(); (void)rkf_min(); (void)rkf_check_on();
+        return 0;
+    }
+    if (!rkf_on() || openpete_workpool_threads() <= 1) return 0;
+    return !(isect_instrumented() || rank_time_on() || rr_mode() == 2);
+}
+
+/* One moby run of the walk: its first walk triangle and one past its last. */
+typedef struct { int i0, i1; } rk_span;
+static rk_span s_rks[MAX_NTRI];
+typedef void (*rk_item_fn)(int item, int worker, void* arg);
+
+/** @brief Work-pool job: the census and rank of one canonical run, into its own faces.
+ * @param item The span index.
+ * @param worker The worker, whose scratch the run uses.
+ * @param arg The spans. */
+static void rkf_canon_item(int item, int worker, void* arg) {
+    const rk_span* r = &((const rk_span*)arg)[item];
+    isect_count c = {0};
+    (void)isect_run(r->i0, r->i1, &s_rkw[worker], &c);
+    rank_run(r->i0, r->i1, 0, &s_rkw[worker]);
+}
+
+static void rank_fresh_moby(int i0, int i1, rk_ws* w);
+/** @brief Work-pool job: the re-rank of one sub-tick run the carry table misses (rank_fresh_moby).
+ * @param item The span index.
+ * @param worker The worker, whose scratch the run uses.
+ * @param arg The spans. */
+static void rkf_fresh_item(int item, int worker, void* arg) {
+    const rk_span* r = &((const rk_span*)arg)[item];
+    rank_fresh_moby(r->i0, r->i1, &s_rkw[worker]);
+}
+
+/* The check's copies of the walk's contest flags, ranks and decal bases: the
+ * inputs before the pool ran, and the pool's outputs. */
+static uint8_t s_rkc_cont[2][MAX_NTRI];
+static int s_rkc_rank[2][MAX_NTRI], s_rkc_under[2][MAX_NTRI];
+
+/** @brief Copy the walk's contest flags, ranks and decal bases into or out of one of the check's copies.
+ * @param k The copy: 0 the inputs, 1 the pool's outputs.
+ * @param out Nonzero copies the copy back over the walk's arrays. */
+static void rkc_copy(int k, int out) {
+    const size_t n = (size_t)s_gout.n;
+    if (out) {
+        memcpy(s_wtri_contest, s_rkc_cont[k], n);
+        memcpy(s_nrank, s_rkc_rank[k], n * sizeof s_nrank[0]);
+        memcpy(s_wtri_under, s_rkc_under[k], n * sizeof s_wtri_under[0]);
+        return;
+    }
+    memcpy(s_rkc_cont[k], s_wtri_contest, n);
+    memcpy(s_rkc_rank[k], s_nrank, n * sizeof s_nrank[0]);
+    memcpy(s_rkc_under[k], s_wtri_under, n * sizeof s_wtri_under[0]);
+}
+
+/** @brief Print the check's totals with the fan-out's. */
+static void rkc_print(void) {
+    fprintf(stderr, "[rank-fanout-check final] canon: sets=%ld runs=%ld faces=%ld mismatched=%ld"
+                    " fresh: sets=%ld runs=%ld faces=%ld mismatched=%ld | fanned canon=%ld/%ld fresh=%ld/%ld\n",
+            s_rkc[0].sets, s_rkc[0].runs, s_rkc[0].faces, s_rkc[0].bad, s_rkc[1].sets, s_rkc[1].runs,
+            s_rkc[1].faces, s_rkc[1].bad, s_rkf_sets[0], s_rkf_runs[0], s_rkf_sets[1], s_rkf_runs[1]);
+}
+
+/** @brief Run a fanned-out set of runs again on the calling thread from the same inputs and count the faces whose output differs.
+ *
+ * Restores the inputs saved in copy 0 after keeping the pool's outputs in
+ * copy 1, runs every span through fn as worker 0, and compares each face's
+ * contest flag and rank, and an eligible face's decal base. The serial
+ * outputs stay, so a mismatch never reaches the select.
+ * @param fn The set's job.
+ * @param nr The span count.
+ * @param leg 0 for the canonical census and rank, 1 for the sub-tick re-rank. */
+static void rkf_check(rk_item_fn fn, int nr, int leg) {
+    static int s_armed;
+    if (!s_armed) { s_armed = 1; atexit(rkc_print); }
+    rkc_copy(1, 0);
+    rkc_copy(0, 1);
+    for (int k = 0; k < nr; k++) fn(k, 0, s_rks);
+    s_rkc[leg].sets++; s_rkc[leg].runs += nr;
+    for (int k = 0; k < nr; k++)
+        for (int i = s_rks[k].i0; i < s_rks[k].i1; i++) {
+            s_rkc[leg].faces++;
+            s_rkc[leg].bad += s_wtri_contest[i] != s_rkc_cont[1][i] || s_nrank[i] != s_rkc_rank[1][i] ||
+                         (isect_eligible(i) && s_wtri_under[i] != s_rkc_under[1][i]);
+        }
+}
+
+/** @brief Run the spans in s_rks through fn: on the work pool when there are two and they hold rkf_min faces, else on the calling thread in walk order.
+ *
+ * The pool leg keeps no pair list (s_ip_off) and, under the check, runs the
+ * set again serially (rkf_check).
+ * @param fn The job.
+ * @param nr The span count.
+ * @param faces The spans' walk triangles.
+ * @param leg 0 for the canonical census and rank, 1 for the sub-tick re-rank. */
+static void rkf_run(rk_item_fn fn, int nr, long faces, int leg) {
+    if (nr < 2 || faces < rkf_min()) {
+        for (int k = 0; k < nr; k++) fn(k, 0, s_rks);
+        return;
+    }
+    const int chk = rkf_check_on();
+    if (chk) rkc_copy(0, 0);
+    s_ip_off = 1;
+    openpete_workpool_run(nr, fn, s_rks);
+    if (chk) rkf_check(fn, nr, leg);
+    s_ip_off = 0;
+    s_rkf_sets[leg]++; s_rkf_runs[leg] += nr;
+}
+
+/** @brief The canonical feed's census and rank with the runs fanned out, in place of isect_census and native_rank_build.
+ *
+ * In walk order on the calling thread: clears the contest flags and the pair
+ * list, takes each run's stored verdict where the reuse matches it
+ * (rr_census_reused, rr_rank_reused), and lists the other runs; then runs the
+ * listed runs through rkf_run. The outputs equal the serial pair's, the pair
+ * list aside.
+ * @return 1 when it ran, 0 when the feed takes the serial pair (rkf_allowed). */
+static int rkf_canon(void) {
+    if (!rkf_allowed()) return 0;
+    memset(s_wtri_contest, 0, (size_t)s_gout.n);
+    s_ip_n = 0;
+    int nr = 0;
+    long faces = 0;
+    for (int i0 = 0; i0 < s_gout.n; ) {
+        const uint32_t mob = s_wtri_moby[i0];
+        int i1 = i0;
+        while (i1 < s_gout.n && s_wtri_moby[i1] == mob) i1++;
+        const int cen = rr_census_reused(i0, i1, mob);
+        const int rk = rr_rank_reused(i0);
+        if (!cen) { s_rks[nr++] = (rk_span){ i0, i1 }; faces += i1 - i0; }
+        else if (!rk) rank_run(i0, i1, 0, &s_rkw[0]);
+        i0 = i1;
+    }
+    rkf_run(rkf_canon_item, nr, faces, 0);
+    return 1;
 }
 
 /** @brief Compare the feed's reused verdict against a full census and rank of the same walk (OPENPETE_MOBY_RANK_REUSE_VERIFY=1).
@@ -10958,11 +11239,6 @@ static int rank_mix_slot(int i0, int i1, const int* cr, const int* fr, int a, in
     *tie = bf > 0 && bf == fr[a - i0];
     return best;
 }
-/* A ranked face of a re-ranked run on the merged scale: the carried rank it
- * follows (a hit face's own), 1 when it sits just after that rank (an absent
- * face), its fresh rank to order absent faces sharing a slot, and its walk
- * triangle. */
-typedef struct { int c, after, f, i; } rmix_e;
 /** @brief qsort comparator over rmix_e: carried rank, then after, then fresh rank, all ascending. */
 static int rmix_cmp(const void* a, const void* b) {
     const rmix_e *x = (const rmix_e*)a, *y = (const rmix_e*)b;
@@ -10985,9 +11261,9 @@ static int rmix_cmp(const void* a, const void* b) {
  * @param i0 The run's first walk triangle.
  * @param i1 One past its last.
  * @param cr The run's carried ranks, indexed from i0.
- * @param fr The run's fresh ranks, indexed from i0. */
-static void rank_mix_place(int i0, int i1, const int* cr, const int* fr) {
-    static rmix_e E[MAX_NTRI];
+ * @param fr The run's fresh ranks, indexed from i0.
+ * @param E Scratch for the run's ranked faces. */
+static void rank_mix_place(int i0, int i1, const int* cr, const int* fr, rmix_e* E) {
     int n = 0;
     for (int i = i0; i < i1; i++) {
         if (s_nrank[i] <= 0) continue;
@@ -11068,52 +11344,54 @@ static void rank_mix_census(int i0, int i1, const int* cr, const uint8_t* cc, co
  * wherever it exists. The fresh ranks are positions in the present walk's
  * face set and the carried ones in the endpoint's, so rank_mix_place maps the
  * absent faces into the carried order before the select compares them. The
- * census then checks the applied order (rank_mix_census).
+ * census then checks the applied order (rank_mix_census). Writes only the
+ * run's faces, and with the pair list off (s_ip_off) nothing shared. A run
+ * longer than the scratch can be grown to keeps its carried verdict.
  * @param i0 The run's first walk triangle.
- * @param i1 One past its last. */
-static void rank_fresh_moby(int i0, int i1) {
-    static isect_tri T[MAX_NTRI];
-    static int idx[MAX_NTRI];
-    static int keep_rank[MAX_NTRI];
-    static int fresh_rank[MAX_NTRI];
-    static uint8_t keep_cont[MAX_NTRI];
+ * @param i1 One past its last.
+ * @param w The worker's scratch. */
+static void rank_fresh_moby(int i0, int i1, rk_ws* w) {
+    if (!rk_ws_grow(w, i1 - i0)) return;
+    int *keep_rank = w->keep_rank, *fresh_rank = w->fresh_rank;
+    uint8_t* keep_cont = w->keep_cont;
     memcpy(keep_rank, &s_nrank[i0], (size_t)(i1 - i0) * sizeof s_nrank[0]);
     memcpy(keep_cont, &s_wtri_contest[i0], (size_t)(i1 - i0));
     const int ip0 = s_ip_n;
-    int n = 0, cont = 0;
     memset(&s_wtri_contest[i0], 0, (size_t)(i1 - i0));
-    for (int i = i0; i < i1; i++)
-        if (isect_eligible(i)) { isect_tri_of(i, &T[n]); idx[n++] = i; }
     isect_count c = {0};
-    isect_moby(T, idx, n, &c);
-    for (int i = i0; i < i1; i++) cont |= s_wtri_contest[i];
-    if (cont || isect_instrumented()) native_rank_moby(i0, i1, native_rank_negctl());
-    else memset(&s_nrank[i0], 0, (size_t)(i1 - i0) * sizeof s_nrank[0]);
+    (void)isect_run(i0, i1, w, &c);
+    rank_run(i0, i1, isect_instrumented(), w);
     memcpy(fresh_rank, &s_nrank[i0], (size_t)(i1 - i0) * sizeof s_nrank[0]);
     for (int i = i0; i < i1; i++)
         if (!(s_rf_flag[i] & RF_ABSENT)) { s_nrank[i] = keep_rank[i - i0]; s_wtri_contest[i] = keep_cont[i - i0]; }
-    rank_mix_place(i0, i1, keep_rank, fresh_rank);
+    rank_mix_place(i0, i1, keep_rank, fresh_rank, w->M);
     if (rank_ep_mode()) rank_mix_census(i0, i1, keep_rank, keep_cont, fresh_rank, ip0);
 }
 /** @brief Rank from this present's walk the faces of every moby run that the carry table did not walk.
  *
  * A run is a contiguous stretch of walk triangles with one moby pointer, the
  * unit native_rank_build ranks. A run with an eligible face absent from the
- * table goes through rank_fresh_moby; a run whose faces all hit keeps the
- * carried verdict. Counts the census's absent, fallback and re-ranked terms
- * when the census is on.
+ * table goes through rank_fresh_moby, those runs fanned out over the work
+ * pool where rkf_allowed lets them (rkf_run); a run whose faces all hit keeps
+ * the carried verdict. Counts the census's absent, fallback and re-ranked
+ * terms when the census is on.
  * @param fresh 1 to rank, 0 to count only. */
 static void rank_fresh_pass(int fresh) {
+    const int fan = fresh && rkf_allowed();
+    int nr = 0;
+    long faces = 0;
     for (int i0 = 0; i0 < s_gout.n; ) {
         const uint32_t mob = s_wtri_moby[i0];
         int i1 = i0, na = 0;
         for (; i1 < s_gout.n && s_wtri_moby[i1] == mob; i1++) na += (s_rf_flag[i1] & RF_ABSENT) != 0;
         const int redo = fresh && na > 0;
-        if (redo) rank_fresh_moby(i0, i1);
+        if (redo && fan) { s_rks[nr++] = (rk_span){ i0, i1 }; faces += i1 - i0; }
+        else if (redo) rank_fresh_moby(i0, i1, &s_rkw[0]);
         s_ep_absent += na; s_ep_fresh += redo;
         if (!redo) s_ep_fallback += na;
         i0 = i1;
     }
+    if (fan) rkf_run(rkf_fresh_item, nr, faces, 1);
 }
 /** @brief The world bucket a carry entry gives its face at this present's camera.
  *
@@ -11342,7 +11620,9 @@ static void rank_ep_report(void) {
  * A canonical feed computes them (intersection census, then the rank build)
  * and stores them for the sub-tick carry; an intermediate present reads them
  * back from the carry while the carry is on, re-ranking the moby runs the
- * carry does not cover, and computes them otherwise.
+ * carry does not cover, and computes them otherwise. The canonical census
+ * and rank fan out over the work pool where rkf_allowed lets them (rkf_canon);
+ * the rank-time instrument then keeps them serial.
  * Inert unless the native rank or the intersection log is on. Also emits the
  * rank-time, rank-carry and select census lines and runs the calibration
  * instrument when each is enabled.
@@ -11352,12 +11632,13 @@ static void moby_rank_prepare(CPUState* cpu) {
     int carry = s_in_reextract && rank_carry_on();
     uint64_t t0 = rt_now(), c0 = rt_cpu_ns();
     uint64_t m0 = mst_fine_now();
-    if (carry) rank_carry_apply(cpu); else { rr_begin(); isect_census(); }
+    int built = 0;   /* the fan-out ran the census and the rank (rkf_canon) */
+    if (carry) rank_carry_apply(cpu); else { rr_begin(); built = rkf_canon(); if (!built) isect_census(); }
     mst_add(carry ? MST_RKC : MST_RKI, m0);
     rank_stage_time(RT_ISECT, t0, c0);
     t0 = rt_now(); c0 = rt_cpu_ns();
     m0 = mst_fine_now();
-    if (!carry) { native_rank_build(); rr_end(); }
+    if (!carry) { if (!built) native_rank_build(); rr_end(); }
     mst_add(MST_RKB, m0);
     m0 = mst_fine_now();
     if (!s_in_reextract) rank_carry_store(cpu);
