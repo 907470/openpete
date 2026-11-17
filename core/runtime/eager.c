@@ -1216,11 +1216,16 @@ static void eager_report(void)
                openpete_get_cadence() == OPENPETE_CADENCE_FILL ? "fill" : "even", s_eager.fill_spans);
 }
 
-/** @brief Drop the eager scene plan on a guest discontinuity (savestate load, rewind, level load).
+/** @brief Drop the eager scene plan on a guest discontinuity (a savestate load from a file, or a non-quiet in-memory state load).
  *
  * Clears the planned targets, the last target and the canonical gap's origin,
  * and resets the decaying tick-time peak to the tick mean. The scene ring flushes its own pending
- * scenes. Registered with openpete_on_guest_discontinuity. */
+ * scenes. Registered with openpete_on_guest_discontinuity. A rewind step (a
+ * quiet in-memory load) and a level load do not call it: a level load stops
+ * canonical presents, so production is withheld (world_live) until they
+ * resume, the first span after it does not continue a last target more than
+ * a period in the past, and the world going live opens the re-warm window
+ * (eager_note_live). */
 static void eager_on_discontinuity(void) { s_eager.n = s_eager.i = 0; s_eager.last_target = 0; s_eager.tick_peak = s_eager.tick_ema; s_eager.canon_frame = 0; }
 
 /* The run's frame-time log, for presents made on the present thread; NULL
