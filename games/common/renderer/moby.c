@@ -941,6 +941,20 @@ static int moby_pose_derive(CPUState* cpu, uint32_t model, const uint8_t st[5], 
     return 1;
 }
 
+int moby_keyframe_pair(CPUState* cpu, uint32_t model, const uint8_t st[5], moby_keyframe_pair_t* out) {
+    moby_pose_t p;
+    if (!moby_pose_derive(cpu, model, st, &p)) return 0;
+    out->header = p.header;
+    out->header_b = p.header_b;
+    out->blend = p.blend;
+    if (game_layout.moby.rec_frame_is_word) {
+        out->word_a = p.frame_a;
+        out->word_b = p.frame_b;
+        return 1;
+    }
+    return moby_data_word(p.frame_a, &out->word_a) && moby_data_word(p.frame_b, &out->word_b);
+}
+
 /** @brief Open a vertex stream on a keyframe through the game's decoder slot.
  *
  * Calls moby_game.vstream_init, which must be set.

@@ -51,10 +51,12 @@
 //
 // Under extended LOD, which draws mobys past the game's own draw distances,
 // a record the routine dropped on its box or far bound alone is drawn too
-// (glow_view_verdict). Some classes hold a record only while a child moby was
-// drawn on the previous tick (game_layout.glow.synth); where the game freed
-// it and native still draws the child, the record is built natively as the
-// game writes it (glow_synth_moby). Original LOD runs neither.
+// (glow_view_verdict). Some classes hold a record only while a child moby,
+// or the moby itself, was drawn on the previous tick (game_layout.glow.synth);
+// where the game freed it and native still draws that moby, the record is
+// built natively as the game writes it (glow_synth_moby), at a position the
+// game reads off the child or off the moby's own animated model vertices
+// (glow_part_pos). Original LOD runs neither.
 //
 // Spyro 1's own glow renderer is fed by a float re-derivation in
 // games/spyro-1/renderer/particle.c: its records carry a moby-position pointer
@@ -116,11 +118,12 @@ typedef struct {
     float    depth;
     int      key;        /* the bucket it links at, -1 for the front entry */
     uint32_t addr;
-    int32_t  w[3];
+    double   w[3];       /* the world position; integral but for a model-vertex glow */
     uint32_t packed;
     uint32_t rgb;        /* the centre colour, low 24 bits */
     int      yaw;
-    int      synth;      /* a native glow keyed by its child moby (glow_synth_moby) */
+    int      synth;      /* a native glow keyed by its moby (glow_synth_moby) */
+    const game_glow_synth_t* part;   /* its class's entry for a model-vertex glow, else NULL */
 } glow_rec;
 
 /** @brief The signed ordering-table bias byte of a record's packed word.
@@ -263,7 +266,8 @@ typedef struct {
     uint32_t packed;
     uint32_t rgb;
     int      synth;
-    int32_t  w[3];
+    const game_glow_synth_t* part;
+    double   w[3];
     double   off[3];
     double   m1, m2, m3;
 } glow_src;
@@ -309,10 +313,11 @@ static glow_verdict glow_classify(CPUState* cpu, const ngte_view* v, uint32_t s,
     r->addr = GW.pool + s * GW.stride;
     r->packed = cpu->read_word(r->addr + GW.packed_off);
     r->synth = 0;
+    r->part = NULL;
     if ((r->packed & GLOW_SHAPE_MASK) == 0u) return GLOW_V_FREE;
     r->rgb = cpu->read_word(r->addr + 0x0Cu) & 0xFFFFFFu;
     for (uint32_t k = 0; k < 3u; k++)
-        r->w[k] = (int32_t)cpu->read_word(r->addr + GW.pos_off + k * 4u);
+        r->w[k] = (double)(int32_t)cpu->read_word(r->addr + GW.pos_off + k * 4u);
     return glow_cull(v, r, 0);
 }
 
@@ -453,6 +458,7 @@ static void glow_fan_append(const glow_src* r, int yaw, const glow_fan* f) {
     rec.packed = r->packed;
     rec.rgb = r->rgb;
     rec.synth = r->synth;
+    rec.part = r->part;
     rec.yaw = yaw;
     const int blend = ngte_abr_blend(1, NGTE_ABR_QUARTER_AS_ADD);   /* 0xE1000620: ABR 0b01 */
     for (int t = 0; t < f->n && s_item_n < GLOW_MAX_PRIMS; t++) {
@@ -979,20 +985,120 @@ static int glow_ram_ptr(uint32_t a) {
     return a >= 0x80000000u && a < 0x80200000u;
 }
 
-/** @brief Under extended LOD, feed the glow the game frees for one drawn-gated moby whose child native draws.
+/* ---- the model-vertex glow position --------------------------------------
  *
- * The game keeps the glow record only while the child's drawn byte was set
- * (game_glow_synth_t); extended LOD draws the child where the game culls it.
- * A moby whose tag holds a live record is skipped (the pool walk feeds it),
- * as is one whose child is absent, of another class, or not drawn by native
- * this tick (glow_native_draws). Otherwise the record
- * is built as the game writes it: the class's shape, size, colour and bias,
- * the child's position moved by dpos, and a phase that is the child's
- * address bits 2-9, fixed while the glow is synthesized. It is keyed by the
- * child's address, so a sub-tick present moves it with the child's own
- * snapshots. It passes the routine's tests without the box and far bounds
- * (glow_cull), the lateral one through glow_view_admit, and counts into
- * s_synth_admit.
+ * Some classes place their glow record on vertices of their own animated
+ * model (game_glow_synth_t.vtx_n). Each tick the update first rebuilds the
+ * moby's rotation from its angle word (func_80055D24 with flag 4, which calls
+ * func_8004EA90 on Moby+0x44 into Moby+0x20 from the identity, updatemobys.s
+ * 0x80055E58-0x80055E78), then calls func_80055F14 per vertex
+ * (updatemobys.s 0x80055F14-0x800560A8):
+ *   * the keyframe pair and blend are the cull's: header A = anims[id],
+ *     header B = anims[nextId] at nextFrame, blend = table[Moby+0x40]
+ *     (moby_keyframe_pair); the shift is header A's byte 2.
+ *   * vertex i of a keyframe is the word at header +0x20's data base plus
+ *     (keyframe word & 0xFFFF) * 2 plus i * 4, read whole and split into
+ *     bits 21-31, 11-21 and 0-11, each signed (0x80055F98-0x80055FE4); this
+ *     is not the draw's vertex stream codec.
+ *   * with a non-zero blend the GTE's INTPL takes A + (B - A) * blend * 16 /
+ *     4096 per field (0x80056008-0x80056050); the fields are then shifted
+ *     left by the shift.
+ *   * the rotation times (bits 11-21, bits 0-11, bits 21-31) gives (m1, m2,
+ *     m3) >> 12, and the vertex is (X + m3, Y - m1, Z - m2) from the moby's
+ *     position (0x80056060-0x800560A8).
+ * A two-vertex glow adds both world positions and halves each component
+ * toward zero (func_8004F194, func_8004F110). This port takes every step in
+ * float, without the INTPL's, the matrix's and the halving's truncations. */
+
+/* The bytes of a moby the model-vertex position reads: the position words,
+ * the class, the animation state and the angle word. */
+#define GLOW_PART_BYTES (0x48u)
+
+/** @brief One model vertex's three fields as func_80055F14 reads them from a keyframe.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader.
+ * @param word The keyframe's record word 0.
+ * @param idx The vertex index.
+ * @param f Receives the fields in the order the routine loads IR1, IR2 and IR3:
+ *        bits 11-21, bits 0-11 and bits 21-31. */
+static void glow_part_fields(CPUState* cpu, uint32_t header, uint32_t word, uint32_t idx, double f[3]) {
+    const uint32_t base = cpu->read_word(header + 0x20u);
+    const uint32_t w = cpu->read_word(base + ((word & 0xFFFFu) << 1) + idx * 4u);
+    f[0] = (double)((int32_t)(w << 10) >> 21);
+    f[1] = (double)((int32_t)(w << 20) >> 20);
+    f[2] = (double)((int32_t)w >> 21);
+}
+
+/** @brief The world position of a model-vertex glow from one state of its moby, in float.
+ *
+ * The state is a copy of the moby's leading bytes, live or from an interp
+ * snapshot; see the section comment for the computation.
+ * @param cpu The guest CPU state, read only.
+ * @param mb The moby's bytes from offset 0, at least GLOW_PART_BYTES.
+ * @param k The class's entry; vtx_n is 1 or 2.
+ * @param out Receives the position.
+ * @return 0 when the class's model or the keyframe pair does not resolve, else 1. */
+static int glow_part_pos(CPUState* cpu, const uint8_t* mb, const game_glow_synth_t* k, double out[3]) {
+    uint16_t cls;
+    memcpy(&cls, mb + game_layout.moby.class_off, 2);
+    const uint32_t model = cpu->read_word(game_layout.moby.model_table + (uint32_t)cls * 4u);
+    moby_keyframe_pair_t kp;
+    if (!glow_ram_ptr(model) || !moby_keyframe_pair(cpu, model, mb + game_layout.moby.anim_state_off, &kp))
+        return 0;
+    const double scale = (double)(1u << (cpu->read_byte(kp.header + game_layout.moby.anim_shift_off) & 31u));
+    const double t = (double)kp.blend * 16.0 / 4096.0;
+    uint32_t rot;
+    memcpy(&rot, mb + game_layout.moby.angle_off, 4);
+    double ang[3];
+    ngte_word_angles(rot, ang);
+    static const float ident[3][3] = { { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } };
+    float R[3][3];
+    ngte_compose_euler_mf(cpu, ident, ang, R);
+    int32_t pos[3];
+    memcpy(pos, mb + game_layout.moby.pos_off, 12);
+    double sum[3] = { 0.0, 0.0, 0.0 };
+    for (uint32_t n = 0; n < k->vtx_n && n < 2u; n++) {
+        double a[3], b[3], ir[3];
+        glow_part_fields(cpu, kp.header, kp.word_a, k->vtx[n], a);
+        if (kp.blend) glow_part_fields(cpu, kp.header_b, kp.word_b, k->vtx[n], b);
+        for (int i = 0; i < 3; i++) ir[i] = (kp.blend ? a[i] + (b[i] - a[i]) * t : a[i]) * scale;
+        double m[3];
+        for (int i = 0; i < 3; i++) m[i] = (double)R[i][0] * ir[0] + (double)R[i][1] * ir[1] + (double)R[i][2] * ir[2];
+        sum[0] += (double)pos[0] + m[2];
+        sum[1] += (double)pos[1] - m[0];
+        sum[2] += (double)pos[2] - m[1];
+    }
+    for (int i = 0; i < 3; i++) out[i] = sum[i] / (double)k->vtx_n;
+    return 1;
+}
+
+/** @brief The world position of a model-vertex glow from its moby's live state.
+ * @param cpu The guest CPU state, read only.
+ * @param m The moby.
+ * @param k The class's entry.
+ * @param out Receives the position.
+ * @return glow_part_pos's verdict. */
+static int glow_part_live(CPUState* cpu, uint32_t m, const game_glow_synth_t* k, double out[3]) {
+    uint32_t w[GLOW_PART_BYTES / 4u];
+    for (uint32_t i = 0; i < GLOW_PART_BYTES / 4u; i++) w[i] = cpu->read_word(m + i * 4u);
+    return glow_part_pos(cpu, (const uint8_t*)w, k, out);
+}
+
+/** @brief Under extended LOD, feed the glow the game frees for one drawn-gated moby whose gating moby native draws.
+ *
+ * The game keeps the glow record only while the gating moby's drawn byte was
+ * set (game_glow_synth_t): a child moby, or with child_cls 0 the moby itself;
+ * extended LOD draws it where the game culls it. A moby whose tag holds a
+ * live record is skipped (the pool walk feeds it), as is one whose child is
+ * absent or of another class, or whose gating moby native does not draw this
+ * tick (glow_native_draws). Otherwise the record is built as the game writes
+ * it: the class's shape, size, colour and bias, at the child's position
+ * moved by dpos or at the moby's model vertices (glow_part_live), and a phase
+ * that is the gating moby's address bits 2-9, fixed while the glow is
+ * synthesized. It is keyed by the gating moby's address, so a sub-tick
+ * present moves it with that moby's own snapshots (glow_record_offset). It
+ * passes the routine's tests without the box and far bounds (glow_cull), the
+ * lateral one through glow_view_admit, and counts into s_synth_admit.
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view.
  * @param m The moby.
@@ -1002,19 +1108,24 @@ static void glow_synth_moby(CPUState* cpu, const ngte_view* v, uint32_t m, const
                             const glow_capture_ctx* c) {
     const uint32_t tag = cpu->read_word(m);
     if (!glow_ram_ptr(tag) || cpu->read_word(tag + k->rec_off) != 0u) return;
-    const uint32_t child = cpu->read_word(tag + k->child_off);
+    const uint32_t child = k->child_cls ? cpu->read_word(tag + k->child_off) : m;
     if (!glow_ram_ptr(child)) return;
-    if (cpu->read_half(child + game_layout.moby.class_off) != k->child_cls) return;
+    if (k->child_cls && cpu->read_half(child + game_layout.moby.class_off) != k->child_cls) return;
     if (!glow_native_draws(cpu, child)) return;
     glow_src r;
     memset(&r, 0, sizeof r);
     r.addr = child;
     r.synth = 1;
+    r.part = k->vtx_n ? k : NULL;
     r.rgb = k->rgb & 0xFFFFFFu;
     r.packed = (uint32_t)k->shape | ((uint32_t)k->size << 8) | (((child >> 2) & 0xFFu) << 16) |
                ((uint32_t)(uint8_t)k->bias << 24);
-    for (uint32_t i = 0; i < 3u; i++)
-        r.w[i] = (int32_t)cpu->read_word(child + game_layout.moby.pos_off + 4u * i) + k->dpos[i];
+    if (r.part) {
+        if (!glow_part_live(cpu, m, k, r.w)) return;
+    } else {
+        for (uint32_t i = 0; i < 3u; i++)
+            r.w[i] = (double)((int32_t)cpu->read_word(child + game_layout.moby.pos_off + 4u * i) + k->dpos[i]);
+    }
     const glow_verdict gv = glow_cull(v, &r, 1);
     if (gv != GLOW_V_ACCEPT && gv != GLOW_V_PYR_X) return;
     glow_fan f;
@@ -1040,6 +1151,162 @@ static void glow_synth_set(CPUState* cpu, const ngte_view* v, const glow_capture
         const uint16_t cls = cpu->read_half(m + game_layout.moby.class_off);
         for (uint32_t j = 0; j < GW.synth_n; j++)
             if (GW.synth[j].cls == cls) glow_synth_moby(cpu, v, m, &GW.synth[j], c);
+    }
+}
+
+/* ---- the model-vertex compare (OPENPETE_GLOW_PART_CMP) ---------------------
+ *
+ * The record's position words against glow_part_pos of the moby's live state
+ * at the capture, for every live moby of a model-vertex class whose record
+ * the class's update wrote this tick. The update writes it only when the
+ * drawn byte it reads, the one the previous tick's draw left, is non-zero;
+ * with that byte 0 an update that runs frees the record and one that does
+ * not run (the moby outside its update radius) leaves a stale record, which
+ * is counted as stale and not compared. Each error is the world distance and
+ * the screen distance of the two projected points under the tick's view.
+ * Level 2 adds a line per compared moby, level 3 one per moby without a
+ * record. The summary prints at exit per class; a class with no compared
+ * record reads VACUOUS. */
+
+#define GLOW_CMP_CLS  4
+#define GLOW_CMP_KEYS 64
+
+typedef struct { glow_acc world, px; unsigned long stale; } glow_cmp_acc;
+static glow_cmp_acc s_cmp[GLOW_CMP_CLS];
+static struct { uint32_t moby; unsigned epoch; uint8_t drawn; } s_cmp_last[GLOW_CMP_KEYS];
+
+/** @brief OPENPETE_GLOW_PART_CMP, latched on first use: 0 off, 1 the exit summary, 2 also per-moby lines, 3 also mobys without a record.
+ * @return The level. */
+static int glow_cmp_level(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_GLOW_PART_CMP"); v = (e && *e) ? atoi(e) : 0; }
+    return v;
+}
+
+/** @brief Print the compare's per-class summary; registered with atexit. */
+static void glow_cmp_report(void) {
+    for (uint32_t j = 0; j < GW.synth_n && j < GLOW_CMP_CLS; j++) {
+        if (!GW.synth[j].vtx_n) continue;
+        const glow_cmp_acc* a = &s_cmp[j];
+        fprintf(stderr, "[glow-part-cmp] cls=%03X compared=%lu stale=%lu world_mean=%.3f world_max=%.3f"
+                        " px_n=%lu px_mean=%.4f px_max=%.4f verdict=%s\n",
+                (unsigned)GW.synth[j].cls, a->world.n, a->stale,
+                a->world.n ? a->world.sum / (double)a->world.n : 0.0, a->world.mx,
+                a->px.n, a->px.n ? a->px.sum / (double)a->px.n : 0.0, a->px.mx,
+                a->world.n ? "MEASURED" : "VACUOUS");
+    }
+}
+
+/** @brief The screen point of a world position under a view, when it lies past the near plane.
+ * @param v The view.
+ * @param w The world position.
+ * @param sx Receives the screen X.
+ * @param sy Receives the screen Y.
+ * @return 1 when projected, else 0. */
+static int glow_cmp_screen(const ngte_view* v, const double w[3], double* sx, double* sy) {
+    glow_src r;
+    memset(&r, 0, sizeof r);
+    for (int i = 0; i < 3; i++) r.w[i] = w[i];
+    glow_cull(v, &r, 1);
+    if (r.m3 < (double)GW.near_z) return 0;
+    ngte_proj o;
+    ngte_screen_gte(r.m1, r.m2, r.m3, v->ofx, v->ofy, v, 0, &o);
+    *sx = o.sx; *sy = o.sy;
+    return 1;
+}
+
+/** @brief The drawn byte a moby had at the previous capture, then store this capture's.
+ * @param m The moby.
+ * @param drawn This capture's drawn byte.
+ * @return The previous capture's byte, or -1 when the store holds none from it. */
+static int glow_cmp_swap_drawn(uint32_t m, uint8_t drawn) {
+    int slot = -1, prev = -1;
+    for (int i = 0; i < GLOW_CMP_KEYS && slot < 0; i++)
+        if (s_cmp_last[i].moby == m) slot = i;
+    for (int i = 0; i < GLOW_CMP_KEYS && slot < 0; i++)
+        if (s_cmp_last[i].moby == 0u || s_cmp_last[i].epoch + 1u < s_epoch) slot = i;
+    if (slot < 0) return -1;
+    if (s_cmp_last[slot].moby == m && s_cmp_last[slot].epoch + 1u == s_epoch) prev = s_cmp_last[slot].drawn;
+    s_cmp_last[slot].moby = m;
+    s_cmp_last[slot].epoch = s_epoch;
+    s_cmp_last[slot].drawn = drawn;
+    return prev;
+}
+
+/** @brief Add one native position's error against the game's record to a class's accumulators.
+ * @param a The class's accumulators.
+ * @param v The tick's view.
+ * @param game The record's position.
+ * @param nat The native position.
+ * @param px Receives the screen error, -1 when either point is behind the near plane.
+ * @return The world error. */
+static double glow_cmp_add(glow_cmp_acc* a, const ngte_view* v, const double game[3], const double nat[3],
+                           double* px) {
+    const double e = sqrt((game[0] - nat[0]) * (game[0] - nat[0]) + (game[1] - nat[1]) * (game[1] - nat[1]) +
+                          (game[2] - nat[2]) * (game[2] - nat[2]));
+    glow_acc_add(&a->world, e);
+    double gx, gy, nx, ny;
+    *px = -1.0;
+    if (glow_cmp_screen(v, game, &gx, &gy) && glow_cmp_screen(v, nat, &nx, &ny)) {
+        *px = hypot(gx - nx, gy - ny);
+        glow_acc_add(&a->px, *px);
+    }
+    return e;
+}
+
+/** @brief Compare one moby's glow record, when its update wrote it this tick, with its native model-vertex position.
+ * @param cpu The guest CPU state, read only.
+ * @param v The tick's view.
+ * @param m The moby.
+ * @param j The index of its class's entry in GW.synth. */
+static void glow_cmp_moby(CPUState* cpu, const ngte_view* v, uint32_t m, uint32_t j) {
+    const game_glow_synth_t* k = &GW.synth[j];
+    const uint32_t tag = cpu->read_word(m);
+    const uint8_t drawn = cpu->read_byte(m + game_layout.moby.drawn_off);
+    const int pdrawn = glow_cmp_swap_drawn(m, drawn);
+    double nat[3];
+    if (!glow_ram_ptr(tag) || !glow_part_live(cpu, m, k, nat)) return;
+    const double cd = sqrt((nat[0] - v->cam[0]) * (nat[0] - v->cam[0]) + (nat[1] - v->cam[1]) * (nat[1] - v->cam[1]) +
+                           (nat[2] - v->cam[2]) * (nat[2] - v->cam[2]));
+    const uint32_t rec = cpu->read_word(tag + k->rec_off);
+    if (!glow_ram_ptr(rec) || (cpu->read_word(rec + GW.packed_off) & GLOW_SHAPE_MASK) == 0u) {
+        if (glow_cmp_level() >= 3)
+            fprintf(stderr, "[glow-part f=%u] moby=%08X cls=%03X drawn=%u native=%d no_record"
+                            " live=(%.0f,%.0f,%.0f) cam_dist=%.0f\n",
+                    openpete_frame, m, (unsigned)k->cls, drawn, glow_native_draws(cpu, m), nat[0], nat[1], nat[2], cd);
+        return;
+    }
+    if (pdrawn <= 0) { s_cmp[j].stale += pdrawn == 0; return; }
+    double game[3];
+    for (uint32_t i = 0; i < 3u; i++) game[i] = (double)(int32_t)cpu->read_word(rec + GW.pos_off + 4u * i);
+    double px;
+    const double e = glow_cmp_add(&s_cmp[j], v, game, nat, &px);
+    if (glow_cmp_level() >= 2)
+        fprintf(stderr, "[glow-part f=%u] moby=%08X cls=%03X drawn=%u anim=%08X progress=%u game=(%.0f,%.0f,%.0f)"
+                        " native=(%.2f,%.2f,%.2f) err=%.3f px=%.4f cam_dist=%.0f\n",
+                openpete_frame, m, (unsigned)k->cls, drawn, cpu->read_word(m + game_layout.moby.anim_state_off),
+                cpu->read_byte(m + game_layout.moby.anim_state_off + 4u), game[0], game[1], game[2],
+                nat[0], nat[1], nat[2], e, px, cd);
+}
+
+/** @brief Under OPENPETE_GLOW_PART_CMP, compare every live moby of a model-vertex class with its game record.
+ * @param cpu The guest CPU state, read only.
+ * @param v The tick's view. */
+static void glow_cmp_set(CPUState* cpu, const ngte_view* v) {
+    static int armed = 0;
+    if (!glow_cmp_level() || !GW.synth_n) return;
+    if (!armed) { armed = 1; atexit(glow_cmp_report); }
+    const uint32_t head = game_layout.moby.array_head;
+    const uint32_t arr = game_layout.moby.array_direct ? head : cpu->read_word(head);
+    if (!glow_ram_ptr(arr)) return;
+    for (uint32_t i = 0; i < 1024u; i++) {
+        const uint32_t m = arr + i * game_layout.moby.array_stride;
+        const uint8_t st = cpu->read_byte(m + game_layout.moby.state_off);
+        if (st == game_layout.moby.state_term) break;
+        if (st & 0x80u) continue;
+        const uint16_t cls = cpu->read_half(m + game_layout.moby.class_off);
+        for (uint32_t j = 0; j < GW.synth_n && j < GLOW_CMP_CLS; j++)
+            if (GW.synth[j].cls == cls && GW.synth[j].vtx_n) glow_cmp_moby(cpu, v, m, j);
     }
 }
 
@@ -1076,6 +1343,7 @@ static void glow_capture_set(CPUState* cpu, const ngte_view* v) {
     c.yaw = glow_cam_yaw(cpu);
     for (uint32_t s = 0; s < GW.slots; s++) glow_capture_rec(cpu, v, s, &c);
     glow_synth_set(cpu, v, &c);
+    glow_cmp_set(cpu, v);
     glow_vtx_cal_tick(&c);
 }
 
@@ -1239,33 +1507,43 @@ static int glow_rec_same(const glow_rec* r, const openpete_interp_obj_t* o, doub
  * table and blends toward it by 1 - alpha. The phase change is the previous
  * snapshot's phase byte minus the current snapshot's, as a signed byte, so it
  * is the routine's per-draw step whichever side of the draw the snapshots are
- * taken; a synthesized glow's phase is fixed. Returns 0 with a zero offset
+ * taken; a synthesized glow's phase is fixed. A model-vertex glow steps by
+ * its position from each snapshot of its moby (glow_part_pos), so it follows
+ * the moby's animation as well as its motion. Returns 0 with a zero offset
  * and phase change for a record with no previous snapshot, a snapshot blob
  * too short for the position words, snapshots more than one and a half tick
  * periods apart, a pair glow_rec_same rejects, or a displacement beyond
  * GLOW_REUSE_CEILING.
+ * @param cpu The guest CPU state, read only.
  * @param r The record as the tick read it.
  * @param alpha The present's position in the tick interval, 1 at its end.
  * @param off Receives the world-unit offset from the tick's position.
  * @param dphase Receives the phase change toward the previous tick, scaled by 1 - alpha.
  * @return 1 when the previous snapshot is the same record, else 0. */
-static int glow_record_offset(const glow_rec* r, double alpha, double off[3], double* dphase) {
+static int glow_record_offset(CPUState* cpu, const glow_rec* r, double alpha, double off[3],
+                              double* dphase) {
     off[0] = off[1] = off[2] = 0.0;
     *dphase = 0.0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(r->addr);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     const uint32_t po = glow_rec_pos_off(r);
-    if ((uint32_t)o->blob_len < po + 12u) return 0;
+    if ((uint32_t)o->blob_len < (r->part ? GLOW_PART_BYTES : po + 12u)) return 0;
     if (o->curr_ns - o->prev_ns >
         g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2) return 0;
     double step;
     if (!glow_rec_same(r, o, &step)) return 0;
-    int32_t pw[3], cw[3];   /* a synthesized glow steps by its child's own pair */
-    memcpy(pw, o->prev + po, 12);
-    memcpy(cw, o->curr + po, 12);
+    double pw[3], cw[3];   /* a synthesized glow steps by its moby's own pair */
+    if (r->part) {
+        if (!glow_part_pos(cpu, o->prev, r->part, pw) || !glow_part_pos(cpu, o->curr, r->part, cw)) return 0;
+    } else {
+        int32_t pi[3], ci[3];
+        memcpy(pi, o->prev + po, 12);
+        memcpy(ci, o->curr + po, 12);
+        for (int k = 0; k < 3; k++) { pw[k] = (double)pi[k]; cw[k] = (double)ci[k]; }
+    }
     double d[3], sq = 0.0;
     for (int k = 0; k < 3; k++) {
-        d[k] = (double)pw[k] - (r->synth ? (double)cw[k] : (double)r->w[k]);
+        d[k] = pw[k] - (r->synth ? cw[k] : r->w[k]);
         sq += d[k] * d[k];
     }
     if (sq > GLOW_REUSE_CEILING * GLOW_REUSE_CEILING) return 0;
@@ -1304,6 +1582,7 @@ static int glow_prev_cam_yaw(double* out) {
  * captured one blended toward the previous snapshot's by 1 - alpha along the
  * shorter way round the 4096-unit circle. At alpha 1 every blend term is zero
  * and the record and angle are the capture's.
+ * @param cpu The guest CPU state, read only.
  * @param v The present's view.
  * @param rec The record as the tick read it.
  * @param alpha The present's position in the tick interval, 1 at its end.
@@ -1311,14 +1590,15 @@ static int glow_prev_cam_yaw(double* out) {
  * @param r Receives the record with its view-space centre under `v`.
  * @param ang Receives the angle in sine-table entries.
  * @return 1 when the record was paired with its previous snapshot, else 0. */
-static int glow_shown(const ngte_view* v, const glow_rec* rec, double alpha, const double* pyaw,
-                      glow_src* r, double* ang) {
+static int glow_shown(CPUState* cpu, const ngte_view* v, const glow_rec* rec, double alpha,
+                      const double* pyaw, glow_src* r, double* ang) {
     double off[3], dphase;
-    const int paired = glow_record_offset(rec, alpha, off, &dphase);
+    const int paired = glow_record_offset(cpu, rec, alpha, off, &dphase);
     r->addr = rec->addr;
     r->packed = rec->packed;
     r->rgb = rec->rgb;
     r->synth = rec->synth;
+    r->part = rec->part;
     for (int k = 0; k < 3; k++) r->w[k] = rec->w[k];
     const double p[3] = { (double)rec->w[0] + off[0], (double)rec->w[1] + off[1],
                           (double)rec->w[2] + off[2] };
@@ -1375,7 +1655,7 @@ static int glow_fan_at(CPUState* cpu, const ngte_view* v, const glow_rec* rec, d
                        const double* pyaw, glow_fan* f, int* paired) {
     glow_src r;
     double ang;
-    const int pr = glow_shown(v, rec, alpha, pyaw, &r, &ang);
+    const int pr = glow_shown(cpu, v, rec, alpha, pyaw, &r, &ang);
     if (paired) *paired = pr;
     f->n = 0;
     if (r.m3 < (double)GW.near_z) return 0;
@@ -1419,7 +1699,7 @@ static void glow_sac(const glow_rec* rec, const glow_fan* f, const ngte_view* v)
     memcpy(pw, o->prev + GW.pos_off, 12);
     memcpy(cc, o->curr + GW.pos_off, 12);
     if ((cc[0] != rec->w[0] || cc[1] != rec->w[1] || cc[2] != rec->w[2]) && sac_level() >= 2)
-        fprintf(stderr, "[sac-glow-currmismatch vbl=%u] rec=%08X drawn=(%d,%d,%d) store=(%d,%d,%d)\n",
+        fprintf(stderr, "[sac-glow-currmismatch vbl=%u] rec=%08X drawn=(%.0f,%.0f,%.0f) store=(%d,%d,%d)\n",
                 openpete_frame, rec->addr, rec->w[0], rec->w[1], rec->w[2], cc[0], cc[1], cc[2]);
     const double p[3] = { pw[0], pw[1], pw[2] };
     sac_judge(SAC_GLOW, rec->addr, p, cw, (int64_t)o->prev_ns, (int64_t)o->curr_ns, f->csx, f->csy, v);

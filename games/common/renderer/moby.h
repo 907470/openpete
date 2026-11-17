@@ -231,6 +231,31 @@ double moby_native_view_vwiden(void);
  *         where a multi-tick gap is a discontinuity rather than motion; 1
  *         otherwise, with a zero out[] for a moby static in the world. */
 int moby_record_world_offset(uint32_t moby, double out[3]);
+/* The keyframe pair one moby's animation state names, by the cull's rule:
+ * the AnimationHeaders of keyframes A and B, each keyframe's record word 0
+ * (the stream word the vertex codecs open on) and the blend byte, 0 for
+ * keyframe A alone. */
+typedef struct {
+    uint32_t header, header_b;
+    uint32_t word_a, word_b;
+    uint32_t blend;
+} moby_keyframe_pair_t;
+
+/** @brief The keyframe pair and blend byte a moby's five animation state bytes name, as the native moby walk derives them.
+ *
+ * The derivation is the walk's own (header A from anims[id], header B from
+ * anims[nextId] when the mapped blend byte is non-zero and that slot holds a
+ * header, else keyframe A with blend 0); the record word is read from the
+ * keyframe record where the layout keeps the record's address.
+ * @param cpu The guest CPU state, read only.
+ * @param model The model-table entry.
+ * @param st The five animation state bytes (id, nextId, frame, nextFrame,
+ *        progress), live or from an interp snapshot.
+ * @param out Receives the pair.
+ * @return 0 when anims[id] is not a header or a record word does not map, else 1. */
+int moby_keyframe_pair(struct CPUState* cpu, uint32_t model, const uint8_t st[5],
+                       moby_keyframe_pair_t* out);
+
 /** @brief The moby's displacement from the state its replayed record was composed from to the state this present shows.
  *
  * moby_record_world_offset, plus curr - prev for a record of a previous-queue

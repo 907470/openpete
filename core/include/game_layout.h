@@ -119,7 +119,11 @@ typedef struct env_anim_sublist {
  * glow record pointer at `rec_off`; the child is of class `child_cls`. While
  * the record is live the game writes it with shape `shape`, size `size`,
  * colour `rgb` and ordering-table bias `bias`, at the child's position
- * moved by `dpos`. */
+ * moved by `dpos`. With `child_cls` 0 the drawn byte tested is the moby's
+ * own and `child_off` is unused. With `vtx_n` 1 or 2 the position is instead
+ * the moby's own model vertex `vtx[0]`, or the halved sum of `vtx[0]` and
+ * `vtx[1]`, placed in the world as the game's model-vertex routine places it
+ * (Spyro 3 func_80055F14), and `dpos` is unused. */
 typedef struct game_glow_synth {
     uint16_t cls;
     uint16_t child_cls;
@@ -130,6 +134,8 @@ typedef struct game_glow_synth {
     int8_t   bias;
     uint32_t rgb;
     int32_t  dpos[3];
+    uint8_t  vtx_n;
+    uint8_t  vtx[2];
 } game_glow_synth_t;
 
 /* One moby placement marker: a moby of class `cls` whose state byte goes

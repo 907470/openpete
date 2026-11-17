@@ -49,9 +49,25 @@ static const game_moby_director_t s_moby_director[] = {
  * colour 0xC060A0 (:150-156); each tick it copies the gem's position into
  * it (:165), subtracts 0x19 from Z (:171) and stores bias 8 (:175). With the
  * byte 0 it frees the record (:142-145). */
+/* Three Spooky Swamp classes gate their glow on their own drawn byte +0x4D
+ * and place it on vertices of their own model (func_80055F14): class 0x012
+ * (asm/nonmatchings/overlays/level_23/moby/func_level_23_8007D9D8.s:92-128)
+ * keeps the record at tag +0x1C, allocated as shape 1, size 0x80, colour
+ * 0x489090, at vertex 0; class 0x014 (func_level_23_8007EE44.s:860-899) at
+ * tag +0x38, size 0xFE, at the halved sum of vertices 0 and 1; class 0x06D
+ * (func_level_23_800868A0.s:120-162) at tag +0x5C, size 0xFE, at the halved
+ * sum of vertices 2 and 3. Each stores bias 8 and frees the record with the
+ * byte 0. The update table at D_level_23_800963E4 (level.data.s) names
+ * each routine's class. */
 static const game_glow_synth_t s_glow_synth[] = {
     { .cls = 0x2E7u, .child_cls = 0x1D5u, .child_off = 0x0Cu, .rec_off = 0x10u,
       .shape = 1u, .size = 0xFAu, .bias = 8, .rgb = 0xC060A0u, .dpos = { 0, 0, -0x19 } },
+    { .cls = 0x012u, .rec_off = 0x1Cu, .shape = 1u, .size = 0x80u, .bias = 8, .rgb = 0x489090u,
+      .vtx_n = 1u, .vtx = { 0u, 0u } },
+    { .cls = 0x014u, .rec_off = 0x38u, .shape = 1u, .size = 0xFEu, .bias = 8, .rgb = 0x489090u,
+      .vtx_n = 2u, .vtx = { 0u, 1u } },
+    { .cls = 0x06Du, .rec_off = 0x5Cu, .shape = 1u, .size = 0xFEu, .bias = 8, .rgb = 0x489090u,
+      .vtx_n = 2u, .vtx = { 2u, 3u } },
 };
 
 /* Update (0x80055400) dispatches game.state 6 to UpdateCutscene and 11 to
