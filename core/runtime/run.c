@@ -1243,6 +1243,34 @@ static int try_load_exe(const openpete_options_t* opts,
     return 1;
 }
 
+/** @brief Log why PsyCross's GL context cannot be opened, naming the driver and the remedy.
+ *
+ * Under the offscreen driver the cause is EGL (no libEGL, or none that
+ * offers a surfaceless or default display and a config), which SDL's error
+ * names; under any other driver it is a display server that cannot be
+ * reached.
+ * @param opts The parsed options. */
+static void log_psyx_init_failure(const openpete_options_t* opts) {
+    const char* drv = SDL_GetHint(SDL_HINT_VIDEO_DRIVER);
+    if (opts->headless && drv && SDL_strcasecmp(drv, "offscreen") == 0) {
+        OPL_ERROR_F("boot",
+                    "PsyCross could not open its GL context under SDL's offscreen "
+                    "video driver (SDL: %s). A headless run that PsyCross rasterizes "
+                    "for (the oracle, an -og capture, a headless --record) takes its "
+                    "GL context from EGL with no display server: install libEGL "
+                    "(Mesa), or set SDL_VIDEODRIVER=x11 with a reachable DISPLAY "
+                    "(scripts/lib/xvfb.sh). %s",
+                    SDL_GetError(), openpete_error_ref(OP_E_DISPLAY));
+        return;
+    }
+    OPL_ERROR_F("boot",
+                "PsyCross init failed under SDL video driver '%s' (SDL: %s). No "
+                "display is reachable. Over ssh, export XDG_RUNTIME_DIR and "
+                "WAYLAND_DISPLAY (or DISPLAY) from the login session. %s",
+                drv ? drv : "(SDL's pick)", SDL_GetError(),
+                openpete_error_ref(OP_E_DISPLAY));
+}
+
 /** @brief Boot the EXE, dispatch one recompiled function, check its v0, and exit.
  *
  * Runs instead of the host loop when --test-recomp-call or --test-segv is
@@ -1282,18 +1310,13 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
                                   game_default_window_h(),
                                   /*fullscreen=*/0,
                                   /*startHidden=*/opts->headless ? 1 : 0);
-    /* --headless still opens a GL context: PsyCross rasterizes the OT for the
-     * oracle, so g_psyx_null_gpu stays 0 and SDL_INIT_VIDEO must succeed. A
-     * session with no display reachable fails here. Stopping now names the
+    /* --headless still opens a GL context here (g_psyx_null_gpu stays 0).
+     * headless_gl_probe has already refused a headless run without a usable
+     * EGL; an SDL video init failure returns 0 here. Stopping now names the
      * cause; continuing would crash at the first ResetGraph with a null GL
      * proc and no explanation. */
     if (!psyx_ok) {
-        OPL_ERROR_F("boot",
-                    "PsyCross init failed (SDL: %s). No display is reachable; "
-                    "even --headless needs one, because PsyCross rasterizes "
-                    "for the oracle. Over ssh, export XDG_RUNTIME_DIR and "
-                    "WAYLAND_DISPLAY (or DISPLAY) from the login session. %s",
-                    SDL_GetError(), openpete_error_ref(OP_E_DISPLAY));
+        log_psyx_init_failure(opts);
         return OPENPETE_EXIT_PANIC;
     }
 
@@ -2008,14 +2031,13 @@ static int run_host_init(const openpete_options_t* opts) {
         OPL_INFO_F("devui", "%s", "--devui-open is inert in this run: the "
                    "dev config overlay exists only in a windowed native-vk "
                    "session");
-    /* A headless run that keeps the GL path uses the real GL driver - SDL's
-     * "offscreen" video driver hands back a context with NULL gl* function
-     * pointers, so the first call from GR_InitialisePSX segfaults. A
-     * GPU/display backend (X/Wayland/WSLg/WGL) must therefore be present;
-     * pure-console CI needs Xvfb. The window is created unmapped via
-     * startHidden so it never flashes or steals focus - GL/FBO rendering
-     * works without it ever being shown. Null-GPU mode creates no window or
-     * context. */
+    /* A headless run that keeps the GL path takes its context from the
+     * driver headless_select_video_driver chose before dispatch: SDL's
+     * offscreen driver (surfaceless EGL, no display server) on Linux, the
+     * platform driver on a hidden window on Windows. Every run creates this
+     * window unmapped (startHidden) so it never flashes or steals focus;
+     * GL/FBO rendering works without it ever being shown. Null-GPU mode
+     * creates no window or context. */
     /* PsyCross renders to its FBO only; the native Vulkan window is the
      * display in every mode. What reaches the screen is either the native
      * scene (--renderer vk) or PsyCross's read-back frame (--renderer
@@ -2026,17 +2048,13 @@ static int run_host_init(const openpete_options_t* opts) {
                                   /*startHidden=*/1);
     /* PsyX_Initialise runs SDL_INIT_VIDEO in every mode, and a headless run
      * that keeps the GL path (the oracle: PsyCross rasterizes every OT) opens
-     * a GL context. A session with no display reachable fails here. Stopping
-     * now names the
-     * cause; continuing would crash at the first ResetGraph with a null GL
-     * proc and no explanation. */
+     * a GL context. headless_gl_probe has already refused a headless run
+     * without a usable EGL; an SDL video init failure (no display reachable
+     * by a windowed run) returns 0 here. Stopping now names the cause;
+     * continuing would crash at the first ResetGraph with a null GL proc and
+     * no explanation. */
     if (!psyx_ok) {
-        OPL_ERROR_F("boot",
-                    "PsyCross init failed (SDL: %s). No display is reachable; "
-                    "even --headless needs one, because PsyCross rasterizes "
-                    "for the oracle. Over ssh, export XDG_RUNTIME_DIR and "
-                    "WAYLAND_DISPLAY (or DISPLAY) from the login session. %s",
-                    SDL_GetError(), openpete_error_ref(OP_E_DISPLAY));
+        log_psyx_init_failure(opts);
         openpete_fatal_message(OP_E_DISPLAY, "OpenPete could not start graphics",
                                "No display could be opened.");
         return OPENPETE_EXIT_PANIC;
@@ -2704,6 +2722,89 @@ static void headless_disable_session_bus_autolaunch(bool headless) {
         SDL_setenv_unsafe("DBUS_SESSION_BUS_ADDRESS", "disabled:", 0);
 }
 
+/** @brief Name the SDL video driver a headless run uses, or NULL for SDL's own pick.
+ *
+ * A headless run that opens no GL context (null-GPU PsyCross; the native
+ * renderer is a surfaceless Vulkan device that takes no SDL surface) needs
+ * no window on any platform, so the dummy driver serves it. A run that
+ * keeps the PsyCross GL path needs a context: on Linux and the other
+ * EGL platforms the offscreen driver gives one through surfaceless EGL
+ * with no display server. On Windows and macOS the offscreen driver's
+ * EGL is ANGLE's libEGL, which is not shipped, so SDL's platform driver
+ * (WGL or CGL on a hidden window, which needs no display server) is kept.
+ * @param psyx_gl The run opens PsyCross's GL context.
+ * @return "dummy", "offscreen", or NULL. */
+static const char* headless_video_driver(bool psyx_gl) {
+    if (!psyx_gl) return "dummy";
+#if defined(_WIN32) || defined(__APPLE__)
+    return NULL;
+#else
+    return "offscreen";
+#endif
+}
+
+/** @brief Keep a headless run off the session's display server.
+ *
+ * SDL's Wayland backend connects to $XDG_RUNTIME_DIR/wayland-0 even with
+ * WAYLAND_DISPLAY unset, and its X11 backend to $DISPLAY; a compositor or
+ * server that stops answering blocks SDL_Init(SDL_INIT_VIDEO) with no log
+ * line. The driver headless_video_driver names is set as the
+ * SDL_VIDEO_DRIVER hint at normal priority, so a caller-set
+ * SDL_VIDEO_DRIVER or SDL_VIDEODRIVER environment variable still wins. A
+ * windowed run is left to SDL's pick.
+ * @param headless The run is headless.
+ * @param psyx_gl The run opens PsyCross's GL context. */
+static void headless_select_video_driver(bool headless, bool psyx_gl) {
+    if (!headless) return;
+    const char* want = headless_video_driver(psyx_gl);
+    if (want) SDL_SetHint(SDL_HINT_VIDEO_DRIVER, want);
+    const char* got = SDL_GetHint(SDL_HINT_VIDEO_DRIVER);
+    OPL_INFO_F("boot", "headless video driver: %s%s",
+               got ? got : "(SDL's pick)",
+               got && want && strcmp(got, want) != 0 ? " (set by the caller)" : "");
+}
+
+/** @brief Check that SDL's offscreen driver can load EGL before PsyCross opens its GL context.
+ *
+ * A PsyX_Initialise whose GL context fails tears PsyCross down through
+ * GR_Shutdown, which calls GL entry points that were never loaded, so the
+ * failure would surface as a SIGSEGV instead of a message. Under the
+ * offscreen driver SDL_GL_LoadLibrary loads libEGL, initialises its
+ * surfaceless or default display and chooses a config, which covers the
+ * causes a host without a usable EGL hits. The library and the video
+ * subsystem reference are released again; PsyCross reloads both. Any other
+ * driver passes unchecked.
+ * @param opts The parsed options.
+ * @return true when the run may open the GL context; false after logging
+ *         the cause and the override. */
+static bool headless_gl_probe(const openpete_options_t* opts) {
+    const char* drv = SDL_GetHint(SDL_HINT_VIDEO_DRIVER);
+    if (!opts->headless || !drv || SDL_strcasecmp(drv, "offscreen") != 0) return true;
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+        log_psyx_init_failure(opts);
+        return false;
+    }
+    const bool ok = SDL_GL_LoadLibrary(NULL);
+    if (ok) SDL_GL_UnloadLibrary();
+    else log_psyx_init_failure(opts);
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    return ok;
+}
+
+/** @brief Choose a headless run's video driver and check that it can serve the run.
+ *
+ * The recomp smoke test and every run psycross_raster_unread does not
+ * clear open PsyCross's GL context.
+ * @param opts The parsed options.
+ * @return false after logging the cause when the run's GL context cannot
+ *         be opened; true otherwise. */
+static bool headless_video_setup(const openpete_options_t* opts) {
+    const bool psyx_gl = opts->test_recomp_call_addr != 0 || opts->test_recomp_segv
+                         || !psycross_raster_unread(opts);
+    headless_select_video_driver(opts->headless, psyx_gl);
+    return !psyx_gl || headless_gl_probe(opts);
+}
+
 /** @brief Run the host on main's `sim` hold: the body of openpete_run.
  *
  * @param opts The parsed options.
@@ -2738,6 +2839,12 @@ static int run_on_sim(const openpete_options_t* opts) OP_REQUIRES(sim) {
 
     openpete_psx_install_crash_handler();
 
+    if (!headless_video_setup(opts)) {
+        openpete_fatal_message(OP_E_DISPLAY, "OpenPete could not start graphics",
+                               "No OpenGL context could be opened.");
+        return OPENPETE_EXIT_PANIC;
+    }
+
     /* Smoke test: dispatch one recompiled function and exit before the SDL
      * loop runs. */
     if (opts->test_recomp_call_addr != 0 || opts->test_recomp_segv) {
@@ -2752,12 +2859,6 @@ static int run_on_sim(const openpete_options_t* opts) OP_REQUIRES(sim) {
         return run_split_threaded(opts);
     return run_recomp_fiber(opts);
 #endif
-
-    if (opts->headless) {
-        SDL_setenv_unsafe("SDL_VIDEODRIVER", "offscreen", 0);
-        OPL_INFO_F("boot", "headless mode requested (preferred driver: %s)",
-                   SDL_getenv("SDL_VIDEODRIVER"));
-    }
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         if (opts->headless) {

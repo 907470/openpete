@@ -29,7 +29,7 @@ jq '.' /tmp/log.json | head -20
 | Flag | Effect |
 |---|---|
 | `--disc PATH` | Disc image (BIN/CUE). |
-| `--headless` | No on-screen window (offscreen video driver). |
+| `--headless` | No on-screen window and no display server. A run PsyCross rasterizes for takes its GL context from SDL's offscreen driver (surfaceless EGL; needs libEGL) on Linux and from the platform driver on a hidden window on Windows; any other run uses SDL's dummy driver. A set `SDL_VIDEO_DRIVER` or `SDL_VIDEODRIVER` wins. |
 | `--frame-limit N` | Exit once the feed key reaches N: yields on Spyro 1, VBLs on Spyro 2 and 3. A tick is two VBLs. |
 | `--max-runtime-seconds N` | Wall-clock SIGTERM after N seconds. |
 | `--skip-to-level L` | Boot into level L - numeric id (10 = Artisans, 63 = Gnasty) or `lower_snake_case` name - instead of the attract demo. An unknown name prints the list. |
