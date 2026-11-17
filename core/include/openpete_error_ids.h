@@ -40,7 +40,8 @@ extern "C" {
     X(CARD_OPEN,     "OP-E-CARD-OPEN",     "op-e-card-open")     \
     X(CARD_BAD,      "OP-E-CARD-BAD",      "op-e-card-bad")      \
     X(CARD_READONLY, "OP-E-CARD-READONLY", "op-e-card-readonly") \
-    X(CARD_WRITE,    "OP-E-CARD-WRITE",    "op-e-card-write")
+    X(CARD_WRITE,    "OP-E-CARD-WRITE",    "op-e-card-write")    \
+    X(DISC_BUILD,    "OP-E-DISC-BUILD",    "op-e-disc-build")
 
 #define OPENPETE_ERROR_ENUM_ROW(name, id, anchor) OP_E_##name,
 typedef enum {

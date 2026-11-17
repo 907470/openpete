@@ -418,6 +418,21 @@ int openpete_psx_resolve_disc_bin(const char* disc_path,
 int openpete_psx_read_disc_serial(const char* image_path,
                                   char* out, size_t out_cap);
 
+/** @brief Parse the BOOT line of a SYSTEM.CNF text into the boot executable's path and the release serial.
+ *
+ * The BOOT value is read after optional spaces, an optional "cdrom:" and
+ * leading slashes or backslashes, up to ';', a space or the line end
+ * ("SCUS_942.28"). The serial is that path's last component with '.' and
+ * '_' made '-' and the second '-' dropped ("SCUS-94228").
+ * @param text The NUL-terminated SYSTEM.CNF text.
+ * @param path Receives the path, or NULL.
+ * @param path_cap Capacity of @p path; a path that does not fit fails.
+ * @param serial Receives the serial, or NULL; cut at @p serial_cap - 1.
+ * @param serial_cap Capacity of @p serial.
+ * @return 0 on success; -1 when @p text is NULL or holds no BOOT value. */
+int openpete_psx_parse_boot_line(const char* text, char* path, size_t path_cap,
+                                 char* serial, size_t serial_cap);
+
 /** @brief Report whether interrupts are masked: the kernel's critical-section flag.
  *
  * Set at boot (the kernel enters a critical section before the executable

@@ -126,9 +126,23 @@ Defined in `core/include/openpete.h`.
 | 0 | Clean termination (frame limit, SDL quit). |
 | 1 | Panic, crash, or watchdog timeout. |
 | 2 | State divergence against the golden - the oracle gate's verdict. |
-| 3 | Setup error: unknown flag, disc not found. |
+| 3 | Setup error: unknown flag, disc not found, a disc this game cannot boot (another region's release), or under `OPENPETE_DISC_BUILD_REFUSE=1` any disc build that is not supported. |
 | 64 | The card guard refused a card path in the per-user card directory (`OPENPETE_CARD_GUARD`); a gate harness's SKIP. |
 | 66 | The sandbox guard refused a write path outside the `OPENPETE_SANDBOX` root (`core/include/openpete_paths.h`). |
+
+## Disc builds
+
+At boot, before the game's code is attached, the disc's SYSTEM.CNF serial
+and the SHA-256 of the boot executable it names are classified against the
+known builds (`core/psx/disc_build.c`) and logged as a `disc` line:
+`build of PATH: supported|recognised|unknown|unreadable (serial, region,
+boot, exe sha256)`. A disc whose boot executable is not the one the game
+boots is refused (exit 3, `OP-E-DISC-BUILD`). Another build of a supported
+serial logs a warning, holds a toast for 30 s, and boots. A gate or corpus
+run sets `OPENPETE_DISC_BUILD_REFUSE=1` to refuse every build that is not
+supported, so a run is never measured on another build.
+`tests/unit/disc_build_test` covers the classifier; with
+`OPENPETE_DISC_BUILD_REAL=1` it also classifies the three checkouts' discs.
 
 ## The sandbox
 

@@ -2273,6 +2273,12 @@ static const knob_desc_t g_builtin_debug[] = {
         "per-user card directory or the cards directory beside the "
         "executable. For automated runs, which must not touch a "
         "player's cards. Read at launch."),
+    ENVROW_LATCHED("DISC_BUILD_REFUSE", "Debug", "0",
+        "1 = refuse to start, exit 3 with the disc's message, when the "
+        "disc's boot executable is not a supported build (another "
+        "revision, region or a modified image). 0 warns and boots. For "
+        "automated runs, which must run only the supported discs. Read at "
+        "launch."),
     ENVROW_LATCHED("SANDBOX", "Debug", "",
         "Directory every file the run writes goes under: config, state and "
         "data resolve to <root>/config, <root>/state and <root>/data on "

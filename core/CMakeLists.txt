@@ -148,6 +148,8 @@ add_library(openpete_core STATIC
     psx/cdrom_mmio.c
     psx/disc_cache.c
     psx/disc_image.c
+    psx/disc_build.c
+    psx/disc_build_boot.c
     psx/exe_loader.cpp
     psx/psx_region.c
     psx/vstream.c

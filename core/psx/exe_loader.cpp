@@ -231,6 +231,73 @@ extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                           out_size);
 }
 
+namespace {
+
+/** @brief Locate the BOOT value of a SYSTEM.CNF text.
+ *
+ * The value starts after the '=', optional spaces, an optional "cdrom:" and
+ * leading slashes or backslashes, and ends at ';', a space or the line end,
+ * which tolerates the spacing and slash variations real images use: the
+ * line `BOOT = cdrom:/SCUS_942.28;1` gives `SCUS_942.28`.
+ * @param text The NUL-terminated text.
+ * @param len Receives the value's length; 0 when there is none.
+ * @return The value's first character, or nullptr when the text has no BOOT key. */
+const char* boot_value(const char* text, size_t* len) {
+    *len = 0;
+    const char* boot = std::strstr(text, "BOOT");
+    const char* eq = boot ? std::strchr(boot, '=') : nullptr;
+    if (!eq) return nullptr;
+    const char* p = eq + 1 + std::strspn(eq + 1, " \t");
+    if (!std::strncmp(p, "cdrom:", 6)) p += 6;
+    p += std::strspn(p, "\\/");
+    *len = std::strcspn(p, "; \t\r\n");
+    return p;
+}
+
+/** @brief Write the release serial a boot path names.
+ *
+ * The serial is the path's last component with '.' and '_' made '-' and the
+ * second '-' dropped, since the dot inside the numeric half is 8.3 padding:
+ * `SCUS_942.28` gives `SCUS-94228`.
+ * @param path The boot path.
+ * @param n Its length.
+ * @param serial Receives the serial, cut at @p cap - 1.
+ * @param cap Capacity of @p serial; at least 1. */
+void serial_of_boot_path(const char* path, size_t n, char* serial, size_t cap) {
+    size_t start = 0;
+    for (size_t i = 0; i < n; i++)
+        if (path[i] == '\\' || path[i] == '/') start = i + 1;
+    size_t o = 0;
+    for (size_t i = start; i < n && o + 1 < cap; i++)
+        serial[o++] = (path[i] == '.' || path[i] == '_') ? '-' : path[i];
+    serial[o] = '\0';
+    char* second = std::strchr(serial, '-');
+    char* third = second ? std::strchr(second + 1, '-') : nullptr;
+    if (third) std::memmove(third, third + 1, std::strlen(third));
+}
+
+}  // namespace
+
+/* BOOT line of a SYSTEM.CNF text; see openpete_psx.h. */
+extern "C" int openpete_psx_parse_boot_line(const char* text, char* path, size_t path_cap,
+                                            char* serial, size_t serial_cap) {
+    if (path && path_cap) path[0] = '\0';
+    if (serial && serial_cap) serial[0] = '\0';
+    size_t n = 0;
+    const char* p = text ? boot_value(text, &n) : nullptr;
+    if (!p || n == 0) return -1;
+    if (path && path_cap) {
+        if (n + 1 > path_cap) return -1;
+        std::memcpy(path, p, n);
+        path[n] = '\0';
+    }
+    if (serial && serial_cap) {
+        serial_of_boot_path(p, n, serial, serial_cap);
+        if (!serial[0]) return -1;
+    }
+    return 0;
+}
+
 /* Serial from SYSTEM.CNF's BOOT line; see openpete_psx.h. */
 extern "C" int openpete_psx_read_disc_serial(const char* image_path,
                                              char* out, size_t out_cap) {
@@ -251,33 +318,8 @@ extern "C" int openpete_psx_read_disc_serial(const char* image_path,
     disc_image_close(img);
     if (got != entry.size)
         return -1;
-    const char* text = reinterpret_cast<const char*>(buf.data());
-
-    /* BOOT = cdrom:\SCUS_942.28;1  ->  SCUS-94228. Tolerant of the spacing
-     * and slash direction variations real images use. */
-    const char* boot = strstr(text, "BOOT");
-    if (!boot) return -1;
-    const char* eq = strchr(boot, '=');
-    if (!eq) return -1;
-    const char* p = eq + 1;
-    while (*p == ' ' || *p == '\t') p++;
-    if (!strncmp(p, "cdrom:", 6)) p += 6;
-    while (*p == '\\' || *p == '/') p++;
-
-    size_t o = 0;
-    for (; *p && *p != ';' && *p != '\r' && *p != '\n' && o + 1 < out_cap; p++) {
-        if (*p == '.' || *p == '_') { out[o++] = '-'; continue; }
-        out[o++] = *p;
-    }
-    out[o] = '\0';
-    /* "SCUS-942-28" -> "SCUS-94228": the dot inside the numeric half is
-     * 8.3 padding, not part of the serial. */
-    char* second = strchr(out, '-');
-    if (second) {
-        char* third = strchr(second + 1, '-');
-        if (third) memmove(third, third + 1, strlen(third));
-    }
-    return out[0] ? 0 : -1;
+    return openpete_psx_parse_boot_line(reinterpret_cast<const char*>(buf.data()), nullptr, 0,
+                                        out, out_cap);
 }
 
 /** @brief Read a whole host file into a malloc'd buffer.

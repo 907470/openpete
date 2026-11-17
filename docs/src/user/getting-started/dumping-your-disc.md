@@ -66,3 +66,26 @@ from it, it is removed again with an
     ([OP-E-WRONG-DISC](../help/troubleshooting.md#op-e-wrong-disc)).
     Modified images with the right serial are not the image OpenPete's port
     is built and tested against.
+
+## Unsupported discs
+
+Each game's code is built from the game program on one disc: the NTSC-U
+release, version 1.0. At every start OpenPete reads the disc's serial and
+the game program its `SYSTEM.CNF` names, and compares the program's SHA-256
+with the one it is built from. The `.bin` hash does not decide: two dumps of
+the same disc can differ outside the game program.
+
+| Disc | What OpenPete does |
+| --- | --- |
+| Spyro the Dragon SCUS-94228, Spyro 2: Ripto's Rage! SCUS-94425, Spyro: Year of the Dragon SCUS-94467 version 1.0 | Starts. |
+| A PAL release (serials SCES-01438, SCES-02104, SCES-02835) or an NTSC-J release (SCPS-10085, SCPS-10083, SCPS-45395, SCPS-10128) | Does not start. The message names the release and the NTSC-U release to use instead. |
+| An image whose `SYSTEM.CNF` names another program (such as `PSX.EXE`), or has no usable `SYSTEM.CNF` | Starts after a warning when the image holds the game's own program file (`SCUS_942.28`, `SCUS_944.25` or `SCUS_944.67`); otherwise does not start. An image whose program is the supported one under another name starts without a warning. |
+| Spyro: Year of the Dragon revision 1.1 (same serial SCUS-94467; its `.bin` SHA-1 is `81eae747fbd9b2ff75ae5b3e24287bb25fcb516a`, where version 1.0's is the one on [Spyro 3](../games/spyro-3.md#disc)), or any image whose game program differs from version 1.0 | Starts after a warning naming the revision, and is expected to crash. |
+
+When the game starts from a disc that is not the supported build, the
+log `openpete.log` gets a warning naming the disc's serial, its game program
+and that program's SHA-256, and the screen shows the notification
+**UNSUPPORTED DISC** for 30 seconds. With notifications off
+([Display](../graphics/display.md)) only the log line is written. A disc
+that cannot run at all is refused at the start with
+[OP-E-DISC-BUILD](../help/troubleshooting.md#op-e-disc-build).

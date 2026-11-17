@@ -22,7 +22,7 @@ hashes of the `.bin`:
 | SHA-1 | `9df489e2420988494691c9193fe74dec4b1dbfcd` |
 | MD5 | `edd092fecba64c7a79d4412d3b38eba1` |
 
-Other versions of the disc with the same serial are untested. The
+Revision 1.1 of the disc has the same serial and another game program; OpenPete warns at its start that it is not supported and is expected to crash ([Unsupported discs](../getting-started/dumping-your-disc.md#unsupported-discs)). The
 [library](../help/glossary.md#library) names an image with the SHA-256 above
 "Spyro: Year of the Dragon (NTSC-U, v1.0)"; any other image is listed under
 its file name. Drag the image onto the window, or pass it on the command line, as

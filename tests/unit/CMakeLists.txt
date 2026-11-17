@@ -1028,6 +1028,38 @@ endif()
 set_target_properties(disc_image_test PROPERTIES C_STANDARD 11 CXX_STANDARD 20)
 add_test(NAME disc_image_test COMMAND disc_image_test)
 
+# disc_build_test - disc build classification: synthetic SYSTEM.CNF texts and
+# executables into every class and warning (the decomp checkouts' PSX.EXE
+# files stand in for the supported executables), the BOOT-line parser, the
+# player message and toast texts, and the image reader and the boot check
+# on written raw images. OPENPETE_DISC_BUILD_REAL=1 adds the three
+# checkouts' discs with the time of each read.
+add_executable(disc_build_test
+    disc_build_test.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_build.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_build_boot.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_cache.c
+    ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
+    ${CMAKE_SOURCE_DIR}/core/host/sha256.c
+    ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
+    ${CMAKE_SOURCE_DIR}/core/diag/error_ids.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c)
+target_include_directories(disc_build_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt
+    ${CMAKE_SOURCE_DIR}/core/host
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include)
+target_compile_definitions(disc_build_test PRIVATE
+    OPENPETE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(disc_build_test PRIVATE SDL3::SDL3-static)
+if(WIN32)
+    target_link_libraries(disc_build_test PRIVATE winmm)
+endif()
+set_target_properties(disc_build_test PROPERTIES C_STANDARD 11 CXX_STANDARD 20)
+add_test(NAME disc_build_test COMMAND disc_build_test)
+
 # sfx_smpl_walk_test - the WAV smpl chunk walk ends on a chunk that runs past
 # the file and refuses loop points outside int range. The test TU includes
 # sfx_pack.c with stubs for PsyCross, the mod registry and paths.

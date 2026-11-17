@@ -8,6 +8,7 @@
 #include "openpete.h"
 #include "openpete_fatal.h"
 #include "openpete_config.h"
+#include "openpete_disc_build.h"
 #include "openpete_identify.h"
 #include "openpete_log.h"
 #include "openpete_boot_timing.h"
@@ -220,6 +221,11 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     rc = openpete_options_require_exe_source(opts);
     if (rc != OPENPETE_EXIT_OK)
         return fatal_start(rc, OP_E_NO_DISC, "No game disc image was found.");
+    /* The disc's build, before the game's code is attached: a disc this
+     * game cannot boot is refused with its message, another build is
+     * warned about and boots. */
+    if (!opts->exe_path && openpete_disc_build_boot_check(opts->disc_path, game_get_exe_filename()) != 0)
+        return OPENPETE_EXIT_SETUP_ERROR;
 
     /* The mod layer, once, at identification: before the compile-on-boot
      * pass below and the load inside openpete_run(). */
