@@ -30,6 +30,15 @@ enum { CYC_FACES_SPYRO1 = 0, CYC_FACES_SPYRO3 = 1 };
  * the pre-pass offered. TERRAIN_SECTOR_CULL_SPHERE: the sphere-frustum test at
  * environment.s:800224E0-80022548. */
 enum { TERRAIN_SECTOR_CULL_NONE = 0, TERRAIN_SECTOR_CULL_SPHERE = 1 };
+
+/* The arena the world draw's sector lists sit in (terrain.hp_list_arena).
+ * TERRAIN_LIST_ARENA_NONE: not located. TERRAIN_LIST_ARENA_SONY_IMAGE: the
+ * static scratch pool at the runtime's image base
+ * (psx_runtime_g_sony_image_base). TERRAIN_LIST_ARENA_POLYBUF_CARVE: the
+ * draw scratch carved below the primitive buffer's end,
+ * `*polybuf.end - polybuf.scratch`, read when the world draw returns. */
+enum { TERRAIN_LIST_ARENA_NONE = 0, TERRAIN_LIST_ARENA_SONY_IMAGE = 1,
+       TERRAIN_LIST_ARENA_POLYBUF_CARVE = 2 };
 /* Where the moby-shadow draw finds the base of the drawn-moby list, and which
  * screen-extent rejection it applies before emitting a fan. */
 enum { SHADOW_LIST_ADDR = 0, SHADOW_LIST_GTE_DATA = 1 };
@@ -567,6 +576,14 @@ typedef struct game_layout {
          * clamp(2 * (SZ - 0x1000), 0, 0xFFF), with no NCLIP. 0 on a game
          * without that walk. */
         uint32_t second_pass_flag;
+        /* Where the world draw's binning writes its HP sector lists, read by
+         * the OPENPETE_TERRAIN_BINCHECK instrument. `hp_list_arena` is a
+         * TERRAIN_LIST_ARENA_* value naming the arena the lists sit in;
+         * `hp_list_off` are the offsets of the lists inside it, each a
+         * NULL-terminated array of `sector|bits` words, 0 = unused slot. A
+         * sector the draw lists HP sits in one of them. */
+        int      hp_list_arena;
+        uint32_t hp_list_off[2];
         int      sector_cull;
         /* The LP walk's per-vertex near outcode. A sector the binning lists
          * with view-Z minus radius at or below `lp_near_band` carries the

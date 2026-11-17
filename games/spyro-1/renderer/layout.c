@@ -260,6 +260,8 @@ const game_layout_t spyro1_game_layout = {
         .hp_far_tight  = 0,
         .tight_flags   = 0u,
         .second_pass_flag = 0u,  /* no second semi-transparent walk */
+        .hp_list_arena = TERRAIN_LIST_ARENA_SONY_IMAGE,  /* r_environment.s 800259B4: D_8006FCF4 */
+        .hp_list_off   = { 0x1C00u, 0u },                /* 800259BC: t7 = +0x1C00, the HP list */
         .sector_cull   = TERRAIN_SECTOR_CULL_NONE,
         .near_band       = 0x2000,
         .near_corner     = 0x140,

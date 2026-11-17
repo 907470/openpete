@@ -348,6 +348,9 @@ const game_layout_t spyro3_game_layout = {
         .hp_far_tight  = 0x600,                     /* 800225F8/800225FC: addi -0x100 then -0x500 */
         .tight_flags   = 0x5000u,                   /* 800225F0: andi 0x5000 */
         .second_pass_flag = 0x1000u,                /* 800225F0-80022610 lists it at +0x2200; 80023C00-80024480 draws it */
+        .hp_list_arena = TERRAIN_LIST_ARENA_POLYBUF_CARVE,  /* environment.s 800223B0-800223C0: *end - 0x3000 */
+        .hp_list_off   = { 0x2000u, 0x2200u },          /* 80022454-8002245C: t7 = +0x2000 (HP walk), s1 =
+                                                         * +0x2200 (second walk); +0x2A00 is the LP list */
         /* The LP near outcode, the Spyro 2 rule. */
         .lp_near_band    = 0x760,                   /* 800225C0-800225D0: vz - r - 0x760 <= 0
                                                      * sets entry bit 1 */

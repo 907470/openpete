@@ -16736,17 +16736,97 @@ static int tn_snap_face_keep(const tn_wctx* W, const lvert* sv, const tsface_t* 
     return tn_snap_face_hit(W->snapmask, sv, F);
 }
 
+/* OPENPETE_TERRAIN_BINCHECK's copy of the world draw's HP lists, taken when
+ * the draw returns (tn_bincheck_snapshot): the members, the frame it was
+ * taken on, and the reason no verdict can be read from it (NULL = usable). */
+#define TN_BC_LIST_MAX 192
+static uint32_t    s_bc_list[2 * TN_BC_LIST_MAX];
+static int         s_bc_n;
+static unsigned    s_bc_frame = ~0u;
+static const char* s_bc_refuse = "no world draw ran in the window";
+
+/** @brief Returns whether the OPENPETE_TERRAIN_BINCHECK window holds this frame.
+ * @return 1 on the two frames from the requested one (not under --no-lod), else 0. */
+static int tn_bincheck_window(void) {
+    static int s_binchk = -2;
+    ENV_INT_LATCH(s_binchk, "OPENPETE_TERRAIN_BINCHECK", 0);
+    return s_binchk && openpete_frame >= (unsigned)s_binchk &&
+           openpete_frame < (unsigned)s_binchk + 2u && !openpete_no_lod;
+}
+
+/** @brief Returns the arena the world draw writes its sector lists into, read before the draw runs.
+ *
+ * terrain.hp_list_arena names it: the static scratch pool at the runtime's
+ * image base, or the draw scratch carved below the primitive buffer's end
+ * (`*polybuf.end - polybuf.scratch`, the address the draw itself computes
+ * on entry).
+ * @param cpu The guest CPU state, read only.
+ * @return The arena's guest address, 0 when the layout locates none or the BINCHECK window is closed. */
+static uint32_t tn_bincheck_arena(CPUState* cpu) {
+    if (!tn_bincheck_window()) return 0;
+    extern uint32_t psx_runtime_g_sony_image_base;
+    switch (game_layout.terrain.hp_list_arena) {
+    case TERRAIN_LIST_ARENA_SONY_IMAGE:
+        return psx_runtime_g_sony_image_base;
+    case TERRAIN_LIST_ARENA_POLYBUF_CARVE:
+        if (!game_layout.polybuf.end || !game_layout.polybuf.scratch) return 0;
+        return cpu->read_word(game_layout.polybuf.end) - game_layout.polybuf.scratch;
+    default:
+        return 0;
+    }
+}
+
+/** @brief Copies the world draw's HP lists out of its arena once the draw has returned.
+ *
+ * Each list at terrain.hp_list_off is a NULL-terminated array of
+ * `sector|bits` words; the HP walk reads its list without overwriting it
+ * (its subdivide lists sit past it). Every member must name a sector of the
+ * environment's sector table, else the read is refused: an address the
+ * layout misplaces reads words that name no sector, or none at all. An
+ * empty union is refused as well, since it cannot be told from a misplaced
+ * list.
+ * @param cpu The guest CPU state, read only.
+ * @param arena The arena tn_bincheck_arena read before the draw, 0 for none. */
+static void tn_bincheck_snapshot(CPUState* cpu, uint32_t arena) {
+    if (!tn_bincheck_window()) return;
+    s_bc_frame = openpete_frame; s_bc_n = 0; s_bc_refuse = NULL;
+    int foreign = 0;
+    if (arena) {
+        const uint32_t tab = tenv_rd(cpu, game_layout.env.sector_ptr);
+        uint32_t cnt = tenv_rd(cpu, game_layout.env.sector_count);
+        if (cnt > 4096u) cnt = 4096u;
+        for (int l = 0; l < 2; l++) {
+            const uint32_t off = game_layout.terrain.hp_list_off[l];
+            for (int k = 0; off && k < TN_BC_LIST_MAX; k++) {
+                const uint32_t e = cpu->read_word(arena + off + (uint32_t)k * 4u) & ~3u;
+                if (!e) break;
+                int known = 0;
+                for (uint32_t i = 0; i < cnt && !known; i++) known = rd(cpu, tab + i * 4u) == e;
+                foreign += !known;
+                s_bc_list[s_bc_n++] = e;
+            }
+        }
+    }
+    if (!arena) s_bc_refuse = "the layout locates no list arena";
+    else if (foreign) s_bc_refuse = "a list member names no sector";
+    else if (!s_bc_n) s_bc_refuse = "the lists are empty";
+    fprintf(stderr, "[bincheck-hdr] frame=%u arena=%08X hpList=%d%s%s\n", openpete_frame,
+            (unsigned)arena, s_bc_n, s_bc_refuse ? " VACUOUS: " : "", s_bc_refuse ? s_bc_refuse : "");
+}
+
 /** @brief Print the sector-bin verdict against the game's own HP list under OPENPETE_TERRAIN_BINCHECK=<frame>.
  *
- * The HP list is decoded from the render arena after this tick's
- * func_800258F0 ran: arena+0x1C00, `ptr|bits` entries, NULL-terminated; it
- * survives the call, while the LP list (+0x2000) is clobbered by the HP
- * walk's subdivide lists, so LP membership is attested by the face-set join
- * instead. The compare is scoped by the pre-pass's surviving
- * frustum-visible byte map (arena+0x44D4, D_800771C8-D_8006FCF4, 0xFF =
- * passed): native deliberately draws sectors the .s frustum-culls (GPU
- * clips). Expected: native drawHP equals HP-list membership for every
- * frustum-visible sector. Runs on the two presents from that frame, not
+ * The HP list membership is the copy tn_bincheck_snapshot took when this
+ * frame's world draw returned (terrain.hp_list_arena, terrain.hp_list_off;
+ * Spyro 1 arena+0x1C00 after func_800258F0, Spyro 2 and 3 the HP walk's
+ * +0x2000 list and the second walk's +0x2200 list). The LP list is
+ * clobbered by the HP walk's subdivide lists on Spyro 1, so LP membership is
+ * attested by the face-set join instead. The compare is scoped by the
+ * pre-pass's frustum-visible byte map (tvis_visible, 0xFF = passed): native
+ * deliberately draws sectors the .s frustum-culls (GPU clips). Expected:
+ * native drawHP equals HP-list membership for every frustum-visible sector.
+ * No verdict is printed when the snapshot is missing or refused (its header
+ * line names the reason). Runs on the two presents from that frame, not
  * under --no-lod.
  * @param cpu The guest CPU state, read only.
  * @param s The sector record's guest address.
@@ -16757,25 +16837,10 @@ static int tn_snap_face_keep(const tn_wctx* W, const lvert* sv, const tsface_t* 
  * @param radius The sector radius. */
 static void tn_bincheck(CPUState* cpu, uint32_t s, uint32_t i, int drawHP, int flags,
                         double cbin, int radius) {
-    static int s_binchk = -2;
-    ENV_INT_LATCH(s_binchk, "OPENPETE_TERRAIN_BINCHECK", 0);
-    if (!s_binchk || openpete_frame < (unsigned)s_binchk ||
-        openpete_frame >= (unsigned)s_binchk + 2u || openpete_no_lod) return;
-    extern uint32_t psx_runtime_g_sony_image_base;
-    uint32_t B = psx_runtime_g_sony_image_base;
-    static uint32_t hp_list[192]; static int hp_n = -1;
-    static unsigned hp_frame;
-    if (hp_frame != openpete_frame || hp_n < 0) {
-        hp_frame = openpete_frame; hp_n = 0;
-        for (int k = 0; k < 192; k++) {
-            uint32_t e2 = rd(cpu, B + 0x1C00u + (uint32_t)k * 4);
-            if (!e2) break;
-            hp_list[hp_n++] = e2 & ~3u;
-        }
-        fprintf(stderr, "[bincheck-hdr] frame=%u hpList=%d\n", openpete_frame, hp_n);
-    }
+    if (!tn_bincheck_window()) return;
+    if (s_bc_frame != openpete_frame || s_bc_refuse) return;
     int inHP = 0;
-    for (int k = 0; k < hp_n; k++) if (hp_list[k] == s) { inHP = 1; break; }
+    for (int k = 0; k < s_bc_n; k++) if (s_bc_list[k] == s) { inHP = 1; break; }
     int vis = tvis_visible(cpu, i);
     fprintf(stderr, "[bincheck] s=%u nativeHP=%d listHP=%d vis=%d flags=%04X "
             "cbin=%.1f rad=%d%s\n",
@@ -22494,12 +22559,14 @@ static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
     }
     uint32_t startp = cpu->read_word(game_layout.polybuf.cursor);
     terrain_visibility_capture_arm();
+    const uint32_t bcArena = tn_bincheck_arena(cpu);
     { OP_PROF_FLAGS_ACCUM_SCOPE("terrain.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);
       /* The game's own world draw, by address through the module's dispatch
        * table (the raw recompiled entry, not the override chain), so the
        * verdicts it writes are intact. */
       openpete_recomp_module_get()->dispatch(cpu, game_layout.hooks.world_draw); }
     s_vis_arm = 0;
+    tn_bincheck_snapshot(cpu, bcArena);
     if (s_lodpoke >= 0)
         cpu->write_word(game_layout.env.lod_dist, lodsave);
     uint32_t endp = cpu->read_word(game_layout.polybuf.cursor);
