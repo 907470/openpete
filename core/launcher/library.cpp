@@ -17,6 +17,7 @@
 
 #include "openpete_atomic_file.h"
 #include "openpete_build_id.h"
+#include "openpete_disc_build.h"
 #include "openpete.h"          /* OPENPETE_EXIT_* */
 #include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
@@ -127,31 +128,6 @@ bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]
     return read_ok && out.good();
 }
 
-/** @brief Writes an entry's meta.toml with its label, source, hash, last-played time and game.
- *
- * Replaces the file atomically (synced); a failed write is logged by the
- * helper and leaves the previous file whole. String values are written
- * between double quotes without escaping. An empty game writes no game
- * line.
- * @param entry The library entry's directory.
- * @param label The display name.
- * @param source The file name the image was ingested from.
- * @param sha The disc's SHA-256 in hex.
- * @param last_played The last boot time in seconds since the Unix epoch.
- * @param game The registered game id the image's serial names, or "". */
-void write_meta(const fs::path& entry, const std::string& label,
-                const std::string& source, const std::string& sha,
-                long long last_played, const std::string& game) {
-    std::ostringstream f;
-    f << "label = \"" << label << "\"\n"
-      << "source = \"" << source << "\"\n"
-      << "sha256 = \"" << sha << "\"\n"
-      << "last_played = " << last_played << "\n";
-    if (!game.empty()) f << "game = \"" << game << "\"\n";
-    const std::string text = f.str();
-    (void)op_atomic_write_file((entry / "meta.toml").string().c_str(), text.data(), text.size());
-}
-
 struct Meta {
     fs::path dir;
     std::string label;
@@ -159,8 +135,29 @@ struct Meta {
     std::string sha;
     std::string game;   /* registered game id; "" = unidentified */
     long long last_played = 0;
+    std::string build;  /* the disc's build class (openpete_disc_build_class_name); "" = not yet classified */
+    bool build_warned = false;   /* the player was shown the unsupported-build warning */
     bool failed = false;   /* the entry holds a failed-build marker, of any build */
 };
+
+/** @brief Write a library entry's meta.toml from its fields, replacing the file atomically.
+ *
+ * Lines label, source, sha256, last_played, and game, disc_build and
+ * disc_build_warned when set.
+ * @param m The entry; m.dir names its directory. */
+void write_meta(const Meta& m) {
+    std::ostringstream f;
+    f << "label = \"" << m.label << "\"\n"
+      << "source = \"" << m.source << "\"\n"
+      << "sha256 = \"" << m.sha << "\"\n"
+      << "last_played = " << m.last_played << "\n";
+    if (!m.game.empty()) f << "game = \"" << m.game << "\"\n";
+    if (!m.build.empty()) f << "disc_build = \"" << m.build << "\"\n";
+    if (m.build_warned) f << "disc_build_warned = 1\n";
+    const std::string text = f.str();
+    (void)op_atomic_write_file((m.dir / "meta.toml").string().c_str(), text.data(), text.size());
+}
+
 
 /** @brief Report whether an entry owns its game's box ahead of another: one that built ahead of a failed one, then the more recently played.
  *
@@ -192,9 +189,10 @@ fs::path marker_path(const char* entry_dir) { return fs::path(entry_dir) / "buil
 
 /** @brief Loads a library entry's meta.toml into a Meta, and whether the entry holds a failed-build marker.
  *
- * Recognizes the lines label, source, sha256, game (`key = "value"`, the
- * value taken as the text after the opening quote minus the last character)
- * and last_played (parsed with atoll). Other lines are ignored, and a field
+ * Recognizes the lines label, source, sha256, game, disc_build
+ * (`key = "value"`, the value taken as the text after the opening quote
+ * minus the last character), last_played (parsed with atoll) and
+ * disc_build_warned (1 when set). Other lines are ignored, and a field
  * with no line keeps its default.
  * @param entry The library entry's directory.
  * @param m Receives the fields; dir is set once meta.toml has opened.
@@ -206,10 +204,12 @@ bool read_meta(const fs::path& entry, Meta& m) {
     static const struct { const char* key; std::string Meta::*field; } k_str[] = {
         {"label = \"", &Meta::label}, {"source = \"", &Meta::source},
         {"sha256 = \"", &Meta::sha}, {"game = \"", &Meta::game},
+        {"disc_build = \"", &Meta::build},
     };
     std::string line;
     while (std::getline(f, line)) {
         if (line.rfind("last_played = ", 0) == 0) m.last_played = atoll(line.c_str() + 14);
+        if (line == "disc_build_warned = 1") m.build_warned = true;
         for (const auto& k : k_str) {
             const size_t n = strlen(k.key);
             if (line.size() > n && line.rfind(k.key, 0) == 0)
@@ -234,9 +234,56 @@ void record_game(Meta& m) {
     std::string g = game_of_image(m.dir / "disc.cue");
     if (g.empty()) return;
     m.game = g;
-    write_meta(m.dir, m.label, m.source, m.sha, m.last_played, m.game);
+    write_meta(m);
     OPL_INFO_F("library", "entry %s recorded as %s",
                m.dir.filename().string().c_str(), m.game.c_str());
+}
+
+/** @brief Records the build class of an entry that has none, from its image (openpete_disc_build_identify).
+ *
+ * An entry ingested before entries recorded their build is classified at its
+ * first read in the library scan, as record_game does for the game; an image
+ * that cannot be opened is left unclassified.
+ * @param m The entry; its build is set when recorded. */
+void record_build(Meta& m) {
+    if (!m.build.empty()) return;
+    openpete_disc_build_t b;
+    if (openpete_disc_build_identify((m.dir / "disc.cue").string().c_str(), &b) != 0) return;
+    m.build = openpete_disc_build_class_name(b.cls);
+    write_meta(m);
+    OPL_INFO_F("library", "entry %s: disc build %s (serial %s, exe sha256 %s)",
+               m.dir.filename().string().c_str(), m.build.c_str(), b.serial, b.exe_sha256);
+}
+
+/** @brief Report whether an entry's recorded build is one OpenPete does not support.
+ *
+ * @param m The entry.
+ * @return true for a recorded class other than supported. */
+bool build_unsupported(const Meta& m) {
+    return !m.build.empty() && m.build != openpete_disc_build_class_name(OPENPETE_DISC_BUILD_SUPPORTED);
+}
+
+/** @brief Tell the player an entry's disc is not a supported build, and record that they were told.
+ *
+ * The message (openpete_disc_build_message) goes to stderr, which a
+ * command-line --ingest prints, to the log with the OP-E-DISC-BUILD
+ * reference, and with screens to the game page's panel as a warning: the
+ * entry stays in the library and boots. An entry with a supported or
+ * unrecorded build is left alone.
+ * @param m The entry; build_warned is set and meta.toml rewritten.
+ * @param screens Whether screens show. */
+void warn_build(Meta& m, bool screens) {
+    if (!build_unsupported(m)) return;
+    openpete_disc_build_t b;
+    if (openpete_disc_build_identify((m.dir / "disc.cue").string().c_str(), &b) != 0) return;
+    char msg[1024];
+    openpete_disc_build_message(&b, 0, msg, sizeof msg);
+    std::fprintf(stderr, "openpete: %s: %s %s\n", m.label.c_str(), msg, openpete_error_ref(OP_E_DISC_BUILD));
+    OPL_WARN_F("library", "entry %s: %s %s", m.dir.filename().string().c_str(), msg,
+               openpete_error_ref(OP_E_DISC_BUILD));
+    if (screens) launcher_panel_raise(OP_E_DISC_BUILD, msg, false);
+    m.build_warned = true;
+    write_meta(m);
 }
 
 /** @brief Writes a library entry's disc.cue, the file the runtime boots.
@@ -308,8 +355,10 @@ int boot_entry(openpete_options_t* opts, Meta& m,
     std::snprintf(s_entry_dir, sizeof s_entry_dir, "%s", m.dir.string().c_str());
     opts->disc_path = s_disc_path;
     entry_module_path(s_entry_dir, module_path_out, module_path_cap);
-    if (entry_is_ours(m))
-        write_meta(m.dir, m.label, m.source, m.sha, (long long)time(nullptr), m.game);
+    if (entry_is_ours(m)) {
+        m.last_played = (long long)time(nullptr);
+        write_meta(m);
+    }
     std::snprintf(s_selected_game, sizeof s_selected_game, "%s", m.game.c_str());
     s_booted = 1;
     OPL_INFO_F("library", "booting library entry %s (%s, %s)",
@@ -370,7 +419,9 @@ void refuse(const char* given, int err, bool before_copy, const std::string& why
 
 /** @brief Identify an image before any copy: read it, its SYSTEM.CNF serial and the game the serial names, and refuse an unreadable image, a disc no game claims, a game this executable cannot run, and a game the library already holds a working disc of.
  *
- * The game must be linked and, while the launcher names no game, have a box
+ * A disc no game claims (no SYSTEM.CNF serial, or one no game registers: a
+ * PAL or NTSC-J release, another program) is refused with its disc build's
+ * message (openpete_disc_build_message) under OP-E-DISC-BUILD. The game must be linked and, while the launcher names no game, have a box
  * on the game page (its first-boot inputs staged); a launcher naming a game
  * takes only that game's disc. A refusal is recorded (refuse).
  * @param given The image path from --ingest or a drop, for the messages.
@@ -386,15 +437,16 @@ bool identify(const char* given, const fs::path& bin) {
         return false;
     }
     char serial[32] = {};
-    if (openpete_psx_read_disc_serial(bin.string().c_str(), serial, sizeof serial) != 0) {
-        refuse(given, OP_E_DISC_READ, true, "the image holds no PlayStation SYSTEM.CNF serial",
-               file + " is not a PlayStation game disc: it holds no SYSTEM.CNF.");
-        return false;
-    }
-    const char* game = openpete_game_for_serial(serial);
+    const bool has_serial = openpete_psx_read_disc_serial(bin.string().c_str(), serial, sizeof serial) == 0;
+    const char* game = has_serial ? openpete_game_for_serial(serial) : nullptr;
     if (!game) {
-        refuse(given, OP_E_WRONG_DISC, true, std::string("serial ") + serial + " names no game",
-               file + " (serial " + serial + ") is not a disc of a game OpenPete runs.");
+        /* No game's code can run this disc: the build's own message says why
+         * (a PAL or NTSC-J release, another program, no SYSTEM.CNF). */
+        openpete_disc_build_t b;
+        (void)openpete_disc_build_identify(bin.string().c_str(), &b);
+        char msg[1024];
+        openpete_disc_build_message(&b, 1, msg, sizeof msg);
+        refuse(given, OP_E_DISC_BUILD, true, msg, file + ":\n" + msg);
         return false;
     }
     const openpete_launcher_game* own = launcher_game();
@@ -493,10 +545,15 @@ bool ingest(const char* given, fs::path& entry, bool& added) {
         return false;
     }
     write_cue(entry);
-    const std::string label = label_for(sha, bin);
-    write_meta(entry, label, bin.filename().string(), sha,
-               (long long)time(nullptr), game_of_image(entry / "disc.cue"));
-    std::fprintf(stderr, "[library] added %s (%s)\n", label.c_str(), sha);
+    Meta m;
+    m.dir = entry;
+    m.label = label_for(sha, bin);
+    m.source = bin.filename().string();
+    m.sha = sha;
+    m.last_played = (long long)time(nullptr);
+    m.game = game_of_image(entry / "disc.cue");
+    write_meta(m);
+    std::fprintf(stderr, "[library] added %s (%s)\n", m.label.c_str(), sha);
     added = true;
     return true;
 }
@@ -531,6 +588,7 @@ std::vector<Meta> scan_entries(const fs::path& root) {
         Meta m;
         if (!e.is_directory() || !read_meta(e.path(), m)) continue;
         record_game(m);
+        record_build(m);
         if (entry_is_ours(m)) entries.push_back(m);
         else others++;
     }
@@ -540,20 +598,31 @@ std::vector<Meta> scan_entries(const fs::path& root) {
     return entries;
 }
 
-/** @brief The selector's label of an entry: its label, marked when unidentified, and prefixed with its game's name when the launcher names games and the label does not already start with it.
+/** @brief An identified entry's label, prefixed with its game's name when the launcher names games and the label does not already start with it.
  *
  * @param m The entry.
  * @return The label. */
-std::string entry_label(const Meta& m) {
-    if (m.game.empty()) return m.label + " (unidentified)";
+std::string entry_label_named(const Meta& m) {
     const openpete_launcher_game* g = launcher_game();
     const char* name = (g && g->game_name) ? g->game_name(m.game.c_str()) : nullptr;
     if (!name || !*name || m.label.rfind(name, 0) == 0) return m.label;
     return std::string(name) + " - " + m.label;
 }
 
+/** @brief The selector's label of an entry: marked when unidentified, else its named label (entry_label_named), marked when its disc is not a supported build.
+ *
+ * @param m The entry.
+ * @return The label. */
+std::string entry_label(const Meta& m) {
+    if (m.game.empty()) return m.label + " (unidentified)";
+    if (build_unsupported(m)) return entry_label_named(m) + " (unsupported disc)";
+    return entry_label_named(m);
+}
+
 /** @brief Give each game's box its failed-build drawing exactly when the entry owning it (its first in @p order) holds a failed-build marker naming this build.
  *
+ * The box also takes its unsupported-disc chip exactly when that entry's
+ * recorded disc build is not supported (build_unsupported).
  * @param order The entries, most recently played first. */
 void mark_failed_boxes(const std::vector<Meta*>& order) {
     std::vector<std::string> seen;
@@ -561,6 +630,7 @@ void mark_failed_boxes(const std::vector<Meta*>& order) {
         if (m->game.empty() || std::find(seen.begin(), seen.end(), m->game) != seen.end()) continue;
         seen.push_back(m->game);
         launcher_page_set_failed(m->game.c_str(), library_marker_current(m->dir.string().c_str()));
+        launcher_page_set_unsupported(m->game.c_str(), build_unsupported(*m));
     }
 }
 
@@ -907,9 +977,10 @@ void ingest_drop(const char* path) {
         return;
     }
     record_game(m);
+    record_build(m);
     launcher_focus_game_set(m.game.c_str());
     launcher_jobs_stop_other(m.game.c_str(), true);
-    (void)conclude_ingest(m, added, prepare_entry(m, "ingest"));
+    if (conclude_ingest(m, added, prepare_entry(m, "ingest"))) warn_build(m, true);
 }
 
 /* pick_pass results besides 0 and the LAUNCHER_LIB_* values. */
@@ -975,6 +1046,10 @@ int pick_pass(openpete_options_t* opts, bool screens, bool& direct, Meta& chosen
     } scan{library_root(), {}};
     const int waited = launcher_await_scan(&ScanTask::run, &scan);
     for (const Meta& m : scan.entries) launcher_sky_seed(m.game.c_str());
+    /* An entry classified unsupported that the player was never told about
+     * (ingested before builds were classified) is warned about once. */
+    for (Meta& m : scan.entries)
+        if (!m.build_warned) warn_build(m, screens);
     queue_launch_jobs(scan.entries);
     if (!screens) launcher_jobs_run_inline();
     if (waited == LAUNCHER_SEL_QUIT) return LAUNCHER_LIB_QUIT;
@@ -1018,8 +1093,14 @@ int resolve_ingest(openpete_options_t* opts, bool screens, char* module_path_out
         panel_refusal();
     } else {
         record_game(m);
-        if (conclude_ingest(m, added, prepare_entry(m, "ingest")))
-            return boot_entry(opts, m, module_path_out, module_path_cap);
+        record_build(m);
+        if (conclude_ingest(m, added, prepare_entry(m, "ingest"))) {
+            warn_build(m, screens);
+            /* With screens an unsupported disc's warning shows on the game
+             * page before anything boots; the player starts it from there. */
+            if (!screens || !m.build_warned)
+                return boot_entry(opts, m, module_path_out, module_path_cap);
+        }
         if (launcher_quit_taken()) return LAUNCHER_LIB_QUIT;
         if (!screens) return LAUNCHER_LIB_BUILD_FAILED;
     }

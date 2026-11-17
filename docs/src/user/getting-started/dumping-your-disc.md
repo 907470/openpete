@@ -62,10 +62,10 @@ from it, it is removed again with an
 !!! warning
     OpenPete identifies a disc by the serial in its `SYSTEM.CNF`. Other
     regions (PAL, NTSC-J) and demo discs have other serials and are
-    refused before anything is copied
-    ([OP-E-WRONG-DISC](../help/troubleshooting.md#op-e-wrong-disc)).
-    Modified images with the right serial are not the image OpenPete's port
-    is built and tested against.
+    refused before anything is copied, with a message naming the release
+    ([OP-E-DISC-BUILD](../help/troubleshooting.md#op-e-disc-build)).
+    Modified images with the right serial are added with a warning
+    ([Unsupported discs](#unsupported-discs)).
 
 ## Unsupported discs
 
@@ -78,12 +78,19 @@ the same disc can differ outside the game program.
 | Disc | What OpenPete does |
 | --- | --- |
 | Spyro the Dragon SCUS-94228, Spyro 2: Ripto's Rage! SCUS-94425, Spyro: Year of the Dragon SCUS-94467 version 1.0 | Starts. |
-| A PAL release (serials SCES-01438, SCES-02104, SCES-02835) or an NTSC-J release (SCPS-10085, SCPS-10083, SCPS-45395, SCPS-10128) | Does not start. The message names the release and the NTSC-U release to use instead. |
+| A PAL release (serials SCES-01438, SCES-02104, SCES-02835) or an NTSC-J release (SCPS-10085, SCPS-10083, SCPS-45395, SCPS-10128) | Is not added to the library and does not start. The message names the release and the NTSC-U release to use instead. |
 | An image whose `SYSTEM.CNF` names another program (such as `PSX.EXE`), or has no usable `SYSTEM.CNF` | Starts when the image holds the game's own program file (`SCUS_942.28`, `SCUS_944.25` or `SCUS_944.67`); otherwise does not start. An image whose program is the supported one under another name starts without a warning. |
-| Spyro: Year of the Dragon revision 1.1 (same serial SCUS-94467; its `.bin` SHA-1 is `81eae747fbd9b2ff75ae5b3e24287bb25fcb516a`, where version 1.0's is the one on [Spyro 3](../games/spyro-3.md#disc)), or any image whose game program differs from version 1.0 | Starts, and is expected to crash. |
+| Spyro: Year of the Dragon revision 1.1 (same serial SCUS-94467; its `.bin` SHA-1 is `81eae747fbd9b2ff75ae5b3e24287bb25fcb516a`, where version 1.0's is the one on [Spyro 3](../games/spyro-3.md#disc)), or any image whose game program differs from version 1.0 | Is added with a warning, starts, and is expected to crash. |
 
-When the game starts from a disc that is not the supported build, the
-log `openpete.log` gets a warning naming the disc's serial, its game program,
-that program's SHA-256 and
-[OP-E-DISC-BUILD](../help/troubleshooting.md#op-e-disc-build). A disc that
-cannot run at all is refused at the start with the same id.
+When a disc that is not the supported build is added to the library, the
+game page shows a warning naming the disc and the supported release, with
+[OP-E-DISC-BUILD](../help/troubleshooting.md#op-e-disc-build); with
+`--ingest` on the command line the same text is printed. The disc stays in
+the library and starts from its box, and the version list names it with
+**(unsupported disc)**. A disc added before this check existed gets the
+warning once, the next time the library opens.
+
+When the game starts from such a disc, the log `openpete.log` gets a
+warning naming the disc's serial, its game program, that program's SHA-256
+and OP-E-DISC-BUILD. A disc that cannot run at all is refused at the start
+with the same id.

@@ -74,6 +74,9 @@ Cases:
             library's page): key up and the d-pad up reach it, down and right return to the box, left and
             up on it do nothing; Enter, South and a click each open the mods folder the loader reads
             (OPENPETE_LAUNCHER_OPEN_URL_STUB=1 logs the path and opens nothing), which is created.
+  unsupported-mark  An entry whose meta.toml records a disc build other than supported (disc_build) marks its
+            box with an "Unsupported disc" chip below the serial's (box.<game>.unsupported); a supported
+            entry's box has none.
   exit-return  EXIT GAME (injected through OPENPETE_MOUSE_INJECT) in a session picked on the game page
             returns to the launcher, three times over a library of Spyro 1 and 2 (picks Spyro 2, Spyro 1,
             Spyro 2 by OPENPETE_LAUNCHER_SELECT_GAME's list), then the page quits: each relaunch carries
@@ -873,16 +876,18 @@ def case_multi_install_extract(a):
 
 
 def library_state(d):
-    """The library's entries (any ingest-tmp directory included) and each entry's meta.toml lines but last_played."""
+    """The library's entries (any ingest-tmp directory included) and each entry's meta.toml lines but last_played
+    and the disc build lines."""
     lib = os.path.join(d, "data", "openpete", "library")
     out = {}
     for e in sorted(os.listdir(lib)):
         if e.startswith("."):
             continue   # the lock file the run takes
         m = os.path.join(lib, e, "meta.toml")
-        # last_played is the pick's stamp of a play, not a change the ingest made.
-        out[e] = [l for l in open(m).read().splitlines() if not l.startswith("last_played")] \
-            if os.path.isfile(m) else None
+        # last_played is the pick's stamp of a play, and disc_build / disc_build_warned the library scan's
+        # classification of an entry that had none: neither is a change the ingest made.
+        out[e] = [l for l in open(m).read().splitlines()
+                  if not l.startswith(("last_played", "disc_build"))] if os.path.isfile(m) else None
     return out
 
 
@@ -1881,7 +1886,7 @@ def case_exit_return(a):
     card = os.path.join(d, "cards")
     os.makedirs(card)
     env = {"OPENPETE_LAUNCHER_SELECT_GAME": "spyro-2,spyro-1,spyro-2", "OPENPETE_LAUNCHER_PICK_DELAY_MS": "1500",
-           "OPENPETE_MOUSE_INJECT": exit_script(d, "exit"), "OPENPETE_LAUNCHER_INPUT": "6000:quit"}
+           "OPENPETE_MOUSE_INJECT": exit_script(d, "exit"), "OPENPETE_LAUNCHER_INPUT": "20000:quit"}
     # Flags the relaunch leaves out (kDropped): each bounds one session, and the first relaunch's argv
     # holds them no longer, so they are dropped once.
     args = ["--launcher-window", "1280x800", "--frame-limit", "100000", "--max-runtime-seconds", "900"]
@@ -1949,7 +1954,9 @@ def case_exit_close(a):
     with open(close_only, "w") as f:
         f.write("3000ms close\n")
     for tag in ("close", "sigterm"):
-        env = {"OPENPETE_LAUNCHER_SELECT_GAME": "spyro-1", "OPENPETE_LAUNCHER_INPUT": "8000:quit"}
+        # The quit is a backstop for a launcher that comes back by mistake; it is timed past the pick's wait
+        # for the cold asset cache's launch-time jobs, which runs for seconds under load.
+        env = {"OPENPETE_LAUNCHER_SELECT_GAME": "spyro-1", "OPENPETE_LAUNCHER_INPUT": "60000:quit"}
         if tag == "close":
             env["OPENPETE_MOUSE_INJECT"] = close_only
             rc, log = cl.launch(a.binary, d, tag, ["--launcher-window", "1280x800"], env, timeout=600)
@@ -2029,6 +2036,39 @@ def case_mods_chip(a):
         if rc != 0:
             bad.append(f"{tag}: exit {rc}")
     return verdict("mods-chip", bad, ", ".join(f"{k} (presses, ups, backs) {v}" for k, v in counts.items()))
+
+
+def case_unsupported_mark(a):
+    """The game page marks the box of an entry whose recorded disc build is not supported: a chip below the
+    serial's (box.<game>.unsupported in the manifest), clear of the disc hint, at three window sizes; a
+    supported entry's box has none."""
+    d = cl.case_dir(a.out, "unsupported-mark")
+    e1 = seed_entry(d, "spyro-1", 2)
+    seed_entry(d, "spyro-2", 1)
+    with open(os.path.join(e1, "meta.toml"), "a") as f:
+        f.write('disc_build = "recognised"\ndisc_build_warned = 1\n')
+    bad, checked = [], 0
+    for preset in ("1280x800", "2560x1080", "1024x768"):
+        base = os.path.join(d, "m-" + preset)
+        rc, log = cl.launch(a.binary, d, preset, ["--launcher-window", preset],
+                            {"OPENPETE_LAUNCHER_INPUT": "2500:key=escape", "OPENPETE_LAUNCHER_MANIFEST": base,
+                             "OPENPETE_LAUNCHER_SHOT": base}, timeout=300)
+        m = cl.read_json(base + ".selector.json")
+        items = {it["id"]: it["rect"] for it in (m or {}).get("items", [])}
+        mark, serial, hint = items.get("box.spyro-1.unsupported"), items.get("box.spyro-1.id"), items.get("page.hint")
+        if not mark or not serial or mark[1] <= serial[3]:
+            bad.append(f"{preset}: spyro-1's unsupported chip {mark} not below its serial {serial}")
+        elif hint and mark[3] > hint[1]:
+            bad.append(f"{preset}: spyro-1's unsupported chip {mark} reaches the disc hint {hint}")
+        else:
+            checked += 1
+        if "box.spyro-2.unsupported" in items:
+            bad.append(f"{preset}: spyro-2, a supported entry, is marked")
+        if "box of spyro-1 marks an unsupported disc" not in log:
+            bad.append(f"{preset}: the mark was not logged")
+        if rc != 0:
+            bad.append(f"{preset}: exit {rc}")
+    return verdict("unsupported-mark", bad, f"{checked} sizes checked")
 
 
 def case_input(a):
@@ -2430,11 +2470,11 @@ def case_error_refuse(a):
     identified and copied."""
     d0 = cl.case_dir(a.out, "error-refuse")
     images = {
-        "zero": (write_image(d0, "zero", bytes(600 * SECTOR)), r"holds no PlayStation SYSTEM\.CNF serial"),
+        "zero": (write_image(d0, "zero", bytes(600 * SECTOR)), r"has no usable SYSTEM\.CNF boot line"),
         "not-a-disc": (write_image(d0, "notadisc", b"this is not a disc image\n" * 40),
                        r"cannot be read as a raw disc image"),
         "unclaimed": (truncated_image(d0, "unclaimed", "spyro-1", b"SCUS_942.28", b"SLUS_999.99"),
-                      r"serial SLUS-99999 names no game"),
+                      r"has no usable SYSTEM\.CNF boot line or boot program"),
     }
     bad, counts = [], {}
     for tag, (cue, why) in images.items():
@@ -2814,7 +2854,7 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "quit-assets": case_quit_assets, "quit-east-once": case_quit_east_once,
          "quit-east-twice": case_quit_east_twice, "quit-escape": case_quit_escape, "quit-close": case_quit_close,
          "exit-return": case_exit_return, "exit-direct": case_exit_direct, "exit-close": case_exit_close,
-         "mods-chip": case_mods_chip,
+         "mods-chip": case_mods_chip, "unsupported-mark": case_unsupported_mark,
          "quit-page-sigterm": case_quit_page_sigterm, "error-refuse": case_error_refuse,
          "error-staged": case_error_staged, "error-build": case_error_build, "ingest-retry": case_ingest_retry,
          "error-link": case_error_link}

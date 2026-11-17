@@ -481,6 +481,7 @@ struct BoxState {
     op_time_t logo_tried = 0;   /* the last logo read attempt; 0 for none */
     unsigned picture_gen = ~0u; /* launcher_picture_gen at the last picture read; ~0 for none */
     bool failed = false;        /* the owning entry holds a failed module build (launcher_page_set_failed) */
+    bool unsupported = false;   /* the owning entry's disc is not a supported build (launcher_page_set_unsupported) */
 };
 
 std::deque<BoxState> s_boxes;    /* by game, in first-seen order; a push keeps references valid */
@@ -851,6 +852,15 @@ void launcher_page_lines_draw(const char* const* entry_games, int count, float s
         const Rect t = id_text(rects[i], sz.x, sz.y, scale);
         const std::string id = std::string("box.") + box_games[i] + ".id";
         launcher_chip_text(id.c_str(), {t.x, t.y}, {kIdPadX, kIdPadY}, scale, IM_COL32_WHITE, text.c_str(), fill);
+        if (!box_state(box_games[i]).unsupported) continue;
+        /* Below the serial's chip, its padding clear of it. */
+        const std::string mark = launcher_chip_case("Unsupported disc");
+        const ImVec2 ms = ImGui::CalcTextSize(mark.c_str());
+        const Rect r = rects[i];
+        const float mx = r.x + (r.w - ms.x) * 0.5f, my = t.y + t.h + 2.0f * kIdPadY * scale + kIdGap * scale;
+        const std::string mid = std::string("box.") + box_games[i] + ".unsupported";
+        launcher_chip_text(mid.c_str(), {mx, my}, {kIdPadX, kIdPadY}, scale, IM_COL32(240, 138, 30, 255), mark.c_str(),
+                           fill);
     }
     if (lines.hint) {
         const std::string text = launcher_chip_case(lines.hint);
@@ -905,6 +915,15 @@ void launcher_page_set_failed(const char* game, bool failed) {
             OPL_INFO_F("launcher", "game page: box of %s shows the failed-build drawing", game);
         }
     }
+}
+
+void launcher_page_set_unsupported(const char* game, bool unsupported) {
+    if (!game) return;
+    BoxState& b = box_state(game);
+    if (b.unsupported != unsupported)
+        OPL_INFO_F("launcher", "game page: box of %s %s", game,
+                   unsupported ? "marks an unsupported disc" : "no longer marks an unsupported disc");
+    b.unsupported = unsupported;
 }
 
 float launcher_page_row_bottom(float w, float h) {

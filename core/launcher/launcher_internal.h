@@ -573,6 +573,13 @@ void launcher_panel_build_failed(const char* game, const char* name, const char*
  * @param failed true for a failed build. */
 void launcher_page_set_failed(const char* game, bool failed);
 
+/** @brief Mark a game's box as owned by an entry whose disc is not a supported build: a chip reading "Unsupported disc" in the title's orange shows below the box's serial chip, with the serial's padding, recorded as box.<game>.unsupported.
+ *
+ * A change is logged. The box still activates its entry.
+ * @param game The game id.
+ * @param unsupported true for an unsupported build. */
+void launcher_page_set_unsupported(const char* game, bool unsupported);
+
 /** @brief Return the bottom of the game page's box row with a box grown, in window pixels: where the panel goes.
  *
  * @param w The window width.

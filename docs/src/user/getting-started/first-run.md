@@ -17,7 +17,9 @@ Spyro 3) and the box grows slightly. The page opens with the first box
 focused; after a disc is added, its game's box has the focus.
 
 Below each box is the serial of its game's disc: **SCUS-94228** for Spyro 1,
-**SCUS-94425** for Spyro 2, **SCUS-94467** for Spyro 3. While a game has no
+**SCUS-94425** for Spyro 2, **SCUS-94467** for Spyro 3. A box whose disc
+is not the supported build shows **Unsupported disc** below the serial
+([Unsupported discs](dumping-your-disc.md#unsupported-discs)). While a game has no
 disc in the library, the bottom of the page reads **Drag and drop or select
 your own copy of the game disc**. A message on the page (see
 [When something fails](#when-something-fails)) hides both until it closes.
