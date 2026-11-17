@@ -409,7 +409,7 @@ int  openpete_library_game_disc(const char* game, char* cue, size_t cue_cap);
  * A game session whose entry the player picked on the game page ends at
  * EXIT GAME through the ordinary teardown (cards, settings, mods, threads),
  * and the process then starts the launcher again from a fresh image: execv
- * of the executable on POSIX (the same process id), a new process on
+ * of the executable on POSIX (the same process id), a new process (SDL_CreateProcessWithProperties) on
  * Windows. The relaunch carries OPENPETE_LAUNCHER_RETURN, read and removed
  * from the environment at entry (openpete_launcher_return_arm), which names
  * the return count, the game exited and the game window's last state; the

@@ -28,9 +28,10 @@
 #include <string>
 #include <vector>
 
-#ifdef _WIN32
-#include <windows.h>
-#else
+#include <SDL3/SDL_process.h>
+#include <SDL3/SDL_stdinc.h>
+
+#ifndef _WIN32
 #include <csignal>
 #include <dirent.h>
 #include <fcntl.h>
@@ -202,7 +203,8 @@ std::string export_return() {
     if (win) std::snprintf(v, sizeof v, "%d:%s:%d:%d:%d:%d:%d:%d", s_in.count + 1, s_game_out, fs, mx, x, y, w, h);
     else std::snprintf(v, sizeof v, "%d:%s", s_in.count + 1, s_game_out);
 #ifdef _WIN32
-    SetEnvironmentVariableA(kReturnEnv, v);
+    /* The relaunch's environment is SDL's (SDL_CreateProcessWithProperties). */
+    SDL_SetEnvironmentVariable(SDL_GetEnvironment(), kReturnEnv, v, true);
 #else
     setenv(kReturnEnv, v, 1);
 #endif
@@ -210,36 +212,30 @@ std::string export_return() {
 }
 
 #ifdef _WIN32
-/** @brief Convert UTF-8 text to UTF-16 for a wide Win32 call.
+/** @brief Start the relaunched image as a new process with SDL's process API: the arguments with the executable's path first, SDL's environment, the working directory inherited, stdout and stderr inherited and stdin closed.
  *
- * @param u The UTF-8 text.
- * @return The UTF-16 text; empty on a conversion failure. */
-std::wstring widen(const char* u) {
-    const int n = MultiByteToWideChar(CP_UTF8, 0, u, -1, nullptr, 0);
-    if (n <= 0) return {};
-    std::wstring w((size_t)n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, u, -1, w.data(), n);
-    w.resize((size_t)n - 1);
-    return w;
-}
-
-/** @brief Quote one argument for a Windows command line as CommandLineToArgvW reads it.
- *
- * @param a The argument.
- * @return The quoted argument. */
-std::string win_quote(const std::string& a) {
-    if (!a.empty() && a.find_first_of(" \t\"") == std::string::npos) return a;
-    std::string q = "\"";
-    size_t bs = 0;
-    for (char c : a) {
-        if (c == '\\') { bs++; continue; }
-        q.append(c == '"' ? bs * 2 + 1 : bs, '\\');
-        bs = 0;
-        q.push_back(c);
+ * SDL builds the command line from the UTF-8 arguments with the quoting
+ * CommandLineToArgvW reverses. The process is not waited for; this one
+ * exits after it starts.
+ * @param args The arguments, the program first.
+ * @return true when the process started. */
+bool start_relaunch_process(const std::vector<std::string>& args) {
+    std::vector<const char*> av;
+    for (const std::string& a : args) av.push_back(a.c_str());
+    av.push_back(nullptr);
+    const SDL_PropertiesID p = SDL_CreateProperties();
+    SDL_SetPointerProperty(p, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, av.data());
+    SDL_SetNumberProperty(p, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetNumberProperty(p, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_INHERITED);
+    SDL_SetNumberProperty(p, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_INHERITED);
+    SDL_Process* proc = SDL_CreateProcessWithProperties(p);
+    SDL_DestroyProperties(p);
+    if (!proc) {
+        std::fprintf(stderr, "openpete: return to the launcher failed: %s\n", SDL_GetError());
+        return false;
     }
-    q.append(bs * 2, '\\');
-    q.push_back('"');
-    return q;
+    SDL_DestroyProcess(proc);   /* closes SDL's handles; the process runs on */
+    return true;
 }
 #endif
 
@@ -248,7 +244,7 @@ std::string win_quote(const std::string& a) {
  * POSIX replaces the process image (execv of the executable): the process id,
  * the parent's wait and inherited descriptors stay; every other thread ends;
  * the signal mask is cleared first so the new image starts with none
- * blocked. Windows starts a new process with the same working directory and
+ * blocked. Windows starts a new process (start_relaunch_process) with the same working directory and
  * environment, and this one exits. A failure is logged and the process exits
  * as it would have. */
 void relaunch_at_exit() {
@@ -268,20 +264,9 @@ void relaunch_at_exit() {
                  v.c_str(), steady_ms(), exe);
     std::fflush(nullptr);
 #ifdef _WIN32
-    std::string cmd;
-    for (const std::string& a : args) cmd += (cmd.empty() ? "" : " ") + win_quote(a);
-    const std::wstring wexe = widen(exe), wcmd = widen(cmd.c_str());
-    STARTUPINFOW si = {};
-    si.cb = sizeof si;
-    PROCESS_INFORMATION pi = {};
-    std::vector<wchar_t> line(wcmd.begin(), wcmd.end());
-    line.push_back(L'\0');
-    if (!CreateProcessW(wexe.c_str(), line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
-        std::fprintf(stderr, "openpete: return to the launcher failed: CreateProcess error %lu\n", GetLastError());
-        return;
-    }
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    std::vector<std::string> wargs = args;
+    wargs[0] = exe;
+    (void)start_relaunch_process(wargs);
 #else
     std::vector<char*> av;
     for (const std::string& a : args) av.push_back(const_cast<char*>(a.c_str()));
@@ -325,8 +310,7 @@ void openpete_launcher_return_arm(int argc, char** argv) {
     s_in.armed_ms = steady_ms();
     if (const char* v = std::getenv(kReturnEnv); v && *v) parse_incoming(v);
 #ifdef _WIN32
-    SetEnvironmentVariableA(kReturnEnv, nullptr);
-    _putenv_s(kReturnEnv, "");
+    _putenv_s(kReturnEnv, "");   /* an empty value removes the variable */
 #else
     unsetenv(kReturnEnv);
 #endif
