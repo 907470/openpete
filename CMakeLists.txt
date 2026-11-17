@@ -1383,6 +1383,18 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             TIMEOUT 900
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        # The snap's screen-size bound at 16 px on the still-camera rows with
+        # the terrain cache forced on: mobys left out of the tick's resolve
+        # and of the sub-tick resolves, and in-between mobys taking their
+        # endpoint's decision. Fails when the bound is set and nothing is left out.
+        add_test(NAME moby_snap_min_px_${_pc_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_pose_cache.sh
+                         --game ${_pc_game} --build-dir=${CMAKE_BINARY_DIR} --instrument=snap-min-px)
+        set_tests_properties(moby_snap_min_px_${_pc_game} PROPERTIES
+            LABELS "presentation;moby"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
     # Moby occlusion census. Per row of

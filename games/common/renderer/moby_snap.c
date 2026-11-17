@@ -59,6 +59,7 @@ static float    (*s_q_tri)[3][3]; static int s_q_nt, s_q_capt;
 static float    (*s_q_bnd)[6]; static int s_q_capb;   /* per s_q_tri: its bounds */
 static uint32_t*  s_q_fk; static int s_q_capf;       /* per s_q_tri: its face key, while the probe is on */
 static unsigned   s_q_epoch = ~0u;
+static long       s_ms_scenes;   /* scenes that queued (ms_scene_sync), the bound census's present count */
 static int        s_q_seg;   /* the walk pass now queueing, counted from 0 per scene */
 
 /* The planes one moby may own; more are counted as overflow. */
@@ -124,6 +125,7 @@ static void ms_scene_sync(void) {
     const unsigned ep = openpete_native_scene_epoch();
     if (ep == s_q_epoch) return;
     s_q_epoch = ep; s_q_nm = s_q_nt = 0; s_rk_n = s_sn_n = 0; s_q_seg = 0;
+    s_ms_scenes++;
 }
 
 void moby_snap_note_ranked(const uint32_t* mids, int n, int base) {
@@ -3449,6 +3451,140 @@ static int ms_chunk_run(int g, int nb, const terrain_snap_box* box, const float 
     return 1;
 }
 
+/* ---- the screen-size bound (OPENPETE_SNAP_MIN_PX) ---------------------------
+ * A pulled moby whose drawn height on screen is under a bound takes no snap:
+ * no capture, no contact, no planes. The height is its queued corners'
+ * screen extent (ms_moby.b), in PSX screen lines, 240 whatever the internal
+ * resolution, supersampling or aspect, so a bound of p pixels at 1440 lines
+ * is p * 240 / 1440 lines. The tick's own resolve decides for each moby
+ * and keeps the decision by canonical epoch; an in-between scene takes the
+ * decision of the endpoint the carry takes (alpha at or above 0.5 the
+ * latest tick, below it the one before), and decides from its own height
+ * only for a moby that endpoint did not queue. Hysteresis: a moby left out
+ * at the previous tick stays out until its height reaches 1.25 times the
+ * bound; "previous" is the table of canonical epoch ep - 1, and a tick whose
+ * predecessor's table is not kept decides at the plain bound. Default 16 px,
+ * 0 snaps every moby.
+ *
+ * The lean queue leaves ms_moby.b unset until the moby's chunk resolves, so
+ * the filter computes a moby's bounds itself (ms_bounds_hold) where it needs
+ * the height: at the tick, which resolves its whole queue and would compute
+ * them in its chunks anyway, and in an in-between scene only for a moby the
+ * endpoint did not decide. The census counts scenes, mobys considered and
+ * left out per leg, and the in-between mobys whose bounds the filter
+ * computed; the profiler takes the left-out count per resolve
+ * (mcann.snap_small, mrexn.snap_small). */
+#define MS_SMALL_BITS 11
+#define MS_SMALL_N (1 << MS_SMALL_BITS)
+typedef struct { uint32_t mid; uint8_t small; } ms_small_ent;
+static ms_small_ent s_small[2][MS_SMALL_N];     /* the decisions of the two newest ticks, by epoch parity */
+static uint32_t s_small_ep[2] = { ~0u, ~0u };   /* the canonical epoch each table holds */
+static uint32_t s_small_last = ~0u;              /* the newest epoch decided */
+/* The census: per leg (0 tick, 1 in-between) mobys considered and left out;
+ * in-between mobys the endpoint had not decided, whose bounds the filter computed. */
+static struct { long considered[2], out[2], bounded; } s_smc;
+
+/** @brief The bound in PSX screen lines (OPENPETE_SNAP_MIN_PX, pixels at 1440 lines), read once; 0 when off.
+ * @return The bound. */
+static float ms_small_lines(void) {
+    static float v = -1.0f;
+    if (v < 0.0f) {
+        const char* e = getenv("OPENPETE_SNAP_MIN_PX");
+        v = (e && *e ? (float)atof(e) : 16.0f) * (240.0f / 1440.0f);
+        if (v < 0.0f) v = 0.0f;
+    }
+    return v;
+}
+
+/** @brief Print the bound's run totals (bound set or OPENPETE_MOBY_RANK_TIME=1): the bound, scenes, and per leg mobys considered and left out, with the in-between mobys whose bounds the filter computed. */
+static void ms_small_print(void) {
+    fprintf(stderr, "[snap-min-px total] min_lines=%.3f scenes=%ld considered_tick=%ld out_tick=%ld "
+                    "considered_scene=%ld out_scene=%ld bounded_scene=%ld\n",
+            (double)ms_small_lines(), s_ms_scenes, s_smc.considered[0], s_smc.out[0],
+            s_smc.considered[1], s_smc.out[1], s_smc.bounded);
+}
+
+/** @brief Find a moby's slot in a decision table: its entry, or the empty slot that would take it.
+ * @param t The table.
+ * @param mid The moby's identity.
+ * @return The slot, or NULL when the table is full. */
+static ms_small_ent* ms_small_slot(ms_small_ent* t, uint32_t mid) {
+    unsigned h = (mid * 2654435761u) >> (32 - MS_SMALL_BITS);
+    for (int n = 0; n < MS_SMALL_N; n++, h = (h + 1) & (MS_SMALL_N - 1))
+        if (t[h].mid == mid || t[h].mid == 0) return &t[h];
+    return NULL;
+}
+
+/** @brief A tick's decision for a moby: 1 left out, 0 snapped, -1 when that tick did not queue it or is not kept.
+ * @param ep The canonical epoch.
+ * @param mid The moby's identity.
+ * @return The decision. */
+static int ms_small_at(uint32_t ep, uint32_t mid) {
+    if (ep == ~0u || s_small_ep[ep & 1u] != ep) return -1;
+    const ms_small_ent* e = ms_small_slot(s_small[ep & 1u], mid);
+    return e && e->mid == mid ? e->small : -1;
+}
+
+/** @brief Make a queued moby's bounds hold for the filter, computing them when the lean queue deferred them.
+ *
+ * The chunk's ms_bounds_ensure then finds them held and computes nothing.
+ * @param m The moby. */
+static void ms_bounds_hold(ms_moby* m) {
+    if (m->bok) return;
+    ms_bounds_tris(&s_q_tri[m->t0], &s_q_bnd[m->t0], m->nt, m->b);
+    m->bok = 1;
+}
+
+/** @brief Whether one queued moby is left out of the snap in the resolve under way, recording the tick's decision on its own resolve.
+ * @param mb The moby; its bounds are computed when the decision needs its height.
+ * @param ml The bound in lines.
+ * @param ep The tick's canonical epoch (its own resolve) or the endpoint's (an in-between scene).
+ * @return 1 when left out. */
+static int ms_small_decide(ms_moby* mb, float ml, uint32_t ep) {
+    if (s_rex) {
+        const int d = ms_small_at(ep, mb->mid);
+        if (d >= 0) return d;
+        s_smc.bounded++;
+        ms_bounds_hold(mb);
+        return mb->b[3] - mb->b[1] < ml;
+    }
+    ms_bounds_hold(mb);
+    const float h = mb->b[3] - mb->b[1];
+    const int small = ms_small_at(ep - 1u, mb->mid) == 1 ? h < 1.25f * ml : h < ml;
+    ms_small_ent* e = ms_small_slot(s_small[ep & 1u], mb->mid);
+    if (e) { e->mid = mb->mid; e->small = (uint8_t)small; }
+    return small;
+}
+
+/** @brief Leave the mobys the screen-size bound excludes out of the queue, keeping the rest in order. */
+static void ms_small_filter(void) {
+    const float ml = ms_small_lines();
+    if (ml <= 0.0f) return;
+    static int s_pid[2] = { -1, -1 };
+    if (s_pid[0] < 0) {
+        s_pid[0] = op_prof_intern("mcann.snap_small");
+        s_pid[1] = op_prof_intern("mrexn.snap_small");
+    }
+    uint32_t ep;
+    if (!s_rex) {
+        ep = spyro_native_canon_epoch_stamp();
+        if (s_small_ep[ep & 1u] != ep) { memset(s_small[ep & 1u], 0, sizeof s_small[0]); s_small_ep[ep & 1u] = ep; }
+        s_small_last = ep;
+    } else {
+        ep = s_rex_alpha >= 0.5 || s_small_last == ~0u ? s_small_last : s_small_last - 1u;
+    }
+    const int leg = s_rex ? 1 : 0;
+    int n = 0;
+    for (int k = 0; k < s_q_nm; k++) {
+        if (ms_small_decide(&s_q_mob[k], ml, ep)) continue;
+        s_q_mob[n++] = s_q_mob[k];
+    }
+    s_smc.considered[leg] += s_q_nm;
+    s_smc.out[leg] += s_q_nm - n;
+    if (op_prof_on()) op_prof_count(s_pid[leg], (uint64_t)(s_q_nm - n));
+    s_q_nm = n;
+}
+
 /** @brief Resolve the queue when it and the last terrain build belong to the scene now accumulating.
  *
  * Mobys go to the capture in groups of up to 128 (one bit each in the hit
@@ -3461,6 +3597,8 @@ static void ms_resolve(void) {
     ms_census cs; memset(&cs, 0, sizeof cs);
     cs.zmin = 1e30f;
     cs.timed = t0 != 0;
+    static int s_small_atexit;
+    if (!s_small_atexit && (t0 || ms_small_lines() > 0.0f)) { s_small_atexit = 1; atexit(ms_small_print); }
     float view[3];
     terrain_snap_view(&view[0], &view[1], &view[2]);
     if (view[0] > 0.0f) {
@@ -3468,6 +3606,7 @@ static void ms_resolve(void) {
         ms_up_sync();
         memcpy(s_rs_view, view, sizeof s_rs_view);
         uint64_t tp = rsp_now();
+        ms_small_filter();
         const int nrun = ms_carry_begin(&cs);
         rsp_mark(RSP_CARRY, tp);
         for (int g = 0; g < nrun; g += 128)
@@ -3481,6 +3620,9 @@ static void ms_resolve(void) {
     cs.pulled = s_q_nm;
     s_q_nm = s_q_nt = 0;
     if (t0) ms_census_print(&cs, ms_cpu_ns() - t0);
+    if (t0 && ms_small_lines() > 0.0f)
+        fprintf(stderr, "[moby-snap-small] considered=%ld out_tick=%ld out_scene=%ld\n",
+                s_smc.considered[0] + s_smc.considered[1], s_smc.out[0], s_smc.out[1]);
 }
 
 /** @brief Run ms_resolve inside the profiler scope of its leg: mrex.resolve in a sub-tick re-extract, else mcan.resolve. */

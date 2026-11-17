@@ -65,7 +65,14 @@
 # ([snap-queue-lean-check] queued= resolved= compared= mismatched=), and the
 # collect gathers each moby's corners into the queue and into its own buffer
 # and compares them (moby.c, moby_snap_gather_to;
-# [snap-queue-lean-gather] mobys= mismatched=).
+# [snap-queue-lean-gather] mobys= mismatched=). Under snap-min-px the
+# still-camera rows run with OPENPETE_SNAP_MIN_PX=16 and the terrain cache
+# forced on: the screen-size bound must leave mobys out of both the tick's
+# resolve and the sub-tick resolves, and an in-between scene must inherit the
+# endpoint's decision for some of its mobys rather than compute their bounds
+# ([snap-min-px total] ... considered_tick= out_tick= considered_scene=
+# out_scene= bounded_scene=); a run where the bound is set and nothing is
+# left out fails.
 # Under rank-absent the same walking rows run with
 # OPENPETE_MOBY_RANK_ABSENT_SKIP=check: every sub-tick moby run whose faces
 # absent from the carry table contest no face (rank_absent_contests) is also
@@ -81,7 +88,7 @@
 # Usage:
 #   tests/harness/check_moby_pose_cache.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
 #       [--instrument=pose-cache|push-fanout|snap-fanout|rec-fanout|rank-fanout|snap-listed|snap-rex-merge
-#        |snap-corner-eq|snap-queue-lean
+#        |snap-corner-eq|snap-queue-lean|snap-min-px
 #        |rank-absent|occl-held]
 # Exit 0 PASS: engaged above zero (hits, emits compared, chunks of each leg
 # compared) and no mismatch. 1 FAIL: a mismatch, a missing capture or a
@@ -89,7 +96,8 @@
 # no listed chunk compared on either leg or no walk saved, or no present
 # compared or none where two walk passes queued, or no moby with equal
 # corner inputs, or no moby resolved or none left unresolved, no kept or
-# no re-ranked run, or no moby dropped on a captured present.
+# no re-ranked run, or no moby dropped on a captured present. snap-min-px
+# has no VACUOUS outcome: nothing left out is a FAIL.
 # 64 SKIP (no binary or disc).
 set -u
 
@@ -155,15 +163,19 @@ LOG="$OUT/$GAME-$INSTR.log"
 SHOT="$OUT/$GAME-$INSTR"
 OUTS="${SHOT}__${VBLS%,*}-vk.png,${SHOT}__${VBLS#*,}-vk.png"
 case "$INSTR" in
+    # The snap compare rows run with the screen-size bound off (OPENPETE_SNAP_MIN_PX=0):
+    # each checks machinery the bound would leave with nothing to compare on a row
+    # of small mobys. snap-min-px sets the bound itself.
     pose-cache)  KNOB=(OPENPETE_MOBY_POSE_CACHE=2);;
     push-fanout) KNOB=(OPENPETE_MOBY_PUSH_FANOUT_CHECK=1);;
-    snap-fanout) KNOB=(OPENPETE_MOBY_SNAP_FANOUT_CHECK=1 OPENPETE_MOBY_SNAP_FANOUT_MIN=0);;
+    snap-fanout) KNOB=(OPENPETE_MOBY_SNAP_FANOUT_CHECK=1 OPENPETE_MOBY_SNAP_FANOUT_MIN=0 OPENPETE_SNAP_MIN_PX=0);;
     rec-fanout)  KNOB=(OPENPETE_MOBY_REC_FANOUT_CHECK=1 OPENPETE_MOBY_REC_FANOUT_MIN=0 OPENPETE_MOBY_POSE_CACHE=0);;
     rank-fanout) KNOB=(OPENPETE_MOBY_RANK_FANOUT_CHECK=1 OPENPETE_MOBY_RANK_FANOUT_MIN=0);;
-    snap-listed)      KNOB=(OPENPETE_SNAP_LISTED_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
-    snap-rex-merge)   KNOB=(OPENPETE_SNAP_REX_MERGE_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
-    snap-corner-eq)   KNOB=(OPENPETE_SNAP_CORNER_EQ_CHECK=1);;
-    snap-queue-lean)  KNOB=(OPENPETE_SNAP_QUEUE_LEAN_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
+    snap-listed)      KNOB=(OPENPETE_SNAP_LISTED_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_SNAP_MIN_PX=0);;
+    snap-rex-merge)   KNOB=(OPENPETE_SNAP_REX_MERGE_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_SNAP_MIN_PX=0);;
+    snap-corner-eq)   KNOB=(OPENPETE_SNAP_CORNER_EQ_CHECK=1 OPENPETE_SNAP_MIN_PX=0);;
+    snap-queue-lean)  KNOB=(OPENPETE_SNAP_QUEUE_LEAN_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_SNAP_MIN_PX=0);;
+    snap-min-px)      KNOB=(OPENPETE_SNAP_MIN_PX=16 OPENPETE_TERRAIN_CACHE_FORCE=1);;
     rank-absent) KNOB=(OPENPETE_MOBY_RANK_ABSENT_SKIP=check);;
     occl-held)   KNOB=(OPENPETE_OCCL_HELD_CONFIRM=log);;
     *) echo "pose-cache: SKIP (no instrument $INSTR)"; exit 64;;
@@ -249,6 +261,20 @@ if [[ "$INSTR" == snap-queue-lean ]]; then
     [[ "${c:-0}" -gt 0 && "${r:-0}" -lt "${q:-0}" && "${gm:-0}" -gt 0 ]] ||
         { echo "snap-queue-lean: VACUOUS (compared ${c:-0}, resolved ${r:-0} of ${q:-0} queued, gathered ${gm:-0})"; exit 2; }
     echo "snap-queue-lean: PASS"
+    exit 0
+fi
+if [[ "$INSTR" == snap-min-px ]]; then
+    line="$(grep '^\[snap-min-px total\]' "$LOG" | tail -n 1)"
+    [[ -n "$line" ]] || { echo "snap-min-px: FAIL (no [snap-min-px total] line in $LOG)"; exit 1; }
+    echo "snap-min-px: $GAME $line"
+    for f in considered_tick out_tick considered_scene out_scene bounded_scene; do
+        printf -v "v_$f" '%s' "$(sed -n "s/.* $f=\([0-9]*\).*/\1/p" <<<"$line")"
+    done
+    [[ "${v_out_tick:-0}" -gt 0 && "${v_out_scene:-0}" -gt 0 ]] ||
+        { echo "snap-min-px: FAIL (bound set, left out tick ${v_out_tick:-0} of ${v_considered_tick:-0}, scene ${v_out_scene:-0} of ${v_considered_scene:-0})"; exit 1; }
+    [[ "${v_bounded_scene:-0}" -lt "${v_considered_scene:-0}" ]] ||
+        { echo "snap-min-px: FAIL (no in-between moby inherited its endpoint's decision: bounded ${v_bounded_scene:-0} of ${v_considered_scene:-0})"; exit 1; }
+    echo "snap-min-px: PASS"
     exit 0
 fi
 if [[ "$INSTR" == snap-rex-merge ]]; then
