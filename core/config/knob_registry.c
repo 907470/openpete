@@ -2690,6 +2690,8 @@ static const knob_desc_t g_builtin_debug[] = {
         "The simple-moby decode projects each record's vertices in the record's own job, on the walk workers when it fans out (default 1; 0 = in the serial prefix)."),
     ENVROW_LATCHED("EAGER_REWARM", "Debug", "1",
         "At the world going live, the first 32 scenes and renders cheaper than the planner's cost averages replace them (default 1; 0 = an eighth per sample)."),
+    ENVROW_LATCHED("TSC_VHASH_MEMO", "Debug", "1",
+        "A sub-tick terrain build skips a cached sector's vertex hash that an earlier sub-tick build of the same guest generation found current (default 1; 0 = hash every build)."),
     ENVROW_LATCHED("UI_UNDER_PLAYER", "Debug", "1",
         "Draw 2D the game links behind the player's ordering-table slot before the player (default 1; 0 = all 2D over the player)."),
     ENVROW_LATCHED("TC_BAKE_BUDGET_US", "Debug", "1000",

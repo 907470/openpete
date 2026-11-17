@@ -93,15 +93,21 @@
 # ([sim-proj-defer-check final] deferred= immediate= records= verts=
 # mismatched=).
 #
+# Under tsc-vhash-memo the still-camera rows run with the terrain cache
+# forced on and OPENPETE_TSC_VHASH_MEMO_CHECK=1: every cached sector whose
+# vertex hash a sub-tick build skips (games/common/renderer/terrain.c,
+# tsc_vhash_memo) is hashed as well and compared with the stored hash
+# ([tsc-vhash-memo-check final] skipped= checked= mismatched=).
+#
 # Usage:
 #   tests/harness/check_moby_pose_cache.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
 #       [--instrument=pose-cache|push-fanout|snap-fanout|rec-fanout|rank-fanout|snap-listed|snap-rex-merge
 #        |snap-corner-eq|snap-queue-lean|snap-min-px
-#        |rank-absent|occl-held|sim-proj-defer]
+#        |rank-absent|occl-held|sim-proj-defer|tsc-vhash-memo]
 # Exit 0 PASS: engaged above zero (hits, emits compared, chunks of each leg
 # compared) and no mismatch. 1 FAIL: a mismatch, a missing capture or a
 # missing total. 2 VACUOUS: no hit, no emit, no chunk of a leg compared, or
-# no simple record compared, no listed chunk compared on either leg or no walk saved, or no present
+# no simple record compared, no sector hash skipped, no listed chunk compared on either leg or no walk saved, or no present
 # compared or none where two walk passes queued, or no moby with equal
 # corner inputs, or no moby resolved or none left unresolved, no kept or
 # no re-ranked run, or no moby dropped on a captured present. snap-min-px
@@ -186,6 +192,7 @@ case "$INSTR" in
     snap-min-px)      KNOB=(OPENPETE_SNAP_MIN_PX=16 OPENPETE_TERRAIN_CACHE_FORCE=1);;
     rank-absent) KNOB=(OPENPETE_MOBY_RANK_ABSENT_SKIP=check);;
     occl-held)   KNOB=(OPENPETE_OCCL_HELD_CONFIRM=log);;
+    tsc-vhash-memo) KNOB=(OPENPETE_TSC_VHASH_MEMO_CHECK=1 OPENPETE_TERRAIN_CACHE_FORCE=1);;
     sim-proj-defer) [[ "$GAME" == spyro-1 ]] && { echo "sim-proj-defer: SKIP (no simple-model decode on $GAME)"; exit 64; }
                  KNOB=(OPENPETE_MOBY_SIM_PROJ_DEFER_CHECK=1);;
     *) echo "pose-cache: SKIP (no instrument $INSTR)"; exit 64;;
@@ -225,6 +232,17 @@ if [[ "$INSTR" == occl-held ]]; then
     [[ "$bad" == 0 ]] || { echo "occl-held: FAIL (a capture differs with the re-confirm off)"; exit 1; }
     [[ "$drop" -gt 0 ]] || { echo "occl-held: VACUOUS (no moby dropped on a captured present)"; exit 2; }
     echo "occl-held: PASS"
+    exit 0
+fi
+if [[ "$INSTR" == tsc-vhash-memo ]]; then
+    line="$(grep '^\[tsc-vhash-memo-check final\]' "$LOG" | tail -n 1)"
+    [[ -n "$line" ]] || { echo "tsc-vhash-memo: FAIL (no [tsc-vhash-memo-check final] total in $LOG)"; exit 1; }
+    echo "tsc-vhash-memo: $GAME $line"
+    bd="$(sed -n 's/.* mismatched=\([0-9]*\).*/\1/p' <<<"$line")"
+    ck="$(sed -n 's/.* checked=\([0-9]*\).*/\1/p' <<<"$line")"
+    [[ "${bd:-1}" == 0 ]] || { echo "tsc-vhash-memo: FAIL (${bd:-?} mismatched of ${ck:-?})"; exit 1; }
+    [[ "${ck:-0}" -gt 0 ]] || { echo "tsc-vhash-memo: VACUOUS (no sector hash skipped)"; exit 2; }
+    echo "tsc-vhash-memo: PASS"
     exit 0
 fi
 if [[ "$INSTR" == sim-proj-defer ]]; then

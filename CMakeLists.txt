@@ -1413,6 +1413,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # The terrain decode cache's vertex-hash memo against the hash it skips,
+    # with the terrain cache forced on: every skipped hash is computed and
+    # compared with the stored one.
+    foreach(_vhm_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME terrain_vhash_memo_${_vhm_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_pose_cache.sh
+                         --game ${_vhm_game} --build-dir=${CMAKE_BINARY_DIR} --instrument=tsc-vhash-memo)
+        set_tests_properties(terrain_vhash_memo_${_vhm_game} PROPERTIES
+            LABELS "presentation;terrain"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Moby occlusion census. Per row of
     # games/spyro-2/corpus/moby-occlusion-corpus.manifest, three headless legs at
     # one freecam pose (extended LOD, extended LOD with the simple-kind

@@ -3775,6 +3775,7 @@ typedef struct {
     int polyanim;   /* named by an env poly-anim descriptor (vert banks animate) */
     uint8_t envModel; /* HP bank from the walker model this tick (tsc_envm_apply) */
     uint32_t vhash; /* LP+HP packed vertex words: catches an in-place rewrite */
+    unsigned vhGen; /* 1 + the guest generation a sub-tick build last found vhash current in, 0 for none */
     /* Pack-aware LP grade (tsc_lp_grade): face-weighted mean stock->pack
      * affine of this sector's HP textures. 0 = uncomputed, 1 = fit,
      * 2 = no signal (untextured/unmatched sector - level mean applies). */
@@ -7707,6 +7708,56 @@ static uint32_t tsc_vhash_check(CPUState* cpu, const tscache_t* W, const uint32_
     return vh;
 }
 
+static int s_vanim_sub;
+/* The vertex-hash memo's totals (tsc_vhash_memo): hashes skipped, and under
+ * OPENPETE_TSC_VHASH_MEMO_CHECK the skips compared and those whose hash
+ * differed from the stored one. */
+static long s_vhm_skip, s_vhm_checked, s_vhm_bad;
+
+/** @brief Print the vertex-hash memo's compare totals at exit. */
+static void tsc_vhash_memo_report(void) {
+    fprintf(stderr, "[tsc-vhash-memo-check final] skipped=%ld checked=%ld mismatched=%ld\n",
+            s_vhm_skip, s_vhm_checked, s_vhm_bad);
+}
+
+/** @brief Return the vertex hash of a signature-matched entry, skipping the hash when a sub-tick build of this guest generation already found the entry current.
+ *
+ * Between two switches into the game fiber guest memory does not change, so
+ * a sub-tick build of the same guest generation reads the same vertex words
+ * the previous one hashed (openpete_guest_generation). OPENPETE_TSC_VHASH_MEMO=0
+ * hashes every time; OPENPETE_TSC_VHASH_MEMO_CHECK=1 hashes every skip as well
+ * and counts the hashes that differ from the stored one
+ * (`[tsc-vhash-memo-check final]` at exit).
+ * @param cpu The guest CPU state.
+ * @param C The entry, its signature matching the header in RAM, not poly-animated.
+ * @param g The sector's header signature words.
+ * @param sectorPtr The sector pointer table's guest address.
+ * @param sectorCnt The sector count.
+ * @return The hash. */
+static uint32_t tsc_vhash_memo(CPUState* cpu, tscache_t* C, const uint32_t g[5],
+                               uint32_t sectorPtr, uint32_t sectorCnt) {
+    static int on = -1, chk = 0;
+    if (on < 0) {
+        const char* e = getenv("OPENPETE_TSC_VHASH_MEMO");
+        on = !(e && *e == '0');
+        const char* c = getenv("OPENPETE_TSC_VHASH_MEMO_CHECK");
+        chk = c && *c && *c != '0';
+        if (chk) atexit(tsc_vhash_memo_report);
+    }
+    const unsigned gen1 = openpete_guest_generation() + 1u;
+    if (on && s_vanim_sub && C->vhGen == gen1) {
+        s_vhm_skip++;
+        if (chk) {
+            s_vhm_checked++;
+            s_vhm_bad += tsc_vhash(cpu, C->s, g) != C->vhash;
+        }
+        return C->vhash;
+    }
+    const uint32_t vh = tsc_vhash_check(cpu, C, g, sectorPtr, sectorCnt);
+    C->vhGen = (s_vanim_sub && vh == C->vhash) ? gen1 : 0u;
+    return vh;
+}
+
 /** @brief Returns sector s's decoded cache entry, decoding it on a miss or a changed signature.
  *
  * The entry holds both tiers' vertices and faces, the colour-array bases and
@@ -7728,7 +7779,7 @@ static tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     tsc_sig_read(cpu, s, g);
     tscache_t* C = tsc_slot_of(s);
     const int sigOk = C && !memcmp(C->sig, g, sizeof g);
-    const uint32_t vh = (sigOk && !C->polyanim) ? tsc_vhash_check(cpu, C, g, sectorPtr, sectorCnt) : 0u;
+    const uint32_t vh = (sigOk && !C->polyanim) ? tsc_vhash_memo(cpu, C, g, sectorPtr, sectorCnt) : 0u;
     if (sigOk && (C->polyanim || C->vhash == vh)) {
         s_tsc_hit++; C->lastUse = s_tsc_stamp;
         if (tsc_audit_on()) tsc_audit_hit(cpu, C, g, lqTable, hqTable, texTblMode, hiDetail);
