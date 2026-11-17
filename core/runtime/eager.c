@@ -120,6 +120,8 @@ static struct {
     int       level;                  /* divisor of the span being produced: every level-th slot */
     int       pinned;                 /* OPENPETE_EAGER_LEVEL */
     int       afford_pin;             /* OPENPETE_EAGER_AFFORD: force the budget's verdict (A/B) */
+    int       count_spare;            /* OPENPETE_EAGER_COUNT_SPARE: room a clean span leaves, in scenes */
+    int       count_runs;             /* OPENPETE_EAGER_COUNT_RUNS: clean spans that give back one scene */
     int       rewarm_on;              /* OPENPETE_EAGER_REWARM (default 1): re-warm the cost averages at the world going live */
     int       live_prev;              /* world_live at the previous call that set it */
     int       warm_left;              /* scenes left in the re-warm window */
@@ -160,7 +162,8 @@ static struct {
     op_time_t span_len;               /* the open free span's length, anchor to last instant */
     op_time_t produce_end;            /* the open span's update-VBL sim deadline */
     unsigned  canon_frame;            /* openpete_frame at the last canonical, 0 after a discontinuity */
-} s_eager = { .ladder = { .level = 1, .since_short = EAGER_HEADROOM_RUNS }, .level = 1 };
+} s_eager = { .ladder = { .level = 1, .since_short = EAGER_HEADROOM_RUNS }, .level = 1,
+             .count_spare = EAGER_COUNT_SPARE, .count_runs = EAGER_COUNT_RUNS };
 
 /* Documented at the declaration in eager.h. */
 int eager_active(void) { return s_eager.active; }
@@ -196,7 +199,11 @@ int eager_hold_done(void)
  * else policy 0 (every level-th grid slot). OPENPETE_EAGER_LEVEL, when
  * nonzero, disables the adaptive level ladder, and a positive value also
  * sets the level. OPENPETE_EAGER_AFFORD pins the per-span scene budget and
- * OPENPETE_EAGER_LAG_US (microseconds) pins the lag. OPENPETE_EAGER_REWARM=0
+ * OPENPETE_EAGER_LAG_US (microseconds) pins the lag. OPENPETE_EAGER_COUNT_SPARE
+ * (scenes, default EAGER_COUNT_SPARE) sets the room a span must leave to
+ * count as clean for the free-span and fill count controllers, and
+ * OPENPETE_EAGER_COUNT_RUNS (spans, default EAGER_COUNT_RUNS) the free
+ * span's clean run that gives back one scene. OPENPETE_EAGER_REWARM=0
  * turns off the re-warm window at the world going live (eager_note_live).
  * Later calls do nothing. */
 static void eager_init(void)
@@ -215,6 +222,13 @@ static void eager_init(void)
     s_eager.lag_pin = (g && *g) ? (op_time_t)atoll(g) * 1000 : 0;
     const char *rw = getenv("OPENPETE_EAGER_REWARM");
     s_eager.rewarm_on = !(rw && *rw == '0');
+    const char *cs = getenv("OPENPETE_EAGER_COUNT_SPARE");
+    if (cs && *cs && atoi(cs) >= 0) s_eager.count_spare = atoi(cs);
+    const char *cr = getenv("OPENPETE_EAGER_COUNT_RUNS");
+    if (cr && *cr && atoi(cr) >= 1) s_eager.count_runs = atoi(cr);
+    if (s_eager.count_spare != EAGER_COUNT_SPARE || s_eager.count_runs != EAGER_COUNT_RUNS)
+        OPL_INFO_F("eager", "count controller: spare %d scene(s), clean run %d span(s)",
+                   s_eager.count_spare, s_eager.count_runs);
 }
 
 /** @brief Return the first instant of the lattice v(n) = base + n * period at or after t.
@@ -668,7 +682,7 @@ static op_time_t eager_free_span(int afford, op_time_t grid_period, eager_span_t
 {
     if (s_eager.span_free && s_eager.world_live && !s_eager.span_warm)
         op_eager_count_step(&s_eager.count, s_eager.span_cause, s_eager.span_afford, s_eager.spare,
-                            s_eager.span_made, s_eager.span_len, EAGER_COUNT_RUNS, EAGER_COUNT_SPARE,
+                            s_eager.span_made, s_eager.span_len, s_eager.count_runs, s_eager.count_spare,
                             EAGER_DRAIN_RUNS);
     if (!s_eager.pinned) s_eager.level = 1;
     return eager_span_fill(op_eager_count_plan(&s_eager.count, afford), grid_period, sp);
@@ -691,7 +705,7 @@ static void eager_fill_span(int afford, int ns)
     if (!s_eager.span_fill) memset(&s_eager.fill_count, 0, sizeof s_eager.fill_count);
     else if (s_eager.world_live && !s_eager.span_warm)
         op_eager_fill_step(&s_eager.fill_count, s_eager.span_cause, s_eager.fill_afford, s_eager.spare,
-                           EAGER_HEADROOM_RUNS, EAGER_COUNT_SPARE);
+                           EAGER_HEADROOM_RUNS, s_eager.count_spare);
     s_eager.level = 1;
     s_eager.fill_afford = afford < ns ? afford : ns;
     s_eager.fill_k = op_eager_fill_count(&s_eager.fill_count, afford, ns);
