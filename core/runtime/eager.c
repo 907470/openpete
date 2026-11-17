@@ -120,6 +120,10 @@ static struct {
     int       level;                  /* divisor of the span being produced: every level-th slot */
     int       pinned;                 /* OPENPETE_EAGER_LEVEL */
     int       afford_pin;             /* OPENPETE_EAGER_AFFORD: force the budget's verdict (A/B) */
+    int       rewarm_on;              /* OPENPETE_EAGER_REWARM (default 1): re-warm the cost averages at the world going live */
+    int       live_prev;              /* world_live at the previous call that set it */
+    int       warm_left;              /* scenes left in the re-warm window */
+    int       span_warm;              /* the open span was planned inside the re-warm window */
     int       policy;                 /* 0 divisor, 1 greedy */
     op_time_t cost_ema, cost_dev; int cost_n;   /* per-scene production cost */
     op_time_t vbl_ema;                /* cost of a non-drawing VBL on this thread */
@@ -192,7 +196,9 @@ int eager_hold_done(void)
  * else policy 0 (every level-th grid slot). OPENPETE_EAGER_LEVEL, when
  * nonzero, disables the adaptive level ladder, and a positive value also
  * sets the level. OPENPETE_EAGER_AFFORD pins the per-span scene budget and
- * OPENPETE_EAGER_LAG_US (microseconds) pins the lag. Later calls do nothing. */
+ * OPENPETE_EAGER_LAG_US (microseconds) pins the lag. OPENPETE_EAGER_REWARM=0
+ * turns off the re-warm window at the world going live (eager_note_live).
+ * Later calls do nothing. */
 static void eager_init(void)
 {
     static int inited;
@@ -207,6 +213,8 @@ static void eager_init(void)
     s_eager.afford_pin = (f && *f) ? atoi(f) : 0;
     const char *g = getenv("OPENPETE_EAGER_LAG_US");
     s_eager.lag_pin = (g && *g) ? (op_time_t)atoll(g) * 1000 : 0;
+    const char *rw = getenv("OPENPETE_EAGER_REWARM");
+    s_eager.rewarm_on = !(rw && *rw == '0');
 }
 
 /** @brief Return the first instant of the lattice v(n) = base + n * period at or after t.
@@ -644,8 +652,8 @@ static op_time_t eager_span_fill(int afford, op_time_t grid_period, eager_span_t
 /** @brief Plan a free span: step the count controller on the previous free span, re-space this one to its count, and set level 1.
  *
  * With no display grid there is no slot to skip, so the divisor ladder
- * does not run. The previous free span, closed while the world was live,
- * steps the count controller by its cut's cause (op_eager_count_step): a
+ * does not run. The previous free span, closed while the world was live
+ * and planned outside the re-warm window (span_warm), steps the count controller by its cut's cause (op_eager_count_step): a
  * deadline cut plans one scene of its afford fewer from here on, a ring cut
  * floors the spacing at the present thread's measured drain, a withheld or
  * late cut changes nothing, and a run of spans that finished with room
@@ -658,7 +666,7 @@ static op_time_t eager_span_fill(int afford, op_time_t grid_period, eager_span_t
  * @return The span's period in nanoseconds. */
 static op_time_t eager_free_span(int afford, op_time_t grid_period, eager_span_t *sp)
 {
-    if (s_eager.span_free && s_eager.world_live)
+    if (s_eager.span_free && s_eager.world_live && !s_eager.span_warm)
         op_eager_count_step(&s_eager.count, s_eager.span_cause, s_eager.span_afford, s_eager.spare,
                             s_eager.span_made, s_eager.span_len, EAGER_COUNT_RUNS, EAGER_COUNT_SPARE,
                             EAGER_DRAIN_RUNS);
@@ -668,8 +676,8 @@ static op_time_t eager_free_span(int afford, op_time_t grid_period, eager_span_t
 
 /** @brief Plan a span on a display grid under the fill cadence: step the grid's count controller and set the span's scene count.
  *
- * The previous fill span, closed while the world was live, steps the
- * controller (op_eager_fill_step: a deadline or ring cut plans one scene
+ * The previous fill span, closed while the world was live and planned
+ * outside the re-warm window (span_warm), steps the controller (op_eager_fill_step: a deadline or ring cut plans one scene
  * fewer from here on, EAGER_HEADROOM_RUNS consecutive spans with
  * EAGER_COUNT_SPARE scenes of room give every one back). A span that
  * follows a span of another planner starts the controller from zero, since
@@ -681,7 +689,7 @@ static op_time_t eager_free_span(int afford, op_time_t grid_period, eager_span_t
 static void eager_fill_span(int afford, int ns)
 {
     if (!s_eager.span_fill) memset(&s_eager.fill_count, 0, sizeof s_eager.fill_count);
-    else if (s_eager.world_live)
+    else if (s_eager.world_live && !s_eager.span_warm)
         op_eager_fill_step(&s_eager.fill_count, s_eager.span_cause, s_eager.fill_afford, s_eager.spare,
                            EAGER_HEADROOM_RUNS, EAGER_COUNT_SPARE);
     s_eager.level = 1;
@@ -874,6 +882,7 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
     eager_plan_dbg(now, first_in, span_end, period, &lat, &sp, budget, afford);
     eager_plan_record(now, &sp, period, budget, afford);
     s_eager.span_cut = 0;
+    s_eager.span_warm = s_eager.warm_left > 0;
     s_eager.span_late = s_eager.tick_late > 0;
     s_eager.span_afford = afford;
     s_eager.span_made = 0;
@@ -896,6 +905,48 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
     eager_shed_unplanned(sp.first, sp.end, grid_period, period, ns);
     eager_prof_plan(budget, afford, ns, period, grid_period, free_grid, lat.on);
     s_eager.spans++;
+}
+
+/** @brief Fold one scene's production time into the per-scene cost mean and deviation that eager_tail_cost and eager_afford read.
+ *
+ * Inside the re-warm window (eager_note_live) a scene cheaper than the mean
+ * replaces it and halves the deviation. Otherwise one stall enters the mean
+ * and the deviation at a bounded multiple of the mean
+ * (op_eager_cost_sample), the deviation's step at most the mean plus four
+ * deviations, over a 32-sample window, and the mean over an 8-sample window.
+ * @param span The scene's production time in nanoseconds. */
+static void eager_cost_note(op_time_t span)
+{
+    /* Inside the re-warm window a scene cheaper than the mean replaces it and
+     * halves the deviation: the first scenes of a level are slow, and at one
+     * scene per span an eighth per scene takes dozens of scenes to forget them. */
+    if (s_eager.warm_left > 0) {
+        s_eager.warm_left--;
+        if (s_eager.cost_n && span < s_eager.cost_ema) {
+            s_eager.cost_ema = span;
+            s_eager.cost_dev /= 2;
+            if (s_eager.cost_n < EAGER_COST_WARMUP) s_eager.cost_n++;
+            return;
+        }
+    }
+    /* One stall enters the mean and the deviation at a bounded multiple of the mean. */
+    const op_time_t sample = s_eager.cost_n ? op_eager_cost_sample(s_eager.cost_ema, span) : span;
+    if (s_eager.cost_n) {
+        op_time_t d = sample > s_eager.cost_ema ? sample - s_eager.cost_ema : s_eager.cost_ema - sample;
+        /* A sample past the bound is one stall, not the width of the cost
+         * distribution. Left whole, 8 * cost_dev outgrows the span's budget and
+         * decimates the rate until the slow window below forgets it, about two
+         * seconds after a single 140 ms scene. The bound moves with the mean, so
+         * a real rise in cost is still learned. */
+        const op_time_t d_cap = s_eager.cost_ema + 4 * s_eager.cost_dev;
+        if (d > d_cap) d = d_cap;
+        /* Slower than the mean: the deviation feeds the plan's capacity
+         * verdict, and an 8-sample window is half a tick - short enough that a
+         * single costly scene moves the level and starts a limit cycle. */
+        s_eager.cost_dev = (s_eager.cost_dev * 31 + d) / 32;
+    }
+    s_eager.cost_ema = s_eager.cost_n ? (s_eager.cost_ema * 7 + sample) / 8 : span;
+    if (s_eager.cost_n < EAGER_COST_WARMUP) s_eager.cost_n++;
 }
 
 /** @brief Extract one scene for display instant t and publish it into the scene ring.
@@ -964,24 +1015,7 @@ static void eager_produce_one(op_time_t t, int canonical)
                       canonical ? OP_PROF_CANONICAL : OP_PROF_INTERMEDIATE);
     const op_time_t span = op_now() - t0;
     openpete_pace_present_span((uint8_t)kind, t0, t0 + span, rex_ns);
-    /* One stall enters the mean and the deviation at a bounded multiple of the mean. */
-    const op_time_t sample = s_eager.cost_n ? op_eager_cost_sample(s_eager.cost_ema, span) : span;
-    if (s_eager.cost_n) {
-        op_time_t d = sample > s_eager.cost_ema ? sample - s_eager.cost_ema : s_eager.cost_ema - sample;
-        /* A sample past the bound is one stall, not the width of the cost
-         * distribution. Left whole, 8 * cost_dev outgrows the span's budget and
-         * decimates the rate until the slow window below forgets it, about two
-         * seconds after a single 140 ms scene. The bound moves with the mean, so
-         * a real rise in cost is still learned. */
-        const op_time_t d_cap = s_eager.cost_ema + 4 * s_eager.cost_dev;
-        if (d > d_cap) d = d_cap;
-        /* Slower than the mean: the deviation feeds the plan's capacity
-         * verdict, and an 8-sample window is half a tick - short enough that a
-         * single costly scene moves the level and starts a limit cycle. */
-        s_eager.cost_dev = (s_eager.cost_dev * 31 + d) / 32;
-    }
-    s_eager.cost_ema = s_eager.cost_n ? (s_eager.cost_ema * 7 + sample) / 8 : span;
-    if (s_eager.cost_n < EAGER_COST_WARMUP) s_eager.cost_n++;
+    eager_cost_note(span);
 }
 
 /** @brief Record how many more scenes the produce guard would have started when the span's plan finished.
@@ -1047,6 +1081,27 @@ static int eager_produce(op_time_t deadline, op_time_t period)
     return made;
 }
 
+/* The re-warm window's length, in scenes on this thread and in renders on the present thread. */
+#define EAGER_REWARM_SCENES 32
+
+/** @brief Record whether the world is live, opening the cost averages' re-warm window when it turns live.
+ *
+ * At a not-live to live edge (boot, a level load, a discontinuity's hold)
+ * and with OPENPETE_EAGER_REWARM on, the next EAGER_REWARM_SCENES scenes may
+ * lower the scene cost average to their own cost (eager_produce_one), and the
+ * present thread's render and present averages likewise
+ * (openpete_present_thread_rewarm).
+ * @param world_live Nonzero when canonical presents are flowing. */
+static void eager_note_live(int world_live)
+{
+    if (world_live && !s_eager.live_prev && s_eager.rewarm_on) {
+        s_eager.warm_left = EAGER_REWARM_SCENES;
+        openpete_present_thread_rewarm(EAGER_REWARM_SCENES);
+    }
+    s_eager.live_prev = world_live;
+    s_eager.world_live = world_live;
+}
+
 /** @brief Measure the VBLs since the previous canonical present.
  *
  * A guest discontinuity zeroes canon_frame, so the first canonical after one
@@ -1101,7 +1156,7 @@ void eager_canonical(op_time_t now, op_time_t slot, op_time_t period,
     /* The canonical scene, then as much of the span as fits
      * before the update VBL is due - the latter only while
      * the world is live. */
-    s_eager.world_live = world_live;
+    eager_note_live(world_live);
     eager_produce(world_live ? produce_end - 500000 : now, period);
 }
 
@@ -1112,7 +1167,7 @@ int eager_idle(int world_live, int may_produce, op_time_t deadline, op_time_t pe
      * a long producer stall) the guest is rewriting RAM and a re-extract
      * would read it mid-overwrite: the display holds the last image and no
      * scene is produced. */
-    s_eager.world_live = world_live;
+    eager_note_live(world_live);
     if (!(may_produce && world_live)) return 0;
     eager_produce(deadline, period);
     return 1;

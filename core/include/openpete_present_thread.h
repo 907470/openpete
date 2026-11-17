@@ -127,6 +127,14 @@ int64_t  openpete_present_thread_cost_ns(void);
  * @param render_ns Receives the render average in nanoseconds.
  * @param present_ns Receives the present-step average in nanoseconds. */
 void     openpete_present_thread_emas(int64_t *render_ns, int64_t *present_ns);
+/** @brief Open a re-warm window: for the next renders, a render or present cost below its average replaces the average.
+ *
+ * Called when the world goes live, so the averages a slow first scene of a
+ * level seeded fall to the steady cost at the first fast render instead of
+ * losing an eighth per render. A cost above the average enters as usual
+ * (op_eager_cost_ema). 0 closes the window.
+ * @param renders The window's length in renders. */
+void     openpete_present_thread_rewarm(int renders);
 
 #ifdef __cplusplus
 }
