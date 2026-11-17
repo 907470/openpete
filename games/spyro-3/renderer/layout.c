@@ -42,6 +42,18 @@ static const game_moby_director_t s_moby_director[] = {
     { NULL, "g_Spyro", 0u, 0u, 0x250u },
 };
 
+/* The gem lamp of Crystal Islands (class 0x2E7,
+ * asm/nonmatchings/overlays/level_41/moby/func_level_41_80086E70.s): while
+ * its gem (class 0x1D5, tag +0x0C) has a non-zero drawn byte +0x4D (:136)
+ * it keeps a glow record at tag +0x10, allocated as shape 1, size 0xFA,
+ * colour 0xC060A0 (:150-156); each tick it copies the gem's position into
+ * it (:165), subtracts 0x19 from Z (:171) and stores bias 8 (:175). With the
+ * byte 0 it frees the record (:142-145). */
+static const game_glow_synth_t s_glow_synth[] = {
+    { .cls = 0x2E7u, .child_cls = 0x1D5u, .child_off = 0x0Cu, .rec_off = 0x10u,
+      .shape = 1u, .size = 0xFAu, .bias = 8, .rgb = 0xC060A0u, .dpos = { 0, 0, -0x19 } },
+};
+
 /* Update (0x80055400) dispatches game.state 6 to UpdateCutscene and 11 to
  * the title overlay (func_title_8007566C); both draw through the model
  * table filled with their own models, so a class number names the game's
@@ -663,6 +675,8 @@ const game_layout_t spyro3_game_layout = {
         /* asm/mobyfunc.s:1964-1980: game state 4 with D_80070104 set draws
          * only the front-entry records. */
         .solo_state_addr = 0x8006E344u, .solo_state = 4u, .solo_flag = 0x80070104u,
+        .synth      = s_glow_synth,
+        .synth_n    = sizeof s_glow_synth / sizeof s_glow_synth[0],
     },
     .glint = {
         .hook       = F_GLINT_DRAW,

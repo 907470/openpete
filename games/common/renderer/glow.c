@@ -49,6 +49,13 @@
 // view a record it dropped on that test alone is drawn too unless its fan has
 // left the view's screen-X window (glow_wide_admit).
 //
+// Under extended LOD, which draws mobys past the game's own draw distances,
+// a record the routine dropped on its box or far bound alone is drawn too
+// (glow_view_verdict). Some classes hold a record only while a child moby was
+// drawn on the previous tick (game_layout.glow.synth); where the game freed
+// it and native still draws the child, the record is built natively as the
+// game writes it (glow_synth_moby). Original LOD runs neither.
+//
 // Spyro 1's own glow renderer is fed by a float re-derivation in
 // games/spyro-1/renderer/particle.c: its records carry a moby-position pointer
 // and its ring is a perspective-scaled radius, a different routine over a
@@ -78,6 +85,9 @@
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
 #include "game_layout.h"
 #include "renderer/subtick_anchor_chk.h"
+#include "renderer/moby_game.h"         /* moby_rec_holds_moby: the animated mobys native draws */
+#include "renderer/moby.h"              /* moby_native_simple_mobys: the simple mobys native draws */
+#include "no_lod.h"                     /* openpete_no_lod: the extended-LOD clauses */
 
 #include <math.h>
 #include <stdint.h>
@@ -108,7 +118,9 @@ typedef struct {
     uint32_t addr;
     int32_t  w[3];
     uint32_t packed;
+    uint32_t rgb;        /* the centre colour, low 24 bits */
     int      yaw;
+    int      synth;      /* a native glow keyed by its child moby (glow_synth_moby) */
 } glow_rec;
 
 /** @brief The signed ordering-table bias byte of a record's packed word.
@@ -249,19 +261,45 @@ static const char* const k_glow_verdict_name[] = {
 typedef struct {
     uint32_t addr;
     uint32_t packed;
+    uint32_t rgb;
+    int      synth;
     int32_t  w[3];
     double   off[3];
     double   m1, m2, m3;
 } glow_src;
 
-/** @brief Read one pool record and apply the routine's rejects to it in the routine's order.
+/** @brief Apply the routine's rejects to one record's position in the routine's order.
  *
- * A zero shape byte is a free slot (:1932); the camera-relative offset must
- * stay inside the +/-GW.box box (:1970-1988); the rotated depth must be at
- * least GW.near_z and under GW.far_z; the rotated point must stay inside the
- * view pyramid 4|X| - 3Z < GW.pyr_x and 3|Y| - Z < GW.pyr_y (:1994-2000). The
- * pyramid is the 4:3 frame widened by a margin of GW.pyr_x / 4 view units
- * laterally.
+ * The camera-relative offset must stay inside the +/-GW.box box
+ * (:1970-1988); the rotated depth must be at least GW.near_z and under
+ * GW.far_z; the rotated point must stay inside the view pyramid
+ * 4|X| - 3Z < GW.pyr_x and 3|Y| - Z < GW.pyr_y (:1994-2000). The pyramid is
+ * the 4:3 frame widened by a margin of GW.pyr_x / 4 view units laterally.
+ * With `ranged` the box and the far bound are skipped, which is the
+ * extended-LOD reading of the same tests.
+ * @param v The tick's projection view.
+ * @param r The record with its position words; receives the offset and, past
+ *        the box test, the rotation.
+ * @param ranged Nonzero to skip the box and far tests.
+ * @return The verdict. */
+static glow_verdict glow_cull(const ngte_view* v, glow_src* r, int ranged) {
+    r->off[0] = (double)r->w[0] - v->cam[0];   /* the routine's IR3 */
+    r->off[1] = v->cam[1] - (double)r->w[1];   /* IR1 */
+    r->off[2] = v->cam[2] - (double)r->w[2];   /* IR2 */
+    const double box = (double)GW.box;
+    for (int k = 0; k < 3 && !ranged; k++)
+        if (r->off[k] <= -box || r->off[k] >= box) return GLOW_V_BOX;
+    ngte_mac(v->cam_M, r->off[1], r->off[2], r->off[0], &r->m1, &r->m2, &r->m3);
+    if (r->m3 < (double)GW.near_z) return GLOW_V_NEAR;
+    if (!ranged && r->m3 >= (double)GW.far_z) return GLOW_V_FAR;
+    if (4.0 * fabs(r->m1) - 3.0 * r->m3 - (double)GW.pyr_x >= 0.0) return GLOW_V_PYR_X;
+    if (3.0 * fabs(r->m2) - r->m3 - (double)GW.pyr_y >= 0.0) return GLOW_V_PYR_Y;
+    return GLOW_V_ACCEPT;
+}
+
+/** @brief Read one pool record and apply the routine's rejects to it (glow_cull).
+ *
+ * A zero shape byte is a free slot (:1932).
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view.
  * @param s The pool slot.
@@ -270,21 +308,12 @@ typedef struct {
 static glow_verdict glow_classify(CPUState* cpu, const ngte_view* v, uint32_t s, glow_src* r) {
     r->addr = GW.pool + s * GW.stride;
     r->packed = cpu->read_word(r->addr + GW.packed_off);
+    r->synth = 0;
     if ((r->packed & GLOW_SHAPE_MASK) == 0u) return GLOW_V_FREE;
+    r->rgb = cpu->read_word(r->addr + 0x0Cu) & 0xFFFFFFu;
     for (uint32_t k = 0; k < 3u; k++)
         r->w[k] = (int32_t)cpu->read_word(r->addr + GW.pos_off + k * 4u);
-    r->off[0] = (double)r->w[0] - v->cam[0];   /* the routine's IR3 */
-    r->off[1] = v->cam[1] - (double)r->w[1];   /* IR1 */
-    r->off[2] = v->cam[2] - (double)r->w[2];   /* IR2 */
-    const double box = (double)GW.box;
-    for (int k = 0; k < 3; k++)
-        if (r->off[k] <= -box || r->off[k] >= box) return GLOW_V_BOX;
-    ngte_mac(v->cam_M, r->off[1], r->off[2], r->off[0], &r->m1, &r->m2, &r->m3);
-    if (r->m3 < (double)GW.near_z) return GLOW_V_NEAR;
-    if (r->m3 >= (double)GW.far_z) return GLOW_V_FAR;
-    if (4.0 * fabs(r->m1) - 3.0 * r->m3 - (double)GW.pyr_x >= 0.0) return GLOW_V_PYR_X;
-    if (3.0 * fabs(r->m2) - r->m3 - (double)GW.pyr_y >= 0.0) return GLOW_V_PYR_Y;
-    return GLOW_V_ACCEPT;
+    return glow_cull(v, r, 0);
 }
 
 /** @brief Whether the routine skips a live record before its cull in its front-entry-only state.
@@ -338,6 +367,8 @@ typedef struct {
 
 static int s_wide_admit;   /* fans the widened view built and fed this call */
 static int s_wide_cull;    /* fans the widened view built and culled this call */
+static int s_range_admit;  /* box- or far-culled records extended LOD fed this call */
+static int s_synth_admit;  /* native glows extended LOD fed for a freed record this call */
 
 /** @brief The camera yaw halfword the routine reads, sign-extended.
  * @param cpu The guest CPU state, read only.
@@ -391,7 +422,7 @@ static void glow_fan_build(CPUState* cpu, const ngte_view* v, const glow_src* r,
     ngte_proj ctr;
     ngte_screen_gte(r->m1, r->m2, r->m3, v->ofx, v->ofy, v, 0, &ctr);
     f->csx = ctr.sx; f->csy = ctr.sy;
-    f->rgb = cpu->read_word(r->addr + 0x0Cu) & 0xFFFFFFu;
+    f->rgb = r->rgb;
     for (uint32_t k = 0; k < GLOW_TRI_N; k++) {
         const uint16_t h = cpu->read_half(entry + 0x20u + k * 2u);
         if (h == 0u) break;
@@ -420,6 +451,8 @@ static void glow_fan_append(const glow_src* r, int yaw, const glow_fan* f) {
     rec.addr = r->addr;
     for (int k = 0; k < 3; k++) rec.w[k] = r->w[k];
     rec.packed = r->packed;
+    rec.rgb = r->rgb;
+    rec.synth = r->synth;
     rec.yaw = yaw;
     const int blend = ngte_abr_blend(1, NGTE_ABR_QUARTER_AS_ADD);   /* 0xE1000620: ABR 0b01 */
     for (int t = 0; t < f->n && s_item_n < GLOW_MAX_PRIMS; t++) {
@@ -820,17 +853,66 @@ typedef struct {
     int      first[GLOW_REC_MAX], vslot[GLOW_REC_MAX];
 } glow_capture_ctx;
 
-/** @brief Build and queue one pool record's fan when the routine draws it or the wider view reveals it.
+/** @brief Whether extended LOD feeds a record the routine dropped on its box or far test, latched on first use.
+ *
+ * On by default; OPENPETE_GLOW_RANGE with a value starting with '0' turns it
+ * off, for an A/B from one binary. Only read while extended LOD is on.
+ * @return 1 when on, else 0. */
+static int glow_range_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_GLOW_RANGE"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/** @brief The verdict the view draws a record under: the routine's, or under extended LOD the routine's tests without the box and far bounds.
+ *
+ * The routine's box and far bounds (GW.box, GW.far_z) stand inside the
+ * distance extended LOD draws mobys at. A record dropped on either is tested
+ * again by glow_cull without both, so the near and pyramid tests still apply.
+ * @param v The tick's projection view.
+ * @param r The record, re-rotated when tested again.
+ * @param g The routine's verdict.
+ * @return The verdict the view draws the record under. */
+static glow_verdict glow_view_verdict(const ngte_view* v, glow_src* r, glow_verdict g) {
+    if (g != GLOW_V_BOX && g != GLOW_V_FAR) return g;
+    if (!openpete_no_lod || !glow_range_enabled()) return g;
+    return glow_cull(v, r, 1);
+}
+
+/** @brief Queue a fan the routine did not draw when the view draws it: appended outright, or through the lateral test of a wider view.
+ *
+ * An accepted view verdict appends the fan; a lateral pyramid reject in a
+ * view wider than 4:3 goes to glow_wide_admit. Every other verdict drops it.
+ * @param v The tick's projection view.
+ * @param r The record.
+ * @param gv The verdict the view draws the record under.
+ * @param wide Nonzero in a view wider than 4:3.
+ * @param yaw The camera yaw the fan was built at.
+ * @param f Its fan.
+ * @return 1 when the fan was appended, else 0. */
+static int glow_view_admit(const ngte_view* v, const glow_src* r, glow_verdict gv, int wide, int yaw,
+                           const glow_fan* f) {
+    if (f->n <= 0) return 0;
+    if (gv == GLOW_V_ACCEPT) { glow_fan_append(r, yaw, f); return 1; }
+    if (gv != GLOW_V_PYR_X || !wide) return 0;
+    const int before = s_wide_admit;
+    glow_wide_admit(v, r, yaw, f);
+    return s_wide_admit != before;
+}
+
+/** @brief Build and queue one pool record's fan when the routine draws it or the view reveals it.
  *
  * A record the routine draws (glow_classify accepts it and glow_solo_skips
  * does not skip it) has its fan built at the tick's camera yaw and phase
- * (glow_fan_build) and appended, and counts into s_accepted. In a view wider
- * than 4:3, a record the routine rejected on its lateral pyramid test alone is
- * built too and offered to glow_wide_admit. With the cull log in range each
- * live record past the box test prints a line; with the census in range each
- * accepted record prints its owner line (glow_owner_line); with the log or
- * the probe on, an accepted record's fan at the routine's integer angle is
- * kept in the context.
+ * (glow_fan_build) and appended, and counts into s_accepted. Any other
+ * record is offered to glow_view_admit under the verdict the view draws it
+ * under (glow_view_verdict): a record the routine rejected on its lateral
+ * test in a view wider than 4:3, or one it rejected on its box or far test
+ * under extended LOD, which counts into s_range_admit when appended. With
+ * the cull log in range each live record past the box test prints a line;
+ * with the census in range each accepted record prints its owner line
+ * (glow_owner_line); with the log or the probe on, an accepted record's fan
+ * at the routine's integer angle is kept in the context.
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view.
  * @param s The pool slot.
@@ -839,12 +921,13 @@ static void glow_capture_rec(CPUState* cpu, const ngte_view* v, uint32_t s, glow
     glow_src r;
     const glow_verdict g = glow_classify(cpu, v, s, &r);
     if (g == GLOW_V_FREE || glow_solo_skips(cpu, r.packed)) return;
-    const int accept = g == GLOW_V_ACCEPT, reveal = c->wide && g == GLOW_V_PYR_X;
+    const glow_verdict gv = glow_view_verdict(v, &r, g);
+    const int accept = g == GLOW_V_ACCEPT;
     const int a = s_accepted < GLOW_REC_MAX ? s_accepted : GLOW_REC_MAX - 1;
     const char* view = "reject";
     glow_fan f = { .n = 0, .xmin = 0.0f, .xmax = 0.0f };
     c->fi[a].n = 0;
-    if (accept || reveal)
+    if (gv == GLOW_V_ACCEPT || (c->wide && gv == GLOW_V_PYR_X))
         glow_fan_build(cpu, v, &r, glow_angle((double)c->yaw, (double)((r.packed >> 16) & 0xFFu)), &f);
     if (accept) {
         c->first[a] = s_item_n;
@@ -854,10 +937,110 @@ static void glow_capture_rec(CPUState* cpu, const ngte_view* v, uint32_t s, glow
         if (glow_census_on() && s_item_n > c->first[a]) glow_owner_line(cpu, s, &r, &s_item[c->first[a]].src);
         view = "accept";
         s_accepted++;
-    } else if (reveal) {
-        view = glow_wide_admit(v, &r, c->yaw, &f);
+    } else if (glow_view_admit(v, &r, gv, c->wide, c->yaw, &f)) {
+        view = gv != g ? "range_admit" : "wide_admit";
+        s_range_admit += gv != g;
     }
     if (c->log && g >= GLOW_V_NEAR) glow_cull_log_line(v, s, g, view, &r, &f, &c->fi[a], s_accepted - 1);
+}
+
+/** @brief Whether extended LOD feeds a native glow for a freed drawn-gated record, latched on first use.
+ *
+ * On by default; OPENPETE_GLOW_SYNTH with a value starting with '0' turns it
+ * off, for an A/B from one binary. Only read while extended LOD is on.
+ * @return 1 when on, else 0. */
+static int glow_synth_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_GLOW_SYNTH"); v = !(e && *e == '0'); }
+    return v;
+}
+
+#define GLOW_SIMPLE_MAX 1024   /* simple-queue entries one capture reads */
+
+/* The mobys the simple models' queue of this tick holds, read once per
+ * capture by glow_synth_set. */
+static uint32_t s_simple[GLOW_SIMPLE_MAX];
+static int      s_simple_n;
+
+/** @brief Whether native draws a moby this tick: its animated record queue or its simple queue holds it.
+ * @param cpu The guest CPU state, read only.
+ * @param m The moby.
+ * @return 1 when drawn, else 0. */
+static int glow_native_draws(CPUState* cpu, uint32_t m) {
+    for (int i = 0; i < s_simple_n; i++)
+        if (s_simple[i] == m) return 1;
+    return moby_rec_holds_moby(cpu, m);
+}
+
+/** @brief Whether a word is a main-RAM pointer.
+ * @param a The word.
+ * @return 1 when it lies in KSEG0 main RAM, else 0. */
+static int glow_ram_ptr(uint32_t a) {
+    return a >= 0x80000000u && a < 0x80200000u;
+}
+
+/** @brief Under extended LOD, feed the glow the game frees for one drawn-gated moby whose child native draws.
+ *
+ * The game keeps the glow record only while the child's drawn byte was set
+ * (game_glow_synth_t); extended LOD draws the child where the game culls it.
+ * A moby whose tag holds a live record is skipped (the pool walk feeds it),
+ * as is one whose child is absent, of another class, or not drawn by native
+ * this tick (glow_native_draws). Otherwise the record
+ * is built as the game writes it: the class's shape, size, colour and bias,
+ * the child's position moved by dpos, and a phase that is the child's
+ * address bits 2-9, fixed while the glow is synthesized. It is keyed by the
+ * child's address, so a sub-tick present moves it with the child's own
+ * snapshots. It passes the routine's tests without the box and far bounds
+ * (glow_cull), the lateral one through glow_view_admit, and counts into
+ * s_synth_admit.
+ * @param cpu The guest CPU state, read only.
+ * @param v The tick's projection view.
+ * @param m The moby.
+ * @param k Its class's entry.
+ * @param c The capture's walk state. */
+static void glow_synth_moby(CPUState* cpu, const ngte_view* v, uint32_t m, const game_glow_synth_t* k,
+                            const glow_capture_ctx* c) {
+    const uint32_t tag = cpu->read_word(m);
+    if (!glow_ram_ptr(tag) || cpu->read_word(tag + k->rec_off) != 0u) return;
+    const uint32_t child = cpu->read_word(tag + k->child_off);
+    if (!glow_ram_ptr(child)) return;
+    if (cpu->read_half(child + game_layout.moby.class_off) != k->child_cls) return;
+    if (!glow_native_draws(cpu, child)) return;
+    glow_src r;
+    memset(&r, 0, sizeof r);
+    r.addr = child;
+    r.synth = 1;
+    r.rgb = k->rgb & 0xFFFFFFu;
+    r.packed = (uint32_t)k->shape | ((uint32_t)k->size << 8) | (((child >> 2) & 0xFFu) << 16) |
+               ((uint32_t)(uint8_t)k->bias << 24);
+    for (uint32_t i = 0; i < 3u; i++)
+        r.w[i] = (int32_t)cpu->read_word(child + game_layout.moby.pos_off + 4u * i) + k->dpos[i];
+    const glow_verdict gv = glow_cull(v, &r, 1);
+    if (gv != GLOW_V_ACCEPT && gv != GLOW_V_PYR_X) return;
+    glow_fan f;
+    glow_fan_build(cpu, v, &r, glow_angle((double)c->yaw, (double)((r.packed >> 16) & 0xFFu)), &f);
+    s_synth_admit += glow_view_admit(v, &r, gv, c->wide, c->yaw, &f);
+}
+
+/** @brief Under extended LOD, offer every live moby of a class in GW.synth to glow_synth_moby.
+ * @param cpu The guest CPU state, read only.
+ * @param v The tick's projection view.
+ * @param c The capture's walk state. */
+static void glow_synth_set(CPUState* cpu, const ngte_view* v, const glow_capture_ctx* c) {
+    if (!GW.synth_n || !openpete_no_lod || !glow_synth_enabled()) return;
+    const uint32_t head = game_layout.moby.array_head;
+    const uint32_t arr = game_layout.moby.array_direct ? head : cpu->read_word(head);
+    if (!glow_ram_ptr(arr)) return;
+    s_simple_n = moby_native_simple_mobys(s_simple, GLOW_SIMPLE_MAX);
+    for (uint32_t i = 0; i < 1024u; i++) {
+        const uint32_t m = arr + i * game_layout.moby.array_stride;
+        const uint8_t st = cpu->read_byte(m + game_layout.moby.state_off);
+        if (st == game_layout.moby.state_term) break;
+        if (st & 0x80u) continue;                       /* dormant */
+        const uint16_t cls = cpu->read_half(m + game_layout.moby.class_off);
+        for (uint32_t j = 0; j < GW.synth_n; j++)
+            if (GW.synth[j].cls == cls) glow_synth_moby(cpu, v, m, &GW.synth[j], c);
+    }
 }
 
 /** @brief Calibrate every accepted record of one capture against the routine's fans, when the walked fans count them.
@@ -878,10 +1061,11 @@ static void glow_vtx_cal_tick(const glow_capture_ctx* c) {
                 sum[0] / n, sum[1] / n);
 }
 
-/** @brief Build and queue the fan of every record the routine drew, and of every record a wider view reveals.
+/** @brief Build and queue the fan of every record the routine drew, of every record the view reveals, and of every glow extended LOD synthesizes.
  *
- * Walks the pool in slot order through glow_capture_rec, then calibrates the
- * capture (glow_vtx_cal_tick).
+ * Walks the pool in slot order through glow_capture_rec, then the drawn-gated
+ * classes through glow_synth_set, then calibrates the capture
+ * (glow_vtx_cal_tick).
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view. */
 static void glow_capture_set(CPUState* cpu, const ngte_view* v) {
@@ -891,6 +1075,7 @@ static void glow_capture_set(CPUState* cpu, const ngte_view* v) {
     c.vtx = glow_vtx_on();
     c.yaw = glow_cam_yaw(cpu);
     for (uint32_t s = 0; s < GW.slots; s++) glow_capture_rec(cpu, v, s, &c);
+    glow_synth_set(cpu, v, &c);
     glow_vtx_cal_tick(&c);
 }
 
@@ -984,8 +1169,9 @@ static void glow_mark_sparx(CPUState* cpu) {
  * OPENPETE_GLOW_CENSUS=LO-HI (or a single VBL): per call in that range, the
  * primitives the routine appended by GPU code, the fans its draw-mode packets
  * delimit, the records the pool walk says it drew, the fans the widened view
- * built and fed or culled, the triangles queued and the native triangles this
- * feeder emitted. fans != accepted names a call whose drawn set the pool walk
+ * built and fed or culled, the box- or far-culled records extended LOD fed,
+ * the native glows extended LOD fed for freed records, the triangles queued
+ * and the native triangles this feeder emitted. fans != accepted names a call whose drawn set the pool walk
  * mispredicts. A capture whose fed count is zero measured nothing.
  * @param start First polybuf address of the routine's output.
  * @param end One past the last.
@@ -998,8 +1184,10 @@ static void glow_census(uint32_t start, uint32_t end, uint32_t fed_before) {
     memset(seen, 0, sizeof seen);
     for (int i = 0; i < s_guest_n; i++) seen[s_guest[i].code]++;
     for (int c = 0; c < 256; c++) if (seen[c]) fprintf(stderr, " %02X:%u", c, seen[c]);
-    fprintf(stderr, " tris=%d fans=%d accepted=%d wide_admit=%d wide_cull=%d fed_tris=%u\n",
-            s_item_n, s_groups, s_accepted, s_wide_admit, s_wide_cull, s_fed_tris - fed_before);
+    fprintf(stderr, " tris=%d fans=%d accepted=%d wide_admit=%d wide_cull=%d range_admit=%d"
+                    " synth_admit=%d fed_tris=%u\n",
+            s_item_n, s_groups, s_accepted, s_wide_admit, s_wide_cull, s_range_admit, s_synth_admit,
+            s_fed_tris - fed_before);
 }
 
 /* ---- sub-tick present ---------------------------------------------------- */
@@ -1021,16 +1209,40 @@ static void glow_census(uint32_t start, uint32_t end, uint32_t fed_before) {
 static unsigned long s_reb_stat[2];   /* 0 lerped, 1 snapped */
 static double        s_reb_worldmax;  /* the largest per-tick world step paired */
 
+/** @brief The byte offset of a record's position words in the snapshot its key names: the pool record's, or for a synthesized glow its child moby's.
+ * @param r The record.
+ * @return The offset. */
+static uint32_t glow_rec_pos_off(const glow_rec* r) {
+    return r->synth ? game_layout.moby.pos_off : GW.pos_off;
+}
+
+/** @brief Whether two snapshots of a record's key hold the same glow: the pool record's GLOW_PACKED_STABLE bytes agree; a synthesized glow's key is its child moby, which carries no packed word.
+ * @param r The record.
+ * @param o The key's snapshots.
+ * @param dphase Receives the phase change toward the previous snapshot, unscaled.
+ * @return 1 when the pair is the same glow, else 0. */
+static int glow_rec_same(const glow_rec* r, const openpete_interp_obj_t* o, double* dphase) {
+    *dphase = 0.0;
+    if (r->synth) return 1;
+    if ((uint32_t)o->blob_len < GW.packed_off + 4u) return 0;
+    uint32_t pp, cp;
+    memcpy(&pp, o->prev + GW.packed_off, 4);
+    memcpy(&cp, o->curr + GW.packed_off, 4);
+    if ((pp & GLOW_PACKED_STABLE) != (cp & GLOW_PACKED_STABLE)) return 0;
+    *dphase = (double)(int8_t)(uint8_t)(((pp >> 16) - (cp >> 16)) & 0xFFu);
+    return 1;
+}
+
 /** @brief Compute a record's world displacement and phase change between the pose the tick drew and the pose this present shows.
  *
- * Reads the record's previous snapshot from the interp object table and
- * blends toward it by 1 - alpha. The phase change is the previous snapshot's
- * phase byte minus the current snapshot's, as a signed byte, so it is the
- * routine's per-draw step whichever side of the draw the snapshots are taken.
- * Returns 0 with a zero offset and phase change for a record with no previous
- * snapshot, a snapshot blob too short for the position and packed words,
- * snapshots more than one and a half tick periods apart, packed words whose
- * GLOW_PACKED_STABLE bytes differ, or a displacement beyond
+ * Reads the previous snapshot of the record's key from the interp object
+ * table and blends toward it by 1 - alpha. The phase change is the previous
+ * snapshot's phase byte minus the current snapshot's, as a signed byte, so it
+ * is the routine's per-draw step whichever side of the draw the snapshots are
+ * taken; a synthesized glow's phase is fixed. Returns 0 with a zero offset
+ * and phase change for a record with no previous snapshot, a snapshot blob
+ * too short for the position words, snapshots more than one and a half tick
+ * periods apart, a pair glow_rec_same rejects, or a displacement beyond
  * GLOW_REUSE_CEILING.
  * @param r The record as the tick read it.
  * @param alpha The present's position in the tick interval, 1 at its end.
@@ -1042,26 +1254,25 @@ static int glow_record_offset(const glow_rec* r, double alpha, double off[3], do
     *dphase = 0.0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(r->addr);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
-    if ((uint32_t)o->blob_len < GW.pos_off + 12u ||
-        (uint32_t)o->blob_len < GW.packed_off + 4u) return 0;
+    const uint32_t po = glow_rec_pos_off(r);
+    if ((uint32_t)o->blob_len < po + 12u) return 0;
     if (o->curr_ns - o->prev_ns >
         g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2) return 0;
-    uint32_t pp, cp;
-    memcpy(&pp, o->prev + GW.packed_off, 4);
-    memcpy(&cp, o->curr + GW.packed_off, 4);
-    if ((pp & GLOW_PACKED_STABLE) != (cp & GLOW_PACKED_STABLE)) return 0;
-    int32_t pw[3];
-    memcpy(pw, o->prev + GW.pos_off, 12);
+    double step;
+    if (!glow_rec_same(r, o, &step)) return 0;
+    int32_t pw[3], cw[3];   /* a synthesized glow steps by its child's own pair */
+    memcpy(pw, o->prev + po, 12);
+    memcpy(cw, o->curr + po, 12);
     double d[3], sq = 0.0;
     for (int k = 0; k < 3; k++) {
-        d[k] = (double)pw[k] - (double)r->w[k];
+        d[k] = (double)pw[k] - (r->synth ? (double)cw[k] : (double)r->w[k]);
         sq += d[k] * d[k];
     }
     if (sq > GLOW_REUSE_CEILING * GLOW_REUSE_CEILING) return 0;
     if (sqrt(sq) > s_reb_worldmax) s_reb_worldmax = sqrt(sq);
     const double rest = 1.0 - alpha;
     for (int k = 0; k < 3; k++) off[k] = d[k] * rest;
-    *dphase = (double)(int8_t)(uint8_t)(((pp >> 16) - (cp >> 16)) & 0xFFu) * rest;
+    *dphase = step * rest;
     return 1;
 }
 
@@ -1106,6 +1317,8 @@ static int glow_shown(const ngte_view* v, const glow_rec* rec, double alpha, con
     const int paired = glow_record_offset(rec, alpha, off, &dphase);
     r->addr = rec->addr;
     r->packed = rec->packed;
+    r->rgb = rec->rgb;
+    r->synth = rec->synth;
     for (int k = 0; k < 3; k++) r->w[k] = rec->w[k];
     const double p[3] = { (double)rec->w[0] + off[0], (double)rec->w[1] + off[1],
                           (double)rec->w[2] + off[2] };
@@ -1195,7 +1408,7 @@ static void glow_item_place(glow_item* it, const glow_fan* f) {
  * @param v The present's view. */
 static void glow_sac(const glow_rec* rec, const glow_fan* f, const ngte_view* v) {
     const double cw[3] = { rec->w[0], rec->w[1], rec->w[2] };
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(rec->addr);
+    const openpete_interp_obj_t* o = rec->synth ? NULL : openpete_interp_objs_find(rec->addr);
     if (!o || !o->have_prev || o->curr_ns <= o->prev_ns ||
         o->curr_ns - o->prev_ns > g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2 ||
         (uint32_t)o->blob_len < GW.pos_off + 12u) {
@@ -1350,9 +1563,9 @@ static const hook_bracket_desc k_bracket = {
  * address differs from GW.ra_guard when the layout names one. A taken call
  * empties the queued set, retiring the previous epoch's set first when it
  * is the epoch's first call (cut_held_sets_capture). When the routine
- * appended anything, or the view is wider than 4:3, or the cull log is on,
- * the pool is walked under the tick's view and every drawn record's fan is
- * built (glow_capture_set). The routine's primitives are walked only for the
+ * appended anything, or the view is wider than 4:3, or extended LOD is on,
+ * or the cull log is on, the pool is walked under the tick's view and every
+ * drawn record's fan is built (glow_capture_set). The routine's primitives are walked only for the
  * census, the cull log and the vertex probe. The set is fed natively when it
  * holds anything, the scene is live and RP_GLOW is selected; a non-empty set
  * from a call that appended nothing marks RP_GLOW drawn
@@ -1373,14 +1586,15 @@ static int on_glow_draw(CPUState* cpu, uint32_t addr) {
 
     cut_held_sets_capture(&s_sets);
     s_item_n = 0; s_guest_n = 0; s_groups = 0; s_accepted = 0; s_wide_admit = 0; s_wide_cull = 0;
+    s_range_admit = 0; s_synth_admit = 0;
     s_epoch++;
     const uint32_t fed_before = s_fed_tris;
     const int log = glow_cull_log_on();
     if (endp > startp && (glow_census_on() || log || glow_vtx_on()))
         glow_capture_guest(cpu, startp, endp);
-    /* A view wider than 4:3 can show a fan the routine emitted nothing for,
-     * so it walks the pool even after an empty call. */
-    if (endp > startp || ngte_view_extended(cpu) || log) {
+    /* A view wider than 4:3, or extended LOD, can show a fan the routine
+     * emitted nothing for, so either walks the pool even after an empty call. */
+    if (endp > startp || ngte_view_extended(cpu) || openpete_no_lod || log) {
         ngte_view view;
         ngte_view_build(cpu, &view);
         glow_capture_set(cpu, &view);

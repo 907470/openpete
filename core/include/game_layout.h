@@ -113,6 +113,25 @@ typedef struct env_anim_sublist {
     uint8_t  model;      /* ENV_ANIM_MODEL_*: the walker's closed form */
 } env_anim_sublist_t;
 
+/* One moby class whose glow record the game allocates only while a child
+ * moby was drawn on the previous tick, and frees otherwise. The moby's tag
+ * (the word at moby +0x00) holds the child pointer at `child_off` and the
+ * glow record pointer at `rec_off`; the child is of class `child_cls`. While
+ * the record is live the game writes it with shape `shape`, size `size`,
+ * colour `rgb` and ordering-table bias `bias`, at the child's position
+ * moved by `dpos`. */
+typedef struct game_glow_synth {
+    uint16_t cls;
+    uint16_t child_cls;
+    uint8_t  child_off;
+    uint8_t  rec_off;
+    uint8_t  shape;
+    uint8_t  size;
+    int8_t   bias;
+    uint32_t rgb;
+    int32_t  dpos[3];
+} game_glow_synth_t;
+
 /* One moby placement marker: a moby of class `cls` whose state byte goes
  * from `state_prev` to `state_curr` between two ticks was placed by the
  * game's code, not moved, on that tick. `state_prev` 0xFF matches any
@@ -1128,7 +1147,11 @@ typedef struct game_layout {
      * `solo_flag` (non-zero) while the word at `solo_state_addr` equals
      * `solo_state`, it draws only the records whose bias is `front_bias` and
      * leaves the phase unchanged; `solo_flag` = 0 on a game without that
-     * branch. */
+     * branch.
+     *
+     * `synth` lists the `synth_n` moby classes whose glow record the game
+     * allocates only while a child moby was drawn (game_glow_synth_t);
+     * NULL on a game with none. */
     struct {
         uint32_t hook;
         uint32_t ra_guard;
@@ -1144,6 +1167,8 @@ typedef struct game_layout {
         uint32_t shape_table;
         uint32_t cam_yaw_off;
         uint32_t solo_state_addr, solo_state, solo_flag;
+        const game_glow_synth_t* synth;
+        uint32_t synth_n;
     } glow;
 
     /* The gem glint: one screen-facing four-point star, or a plain cross
