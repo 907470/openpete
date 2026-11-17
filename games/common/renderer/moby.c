@@ -8923,9 +8923,10 @@ static void class_colour_tally_report(const class_colour_tally_t* t) {
 }
 
 /* One moby's walk-triangle precision under OPENPETE_MOBY_VERIFY_MOBY=<hex
- * Moby address>: the walk triangles keyed to that moby and how many of them
- * the one-to-one match paired with a captured prim. moby 0 = off. */
-typedef struct { uint32_t moby; long n, matched; } moby_prec_tally_t;
+ * Moby address>: the walk triangles keyed to that moby, how many of them the
+ * one-to-one match paired with a captured prim, and how many had candidate
+ * pairs the match could not hold. moby 0 = off. */
+typedef struct { uint32_t moby; long n, matched, unheld; } moby_prec_tally_t;
 /** @brief Start a one-moby precision tally, its Moby read once from OPENPETE_MOBY_VERIFY_MOBY.
  *
  * @param t The tally, zeroed; moby 0 when the variable is unset or empty. */
@@ -8940,19 +8941,101 @@ static void moby_prec_tally_begin(moby_prec_tally_t* t) {
  *
  * @param t The tally.
  * @param moby The triangle's moby key.
- * @param matched Nonzero when the match paired the triangle with a prim. */
-static void moby_prec_tally_add(moby_prec_tally_t* t, uint32_t moby, int matched) {
+ * @param matched Nonzero when the match paired the triangle with a prim.
+ * @param held Zero when the match dropped some of the triangle's candidate pairs. */
+static void moby_prec_tally_add(moby_prec_tally_t* t, uint32_t moby, int matched, int held) {
     if (!t->moby || moby != t->moby) return;
-    t->n++; t->matched += (matched != 0);
+    t->n++; t->matched += (matched != 0); t->unheld += (held == 0);
 }
 /** @brief Print the one-moby precision line to stderr; nothing when the tally is off.
  *
+ * A moby with no walk triangle, or with a walk triangle whose candidate
+ * pairs the match did not hold, gets a refusal line in place of a
+ * percentage, since an unscored triangle would count as unmatched.
  * @param t The tally. */
 static void moby_prec_tally_report(const moby_prec_tally_t* t) {
     if (!t->moby) return;
+    if (!t->n) {
+        fprintf(stderr, "[moby-verify-moby %s vbl=%u m=%08X] REFUSED: no walk triangle of this moby "
+                "in the pass; no precision\n", s_cur_mat, openpete_frame, t->moby);
+        return;
+    }
+    if (t->unheld) {
+        fprintf(stderr, "[moby-verify-moby %s vbl=%u m=%08X] REFUSED: walkTris=%ld of which %ld had "
+                "candidate pairs the match could not hold; no precision\n",
+                s_cur_mat, openpete_frame, t->moby, t->n, t->unheld);
+        return;
+    }
     fprintf(stderr, "[moby-verify-moby %s vbl=%u m=%08X] walkTris=%ld matched=%ld precision=%.1f%%\n",
             s_cur_mat, openpete_frame, t->moby, t->n, t->matched,
-            t->n ? 100.0 * (double)t->matched / (double)t->n : 0.0);
+            100.0 * (double)t->matched / (double)t->n);
+}
+
+/* One admissible walk/prim triangle pairing of the one-to-one match. */
+typedef struct { float c; int w, p; } walk_prim_pair_t;
+
+/** @brief Order two walk/prim pairs by cost, then walk index, then prim index.
+ *
+ * The index keys make the order total, so the greedy assignment is the same
+ * on every libc.
+ * @param a The first pair.
+ * @param b The second pair.
+ * @return Negative, zero or positive as a sorts before, with or after b. */
+static int walk_prim_pair_cmp(const void* a, const void* b) {
+    const walk_prim_pair_t* x = (const walk_prim_pair_t*)a;
+    const walk_prim_pair_t* y = (const walk_prim_pair_t*)b;
+    if (x->c != y->c) return x->c < y->c ? -1 : 1;
+    if (x->w != y->w) return x->w < y->w ? -1 : 1;
+    return (x->p > y->p) - (x->p < y->p);
+}
+
+/** @brief Assign walk triangles to prim triangles one to one, cheapest admissible pair first.
+ *
+ * Taking each walk triangle's own nearest prim lets several walk triangles
+ * claim one prim, which on a cluster of sub-pixel triangles pairs faces that
+ * are not counterparts and then scores their colours against each other. So
+ * every pair whose centroids lie within 32 px and whose tri_match_cost is at
+ * most 4 px is collected, ranked by walk_prim_pair_cmp, and taken in that
+ * order, each side once. The pair pool grows with the pairs found, so every
+ * walk triangle's candidates are held; when it cannot grow, the walk
+ * triangles from the returned index on hold no pair and are left unassigned.
+ * Reads s_wtri and s_ptri.
+ * @param wn The walk triangle count.
+ * @param pn The prim triangle count, at most MAX_PTRI.
+ * @param assign Receives the prim triangle index per walk triangle, -1 when unassigned.
+ * @return The first walk triangle whose pairs were not held; wn when every one was. */
+static int assign_walk_to_prims(int wn, int pn, int* assign) {
+    static walk_prim_pair_t* pool; static size_t poolcap;
+    size_t np = 0;
+    int unheld_from = wn;
+    for (int wi=0; wi<wn && unheld_from==wn; wi++) {
+        const ntri_t* w=&s_wtri[wi];
+        double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
+        for (int pi=0; pi<pn; pi++) {
+            double pcx=(s_ptri[pi].x[0]+s_ptri[pi].x[1]+s_ptri[pi].x[2])/3.0;
+            double pcy=(s_ptri[pi].y[0]+s_ptri[pi].y[1]+s_ptri[pi].y[2])/3.0;
+            if (fabs(pcx-wcx)>32.0||fabs(pcy-wcy)>32.0) continue;
+            double c=tri_match_cost(w,&s_ptri[pi]);
+            if (c>4.0) continue;
+            if (np == poolcap) {
+                size_t ncap = poolcap ? poolcap * 2u : 4096u;
+                walk_prim_pair_t* grown = (walk_prim_pair_t*)realloc(pool, sizeof *pool * ncap);
+                if (!grown) { unheld_from = wi; break; }
+                pool = grown; poolcap = ncap;
+            }
+            pool[np].c=(float)c; pool[np].w=wi; pool[np].p=pi; np++;
+        }
+    }
+    /* A walk triangle cut off mid-scan holds only part of its pairs. */
+    while (np > 0 && pool[np-1].w >= unheld_from) np--;
+    qsort(pool, np, sizeof *pool, walk_prim_pair_cmp);
+    for (int wi=0; wi<wn; wi++) assign[wi] = -1;
+    char ptaken[MAX_PTRI]; memset(ptaken,0,(size_t)pn);
+    for (size_t i=0;i<np;i++)
+        if (assign[pool[i].w] < 0 && !ptaken[pool[i].p]) {
+            assign[pool[i].w] = pool[i].p; ptaken[pool[i].p] = 1;
+        }
+    return unheld_from;
 }
 
 /** @brief Match the walked triangles to the captured prims and print the topology and colour A/B to stderr.
@@ -9008,8 +9091,10 @@ static const int* compare_walk_vs_prims(void) {
        * [pbox] - every walk triangle with a vertex in the same PSX-screen box,
        * with the material words the feeder emitted. Diffing a [wbox] line
        * against the [pbox] line at the same position names which word (colour,
-       * texture page, CLUT, blend) the two sides disagree on. Latched per
-       * pass, like [pbox]. */
+       * texture page, CLUT, blend) the two sides disagree on. Walk positions
+       * print to 0.01 px: a match rebuilt offline from integer-rounded walk
+       * positions moves pairs across the 4 px cost bound. Latched per pass,
+       * like [pbox]. */
         static int s_wb = -1; static int wx0,wy0,wx1,wy1;
         if (s_wb < 0) { const char* e = getenv("OPENPETE_MOBY_WALKBOX");
             s_wb = 0;
@@ -9028,7 +9113,7 @@ static const int* compare_walk_vs_prims(void) {
                         w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->bpp, w->blend,
                         (unsigned)s_wtri_special[wi]);
                 for (int k = 0; k < 3; k++)
-                    fprintf(stderr, " (%.0f,%.0f)%06X[%.2f,%.2f]{%.1f,%.1f,%.1f}",
+                    fprintf(stderr, " (%.2f,%.2f)%06X[%.2f,%.2f]{%.1f,%.1f,%.1f}",
                             w->v[k].sx, w->v[k].sy, w->v[k].rgb & 0xFFFFFFu,
                             w->v[k].u, w->v[k].v, w->v[k].ex, w->v[k].ey, w->v[k].ez);
                 fprintf(stderr, "\n");
@@ -9057,38 +9142,9 @@ static const int* compare_walk_vs_prims(void) {
     int won=0, wmatch_on=0, won_un=0;   /* on-screen walk tris / matched / unmatched-onscreen */
     #define ONSCR(cx,cy) ((cx)>=0.0&&(cx)<=512.0&&(cy)>=0.0&&(cy)<=240.0)
     char pmatched[MAX_PTRI]; if(pn>MAX_PTRI)pn=MAX_PTRI; memset(pmatched,0,pn);
-    /* ONE-TO-ONE assignment, walk tri <-> prim tri. Taking each walk tri's own
-     * nearest prim lets several walk tris claim one prim, which on a cluster of
-     * sub-pixel triangles pairs faces that are not counterparts and then scores
-     * their colours against each other. Rank every admissible pair by cost and
-     * assign in that order, each side used once. */
-    {
-        typedef struct { float c; int w, p; } pair_t;
-        static pair_t* pool; static int poolcap;
-        int need = wn * 8; if (need < 1024) need = 1024;
-        if (need > poolcap) { pool = (pair_t*)realloc(pool, sizeof(pair_t)*(size_t)need); poolcap = need; }
-        int np = 0;
-        for (int wi=0; wi<wn; wi++) {
-            s_assign[wi] = -1;
-            const ntri_t* w=&s_wtri[wi];
-            double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
-            for (int pi=0; pi<pn && np<poolcap; pi++) {
-                double pcx=(s_ptri[pi].x[0]+s_ptri[pi].x[1]+s_ptri[pi].x[2])/3.0;
-                double pcy=(s_ptri[pi].y[0]+s_ptri[pi].y[1]+s_ptri[pi].y[2])/3.0;
-                if (fabs(pcx-wcx)>32.0||fabs(pcy-wcy)>32.0) continue;
-                double c=tri_match_cost(w,&s_ptri[pi]);
-                if (c<=4.0) { pool[np].c=(float)c; pool[np].w=wi; pool[np].p=pi; np++; }
-            }
-        }
-        /* insertion-free ordering: the pool is small, sort by cost */
-        for (int i=1;i<np;i++){ pair_t t=pool[i]; int j=i-1;
-            while (j>=0 && pool[j].c>t.c) { pool[j+1]=pool[j]; j--; } pool[j+1]=t; }
-        char ptaken[MAX_PTRI]; memset(ptaken,0,pn);
-        for (int i=0;i<np;i++)
-            if (s_assign[pool[i].w] < 0 && !ptaken[pool[i].p]) {
-                s_assign[pool[i].w] = pool[i].p; ptaken[pool[i].p] = 1;
-            }
-    }
+    /* One-to-one walk/prim assignment (assign_walk_to_prims); walk tris from
+     * unheld_from on were not scored. */
+    int unheld_from = assign_walk_to_prims(wn, pn, s_assign);
     for (int wi=0;wi<wn;wi++){
         ntri_t* w=&s_wtri[wi];
         double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
@@ -9105,7 +9161,7 @@ static const int* compare_walk_vs_prims(void) {
         if (won_this) won++;
         int ap = s_assign[wi];
         if (ap >= 0) { bp = ap; best = tri_match_cost(w, &s_ptri[ap]); }
-        moby_prec_tally_add(&vmob, s_wtri_moby[wi], ap >= 0);
+        moby_prec_tally_add(&vmob, s_wtri_moby[wi], ap >= 0, wi < unheld_from);
         if (ap >= 0){
             wmatch++; pmatched[bp]=1; wcost_sum += best;
             if (won_this) wmatch_on++;
@@ -9241,6 +9297,10 @@ static const int* compare_walk_vs_prims(void) {
         s_wdiag[0].coinc_pairs, s_wdiag[0].coinc_pulls);
     fprintf(stderr, "[moby-walk-special vbl=%u] pairedChannels=%ld meanErr=%.2f maxErr=%ld\n",
             openpete_frame, spc_n, spc_n ? (double)spc_sum/(double)spc_n : 0.0, spc_max);
+    if (unheld_from < wn)
+        fprintf(stderr, "[moby-walk %s vbl=%u] REFUSED: the pair pool could not grow; walk tris %d..%d "
+                "were not scored, so precision, recall and colour above are lower bounds\n",
+                s_cur_mat, openpete_frame, unheld_from, wn - 1);
     class_colour_tally_report(&vcls);
     moby_prec_tally_report(&vmob);
     #undef ONSCR
