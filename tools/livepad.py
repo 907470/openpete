@@ -164,8 +164,11 @@ def q(v: float) -> int:
 # 573 fast-boot VBLs), each at a sub-VBL fraction. Then the first VBL the
 # player controls Spyro in the first level.
 PREFIX = {
-    # games/spyro-1/bk2/start-new-game.bk2
-    "spyro-1": ([(327, "a"), (380, "a"), (485, "a"), (526, "a")], 3760),
+    # games/spyro-1/bk2/start-new-game.bk2: its row r is read at
+    # openpete_vbl r + 436 (the first pad read follows 436 boot VBLs). The
+    # intro plays out; Spyro is placed in Artisans at VBL 4709 and the
+    # level-entry fly-in ends before 4900.
+    "spyro-1": ([(r + 436, "a") for r in (327, 380, 485, 526)], 4900),
     # games/spyro-2/bk2/start-new-game-cutscene-skip.bk2
     "spyro-2": ([(v, "a") for v in (1157, 1387, 1514, 1625, 1646, 1684, 1726, 1837, 1872, 1911, 1946)], 2340),
     # games/spyro-3/bk2/new-game-title.bk2, then Cross every 30 VBLs through

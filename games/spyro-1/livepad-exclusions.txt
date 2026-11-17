@@ -5,20 +5,22 @@
 # stick mapping) and at more, which this list does not cover. Regenerate the
 # record sets with `tools/livepad.py divergences <verify.log>` after a change
 # the run shows to move them, keeping each reason.
-g_CDMaxReadTime 0-28,1557-1652,1665-1788,1792-1857,1862-1874,2043-2071 drive state (cd_load_transient) at boot, the level load and the record-2043 drive activity; the Spyro 1 recipe records no drive schedule (.cdirq, .cdsync)
-g_CdState 0-28,1557-1874,2043-2071 drive state (cd_load_transient) at boot, the level load and the record-2043 drive activity; the Spyro 1 recipe records no drive schedule (.cdirq, .cdsync)
-libcd_CdLastCom 0-30,1557-1652,1665-1788,1792-1857,1862-1874,2043-2073 drive state (cd_load_transient) at boot, the level load and the record-2043 drive activity; the Spyro 1 recipe records no drive schedule (.cdirq, .cdsync)
-g_CDReadTime 1-28,1558-1652,1666-1788,1793-1857,1863-1874,2044-2071 drive state (cd_load_transient) at boot, the level load and the record-2043 drive activity; the Spyro 1 recipe records no drive schedule (.cdirq, .cdsync)
-g_Spu 1,30,1561-1791,2043,2045-2074,2224-2233,2949 SPU voice state (cd_load_transient) around boot, the level load and the record-2043 drive activity
-g_CdMusic_head 1-29,2043-2072 music stream ring (cd_load_transient) at boot and the record-2043 drive activity
-g_CdMusic_tail 1-29,2043-2072 music stream ring (cd_load_transient) at boot and the record-2043 drive activity
-g_TitlescreenState 1-30,2043-2186,2222-2271,2273-2275,2277-2279,2281-2283,2285-2287,2289-2291,2293-2295,2297-2299,2301-2303,2305-2307,2309-2311,2313-2315,2317-2319,2321-2323,2325-2327,2329-2331,2333-2335,2337-2339,2341-2343,2345-2347,2349-2351,2353-2355,2357-2359,2361-2363,2365-2367,2369-2371,2373-2375,2377-2379,2381-2383,2385-2387,2389-2391,2393-2395,2397-2399,2401-2403,2405-2407,2409-2411,2413-2415,2417-2419,2421-2423,2425-2427,2429-2431,2433-2435,2437-2439,2441-2443,2445-2447,2449-2451,2453-2455,2457-2459,2461-2463,2465-2467,2469-2471,2473-2475,2477-2479,2481-2483,2485-2487,2489-2491,2493-2495,2497-2499,2501-2503,2505-2507,2509-2511,2513-2515,2517-2519,2521-2523,2525-2527,2529-2531,2533-2535,2537-2539,2541-2543,2545-2547,2549-2551,2553-2555,2557-2559,2561-2563,2565-2567,2569-2571,2573-2575,2577-2579,2581-2583,2585-2587,2589-2591,2593-2595,2597-2599,2601-2603,2605-2607,2609-2611,2613-2615,2617-2619,2621-2623,2625-2627,2629-2631,2633-2635,2637-2639,2641-2643,2645-2647,2649-2651,2653-2655,2657-2659,2661-2663,2665-2667,2669-2671,2673-2675,2677-2679,2681-2683,2685-2687,2689-2691,2693-2695,2697-2699,2701-2703,2705-2707,2709-2711,2713-2715,2717-2719,2721-2723,2725-2727,2729-2731,2733-2735,2737-2739,2741-2743,2745-2747,2749-2751,2753-2755,2757-2759,2761-2763,2765-2767,2769-2771,2773-2775,2777-2779,2781-2783,2785-2787,2789-2791,2793-2795,2797-2799,2801-2803,2805-2807,2809-2811,2813-2815,2817-2819,2821-2823,2825-2827,2829-2831,2833-2835,2837-2839,2841-2843,2845-2847,2849-2851,2853-2855,2857-2859,2861-2863,2865-2867,2869-2871,2873-2875,2877-2879,2881-2883,2885-2887,2889-2891,2893-2895,2897-2899,2901-2903,2905-2907,2909-2911,2913-2915,2917-2919,2921-2923,2925-2927,2929-2931,2933-2935,2937-2939,2941-2943,2945-2949 title and level-state struct (cd_load_transient): the Spyro 1 clock row's g_TitlescreenState bursts outside load spans, not diagnosed here
-g_LoadStage 1558-1877 the level load (cd_load_transient)
-level_tables 1561-1860 the level load (cd_load_transient)
-g_NewCyclorama 1561-1791 the level load (cd_load_transient)
-g_Environment_g_Buffers 1561-1860 the level load (cd_load_transient)
-main_bss_800772c8 1852,2063 g_Pad bytes the reference's kernel polls during a streaming load's blocked VBLs (the pad-model carve-out of ram_diff_expect.toml)
-g_DynMobys_pool 2043-2065 moby pool at the record-2043 drive activity (cd_load_transient)
-g_Sparx_moby 2043-2065 Sparx's moby at the record-2043 drive activity (cd_load_transient)
-render_prim_cursor 2044-2090,2224-2227,2232-2235,2949 render scratch (gameplay_neutral)
-main_bss_80077888 2045-2074,2224-2227,2949 g_CutsceneSoundDef from the record-2043 drive activity on, not diagnosed here
+g_CDMaxReadTime 0-28,284-383,386-404,407-574,2138-2227,2240-2355,2359-2421,2426-2446 drive state (cd_load_transient) at boot, the intro cutscene load (records 284-576) and the Artisans load (records 2138-2448); the Spyro 1 recipe records no drive schedule (.cdirq, .cdsync)
+g_CdState 0-28,284-574,2138-2446 drive state (cd_load_transient) at boot, the intro cutscene load (records 284-576) and the Artisans load (records 2138-2448); the Spyro 1 recipe records no drive schedule (.cdirq, .cdsync)
+libcd_CdLastCom 0-30,284-383,386-404,407-574,2138-2227,2240-2355,2359-2421,2426-2446 drive state (cd_load_transient) at boot, the intro cutscene load (records 284-576) and the Artisans load (records 2138-2448); the Spyro 1 recipe records no drive schedule (.cdirq, .cdsync)
+g_CDReadTime 1-28,285-383,387-404,408-574,2139-2227,2241-2355,2360-2421,2427-2446 drive state (cd_load_transient) at boot, the intro cutscene load (records 284-576) and the Artisans load (records 2138-2448); the Spyro 1 recipe records no drive schedule (.cdirq, .cdsync)
+g_Spu 1,30,228-237,2142-2358 SPU voice state (cd_load_transient) at boot, the title-menu Cross presses (records 228-237) and the Artisans load
+g_CdMusic_head 1-29 music stream ring (cd_load_transient) at boot
+g_CdMusic_tail 1-29 music stream ring (cd_load_transient) at boot
+g_TitlescreenState 1-30,226-243,245-247,249-251,253-255,257-259,261-263 title and level-state struct (cd_load_transient) at boot and after the first title-menu Cross press: the Spyro 1 clock row's g_TitlescreenState bursts outside load spans, not diagnosed here
+render_prim_cursor 228-231,236-239 render scratch (gameplay_neutral)
+main_bss_80077888 228-231 g_CutsceneSoundDef at the first title-menu Cross press, not diagnosed here
+g_LoadStage 285-576,2139-2448 the intro cutscene load and the Artisans load (cd_load_transient)
+g_NewCyclorama 286-406,2142-2358 the intro cutscene load and the Artisans load (cd_load_transient)
+g_Environment_g_Buffers 286-406,2142-2424 the intro cutscene load and the Artisans load (cd_load_transient)
+main_bss_800786c4 286-406 g_FairyCutscene during the intro cutscene load, on the records g_NewCyclorama diverges (load timing; the recipe records no drive schedule)
+g_DeltaTime 386-387 VBLs per tick (cd_load_transient) on two records inside the intro cutscene load
+g_UnprocessedFrames 386 ticks owed on one record inside the intro cutscene load, beside g_DeltaTime (load timing)
+level_tables 2142-2424 the Artisans load (cd_load_transient)
+main_sbss_80075890 2142-2358 sbss state during the Artisans load, on the records g_NewCyclorama diverges (load timing; the recipe records no drive schedule)
+main_bss_80078608 2142-2358 g_SpyroFlame and g_Cyclorama during the Artisans load, on the records g_NewCyclorama diverges (load timing; the recipe records no drive schedule)
