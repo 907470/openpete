@@ -17,6 +17,7 @@
 #   tests/harness/check_presentation_golden.sh [--build-dir=DIR] [--filter=SUBSTR]
 #                                        [--freecam-filter=SUBSTR] [--bless]
 #                                        [--repeat=N] [--list] [--game SLUG]
+#                                        [--env OPENPETE_NAME=VALUE]...
 #   tests/harness/check_presentation_golden.sh --verdict-only DIR [--game SLUG]
 #   tests/harness/check_presentation_golden.sh --materialize-ref [--game SLUG]
 #                                        [--tier T] [--at REV] <tile>...
@@ -56,6 +57,18 @@
 #                       re-baseline the identity leg, instead of gating
 #     --game            game slug (default spyro-1); binary, disc, bk2 dir,
 #                       manifests and golden all derive from it
+#     --env OPENPETE_NAME=VALUE
+#                       forward one game knob to every capture leg
+#                       (repeatable), for an A/B against the golden. Without
+#                       it no OPENPETE_* variable of the caller's environment
+#                       reaches the game: the run prints each one once as
+#                       harness (read by these scripts), forwarded or dropped
+#                       (scripts/presentation-game.sh, game knobs). A run
+#                       with --env records the knobs in
+#                       <candidate>/forwarded-knobs.txt and its report's
+#                       forwarded-knobs line; it takes no --bless or
+#                       --verdict-only, and presentation-corpus-promote.sh
+#                       refuses its candidate directory.
 #     --environment-accept=REASON
 #                       with --bless: admit a capture environment that departs
 #                       from the manifest header (scripts/presentation-blessed.py,
@@ -181,6 +194,7 @@ REPEAT=""          # --repeat=N: repeat copies per selected row
 BUILD_ARG=""
 ENV_ACCEPT=""
 VERDICT_ONLY=""     # candidate directory decided without a capture
+KNOBS=()            # --env OPENPETE_NAME=VALUE: game knobs forwarded to every leg
 next_verdict=0
 pending=""          # a value option given as two words (--filter SUBSTR): the option awaiting its value
 for a in "$@"; do
@@ -194,10 +208,11 @@ for a in "$@"; do
   --list) LIST=1;;
   --build-dir=*) BUILD_ARG="$a";;
   --environment-accept=*) ENV_ACCEPT="${a#--environment-accept=}";;
+  --env=*) KNOBS+=("${a#--env=}");;
   --verdict-only) next_verdict=1;;
   --verdict-only=*) VERDICT_ONLY="${a#--verdict-only=}";;
   --game=*) ;;        # read by pg_parse_game below
-  --filter|--freecam-filter|--repeat|--build-dir|--environment-accept|--game) pending="$a";;
+  --filter|--freecam-filter|--repeat|--build-dir|--environment-accept|--game|--env) pending="$a";;
   *) echo "[presentation-golden] FAIL: unknown argument '$a' (an ignored --filter would capture the whole corpus)"; exit 64;;
 esac; done
 if [[ -n "$pending" ]]; then
@@ -208,6 +223,12 @@ if (( next_verdict )) || [[ "$*" == *--verdict-only* && -z "$VERDICT_ONLY" ]]; t
 fi
 if [[ -n "$VERDICT_ONLY" && ( $BLESS -eq 1 || $LIST -eq 1 || -n "$FILTER" || -n "$FREECAM_FILTER" || -n "$REPEAT" ) ]]; then
   echo "[presentation-golden] FAIL: --verdict-only takes no --bless, --list, --filter, --freecam-filter or --repeat"; exit 1
+fi
+if (( ${#KNOBS[@]} )); then
+  why="$(pg_knob_check "${KNOBS[@]}")" || { echo "[presentation-golden] FAIL: $why"; exit 1; }
+  if [[ $BLESS -eq 1 || -n "$VERDICT_ONLY" ]]; then
+    echo "[presentation-golden] FAIL: --env takes no --bless or --verdict-only (a forwarded knob makes the run an A/B, never a golden)"; exit 1
+  fi
 fi
 # Row selection per corpus leg. One filter selects in every leg; a
 # --freecam-filter replaces it for the freecam leg. A leg the scoped run
@@ -244,6 +265,13 @@ if (( LIST )); then
     if (( CREDITS_ON )); then echo "[credits] select credits-interp"; else echo "[credits] not selected by the filter"; fi
   fi
   exit 0
+fi
+# Every OPENPETE_* variable is reported once, here on the host side; the
+# in-image run reports only the knobs it forwards or drops.
+if pg_in_capture_image; then
+  pg_knob_screen --no-harness-rows presentation-golden "${KNOBS[@]}"
+else
+  pg_knob_screen presentation-golden "${KNOBS[@]}"
 fi
 if ! pg_in_capture_image; then
   if [[ -n "$VERDICT_ONLY" ]]; then
@@ -372,6 +400,7 @@ vr_finish() {
     echo "credits-rc: $crc"
     echo "identity-rc: $irc"
     echo "diff-rc: $drc"
+    echo "forwarded-knobs: $(pg_knobs_recorded "$OUT")"
     echo "docs-pairs-rc: ${prc:-}"
     if (( PG_REPEAT )); then
       echo "repeat: $PG_REPEAT"
@@ -461,6 +490,8 @@ vr_verdict() {
     echo "  deliberate change: tests/harness/presentation-ident-check.py $OUT --bless --baseline $PG_IDENT_BASELINE"
     [[ $drc -eq 0 ]] && vr_finish 1
   fi
+  local knobs; knobs="$(pg_knobs_recorded "$OUT")"
+  [[ -n "$knobs" ]] && echo "[presentation-golden] A/B: captured with forwarded knobs $knobs; this verdict is not the stock configuration's and the candidate is not promotable"
   if [[ $drc -ne 0 ]]; then
     echo "[presentation-golden] FAIL: candidate diverged from golden."
     echo "  Candidate images kept in: $OUT"
@@ -507,6 +538,8 @@ elif [[ ! -e .git ]]; then
 fi
 python3 scripts/presentation-blessed.py capture-record "$GAME" --tier "$PG_TIER" "$OUT" --build-dir "$BUILD_DIR" "${FIELDS_ARG[@]}" \
   || { echo "[presentation-golden] FAIL: capture record not written"; exit 1; }
+rm -f "${OUT:?}/$PG_KNOBS_FILE"
+(( ${#KNOBS[@]} )) && printf '%s\n' "${KNOBS[@]}" >"$OUT/$PG_KNOBS_FILE"
 
 # Capture at the compiled DEFAULT depth encoding (now screen-affine), so the
 # golden tracks whatever ships. The depth A/B is a separate manual tool

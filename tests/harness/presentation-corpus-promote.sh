@@ -51,6 +51,9 @@
 # so candidate_dir lies under one of them. Exit 64 when no container engine
 # is present.
 #
+# A candidate directory holding forwarded-knobs.txt (a capture run with
+# check_presentation_golden.sh --env) is refused: its tiles are an A/B.
+#
 # After running, review `git -C <openpete> diff --cached` and commit deliberately.
 #
 # Exit: 0 promoted or nothing to promote; 1 refused; 2 usage; 64 no container
@@ -68,6 +71,13 @@ if [[ -n "$rec_game" && " $* " != *" --game "* && " $*" != *" --game="* ]]; then
   set -- "$@" --game "$rec_game"
 fi
 if [[ -n "$rec_tier" && -z "${PRESENTATION_TIER:-}" ]]; then export PRESENTATION_TIER="$rec_tier"; fi
+# A capture that forwarded game knobs (check_presentation_golden.sh --env) is
+# an A/B, not the stock configuration a golden row records.
+rec_knobs="$(pg_knobs_recorded "${1:-}")"
+if [[ -n "$rec_knobs" ]]; then
+  echo "[promote] REFUSED: ${1:-} was captured with forwarded knobs $rec_knobs (its $PG_KNOBS_FILE); promote only a stock capture"
+  exit 1
+fi
 
 if ! pg_in_capture_image; then
   pg_enter_capture_image --no-engine tests/harness/presentation-corpus-promote.sh "$@"

@@ -123,6 +123,15 @@ and the hook refuses a staged path there, naming the configure it needs.
 `game <game> --oracle` passes `OPENPETE_FRAME_LIMIT` into the container
 when it is set (the reduced smoke run, which has no level-load coverage).
 
+The presentation golden captures the stock configuration: no `OPENPETE_*`
+variable of the caller's environment reaches the game, and the run prints
+each one as `harness`, `forwarded` or `dropped`. An A/B against the golden
+names each game knob with `--env`, for example
+`tests/harness/check_presentation_golden.sh --game spyro-1 --filter portal-handover --env OPENPETE_SNAP_MIN_PX=0`.
+Such a run records the knobs in the candidate's `forwarded-knobs.txt`; it
+takes no `--bless`, and `presentation-corpus-promote.sh` refuses its
+candidate.
+
 ## Native build
 
 ### Linux (Ubuntu / Debian-flavored)

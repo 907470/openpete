@@ -81,12 +81,15 @@ rs_init() {
 }
 
 # The capture settings a row's tiles depend on beyond the binary and tree.
+# The game knobs a gate forwards (PG_KNOBS_KEY, pg_knob_screen) are one of
+# them; a stock run's line carries no knobs field.
 # args: kind affine
 rs_params() {
+  local knobs="${PG_KNOBS_KEY:+ knobs=$PG_KNOBS_KEY}"
   case "$1" in
-    bk2) echo "kind=bk2 game=$PG_GAME tier=$PG_TIER affine=$2 aspect=$PG_CAP_ASPECT lods=$PG_CAP_LODS samples=$PG_MAX_SAMPLES";;
-    freecam) echo "kind=freecam game=$PG_GAME tier=$PG_TIER affine=$2 aspect=$PG_CAP_ASPECT lods=$PG_CAP_LODS start=$PG_FREECAM_START";;
-    *) echo "kind=$1 game=$PG_GAME tier=$PG_TIER";;
+    bk2) echo "kind=bk2 game=$PG_GAME tier=$PG_TIER affine=$2 aspect=$PG_CAP_ASPECT lods=$PG_CAP_LODS samples=$PG_MAX_SAMPLES$knobs";;
+    freecam) echo "kind=freecam game=$PG_GAME tier=$PG_TIER affine=$2 aspect=$PG_CAP_ASPECT lods=$PG_CAP_LODS start=$PG_FREECAM_START$knobs";;
+    *) echo "kind=$1 game=$PG_GAME tier=$PG_TIER$knobs";;
   esac
 }
 

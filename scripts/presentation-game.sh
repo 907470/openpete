@@ -180,6 +180,71 @@ pg_enter_capture_image() {  # [--no-build|--no-engine] script args...
     "--build-dir=$PG_CONTAINER_BUILD_DIR" "${args[@]}"
 }
 
+# ---- game knobs --------------------------------------------------------------
+#
+# A gate verdict is about the stock configuration, so an OPENPETE_* variable
+# in the gate's environment never reaches the game: outside the image the
+# capture container passes only the harness variables in (scripts/
+# golden-capture-container.sh), and inside it pg_knob_screen unsets every
+# other one. A knob reaches every capture leg only when the run names it with
+# `--env KEY=VALUE`; such a run is an A/B, its candidate directory holds
+# forwarded-knobs.txt, and a bless or promote from it is refused.
+#
+# PG_HARNESS_VARS matches the OPENPETE_* names the harness scripts and the
+# capture wrapper read or set themselves; they are not game knobs.
+PG_HARNESS_VARS='^OPENPETE_(BIN|DISC|CAP_ASPECT|CAP_LODS|MAX_SAMPLES|FREECAM_START|MANIFEST_DRY_RUN|FRAME_LIMIT|CAPTURE_[A-Z0-9_]+|CONTAINER_ENGINE|RESUME_RUN|STREAM_FILE|STREAM_POKE|GOLDEN_REF_DIR|GOLDEN_LOCK_HELD|FLEET_ROOT|HARNESS_REAL_DISPLAY|NO_COMMITS|SANDBOX|SANDBOX_CACHE|SANDBOX_PARENT|CARD_DIR|VIBRATION|THREAD_ROLE_FATAL|TOOLS_DIR|RELEASE_ARCHIVE_DIR)$'
+PG_KNOBS_FILE=forwarded-knobs.txt
+
+# Check the --env KEY=VALUE arguments: KEY an OPENPETE_* name outside
+# PG_HARNESS_VARS, each named once. Prints the reason and returns 1 on the
+# first bad one. args: KEY=VALUE...
+pg_knob_check() {
+  local kv k; local -A seen=()
+  for kv in "$@"; do
+    k="${kv%%=*}"
+    if [[ "$kv" != *=* || ! "$k" =~ ^OPENPETE_[A-Z0-9_]+$ ]]; then
+      echo "--env takes OPENPETE_<NAME>=<value> (got '$kv')"; return 1; fi
+    if [[ "$k" =~ $PG_HARNESS_VARS ]]; then
+      echo "--env $k: a harness variable, not a game knob; set it in the environment"; return 1; fi
+    [[ -z "${seen[$k]:-}" ]] || { echo "--env $k given twice"; return 1; }
+    seen[$k]=1
+  done
+}
+
+# Print each OPENPETE_* variable of this environment once, as harness,
+# forwarded or dropped, then unset the dropped ones and export the forwarded
+# ones, so every capture leg started after this inherits exactly the --env
+# set. Exports PG_KNOBS_KEY, the sorted KEY=VALUE list (empty for a stock run),
+# which the resume stamps carry. --no-harness-rows leaves the harness rows
+# out, for the in-image run of a gate whose host side printed them.
+# args: [--no-harness-rows] tag KEY=VALUE...
+pg_knob_screen() {
+  local hrows=1; [[ "$1" == --no-harness-rows ]] && { hrows=0; shift; }
+  local tag="$1" kv k; shift
+  local -A fwd=()
+  for kv in "$@"; do fwd[${kv%%=*}]="${kv#*=}"; done
+  while IFS= read -r k; do
+    [[ -n "$k" ]] || continue
+    if [[ -n "${fwd[$k]+x}" ]]; then continue
+    elif [[ "$k" =~ $PG_HARNESS_VARS ]]; then (( hrows )) && echo "[$tag] env $k: harness"
+    else echo "[$tag] env $k: dropped (a gate captures the stock configuration; --env $k=<value> forwards it)"
+      unset "$k"
+    fi
+  done < <(compgen -e | grep '^OPENPETE_' | sort)
+  for kv in "$@"; do
+    echo "[$tag] env ${kv%%=*}: forwarded to every capture leg (--env), value '${kv#*=}'"
+    export "${kv%%=*}=${kv#*=}"
+  done
+  export PG_KNOBS_KEY; PG_KNOBS_KEY="$(printf '%s\n' "$@" | sed '/^$/d' | sort | paste -sd, -)"
+}
+
+# Print the forwarded-knob list a candidate directory recorded (empty for a
+# stock capture). args: dir
+pg_knobs_recorded() {
+  [[ -s "$1/$PG_KNOBS_FILE" ]] && paste -sd, "$1/$PG_KNOBS_FILE"
+  return 0
+}
+
 # Append the engine's Vulkan device line (`[rhi/vk] device='<name>' ...
 # driver-info='<info>'`) from a capture log to OUTDIR/capture-device.txt, from
 # which scripts/presentation-blessed.py reads the Mesa and device strings a
