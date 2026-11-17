@@ -205,3 +205,6 @@ scorchs_pit@fillcull | pos=(11888, 96432, 24944) yaw=-810 pitch=-20 | 3700 | OPE
 # the second beyond the gem's draw distance.
 crystal_islands@lampglow-band | pos=(61247, 51039, 12218) yaw=1335 pitch=114 | 2000 | --player-pose 61548,51382,11770,0
 crystal_islands@lampglow-far | pos=(62687, 49176, 12391) yaw=1335 pitch=114 | 2000 | --player-pose 61548,51382,11770,0
+# sgt_byrds_base@byrdpose: Sgt. Byrd's head and propeller differ from the reference; at VBL 3700 his walk triangles
+# pair with a game prim of the same tick at 22.9%, the frame's other mobys at 77-92% (OPENPETE_MOBY_VERIFY_MOBY).
+sgt_byrds_base@byrdpose | pos=(65679, 63980, 10584) yaw=-1802 pitch=-129 | 3700 | OPENPETE_FREECAM_AT_VBL=3500 --bk2 games/spyro-3/bk2/area-dismiss.bk2
