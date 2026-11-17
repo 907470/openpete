@@ -33,6 +33,8 @@ openpete_add_game(spyro-1
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro1_symbols.toml
     MOD_SDK
     SOURCES
+        # The builds a disc of this game can hold (openpete_disc_build.h).
+        disc_builds.c
         main.cpp
         psyq_hooks.cpp
 

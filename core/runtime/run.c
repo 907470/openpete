@@ -4,6 +4,7 @@
 // main pumps the window and a worker runs the loop; a build without PsyCross
 // opens a window that only clears and presents.
 
+#include "openpete_disc_build.h"
 #include "openpete_audio_feed_report.h"
 #include "openpete_bugreport.h"
 #include "openpete_bugreport_replay.h"
@@ -2971,13 +2972,14 @@ static int run_on_sim(const openpete_options_t* opts) OP_REQUIRES(sim) {
 
 int openpete_run(const openpete_options_t* opts) {
     /* main reaches this through a function pointer, so `sim` is acquired
-     * here rather than in main. The time init group and the game layout are
-     * complete (the options parse re-read the clock's knobs; the game build
+     * here rather than in main. The time init group, the game layout and
+     * the registered disc builds are complete (the options parse re-read the clock's knobs; the game build
      * was installed) and sealed before any thread that reads them starts. */
     op_role_boot_acquire();
     op_time_init();
     op_seal(time);
     op_seal(game_layout);
+    op_seal(disc_builds);
     const int rc = run_on_sim(opts);
     op_role_boot_release();
     return rc;

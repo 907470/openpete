@@ -9,6 +9,7 @@
 // real values; the descriptor leaves the hooks the game does not implement
 // NULL.
 
+#include "openpete_disc_build.h"
 #include "game_extras.h"
 #include "game_host_desc.h"
 #include "launcher_assets.h"
@@ -242,6 +243,9 @@ static const game_host_desc_t k_host = {
     .assets          = &k_assets,
 };
 
+/* The builds a disc of this game can hold (disc_builds.c). */
+extern const openpete_disc_build_row_t spyro2_disc_builds[];
+
 /* The disc image the User docs pin, labelled by name in the library. */
 static const openpete_launcher_known_disc k_known_discs[] = {
     {"b3fd9fdb24b115fee4583dbe3c36ab788fd8679fb4592dbec8736392dec64551",
@@ -280,6 +284,7 @@ const openpete_game_runtime_t spyro2_game_runtime = {
     .loop_anchor_pc       = 0x8001B140u,
     .known_discs          = k_known_discs,
     .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
+    .disc_builds          = spyro2_disc_builds,
     .consume_pc           = 0x8001271Cu,
     .replay_sites         = k_replay_sites,
     .replay_site_count    = (int)(sizeof k_replay_sites / sizeof k_replay_sites[0]),

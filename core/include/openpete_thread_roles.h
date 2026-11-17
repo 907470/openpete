@@ -391,6 +391,7 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     SEAL(time, "c:openpete_time.c@F@parse_slack_env") /* thread-roles: called by the two above */ \
     SEAL(time, "c:openpete_time.c@F@parse_census_env") /* thread-roles: called by the two above */ \
     SEAL(game_layout, "c:@F@openpete_game_runtime_register") /* thread-roles: copies the descriptor's layout */ \
+    SEAL(disc_builds, "c:@F@openpete_disc_build_add_rows") /* thread-roles: the process entry registers every linked game's rows */ \
     SEAL(psk, "c:portal_sky_s23.c@F@psk_sched_init") /* thread-roles: creates the portal-sky lock and conditions before the worker */
 
 /* ACCESSOR(usr): a partitioned accessor or a module's lock wrapper, whose

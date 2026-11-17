@@ -78,6 +78,9 @@ typedef struct openpete_game_runtime {
     /* The disc images the launcher's library labels by content hash. */
     const struct openpete_launcher_known_disc* known_discs;   /* NULL: none */
     int known_disc_count;
+    /* The builds of the game a disc can hold (openpete_disc_build.h),
+     * ended by a row with no serial. */
+    const struct openpete_disc_build_row* disc_builds;   /* NULL: none */
 
     /* Host-loop hooks (game_extras.h). */
     void     (*on_boot)(CPUState* cpu);

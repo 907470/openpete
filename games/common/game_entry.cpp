@@ -8,6 +8,7 @@
 
 #include <SDL3/SDL_main.h>
 
+#include "openpete_disc_build.h"
 #include "game_build.h"
 #include "game_pick.h"
 #include "launcher_assets.h"
@@ -163,6 +164,12 @@ int main(int argc, char** argv) {
      * replaces it, so the guard is enforced exactly when the caller set
      * OPENPETE_SANDBOX. A bug-report replay rebuilds the command line from
      * the bundle before the game is chosen from it. */
+    /* Every linked game's known disc builds, before the launcher's library
+     * (openpete_game_pick) or the boot classifies a disc of any of them. */
+    for (size_t i = 0; i < openpete_game_build_count; i++) {
+        const openpete_game_runtime_t* rt = openpete_game_builds[i]->runtime;
+        if (rt) openpete_disc_build_add_rows(rt->disc_builds);
+    }
     (void)openpete_paths_sandbox();
     if (const int rrc = openpete_bugreport_replay_prepare(&argc, &argv)) return rrc;
     if (const int src = openpete_paths_sandbox_guard(argc, argv)) return src;

@@ -47,6 +47,7 @@
 // and the title path's image read (GAMESTATE_LOADING_IMG, 5) both go through
 // it and both complete in the iteration that issued them.
 
+#include "openpete_disc_build.h"
 #include "game_extras.h"
 #include "game_host_desc.h"
 #include "launcher_assets.h"
@@ -418,6 +419,9 @@ static const game_host_desc_t k_host = {
     .assets          = &k_assets,
 };
 
+/* The builds a disc of this game can hold (disc_builds.c). */
+extern const openpete_disc_build_row_t spyro3_disc_builds[];
+
 /* The disc image the User docs pin, labelled by name in the library. */
 static const openpete_launcher_known_disc k_known_discs[] = {
     {"a313c9b1306a08e950edddc152280a443796e68052c8e0454b5d76d69354d157",
@@ -459,6 +463,7 @@ const openpete_game_runtime_t spyro3_game_runtime = {
     .loop_anchor_pc       = 0x80055400u,
     .known_discs          = k_known_discs,
     .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
+    .disc_builds          = spyro3_disc_builds,
     .consume_pc           = 0x8003A584u,
     .replay_sites         = k_replay_sites,
     .replay_site_count    = (int)(sizeof k_replay_sites / sizeof k_replay_sites[0]),

@@ -17,6 +17,8 @@ openpete_add_game(spyro-3
     MOBY_GAME        ${CMAKE_SOURCE_DIR}/games/common/renderer/moby_game_spyro23.c
     PLAYER_GAME      ${CMAKE_SOURCE_DIR}/games/common/renderer/player_game_spyro23.c
     SOURCES
+        # The builds a disc of this game can hold (openpete_disc_build.h).
+        disc_builds.c
         skip_to_level.c
         # The moby ops of the mod content registry.
         mods/mod_moby_ops.c

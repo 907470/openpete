@@ -8,7 +8,6 @@
 #include "openpete_error_ids.h"
 #include "openpete_fatal.h"
 #include "openpete_log.h"
-#include "openpete_osd.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -48,8 +47,5 @@ int openpete_disc_build_boot_check(const char* disc_path, const char* game_exe_f
         return -1;
     }
     OPL_WARN_F("disc", "%s %s", msg, openpete_error_ref(OP_E_DISC_BUILD));
-    char toast[OPENPETE_OSD_TEXT_MAX];
-    openpete_disc_build_toast(&b, toast, sizeof toast);
-    openpete_osd_notify("host", "disc.build", OPENPETE_OSD_TIMEOUT_MAX_MS, "%s", toast);
     return 0;
 }

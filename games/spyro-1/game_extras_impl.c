@@ -9,6 +9,7 @@
 // Disc image: games/spyro-1/spyro-1/build/SCUS-94228.cue
 // Disc BIN SHA256: fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37
 
+#include "openpete_disc_build.h"
 #include "game_extras.h"
 #include "game_host_desc.h"
 #include "launcher_assets.h"
@@ -841,6 +842,9 @@ static const game_host_desc_t k_host = {
     .assets          = &k_assets,
 };
 
+/* The builds a disc of this game can hold (disc_builds.c). */
+extern const openpete_disc_build_row_t spyro1_disc_builds[];
+
 /* The README-pinned retail NTSC-U disc, labelled by name in the library. */
 static const openpete_launcher_known_disc k_known_discs[] = {
     {"fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37",
@@ -890,6 +894,7 @@ const openpete_game_runtime_t spyro1_game_runtime = {
     .loop_anchor_pc       = 0x8001ED5Cu,
     .known_discs          = k_known_discs,
     .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
+    .disc_builds          = spyro1_disc_builds,
     .consume_pc           = 0x8003385Cu,
     .replay_sites         = k_replay_sites,
     .replay_site_count    = (int)(sizeof k_replay_sites / sizeof k_replay_sites[0]),

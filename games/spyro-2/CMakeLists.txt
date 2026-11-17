@@ -16,6 +16,8 @@ openpete_add_game(spyro-2
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro2_symbols.toml
     MOD_SDK
     SOURCES
+        # The builds a disc of this game can hold (openpete_disc_build.h).
+        disc_builds.c
         skip_to_level.c
         # The moby ops of the mod content registry.
         mods/mod_moby_ops.c

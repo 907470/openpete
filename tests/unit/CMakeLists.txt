@@ -1038,6 +1038,9 @@ add_executable(disc_build_test
     disc_build_test.c
     ${CMAKE_SOURCE_DIR}/core/psx/disc_build.c
     ${CMAKE_SOURCE_DIR}/core/psx/disc_build_boot.c
+    ${CMAKE_SOURCE_DIR}/games/spyro-1/disc_builds.c
+    ${CMAKE_SOURCE_DIR}/games/spyro-2/disc_builds.c
+    ${CMAKE_SOURCE_DIR}/games/spyro-3/disc_builds.c
     ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
     ${CMAKE_SOURCE_DIR}/core/psx/disc_cache.c
     ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp

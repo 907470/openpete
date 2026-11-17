@@ -144,7 +144,7 @@ See [Mods](../customizing/mods.md).
 The save was made with a different set of mods. See
 [Saves](../playing/saves.md) for adopting it.
 
-### The game warns "Unsupported disc" or crashes soon after starting
+### The game crashes soon after starting, or the log names OP-E-DISC-BUILD
 
 The disc is not the build OpenPete runs. See
 [Unsupported discs](../getting-started/dumping-your-disc.md#unsupported-discs).
@@ -184,4 +184,4 @@ column gives the start of the text, or a box's text.
 | <a id="op-e-card-bad"></a>`OP-E-CARD-BAD` | card N: ... is not a 128 KiB card image | The card file has the wrong size or an unknown header. It was renamed to `<name>.bad-N` and a new card made in its place. | To use the old saves, convert the renamed file to a raw 128 KiB `.mcr` and put it back under the card's name ([Saves](../playing/saves.md)). |
 | <a id="op-e-card-readonly"></a>`OP-E-CARD-READONLY` | card N: ... is a ... image; loaded read-only | The card file is a DexDrive `.gme`, VGS `.mem` or PSP/PS3 `.vmp` image. It loads, and saves to it are refused. | Convert it to a raw 128 KiB `.mcr` with a memory card tool. |
 | <a id="op-e-card-write"></a>`OP-E-CARD-WRITE` | card N: the save could not be written | Writing the card file failed: the disk is full, the folder is read-only, or another program holds the file. | Free disk space or close the other program, then save again. The card keeps its contents from before the failed save. |
-| <a id="op-e-disc-build"></a>`OP-E-DISC-BUILD` | This disc is ... OpenPete runs only ... | The disc is not the build OpenPete runs: a PAL or NTSC-J release, another version of a supported release (such as Spyro: Year of the Dragon revision 1.1), or a modified image ([Unsupported discs](../getting-started/dumping-your-disc.md#unsupported-discs)). A disc of another region does not start; another version or a modified image starts after the warning and is expected to crash. | Make an image of the NTSC-U disc the game's page names, and check its hash ([Dumping your disc](../getting-started/dumping-your-disc.md#checking-the-dump)). |
+| <a id="op-e-disc-build"></a>`OP-E-DISC-BUILD` | This disc is ... OpenPete supports only ... | The disc is not the build OpenPete runs: a PAL or NTSC-J release, another version of a supported release (such as Spyro: Year of the Dragon revision 1.1), or a modified image ([Unsupported discs](../getting-started/dumping-your-disc.md#unsupported-discs)). A disc of another region does not start; another version or a modified image starts and is expected to crash. | Make an image of the NTSC-U disc the game's page names, and check its hash ([Dumping your disc](../getting-started/dumping-your-disc.md#checking-the-dump)). |

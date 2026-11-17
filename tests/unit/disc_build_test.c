@@ -1,19 +1,20 @@
 /* tests/unit/disc_build_test.c - disc build classification.
  *
- * Classifies synthetic SYSTEM.CNF texts and executables into every class
- * and warning: supported (the decomp checkouts' Spyro 1 and Spyro 2
- * executables, which are the discs' own), a supported serial with another
- * executable (a flipped byte; the decomp's Spyro 3 build, which patches the
- * word at 0x8004F6B0 and so has the shape of an unknown revision), PAL and
- * NTSC-J serials on file and not, another NTSC-U serial, and no SYSTEM.CNF,
- * no BOOT line or no executable. Checks the BOOT-line parser, the player
- * message and the toast text of each, then writes raw images (supported,
- * altered, a PAL boot path, no SYSTEM.CNF) and runs the image reader
- * and the boot check on them, with the toast and the fatal message
- * stubbed. With OPENPETE_DISC_BUILD_REAL=1 it also classifies the three
- * checkouts' discs and prints the time of each read; OPENPETE_DISC_BUILD_V11
- * names a Spyro: Year of the Dragon revision 1.1 image to classify as the
- * recognised revision. */
+ * Registers the three games' build rows (games/<game>/disc_builds.c), then
+ * classifies synthetic SYSTEM.CNF texts and executables into every class
+ * and warning: supported (the decomp checkouts' executables, under their
+ * own boot name and under PSX.EXE), a supported serial with another
+ * executable (a flipped byte, the shape of an unknown revision), a
+ * supported executable under another game's serial, PAL and NTSC-J serials
+ * on file and not, another NTSC-U serial, a non-Sony boot name, and no
+ * SYSTEM.CNF, no BOOT line or no executable. Checks the BOOT-line parser and
+ * the player message of each, then writes raw images (supported, altered,
+ * PSX.EXE, a PAL boot path, no SYSTEM.CNF) and runs the image reader and
+ * the boot check on them, with the fatal message stubbed. With
+ * OPENPETE_DISC_BUILD_REAL=1 it also classifies the three checkouts' discs
+ * and prints the time of each read; OPENPETE_DISC_BUILD_V11 names a Spyro:
+ * Year of the Dragon revision 1.1 image to classify as the recognised
+ * revision. */
 #include "openpete_disc_build.h"
 #include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
@@ -47,18 +48,9 @@ void openpete_logf(openpete_log_level_t level, const char* subsystem, const char
     (void)level; (void)subsystem; (void)fmt;
 }
 
-static int  s_toasts, s_fatals;
-static char s_last_toast[256], s_last_fatal[1024];
+static int  s_fatals;
+static char s_last_fatal[1024];
 
-/** @brief Toast stub: counts the posts and keeps the last text. */
-void openpete_osd_notify(const char* source, const char* key, uint32_t timeout_ms, const char* fmt, ...) {
-    (void)source; (void)key; (void)timeout_ms;
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(s_last_toast, sizeof s_last_toast, fmt, ap);
-    va_end(ap);
-    s_toasts++;
-}
 /** @brief Fatal message stub: counts the reports and keeps the last message. */
 void openpete_fatal_message(openpete_error_t err, const char* title, const char* msg) {
     (void)err; (void)title;
@@ -132,12 +124,11 @@ static void expect(const char* what, const char* cnf, const uint8_t* exe, size_t
     snprintf(m, sizeof m, "%s: game", what);
     check(game ? (b.game && !strcmp(b.game, game)) : !b.game, m);
 
-    char msg[768], toast[256];
+    char msg[768];
     openpete_disc_build_message(&b, 0, msg, sizeof msg);
-    openpete_disc_build_toast(&b, toast, sizeof toast);
     if (cls == OPENPETE_DISC_BUILD_SUPPORTED) {
         snprintf(m, sizeof m, "%s: no message", what);
-        check(!msg[0] && !toast[0], m);
+        check(!msg[0], m);
         return;
     }
     snprintf(m, sizeof m, "%s: message names the crash", what);
@@ -145,12 +136,6 @@ static void expect(const char* what, const char* cnf, const uint8_t* exe, size_t
     openpete_disc_build_message(&b, 1, msg, sizeof msg);
     snprintf(m, sizeof m, "%s: refused message", what);
     check(strstr(msg, "cannot start it") != NULL, m);
-    int toast_ok = toast[0] != 0 && strlen(toast) < 230;
-    for (const char* p = toast; *p; p++)
-        if (!(isupper((unsigned char)*p) || isdigit((unsigned char)*p) || strchr(" .:,-", *p)))
-            toast_ok = 0;
-    snprintf(m, sizeof m, "%s: toast \"%s\" in the toast font's set", what, toast);
-    check(toast_ok, m);
 }
 
 /** @brief The BOOT-line parser on the spellings real SYSTEM.CNF files use. */
@@ -243,7 +228,11 @@ static void classify_cases(void) {
            OPENPETE_DISC_WARN_UNREADABLE, OPENPETE_DISC_REGION_UNKNOWN, NULL);
     expect("no BOOT line", "TCB = 4\r\n", junk, nj, OPENPETE_DISC_BUILD_UNREADABLE,
            OPENPETE_DISC_WARN_UNREADABLE, OPENPETE_DISC_REGION_UNKNOWN, NULL);
-    expect("no executable", CNF("SCES_028.35"), NULL, 0, OPENPETE_DISC_BUILD_UNREADABLE,
+    expect("PAL serial on file, no executable", CNF("SCES_028.35"), NULL, 0, OPENPETE_DISC_BUILD_RECOGNISED,
+           OPENPETE_DISC_WARN_PAL, OPENPETE_DISC_REGION_PAL, "spyro-3");
+    expect("supported serial, no executable", CNF("SCUS_942.28"), NULL, 0, OPENPETE_DISC_BUILD_UNREADABLE,
+           OPENPETE_DISC_WARN_UNREADABLE, OPENPETE_DISC_REGION_NTSC_U, NULL);
+    expect("unlisted serial, no executable", CNF("SLES_012.34"), NULL, 0, OPENPETE_DISC_BUILD_UNREADABLE,
            OPENPETE_DISC_WARN_UNREADABLE, OPENPETE_DISC_REGION_PAL, NULL);
 }
 
@@ -334,24 +323,24 @@ static void image_cases(const char* dir) {
         write_image(sup, CNF("SCUS_942.28"), "SCUS_942.28;1", s_exe1, s_n1);
         check(openpete_disc_build_identify(sup, &b) == 0 && b.cls == OPENPETE_DISC_BUILD_SUPPORTED &&
               !strcmp(b.serial, "SCUS-94228"), "image: supported");
-        s_toasts = s_fatals = 0;
-        check(openpete_disc_build_boot_check(sup, "SCUS_942.28") == 0 && !s_toasts && !s_fatals,
+        s_fatals = 0;
+        check(openpete_disc_build_boot_check(sup, "SCUS_942.28") == 0 && !s_fatals,
               "boot check: supported proceeds silently");
         s_exe1[0x1000] ^= 0x01;
         write_image(alt, CNF("SCUS_942.28"), "SCUS_942.28;1", s_exe1, s_n1);
         s_exe1[0x1000] ^= 0x01;
         check(openpete_disc_build_identify(alt, &b) == 0 && b.cls == OPENPETE_DISC_BUILD_UNKNOWN &&
               b.warning == OPENPETE_DISC_WARN_MODIFIED, "image: altered executable");
-        s_toasts = s_fatals = 0;
-        check(openpete_disc_build_boot_check(alt, "SCUS_942.28;1") == 0 && s_toasts == 1 && !s_fatals,
+        s_fatals = 0;
+        check(openpete_disc_build_boot_check(alt, "SCUS_942.28;1") == 0 && !s_fatals,
               "boot check: altered warns and proceeds");
         put_env("OPENPETE_DISC_BUILD_REFUSE", "1");
-        s_toasts = s_fatals = 0;
-        check(openpete_disc_build_boot_check(alt, "SCUS_942.28") != 0 && s_fatals == 1 && !s_toasts &&
+        s_fatals = 0;
+        check(openpete_disc_build_boot_check(alt, "SCUS_942.28") != 0 && s_fatals == 1 &&
               strstr(s_last_fatal, "cannot start it"), "boot check: OPENPETE_DISC_BUILD_REFUSE refuses");
         put_env("OPENPETE_DISC_BUILD_REFUSE", "0");
-        s_toasts = s_fatals = 0;
-        check(openpete_disc_build_boot_check(alt, "SCUS_942.28") == 0 && s_toasts == 1,
+        s_fatals = 0;
+        check(openpete_disc_build_boot_check(alt, "SCUS_942.28") == 0 && !s_fatals,
               "boot check: OPENPETE_DISC_BUILD_REFUSE=0 warns");
         put_env("OPENPETE_DISC_BUILD_REFUSE", NULL);
     }
@@ -363,17 +352,17 @@ static void image_cases(const char* dir) {
     write_image(pal, CNF("SCES_028.35"), "SCES_028.35;1", junk, sizeof junk);
     check(openpete_disc_build_identify(pal, &b) == 0 && b.cls == OPENPETE_DISC_BUILD_RECOGNISED &&
           b.warning == OPENPETE_DISC_WARN_PAL, "image: PAL");
-    s_toasts = s_fatals = 0;
+    s_fatals = 0;
     check(openpete_disc_build_boot_check(pal, "SCUS_944.67") != 0 && s_fatals == 1 &&
           strstr(s_last_fatal, "PAL") && strstr(s_last_fatal, "SCUS-94467"),
           "boot check: a disc booting another executable is refused with its message");
     write_image(none, NULL, "SCUS_942.28;1", junk, sizeof junk);
     check(openpete_disc_build_identify(none, &b) == 0 && b.cls == OPENPETE_DISC_BUILD_UNREADABLE,
           "image: no SYSTEM.CNF");
-    s_toasts = s_fatals = 0;
-    check(openpete_disc_build_boot_check(none, "SCUS_942.28") == 0 && s_toasts == 1 && !s_fatals,
+    s_fatals = 0;
+    check(openpete_disc_build_boot_check(none, "SCUS_942.28") == 0 && !s_fatals,
           "boot check: no SYSTEM.CNF, the game's executable present: generic warning, proceeds");
-    s_toasts = s_fatals = 0;
+    s_fatals = 0;
     check(openpete_disc_build_boot_check(none, "SCUS_944.25") != 0 && s_fatals == 1,
           "boot check: no SYSTEM.CNF and not the game's executable: refused");
     check(openpete_disc_build_identify("/nonexistent/disc.cue", &b) != 0 &&
@@ -424,23 +413,28 @@ static void revision_disc_case(const char* path) {
     const double t0 = now_s();
     const int r = openpete_disc_build_identify(path, &b);
     const double t1 = now_s();
-    char msg[1024], toast[256];
+    char msg[1024];
     openpete_disc_build_message(&b, 0, msg, sizeof msg);
-    openpete_disc_build_toast(&b, toast, sizeof toast);
-    printf("v1.1 %s: %s warning %d serial %s exe %s %.2f ms\n  message: %s\n  toast: %s\n", path,
+    printf("v1.1 %s: %s warning %d serial %s exe %s %.2f ms\n  message: %s\n", path,
            openpete_disc_build_class_name(b.cls), (int)b.warning, b.serial, b.exe_sha256,
-           (t1 - t0) * 1e3, msg, toast);
+           (t1 - t0) * 1e3, msg);
     check(r == 0 && b.cls == OPENPETE_DISC_BUILD_RECOGNISED && b.warning == OPENPETE_DISC_WARN_REVISION &&
           b.revision && !strcmp(b.revision, "1.1"), "v1.1 image: recognised revision 1.1");
     check(strstr(msg, "revision 1.1") && strstr(msg, "original") &&
           strstr(msg, "9df489e2420988494691c9193fe74dec4b1dbfcd") && strstr(msg, "expected to crash"),
           "v1.1 message: revision, the original pressing's .bin SHA-1, the crash");
-    s_toasts = s_fatals = 0;
-    check(openpete_disc_build_boot_check(path, "SCUS_944.67") == 0 && s_toasts == 1 && !s_fatals,
+    s_fatals = 0;
+    check(openpete_disc_build_boot_check(path, "SCUS_944.67") == 0 && !s_fatals,
           "v1.1 boot check: warns and proceeds");
 }
 
+extern const openpete_disc_build_row_t spyro1_disc_builds[], spyro2_disc_builds[], spyro3_disc_builds[];
+
 int main(void) {
+    openpete_disc_build_add_rows(spyro1_disc_builds);
+    openpete_disc_build_add_rows(spyro2_disc_builds);
+    openpete_disc_build_add_rows(spyro3_disc_builds);
+    openpete_disc_build_add_rows(spyro3_disc_builds);   /* ignored */
     const char* tmp = getenv("TMPDIR");
     const char* dir = tmp && *tmp ? tmp : "/tmp";
     s_exe1 = slurp(OPENPETE_SOURCE_DIR "/games/spyro-1/spyro-1/build/PSX.EXE", &s_n1);

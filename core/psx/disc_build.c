@@ -13,68 +13,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* One known build: a release serial, and the SHA-256 of the boot executable
- * its SYSTEM.CNF names (NULL: not on file, so the row matches by serial
- * alone, which only a serial no supported row shares may do). */
-typedef struct {
-    const char*            serial;
-    const char*            exe_sha256;
-    int                    supported;
-    openpete_disc_region_t region;
-    const char*            game;      /* the registered game this is a release of */
-    const char*            title;
-    const char*            revision;
-    const char*            bin_sha1;  /* a supported row's Redump .bin SHA-1, which a player can check, or NULL */
-} disc_build_row_t;
+/* The rows every linked game registered (openpete_disc_build_add_rows),
+ * in registration order. */
+#define ROW_CAP 64
+static const openpete_disc_build_row_t* s_rows[ROW_CAP] OP_SEALED(disc_builds); /* thread-roles: written before openpete_run seals it, read-only after */
+static int s_row_count OP_SEALED(disc_builds); /* thread-roles: written before openpete_run seals it, read-only after */
+OP_SEAL_DEFINE(disc_builds);
 
-/* Sources, per row:
- *  SCUS-94228 v1.0: the decomp's build/PSX.EXE pin (games/spyro-1/spyro-1/
- *    sha256sum.txt, readme "PSX.EXE SHA-256"), equal to SCUS_942.28 read off
- *    the NTSC-U image. Original, Greatest Hits and Collectors' Edition
- *    pressings share the image.
- *  SCUS-94425 v1.0: games/spyro-2/spyro-2/sha256sum.txt, equal to
- *    SCUS_944.25 read off the image whose .bin SHA-256 is b3fd9fdb...
- *  SCUS-94467 v1.0: SCUS_944.67 read off the image whose .bin SHA-256 is
- *    a313c9b1... (Redump "Spyro - Year of the Dragon (USA) (v1.0)"). The
- *    decomp's build/PSX.EXE (e5406997..., its sha256sum.txt pin and the
- *    recompiler manifest's input) differs from it in the word at 0x8004F6B0
- *    (exe_check, asm/stdutil.s); both are supported, the decomp build's row
- *    first so the disc's row, which carries the .bin SHA-1, names the
- *    release in the messages.
- *  SCUS-94467 v1.1: SCUS_944.67 (380928 bytes) read off an image whose
- *    .bin SHA-1 is 81eae747fbd9b2ff75ae5b3e24287bb25fcb516a, Redump's
- *    "Spyro - Year of the Dragon (USA) (v1.1)". Same serial and boot file
- *    name as v1.0, so only the executable's hash tells the two apart.
- *  bin_sha1 of the supported rows: the .bin SHA-1 the User docs give for
- *    each game's disc (docs/src/user/getting-started/dumping-your-disc.md,
- *    games/spyro-2.md, games/spyro-3.md), Redump's listed value.
- *  PAL and NTSC-J serials: PSX Datacenter's entries for each release
- *    (SCES-01438, SCES-02104, SCES-02835; SCPS-10085, SCPS-10083 disc 1 of
- *    the limited edition, SCPS-45395; SCPS-10128). Spyro: Year of the Dragon
- *    had no NTSC-J release. */
-static const disc_build_row_t k_rows[] = {
-    { "SCUS-94467", "e5406997dccc7300c8198498c20b9d6c4c0a547813be1010446b6c4e5d50e39f", 1,
-      OPENPETE_DISC_REGION_NTSC_U, "spyro-3", "Spyro: Year of the Dragon", "1.0", NULL },
-    { "SCUS-94228", "a533d75cab8afaae6107ec35a02a9a5fe979a92c7c955f9cf1ee50f693a1b998", 1,
-      OPENPETE_DISC_REGION_NTSC_U, "spyro-1", "Spyro the Dragon", "1.0",
-      "cf3ce6bedeb89dfbc40990336180f3b9b0f40d9f" },
-    { "SCUS-94425", "7b54002789ab379e0d3a6b49d7b50078b9c9c2fed589f41ff9878ebb68fe0bc1", 1,
-      OPENPETE_DISC_REGION_NTSC_U, "spyro-2", "Spyro 2: Ripto's Rage!", "1.0",
-      "b3a28f8c5ec02dfbd1f9bd47adbe1d75186a5d3f" },
-    { "SCUS-94467", "cb819ee78c556d403779309859cb08a7111331f624759bc1bc380946261bb26e", 1,
-      OPENPETE_DISC_REGION_NTSC_U, "spyro-3", "Spyro: Year of the Dragon", "1.0",
-      "9df489e2420988494691c9193fe74dec4b1dbfcd" },
-    { "SCUS-94467", "006363e485559dcd9a203fe71fe4267cb254d476ca59f04ee841048831ad969e", 0,
-      OPENPETE_DISC_REGION_NTSC_U, "spyro-3", "Spyro: Year of the Dragon", "1.1", NULL },
-    { "SCES-01438", NULL, 0, OPENPETE_DISC_REGION_PAL, "spyro-1", "Spyro the Dragon", NULL, NULL },
-    { "SCPS-10085", NULL, 0, OPENPETE_DISC_REGION_NTSC_J, "spyro-1", "Spyro the Dragon", NULL, NULL },
-    { "SCPS-10083", NULL, 0, OPENPETE_DISC_REGION_NTSC_J, "spyro-1", "Spyro the Dragon", "Limited Edition", NULL },
-    { "SCPS-45395", NULL, 0, OPENPETE_DISC_REGION_NTSC_J, "spyro-1", "Spyro the Dragon", NULL, NULL },
-    { "SCES-02104", NULL, 0, OPENPETE_DISC_REGION_PAL, "spyro-2", "Spyro 2: Gateway to Glimmer", NULL, NULL },
-    { "SCPS-10128", NULL, 0, OPENPETE_DISC_REGION_NTSC_J, "spyro-2", "Spyro x Sparx: Tondemo Tours", NULL, NULL },
-    { "SCES-02835", NULL, 0, OPENPETE_DISC_REGION_PAL, "spyro-3", "Spyro: Year of the Dragon", NULL, NULL },
-};
-#define ROW_COUNT (sizeof k_rows / sizeof k_rows[0])
+void openpete_disc_build_add_rows(const openpete_disc_build_row_t* rows) {
+    if (!rows) return;
+    op_seal_check(disc_builds);
+    for (int i = 0; i < s_row_count; i++)
+        if (s_rows[i] == rows) return;
+    for (const openpete_disc_build_row_t* r = rows; r->serial && s_row_count < ROW_CAP; r++)
+        s_rows[s_row_count++] = r;
+}
 
 const char* openpete_disc_build_class_name(openpete_disc_build_class_t c) {
     switch (c) {
@@ -117,9 +70,9 @@ static openpete_disc_region_t region_of_serial(const char* serial) {
  *
  * @param serial The serial.
  * @return The row, or NULL when no supported row has the serial. */
-static const disc_build_row_t* supported_row(const char* serial) {
-    for (size_t i = 0; i < ROW_COUNT; i++)
-        if (k_rows[i].supported && !strcmp(k_rows[i].serial, serial)) return &k_rows[i];
+static const openpete_disc_build_row_t* supported_row(const char* serial) {
+    for (int i = 0; i < s_row_count; i++)
+        if (s_rows[i]->supported && !strcmp(s_rows[i]->serial, serial)) return s_rows[i];
     return NULL;
 }
 
@@ -132,14 +85,14 @@ static const disc_build_row_t* supported_row(const char* serial) {
  * @param serial The serial.
  * @param sha The executable's hash.
  * @return The row, or NULL. */
-static const disc_build_row_t* match_row(const char* serial, const char* sha) {
-    const disc_build_row_t* own = supported_row(serial);
-    for (size_t i = 0; i < ROW_COUNT; i++)
-        if (k_rows[i].exe_sha256 && !strcmp(k_rows[i].exe_sha256, sha))
-            return own && strcmp(own->game, k_rows[i].game) ? NULL : &k_rows[i];
+static const openpete_disc_build_row_t* match_row(const char* serial, const char* sha) {
+    const openpete_disc_build_row_t* own = supported_row(serial);
+    for (int i = 0; i < s_row_count; i++)
+        if (s_rows[i]->exe_sha256 && !strcmp(s_rows[i]->exe_sha256, sha))
+            return own && strcmp(own->game, s_rows[i]->game) ? NULL : s_rows[i];
     if (supported_row(serial)) return NULL;
-    for (size_t i = 0; i < ROW_COUNT; i++)
-        if (!k_rows[i].exe_sha256 && !strcmp(k_rows[i].serial, serial)) return &k_rows[i];
+    for (int i = 0; i < s_row_count; i++)
+        if (!s_rows[i]->exe_sha256 && !strcmp(s_rows[i]->serial, serial)) return s_rows[i];
     return NULL;
 }
 
@@ -163,16 +116,18 @@ void openpete_disc_build_classify(const char* cnf_text, const uint8_t* exe, size
                                      out->serial, sizeof out->serial) != 0)
         return;
     out->region = region_of_serial(out->serial);
-    if (!exe) return;
+    if (exe) {
+        openpete_sha256_ctx c;
+        uint8_t d[32];
+        openpete_sha256_init(&c);
+        openpete_sha256_update(&c, exe, exe_len);
+        openpete_sha256_final(&c, d);
+        openpete_sha256_hex(d, out->exe_sha256);
+    }
 
-    openpete_sha256_ctx c;
-    uint8_t d[32];
-    openpete_sha256_init(&c);
-    openpete_sha256_update(&c, exe, exe_len);
-    openpete_sha256_final(&c, d);
-    openpete_sha256_hex(d, out->exe_sha256);
-
-    const disc_build_row_t* row = match_row(out->serial, out->exe_sha256);
+    /* A serial-only row needs no executable; anything else does. */
+    const openpete_disc_build_row_t* row = match_row(out->serial, out->exe_sha256);
+    if (!exe && (!row || row->exe_sha256)) return;
     if (row) {
         out->cls = row->supported ? OPENPETE_DISC_BUILD_SUPPORTED : OPENPETE_DISC_BUILD_RECOGNISED;
         out->region = row->region;
@@ -185,7 +140,7 @@ void openpete_disc_build_classify(const char* cnf_text, const uint8_t* exe, size
         return;
     }
     out->cls = OPENPETE_DISC_BUILD_UNKNOWN;
-    const disc_build_row_t* sup = supported_row(out->serial);
+    const openpete_disc_build_row_t* sup = supported_row(out->serial);
     if (sup) {
         out->game = sup->game;
         out->title = sup->title;
@@ -226,10 +181,36 @@ int openpete_disc_build_identify(const char* disc_path, openpete_disc_build_t* o
     return 0;
 }
 
-/* The supported builds, as the messages name them. */
-static const char k_supported_list[] =
-    "the NTSC-U releases Spyro the Dragon (SCUS-94228), Spyro 2: Ripto's Rage! (SCUS-94425) "
-    "and Spyro: Year of the Dragon version 1.0 (SCUS-94467)";
+/** @brief The supported row of a game that names its release: the one carrying a .bin SHA-1, else the first.
+ *
+ * @param game A game id, or NULL.
+ * @return The row, or NULL when the game has no supported row. */
+static const openpete_disc_build_row_t* release_row(const char* game) {
+    const openpete_disc_build_row_t* first = NULL;
+    for (int i = 0; game && i < s_row_count; i++) {
+        if (!s_rows[i]->supported || strcmp(s_rows[i]->game, game)) continue;
+        if (s_rows[i]->bin_sha1) return s_rows[i];
+        if (!first) first = s_rows[i];
+    }
+    return first;
+}
+
+/** @brief Write the list of supported releases ("Title (SERIAL) version V, ..."), one per game.
+ *
+ * @param out Receives the list.
+ * @param cap Its capacity. */
+static void supported_list(char* out, size_t cap) {
+    size_t o = 0;
+    out[0] = '\0';
+    for (int i = 0; i < s_row_count && o < cap; i++) {
+        const openpete_disc_build_row_t* r = s_rows[i];
+        if (!r->supported || release_row(r->game) != r) continue;
+        const int n = snprintf(out + o, cap - o, "%s%s (%s) version %s", o ? ", " : "", r->title,
+                               r->serial, r->revision);
+        if (n < 0) break;
+        o += (size_t)n;
+    }
+}
 
 /** @brief Write the sentence naming the build OpenPete runs in place of this disc.
  *
@@ -237,18 +218,19 @@ static const char k_supported_list[] =
  * @param out Receives the sentence.
  * @param cap Its capacity. */
 static void runs_instead(const openpete_disc_build_t* b, char* out, size_t cap) {
-    const disc_build_row_t* sup = NULL;
-    for (size_t i = 0; b->game && i < ROW_COUNT; i++)
-        if (k_rows[i].supported && !strcmp(k_rows[i].game, b->game)) sup = &k_rows[i];
+    const openpete_disc_build_row_t* sup = release_row(b->game);
     if (sup && sup->bin_sha1)
-        snprintf(out, cap, "OpenPete supports only version %s of the NTSC-U release of %s (%s), "
-                 "whose .bin file has the SHA-1 %s.", sup->revision, sup->title, sup->serial,
-                 sup->bin_sha1);
+        snprintf(out, cap, "OpenPete supports only version %s of the %s release of %s (%s), "
+                 "whose .bin file has the SHA-1 %s.", sup->revision, openpete_disc_region_name(sup->region),
+                 sup->title, sup->serial, sup->bin_sha1);
     else if (sup)
-        snprintf(out, cap, "OpenPete supports only version %s of the NTSC-U release of %s (%s).",
-                 sup->revision, sup->title, sup->serial);
-    else
-        snprintf(out, cap, "OpenPete supports only %s.", k_supported_list);
+        snprintf(out, cap, "OpenPete supports only version %s of the %s release of %s (%s).",
+                 sup->revision, openpete_disc_region_name(sup->region), sup->title, sup->serial);
+    else {
+        char list[320];
+        supported_list(list, sizeof list);
+        snprintf(out, cap, "OpenPete supports only %s.", list[0] ? list : "the builds its games name");
+    }
 }
 
 void openpete_disc_build_message(const openpete_disc_build_t* b, int refused, char* out, size_t cap) {
@@ -271,7 +253,8 @@ void openpete_disc_build_message(const openpete_disc_build_t* b, int refused, ch
     }
     case OPENPETE_DISC_WARN_REVISION:
         snprintf(what, sizeof what, "This disc is %s revision %s (%s). Revision %s has a different game "
-                 "program from the original 1.0 pressing.", b->title, b->revision, serial, b->revision);
+                 "program from the original %s pressing.", b->title, b->revision, serial, b->revision,
+                 release_row(b->game) ? release_row(b->game)->revision : "supported");
         break;
     case OPENPETE_DISC_WARN_MODIFIED:
         snprintf(what, sizeof what, "This disc has the serial of %s (%s), but its game program %s is not "
@@ -290,28 +273,4 @@ void openpete_disc_build_message(const openpete_disc_build_t* b, int refused, ch
     snprintf(out, cap, "%s %s %s", what, instead,
              refused ? "OpenPete cannot start it."
                      : "The game is expected to crash or misbehave with this disc.");
-}
-
-void openpete_disc_build_toast(const openpete_disc_build_t* b, char* out, size_t cap) {
-    if (!cap) return;
-    out[0] = '\0';
-    if (b->warning == OPENPETE_DISC_WARN_NONE) return;
-    const char* serial = b->serial[0] ? b->serial : "UNKNOWN";
-    switch (b->warning) {
-    case OPENPETE_DISC_WARN_REVISION:
-        snprintf(out, cap, "UNSUPPORTED DISC: %s REVISION %s. ONLY THE ORIGINAL 1.0 PRESSING IS "
-                 "SUPPORTED. EXPECT CRASHES.", serial, b->revision);
-        break;
-    case OPENPETE_DISC_WARN_MODIFIED:
-        snprintf(out, cap, "UNSUPPORTED DISC: OTHER VERSION OR MODIFIED IMAGE OF %s. "
-                 "EXPECT CRASHES.", serial);
-        break;
-    case OPENPETE_DISC_WARN_UNREADABLE:
-        snprintf(out, cap, "UNSUPPORTED DISC: BUILD NOT IDENTIFIED. EXPECT CRASHES.");
-        break;
-    default:
-        snprintf(out, cap, "UNSUPPORTED DISC: %s. EXPECT CRASHES.", serial);
-        break;
-    }
-    for (char* p = out; *p; p++) *p = (char)toupper((unsigned char)*p);
 }

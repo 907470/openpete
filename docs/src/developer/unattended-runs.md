@@ -138,7 +138,8 @@ known builds (`core/psx/disc_build.c`) and logged as a `disc` line:
 `build of PATH: supported|recognised|unknown|unreadable (serial, region,
 boot, exe sha256)`. A disc whose boot executable is not the one the game
 boots is refused (exit 3, `OP-E-DISC-BUILD`). Another build of a supported
-serial logs a warning, holds a toast for 30 s, and boots. A gate or corpus
+serial logs the warning with `OP-E-DISC-BUILD` and boots; the player-facing warning is
+shown at library ingest, not at boot. A gate or corpus
 run sets `OPENPETE_DISC_BUILD_REFUSE=1` to refuse every build that is not
 supported, so a run is never measured on another build.
 `tests/unit/disc_build_test` covers the classifier; with
