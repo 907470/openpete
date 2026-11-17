@@ -472,6 +472,50 @@ void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)
                                 float (*scr)[2], moby_otk_vert_t* iv);
 /* The vertex count moby_simple_project_record takes per record. */
 #define MOBY_SIMPLE_MAX_VERTS 256
+/* One simple-model record's projection, its slots and terms taken on the sim
+ * thread (moby_simple_project_defer) and its vertex loop run later by the
+ * record's job (moby_simple_project_run). The transform's pointers name the
+ * provider's per-record storage, which must outlive the jobs. */
+typedef struct {
+    moby_simple_xform_t x;
+    const ngte_view* view;
+    double ofx, ofy;
+    uint32_t gsab_flags;
+    void* out;          /* the record's slots in the projection store */
+    int n;
+    int check;          /* the compare mode: the prefix projected already, the job compares */
+} moby_simple_proj_t;
+/** @brief Take the current simple-model record's projection slots and terms, leaving the vertex loop to the record's job.
+ *
+ * The serial half of moby_simple_project_record: the slots, the record's
+ * class bits and the scope's vertex pointer are as that call leaves them, so
+ * moby_simple_scope_take follows either. Refuses (returns 0, nothing taken)
+ * under OPENPETE_MOBY_SIM_PROJ_DEFER=0, while the stage readback, the
+ * occlusion audit or the late trace is on, and when the record would land in
+ * the scratch array (the store's region full); the caller then projects with
+ * moby_simple_project_record. Under OPENPETE_MOBY_SIM_PROJ_DEFER_CHECK the
+ * projection also runs here and moby_simple_project_run compares its own
+ * against it, counting records, vertices and mismatches into the exit line
+ * `[sim-proj-defer-check final]`.
+ * @param x The record's transform; its pointers must stay valid until the job ran.
+ * @param n The vertex count, at most MOBY_SIMPLE_MAX_VERTS.
+ * @param vm The model-space vertices, read only in the compare mode.
+ * @param iv Receives the integer RTPS in the compare mode, as moby_simple_project_record writes it.
+ * @param pj Receives the deferred projection.
+ * @return 1 when deferred, 0 when the caller must project now. */
+int moby_simple_project_defer(const moby_simple_xform_t* x, int n, const double (*vm)[3],
+                              moby_otk_vert_t* iv, moby_simple_proj_t* pj);
+/** @brief Run a deferred simple-model projection into its slots, on any thread.
+ *
+ * Writes the record's slots and iv only; the result is what
+ * moby_simple_project_record writes for the same record. In the compare
+ * mode it projects into the worker's scratch and compares with the slots.
+ * @param pj The deferred projection.
+ * @param vm The model-space vertices.
+ * @param iv Receives each vertex's integer RTPS when the paint key carries a row.
+ * @param worker The job's scratch index, 0 to MOBY_SIMPLE_CHECK_WORKER. */
+void moby_simple_project_run(const moby_simple_proj_t* pj, const double (*vm)[3], moby_otk_vert_t* iv,
+                             int worker);
 /** @brief The occlusion verdict for one simple-moby record from its view-space origin and bounding radius.
  *
  * The record's bounds are the screen rect of the cube around the sphere of

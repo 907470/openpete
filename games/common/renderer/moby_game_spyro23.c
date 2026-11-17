@@ -1561,6 +1561,10 @@ typedef struct {
     int      key;           /* the record's world bucket on the depth scale */
     int      single;        /* 1 when the record's colour index is non-zero */
     int      vm_off, iv_off, col_off, face_off, face_n;
+    float    Rf[3][3];      /* the rotation at unit scale the projection places the vertices with */
+    double   TR[3];         /* the projection's translation, world / 2 */
+    int      deferred;      /* 1 when the job projects the record (moby_simple_project_defer) */
+    moby_simple_proj_t pj;  /* the deferred projection */
 } s23_simple_job;
 /* The records of the decode in progress and their emit scopes, in queue order. */
 static s23_simple_job      s_s23_job[S23_SIMPLE_QCAP];
@@ -1803,6 +1807,14 @@ static double s23_matrix_stretch(const float R[3][3]) {
         if (row > worst) worst = row;
     }
     return sqrt(worst);
+}
+
+/** @brief Whether OPENPETE_MOBY_POSTRACE_CLS names a class to trace, read once.
+ * @return 1 when s23_simple_postrace prints for some class. */
+static int s23_postrace_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); on = e && strtol(e, NULL, 0) >= 0; }
+    return on;
 }
 
 /** @brief Print the submitted screen-space centroid, extent and placement of one simple-moby record under OPENPETE_MOBY_POSTRACE_CLS.
@@ -2194,6 +2206,9 @@ static void s23_simple_job_run(moby_simple_emit* se, int rec, int worker, void* 
     const moby_otk_vert_t* iv = s_s23_pool.iv + J->iv_off;
     const uint32_t* ctab = s_s23_pool.col + J->col_off;
     const s23_face_words* fw = s_s23_pool.face + J->face_off;
+    if (J->deferred)
+        moby_simple_project_run(&J->pj, (const double (*)[3])(s_s23_pool.vm + J->vm_off),
+                                s_s23_pool.iv + J->iv_off, worker);
     s23_abr_begin(W);
     for (int i = 0; i < J->face_n; i++) s23_simple_face(se, W, J, iv, ctab, &fw[i]);
     W->n.held += s23_abr_flush(se, W, J, (const double (*)[3])(s_s23_pool.vm + J->vm_off));
@@ -2310,15 +2325,28 @@ static int s23_simple_prefix_record(CPUState* cpu, s23_prefix* P, int r, s23_sim
     moby_simple_otk_record(MOBY_OTK_S23_SIMPLE_FLAT, J->itr[2], &J->ork[1]);
     double (*vmod)[3] = s_s23_pool.vm + J->vm_off;
     s23_simple_vertices(cpu, H, nv, vmod);
-    const moby_simple_xform_t xf = { (const int (*)[3])J->R, (const float (*)[3])Rf, pl.TR, J->itr, &J->ork[0] };
-    { OP_PROF_ACCUM_SCOPE("msim.project");
-      moby_simple_project_record(&xf, (const double (*)[3])vmod, nv, vscr, s_s23_pool.iv + J->iv_off); }
+    memcpy(J->Rf, Rf, sizeof J->Rf);
+    memcpy(J->TR, pl.TR, sizeof J->TR);
+    const moby_simple_xform_t xf = { (const int (*)[3])J->R, (const float (*)[3])J->Rf, J->TR, J->itr, &J->ork[0] };
+    /* The vertex loop moves into the record's job unless a trace reads the
+     * screen positions here. */
+    J->deferred = !s23_postrace_on() &&
+                  moby_simple_project_defer(&xf, nv, (const double (*)[3])vmod, s_s23_pool.iv + J->iv_off, &J->pj);
+    if (!J->deferred) {
+        OP_PROF_ACCUM_SCOPE("msim.project");
+        moby_simple_project_record(&xf, (const double (*)[3])vmod, nv, vscr, s_s23_pool.iv + J->iv_off);
+        s23_simple_postrace(cpu, moby, (const float (*)[2])vscr, nv, (const int (*)[3])J->R, rot, dmob);
+        moby_native_late_trace(cpu, moby, (const float (*)[2])vscr, nv, "SIM", s_sq_ghost_only);
+    }
     s_simple_verts += nv;
 
-    s23_simple_postrace(cpu, moby, (const float (*)[2])vscr, nv, (const int (*)[3])J->R, rot, dmob);
-    moby_native_late_trace(cpu, moby, (const float (*)[2])vscr, nv, "SIM", s_sq_ghost_only);
-
-    if (tier <= 0 && P->skip_lp) return 0;
+    if (tier <= 0 && P->skip_lp) {
+        /* No job reads the record: its slots are filled here, as the
+         * projection in place fills them. */
+        if (J->deferred)
+            moby_simple_project_run(&J->pj, (const double (*)[3])vmod, s_s23_pool.iv + J->iv_off, 0);
+        return 0;
+    }
     if (tier <= 0) s_simple_lp++;
     uint32_t faces;
     J->ncol = s23_simple_colours(cpu, H, cpu->read_word(H), tier, s_s23_pool.col + J->col_off,

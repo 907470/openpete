@@ -2686,6 +2686,8 @@ static const knob_desc_t g_builtin_debug[] = {
         "Animated moby walk fan-out bound in faces; a smaller walk runs serially (default 400)."),
     ENVROW_LATCHED("MOBY_SIMPLE_FANOUT_MIN", "Debug", "3000",
         "Simple-moby decode fan-out bound in faces; a smaller decode runs serially (default 3000)."),
+    ENVROW_LATCHED("MOBY_SIM_PROJ_DEFER", "Debug", "1",
+        "The simple-moby decode projects each record's vertices in the record's own job, on the walk workers when it fans out (default 1; 0 = in the serial prefix)."),
     ENVROW_LATCHED("UI_UNDER_PLAYER", "Debug", "1",
         "Draw 2D the game links behind the player's ordering-table slot before the player (default 1; 0 = all 2D over the player)."),
     ENVROW_LATCHED("TC_BAKE_BUDGET_US", "Debug", "1000",

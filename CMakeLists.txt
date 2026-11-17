@@ -1398,6 +1398,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # The simple-moby decode's projection moved into each record's job,
+    # against the serial prefix's projection of the same record: every
+    # projected field and the paint key's integer RTPS. Spyro 1 has no
+    # simple-model decode.
+    foreach(_spd_game spyro-2 spyro-3)
+        add_test(NAME moby_sim_proj_defer_${_spd_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_pose_cache.sh
+                         --game ${_spd_game} --build-dir=${CMAKE_BINARY_DIR} --instrument=sim-proj-defer)
+        set_tests_properties(moby_sim_proj_defer_${_spd_game} PROPERTIES
+            LABELS "presentation;moby"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Moby occlusion census. Per row of
     # games/spyro-2/corpus/moby-occlusion-corpus.manifest, three headless legs at
     # one freecam pose (extended LOD, extended LOD with the simple-kind

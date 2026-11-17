@@ -85,15 +85,23 @@
 # a moby ([occl-held] ... dropped=, matched to the captures by their
 # "wrote intermediate ... on frame" lines).
 #
+# Under sim-proj-defer the still-camera rows (Spyro 2 and 3; Spyro 1 has
+# no simple-model decode) run with OPENPETE_MOBY_SIM_PROJ_DEFER_CHECK=1:
+# every simple-moby record whose projection moves into its job is also
+# projected in the serial prefix, and the job compares every field of its
+# own projection and the paint key's integer RTPS with the prefix's
+# ([sim-proj-defer-check final] deferred= immediate= records= verts=
+# mismatched=).
+#
 # Usage:
 #   tests/harness/check_moby_pose_cache.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
 #       [--instrument=pose-cache|push-fanout|snap-fanout|rec-fanout|rank-fanout|snap-listed|snap-rex-merge
 #        |snap-corner-eq|snap-queue-lean|snap-min-px
-#        |rank-absent|occl-held]
+#        |rank-absent|occl-held|sim-proj-defer]
 # Exit 0 PASS: engaged above zero (hits, emits compared, chunks of each leg
 # compared) and no mismatch. 1 FAIL: a mismatch, a missing capture or a
 # missing total. 2 VACUOUS: no hit, no emit, no chunk of a leg compared, or
-# no listed chunk compared on either leg or no walk saved, or no present
+# no simple record compared, no listed chunk compared on either leg or no walk saved, or no present
 # compared or none where two walk passes queued, or no moby with equal
 # corner inputs, or no moby resolved or none left unresolved, no kept or
 # no re-ranked run, or no moby dropped on a captured present. snap-min-px
@@ -178,6 +186,8 @@ case "$INSTR" in
     snap-min-px)      KNOB=(OPENPETE_SNAP_MIN_PX=16 OPENPETE_TERRAIN_CACHE_FORCE=1);;
     rank-absent) KNOB=(OPENPETE_MOBY_RANK_ABSENT_SKIP=check);;
     occl-held)   KNOB=(OPENPETE_OCCL_HELD_CONFIRM=log);;
+    sim-proj-defer) [[ "$GAME" == spyro-1 ]] && { echo "sim-proj-defer: SKIP (no simple-model decode on $GAME)"; exit 64; }
+                 KNOB=(OPENPETE_MOBY_SIM_PROJ_DEFER_CHECK=1);;
     *) echo "pose-cache: SKIP (no instrument $INSTR)"; exit 64;;
 esac
 ALPHA=0.5
@@ -215,6 +225,17 @@ if [[ "$INSTR" == occl-held ]]; then
     [[ "$bad" == 0 ]] || { echo "occl-held: FAIL (a capture differs with the re-confirm off)"; exit 1; }
     [[ "$drop" -gt 0 ]] || { echo "occl-held: VACUOUS (no moby dropped on a captured present)"; exit 2; }
     echo "occl-held: PASS"
+    exit 0
+fi
+if [[ "$INSTR" == sim-proj-defer ]]; then
+    line="$(grep '^\[sim-proj-defer-check final\]' "$LOG" | tail -n 1)"
+    [[ -n "$line" ]] || { echo "sim-proj-defer: FAIL (no [sim-proj-defer-check final] total in $LOG)"; exit 1; }
+    echo "sim-proj-defer: $GAME $line"
+    bd="$(sed -n 's/.* mismatched=\([0-9]*\).*/\1/p' <<<"$line")"
+    rc="$(sed -n 's/.* records=\([0-9]*\).*/\1/p' <<<"$line")"
+    [[ "${bd:-1}" == 0 ]] || { echo "sim-proj-defer: FAIL (${bd:-?} mismatched records of ${rc:-?})"; exit 1; }
+    [[ "${rc:-0}" -gt 0 ]] || { echo "sim-proj-defer: VACUOUS (no deferred record compared)"; exit 2; }
+    echo "sim-proj-defer: PASS"
     exit 0
 fi
 if [[ "$INSTR" == rank-absent ]]; then

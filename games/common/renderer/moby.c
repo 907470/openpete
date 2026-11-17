@@ -6442,30 +6442,158 @@ static proj_xy* moby_simple_slots(int n) {
 }
 
 
-void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)[3], int n,
-                                float (*scr)[2], moby_otk_vert_t* iv) {
-    if (n > MOBY_SIMPLE_MAX_VERTS) n = MOBY_SIMPLE_MAX_VERTS;
-    double ofx, ofy;
-    const ngte_view* view = moby_simple_view(&ofx, &ofy);
-    /* The draw's GTE runs in half world units (model words and TR, world / 2):
-     * the projection takes its rotation and translation as they stand, so the
-     * projected view-Z is the GTE's own depth, which the divide-overflow test
-     * (moby_gte_near_fixup) reads, and W factor 2 takes it to full world. */
-    proj_xy* out = moby_simple_slots(n);
+/** @brief Project one simple-model record's vertices into its slots: the vertex loop and close every simple projection shares.
+ *
+ * The draw's GTE runs in half world units (model words and TR, world / 2):
+ * the projection takes its rotation and translation as they stand, so the
+ * projected view-Z is the GTE's own depth, which the divide-overflow test
+ * (moby_gte_near_fixup) reads, and W factor 2 takes it to full world.
+ * Writes only out, scr and iv, and the stage readback record when the
+ * readback is on, so a worker may run it for a record whose slots the sim
+ * thread took.
+ * @param x The record's transform.
+ * @param view The record's view.
+ * @param ofx The projection origin X.
+ * @param ofy The projection origin Y.
+ * @param gsab_flags The record's OPENPETE_GSAB_F_* for the stage readback.
+ * @param out The record's slots.
+ * @param n The vertex count.
+ * @param vm The model-space vertices.
+ * @param scr Receives each vertex's screen position, or NULL.
+ * @param iv Receives each vertex's integer RTPS when the paint key carries a row. */
+static void moby_simple_project_into(const moby_simple_xform_t* x, const ngte_view* view, double ofx, double ofy,
+                                     uint32_t gsab_flags, proj_xy* out, int n, const double (*vm)[3],
+                                     float (*scr)[2], moby_otk_vert_t* iv) {
     moby_proj_rec P = { x->R, x->Rf, x->TR, view, ofx, ofy, 2.0, 1.0, 1.0, 0.0, 0,
                         x->otk, x->itr, ofx, ofy, NULL, 0.0 };
-    openpete_gsab_inst* gsab = moby_proj_open(&P, out, OPENPETE_GSAB_F_SIMPLE
-                                              | (s_cur_screen ? OPENPETE_GSAB_F_SCREEN : 0u), 1.0, n);
-    s_esim.cb_rec = (uint8_t)(OPENPETE_CB_MOBY_SIMPLE | (uint32_t)(s_cur_screen != 0) * OPENPETE_CB_MOBY_SCREEN);
+    openpete_gsab_inst* gsab = moby_proj_open(&P, out, gsab_flags, 1.0, n);
     for (int i = 0; i < n; i++) {
         moby_project_vertex(&P, i, vm[i], vm[i], vm[i][0], vm[i][1], vm[i][2], &out[i]);
         out[i].rec = -1;
-        scr[i][0] = out[i].sx; scr[i][1] = out[i].sy;
+        if (scr) { scr[i][0] = out[i].sx; scr[i][1] = out[i].sy; }
         if (x->otk->row != MOBY_OTK_NONE) iv[i] = out[i].iv;
     }
     moby_proj_close(&P, gsab, out, n);
-    s_sim_cur = out;
-    moby_simple_occl_audit(s_esim.moby, out, n);
+}
+
+/** @brief Take the current simple-model record's slots and projection terms: the serial half of every simple projection.
+ *
+ * Sets the record's class bits (s_esim.cb_rec) and s_sim_cur, as the
+ * projection leaves them for moby_simple_scope_take.
+ * @param x The record's transform.
+ * @param n The vertex count, at most MOBY_SIMPLE_MAX_VERTS.
+ * @param pj Receives the terms and the slots. */
+static void moby_simple_project_take(const moby_simple_xform_t* x, int n, moby_simple_proj_t* pj) {
+    pj->x = *x;
+    pj->view = moby_simple_view(&pj->ofx, &pj->ofy);
+    pj->gsab_flags = OPENPETE_GSAB_F_SIMPLE | (s_cur_screen ? OPENPETE_GSAB_F_SCREEN : 0u);
+    pj->out = moby_simple_slots(n);
+    pj->n = n;
+    pj->check = 0;
+    s_esim.cb_rec = (uint8_t)(OPENPETE_CB_MOBY_SIMPLE | (uint32_t)(s_cur_screen != 0) * OPENPETE_CB_MOBY_SCREEN);
+    s_sim_cur = (proj_xy*)pj->out;
+}
+
+void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)[3], int n,
+                                float (*scr)[2], moby_otk_vert_t* iv) {
+    if (n > MOBY_SIMPLE_MAX_VERTS) n = MOBY_SIMPLE_MAX_VERTS;
+    moby_simple_proj_t pj;
+    moby_simple_project_take(x, n, &pj);
+    moby_simple_project_into(x, pj.view, pj.ofx, pj.ofy, pj.gsab_flags, (proj_xy*)pj.out, n, vm, scr, iv);
+    moby_simple_occl_audit(s_esim.moby, (const proj_xy*)pj.out, n);
+}
+
+static int occl_verify_on(void);
+static int moby_late_trace_on(void);
+
+/** @brief Whether simple-model projections may move into the records' jobs (OPENPETE_MOBY_SIM_PROJ_DEFER, default 1), read once.
+ *
+ * check under OPENPETE_MOBY_SIM_PROJ_DEFER_CHECK: the projection also runs
+ * in the prefix and each job compares its own against it.
+ * @param check Receives 1 in the compare mode.
+ * @return 1 when on. */
+static int sim_proj_defer_on(int* check) {
+    static int on = -1, chk = 0;
+    if (on < 0) {
+        const char* e = getenv("OPENPETE_MOBY_SIM_PROJ_DEFER");
+        on = !(e && *e == '0');
+        const char* c = getenv("OPENPETE_MOBY_SIM_PROJ_DEFER_CHECK");
+        chk = c && *c && *c != '0';
+    }
+    *check = chk;
+    return on;
+}
+
+/* The compare mode's totals: records and vertices compared, records whose
+ * job projection differed from the prefix's; and the deferrals taken. */
+static long s_spd_recs, s_spd_verts, s_spd_bad, s_spd_deferred, s_spd_now;
+
+/** @brief Print the compare mode's totals at exit. */
+static void sim_proj_defer_report(void) {
+    fprintf(stderr, "[sim-proj-defer-check final] deferred=%ld immediate=%ld records=%ld verts=%ld mismatched=%ld\n",
+            __atomic_load_n(&s_spd_deferred, __ATOMIC_RELAXED), __atomic_load_n(&s_spd_now, __ATOMIC_RELAXED),
+            __atomic_load_n(&s_spd_recs, __ATOMIC_RELAXED), __atomic_load_n(&s_spd_verts, __ATOMIC_RELAXED),
+            __atomic_load_n(&s_spd_bad, __ATOMIC_RELAXED));
+}
+
+int moby_simple_project_defer(const moby_simple_xform_t* x, int n, const double (*vm)[3],
+                              moby_otk_vert_t* iv, moby_simple_proj_t* pj) {
+    int check;
+    if (n > MOBY_SIMPLE_MAX_VERTS) n = MOBY_SIMPLE_MAX_VERTS;
+    if (!sim_proj_defer_on(&check) || openpete_gsab_on() || occl_verify_on() || moby_late_trace_on() ||
+        s_proj_sim_n + n > MOBY_SIM_PROJ_CAP) {
+        if (check) __atomic_fetch_add(&s_spd_now, 1, __ATOMIC_RELAXED);
+        return 0;
+    }
+    moby_simple_project_take(x, n, pj);
+    if (check) {
+        static int s_atexit;
+        if (!s_atexit) { s_atexit = 1; atexit(sim_proj_defer_report); }
+        moby_simple_project_into(x, pj->view, pj->ofx, pj->ofy, pj->gsab_flags, (proj_xy*)pj->out, n, vm, NULL, iv);
+        pj->check = 1;
+    }
+    __atomic_fetch_add(&s_spd_deferred, 1, __ATOMIC_RELAXED);
+    return 1;
+}
+
+/* Per-worker scratch of the compare mode: a job's own projection of its record. */
+typedef struct {
+    OPENPETE_WORKER_ALIGN proj_xy p[MOBY_SIMPLE_MAX_VERTS];
+    moby_otk_vert_t iv[MOBY_SIMPLE_MAX_VERTS];
+} sim_proj_chk_ws;
+OPENPETE_WORKER_ELEM(sim_proj_chk_ws);
+static sim_proj_chk_ws s_spd_ws[MOBY_SIMPLE_WORKERS + 1];
+
+/** @brief Whether two projected vertices differ in any field a walk reads.
+ * @param a The first.
+ * @param b The second.
+ * @param first Nonzero for a record's first vertex, which also carries the paint key.
+ * @return 1 when they differ. */
+static int proj_xy_differ(const proj_xy* a, const proj_xy* b, int first) {
+    return a->sx != b->sx || a->sy != b->sy || a->vz != b->vz || a->sat != b->sat || a->unr != b->unr ||
+           a->rec != b->rec || a->ex != b->ex || a->ey != b->ey || a->ez != b->ez || a->tvz != b->tvz ||
+           a->kvz != b->kvz || a->okz != b->okz || memcmp(&a->iv, &b->iv, sizeof a->iv) != 0 ||
+           memcmp(a->mv, b->mv, sizeof a->mv) != 0 || a->hx != b->hx || a->hy != b->hy ||
+           (first && memcmp(&a->otk, &b->otk, sizeof a->otk) != 0);
+}
+
+void moby_simple_project_run(const moby_simple_proj_t* pj, const double (*vm)[3], moby_otk_vert_t* iv,
+                             int worker) {
+    if (!pj->check) {
+        moby_simple_project_into(&pj->x, pj->view, pj->ofx, pj->ofy, pj->gsab_flags, (proj_xy*)pj->out, pj->n,
+                                 vm, NULL, iv);
+        return;
+    }
+    sim_proj_chk_ws* W = &s_spd_ws[worker >= 0 && worker <= MOBY_SIMPLE_WORKERS ? worker : MOBY_SIMPLE_WORKERS];
+    moby_simple_project_into(&pj->x, pj->view, pj->ofx, pj->ofy, pj->gsab_flags, W->p, pj->n, vm, NULL, W->iv);
+    const proj_xy* ref = (const proj_xy*)pj->out;
+    int bad = 0;
+    for (int i = 0; i < pj->n; i++)
+        bad |= proj_xy_differ(&W->p[i], &ref[i], i == 0) ||
+               (pj->x.otk->row != MOBY_OTK_NONE && memcmp(&W->iv[i], &iv[i], sizeof iv[i]) != 0);
+    __atomic_fetch_add(&s_spd_recs, 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&s_spd_verts, (long)pj->n, __ATOMIC_RELAXED);
+    if (bad) __atomic_fetch_add(&s_spd_bad, 1, __ATOMIC_RELAXED);
 }
 
 void moby_simple_world_bucket(moby_simple_emit* se, int w) {
