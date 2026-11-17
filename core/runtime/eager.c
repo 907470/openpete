@@ -110,7 +110,7 @@ int openpete_get_cadence(void) { return atomic_load(&s_cadence); }
  * finished with EAGER_COUNT_SPARE scenes of room; a ring cut's drain floor
  * holds for EAGER_DRAIN_RUNS spans. */
 #define EAGER_COUNT_RUNS 16
-#define EAGER_COUNT_SPARE 2
+#define EAGER_COUNT_SPARE 1
 #define EAGER_DRAIN_RUNS 32
 static struct {
     int       active;                 /* the present thread owns the display */
