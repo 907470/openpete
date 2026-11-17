@@ -7,7 +7,10 @@
 # count still name the old one and the load has overwritten the records under
 # them. A table entry is then any word. A scan that follows such a word as a
 # guest address makes a bus access that reaches no device, which the bus
-# logs as a guest access and the hang trace counts as one.
+# logs as a guest access and the hang trace counts as one. The moby
+# trailing-edge reveal on the first canonical pass after the load is the
+# other host reader on this route: it tests the previous level's queued
+# mobys, whose slots the load refilled.
 #
 # One headless run per game: boot, --skip-to-level through the level load to
 # the level, the moby draw path alone (--render-paths moby) so the hooks that

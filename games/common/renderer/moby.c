@@ -868,19 +868,39 @@ typedef struct {
     int held_n;              /* their count */
 } moby_pose_t;
 
+/** @brief Read one word of moby model or animation data through the host span lookup, without a guest bus access.
+ *
+ * The word's address comes from a guest pointer the host follows at any
+ * tick, which a level load can leave naming RAM it refilled; an address no
+ * memory region maps is refused instead of being read off the bus, where it
+ * would count as a guest access that reached no device.
+ * @param a The word's guest address.
+ * @param out Receives the word when it maps.
+ * @return 1 when the word maps, else 0. */
+static int moby_data_word(uint32_t a, uint32_t* out) {
+    const void* h = openpete_psx_to_host_span(a, 4u);
+    if (!h) return 0;
+    memcpy(out, h, 4u);
+    return 1;
+}
+
 /** @brief A keyframe named the way the cull record names it.
  *
  * The address of its record in the header's frame array (anim_frames +
  * index * anim_frame_stride), or, where the cull loads that record's leading
  * stream word into the draw record (rec_frame_is_word), the word
- * (mobydraw.s:463-467 the derivation and the load, :532-535 the store).
- * @param cpu The guest CPU state, read only.
+ * (mobydraw.s:463-467 the derivation and the load, :532-535 the store). The
+ * record's leading word must map (moby_data_word).
  * @param header The AnimationHeader.
  * @param index The keyframe index.
- * @return The keyframe reference. */
-static uint32_t moby_keyframe_ref(CPUState* cpu, uint32_t header, uint32_t index) {
-    uint32_t at = header + game_layout.moby.anim_frames + index * game_layout.moby.anim_frame_stride;
-    return game_layout.moby.rec_frame_is_word ? cpu->read_word(at) : at;
+ * @param ref Receives the keyframe reference when the record maps.
+ * @return 1 when the record maps, else 0. */
+static int moby_keyframe_ref(uint32_t header, uint32_t index, uint32_t* ref) {
+    const uint32_t at = header + game_layout.moby.anim_frames + index * game_layout.moby.anim_frame_stride;
+    uint32_t w;
+    if (!moby_data_word(at, &w)) return 0;
+    *ref = game_layout.moby.rec_frame_is_word ? w : at;
+    return 1;
 }
 
 /** @brief Derive the keyframe pair one moby draws from its animation state bytes by the cull's rule.
@@ -890,24 +910,33 @@ static uint32_t moby_keyframe_ref(CPUState* cpu, uint32_t header, uint32_t index
  * blend takes header B from anims[nextId], and a blend toward an unfilled
  * anims[nextId] holds keyframe A with blend 0, so the stream reader never
  * dereferences a non-header. moby_pose_t carries the rule's asm references.
+ * The table slots and keyframe records are read through the host span
+ * lookup (moby_data_word): a model pointer or table slot naming memory no
+ * region maps yields no pose, and a blend toward such a header B holds
+ * keyframe A.
  * @param cpu The guest CPU state, read only.
  * @param model The model-table entry.
  * @param st The five animation state bytes (id, nextId, frame, nextFrame,
  *        progress), live or from an interp snapshot.
  * @param p Receives the pose.
- * @return 0 when anims[id] is not a header, else 1. */
+ * @return 0 when anims[id] is not a header or its data does not map, else 1. */
 static int moby_pose_derive(CPUState* cpu, uint32_t model, const uint8_t st[5], moby_pose_t* p) {
     const uint32_t anims = model + game_layout.moby.model_anims_off;
-    p->header = cpu->read_word(anims + (uint32_t)st[0] * 4u);
-    if (p->header < 0x80000000u) return 0;
+    if (!moby_data_word(anims + (uint32_t)st[0] * 4u, &p->header) || p->header < 0x80000000u ||
+        !moby_keyframe_ref(p->header, st[2], &p->frame_a))
+        return 0;
     uint32_t blend = moby_game.anim_blend_byte ? moby_game.anim_blend_byte(cpu, st[4]) : st[4];
     p->blend    = blend & 0xFFu;
-    p->header_b = p->blend ? cpu->read_word(anims + (uint32_t)st[1] * 4u) : p->header;
+    p->header_b = p->header;
+    p->frame_b  = p->frame_a;
     /* A blend toward an unfilled anims[nextId] holds keyframe A: the stream
      * reader never dereferences a non-header. */
-    if (p->header_b < 0x80000000u) { p->header_b = p->header; p->blend = 0; }
-    p->frame_a = moby_keyframe_ref(cpu, p->header, st[2]);
-    p->frame_b = p->blend ? moby_keyframe_ref(cpu, p->header_b, st[3]) : p->frame_a;
+    uint32_t hb;
+    if (p->blend && moby_data_word(anims + (uint32_t)st[1] * 4u, &hb) && hb >= 0x80000000u &&
+        moby_keyframe_ref(hb, st[3], &p->frame_b))
+        p->header_b = hb;
+    else
+        p->blend = 0;
     p->held = NULL; p->held_n = 0;
     return 1;
 }
@@ -974,8 +1003,8 @@ static double model_extent_compute(CPUState* cpu, uint32_t header) {
     if (count == 0) return -1.0;
     double best = 0.0;                     /* squared, rooted once at the end */
     for (int fi = 0; fi < nf; fi++) {
-        uint32_t fr = moby_keyframe_ref(cpu, header, (uint32_t)fi);
-        if (!moby_pose_live(header, fr)) continue;
+        uint32_t fr;
+        if (!moby_keyframe_ref(header, (uint32_t)fi, &fr) || !moby_pose_live(header, fr)) continue;
         vstream A;
         vstream_init(cpu, &A, header, fr, s5);
         for (int i = 0; i < count; i++) {
@@ -5100,6 +5129,28 @@ static void moby_qmiss_census(CPUState* cpu, int sub) {
             (int)cpu->read_word(cam + 0x30u), ids);
 }
 
+/** @brief Count the moby array's slots before its 0xFF state sentinel, at most 4096.
+ * @param cpu The guest CPU state, read only.
+ * @param head The array head (moby_array_head).
+ * @return The slot count; 0 for a head below KSEG0 or a zero stride. */
+static uint32_t moby_array_slots(CPUState* cpu, uint32_t head) {
+    const uint32_t stride = game_layout.moby.array_stride;
+    if (head < 0x80000000u || !stride) return 0u;
+    uint32_t n = 0u;
+    while (n < 4096u && cpu->read_byte(head + n * stride + game_layout.moby.state_off) != 0xFFu) n++;
+    return n;
+}
+
+/** @brief Whether an address names one of the moby array's slots before its sentinel.
+ * @param m The address.
+ * @param head The array head (moby_array_head).
+ * @param slots The slot count (moby_array_slots).
+ * @return 1 when m is a slot, else 0. */
+static int moby_array_has(uint32_t m, uint32_t head, uint32_t slots) {
+    const uint32_t stride = game_layout.moby.array_stride;
+    return stride && m >= head && (m - head) % stride == 0u && (m - head) / stride < slots;
+}
+
 /** @brief Latch the trailing-edge candidates on a canonical regular pass.
  *
  * Runs after s_reg_moby holds the canonical queue set, while the guest view
@@ -5113,8 +5164,11 @@ static void moby_qmiss_census(CPUState* cpu, int sub) {
  * cull admits left the queue for a reason the test does not model and is
  * never re-admitted. Runs for the Spyro 1 mirror (host_reveal, no
  * cull_view_admits) and for a game with cull_view_admits and reveal_record;
- * elsewhere the set stays empty. Prints one [moby-trail] line under
- * OPENPETE_MOBY_QMISS_CENSUS.
+ * elsewhere the set stays empty. A previous-queue moby that is no longer a
+ * slot of the moby array before its sentinel (moby_array_has) is dropped
+ * untested: the previous canonical pass can precede a level load, which
+ * moves the array and refills the old slots with other data. Prints one
+ * [moby-trail] line under OPENPETE_MOBY_QMISS_CENSUS.
  * @param cpu The guest CPU state, read only. */
 static void moby_trail_latch(CPUState* cpu) {
     const int s1_mirror = moby_game.host_reveal && !moby_game.cull_view_admits;
@@ -5123,20 +5177,22 @@ static void moby_trail_latch(CPUState* cpu) {
     if (epoch == s_trail_epoch) return;           /* a speculated pass of the same epoch */
     s_trail_epoch = epoch;
     s_trail_cand_n = 0;
-    long kept = 0;
+    const uint32_t head = moby_array_head(cpu), slots = s_trail_prevq_n ? moby_array_slots(cpu, head) : 0u;
+    long kept = 0, gone = 0;
     for (int i = 0; i < s_trail_prevq_n; i++) {
         const uint32_t m = s_trail_prevq[i];
         int held = 0;
         for (int k = 0; k < s_reg_moby_n && !held; k++) held = s_reg_moby[k] == m;
         if (held) continue;
+        if (!moby_array_has(m, head, slots)) { gone++; continue; }
         if (qmiss_admits(cpu, m, 1u) == 0) s_trail_cand[s_trail_cand_n++] = m;
         else kept++;
     }
     memcpy(s_trail_prevq, s_reg_moby, (size_t)s_reg_moby_n * sizeof s_reg_moby[0]);
     s_trail_prevq_n = s_reg_moby_n;
     if (qmiss_census_on())
-        fprintf(stderr, "[moby-trail key=%u leg=canon epoch=%u] queued=%d cand=%d other=%ld\n",
-                openpete_feed_key_now(), epoch, s_reg_moby_n, s_trail_cand_n, kept);
+        fprintf(stderr, "[moby-trail key=%u leg=canon epoch=%u] queued=%d cand=%d other=%ld gone=%ld\n",
+                openpete_feed_key_now(), epoch, s_reg_moby_n, s_trail_cand_n, kept, gone);
 }
 
 /** @brief Return 0 when OPENPETE_MOBY_TRAIL is set to 0, else 1, read once.

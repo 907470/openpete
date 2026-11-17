@@ -1428,9 +1428,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # heavy-fog scan on every tick of the load, asserting zero `reached no
     # device` lines: a host-side scan that follows a sector-table entry the
     # load overwrote reads off the bus. Fails as vacuous when no scan found a
-    # far colour. Spyro 3's row stays out while its reveal path
-    # (moby_pose_derive) reads an unmapped address on the same route.
-    foreach(_hfs_game spyro-1 spyro-2)
+    # far colour. The same runs cover the trailing-edge reveal, whose first
+    # canonical pass after the load tests the previous level's queue.
+    foreach(_hfs_game spyro-1 spyro-2 spyro-3)
         add_test(NAME heavy_fog_scan_${_hfs_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_heavy_fog_scan.sh
                          --game ${_hfs_game} --build-dir=${CMAKE_BINARY_DIR})
