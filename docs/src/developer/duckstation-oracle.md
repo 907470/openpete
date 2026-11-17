@@ -630,6 +630,71 @@ OPENPETE_ORACLE_CLOCK=1 OPENPETE_ORACLE_GTE_STRICT=1 \
   tests/harness/check_psx_oracle.sh --game spyro-2 --recipe games/spyro-2/oracle-cutscene-intro.conf
 ```
 
+### Live controller input
+
+`tests/harness/check_livepad.sh --game G` compares the two emulators'
+live input paths. The input is a committed timed stream,
+`tests/livepad/G.stream` (`tools/livepad.py gen G`): one
+`<t> <control> <value>` event per line, t on openpete's VBL clock with a
+fractional part, the control an SDL gamepad axis or button name. It holds
+the menu presses that start a new game, then stick sweeps, holds at
+partial deflection, diagonals, a circle, flicks set and released inside
+one VBL, near-centre values, d-pad, shoulder, trigger and face buttons.
+Every stick value is a multiple of 256 within ±24320 or a full deflection,
+the set on which both of openpete's stick responses, `linear` and
+`console`, are injective.
+
+1. openpete runs the stream headless through its live path:
+   `OPENPETE_PAD_STREAM` with `OPENPETE_INPUT_VGAMEPAD=1` drives the first
+   SDL virtual pad, so each value passes the SDL gamepad state, the
+   PsyCross decode and its stick mapping (`--stick-response`), the keymap,
+   the latch and the pad write. An event at n - 1 + f reaches the guest at
+   VBL n. The run records the bytes the guest read (`--bk2-record`,
+   consume-keyed).
+2. `tools/livepad.py phys` turns each recorded stick byte back into the
+   stream value that produced it.
+3. DuckStation plays those rows with `--bk2-phys` (regtest `-bk2-phys`,
+   patch 0047): each axis value goes through DuckStation's live input path
+   at its default settings, keyed on the game's pad-ring consumer one VBL
+   early.
+   `--words HEX:3` (regtest `-psxtrace-words`) records Spyro's position at
+   every record.
+4. openpete replays the recorded bytes against that capture on the clock
+   row with every divergent region logged, and writes Spyro's position at
+   the same records (`OPENPETE_PSXTRACE_WORDS=HEX:N:PATH`).
+
+The verdict is `tools/livepad.py report`: Spyro's position error per
+record is the headline; a region that diverges at any record fails the
+run unless `games/G/livepad-exclusions.txt` lists it with a record range
+and its reason (every listed exclusion is printed on each run; one no
+divergence matched is reported stale); a GTE hash mismatch fails it. Zero
+stream events delivered, zero delivered inside a VBL, zero recorded rows
+with the left stick off centre, zero rows DuckStation applied off centre
+or zero records compared is VACUOUS (exit 3). The DuckStation side reads
+the rows openpete's guest consumed, so the harness tests what each
+emulator makes of the same stick and button state, not the VBL at which a
+live sample is latched. `--mapping` selects openpete's `--stick-response`:
+`console` (the default) is the response measured from DuckStation's
+live input path, `linear` the negative control, which diverges. The
+rows are `ctest -L livepad` (labelled `slow`); each skips (64) on a build
+without `--stick-response` or a fork without patch 0047.
+`OPENPETE_DS_DIR` points the harness and `scripts/capture_psx_oracle_ds.sh`
+at another DuckStation checkout.
+
+The console response is specified by a measurement,
+`tests/unit/data/stick-response/console.runs`: for every SDL axis
+value, the byte the game reads when DuckStation's test binary delivers it
+through `-bk2-phys` at its default settings. `tools/stick_response_measure.py
+WORKDIR` regenerates it (about 15 minutes): Spyro 1 boots under sweep movies
+that hold each axis value for two VBLs and carry the value's position in
+the sweep as a button code, and `--words` reads the port 1 pad buffer at the
+pad library's buffer copy store, so each poll names the value it holds.
+Four sweeps (ascending, the axes paired with the mirrored value,
+descending, each value followed by the centre) must each cover all 65536
+values on all four axes with one table, and the table must be monotonic.
+The header records the applied head and the centre byte an axis reads from
+power-on.
+
 Re-blessing a golden (deleting it so the gate recaptures it under a new
 DuckStation head, manifest or recipe) is only legal for an intentional
 gameplay-behaviour change, after reviewing the diff. A golden is

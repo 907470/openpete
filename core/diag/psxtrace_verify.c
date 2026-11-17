@@ -693,6 +693,45 @@ int openpete_psxtrace_skip_to(openpete_psxtrace_t* t, uint32_t rec) {
     return 0;
 }
 
+/** @brief Write one OPENPETE_PSXTRACE_WORDS row: the record, the VBL and the guest words the knob names.
+ *
+ * OPENPETE_PSXTRACE_WORDS=HEX:N:PATH writes `rec vbl w0 .. wN-1` (signed
+ * decimal) for every compared record, read where the record is hashed, in
+ * the layout of the reference's <trace>.words (regtest -psxtrace-words), so
+ * a harness compares a value (Spyro's position) record by record. Records
+ * inside a load window are not compared and get no row. Reads guest RAM
+ * only.
+ * @param rec The record's index.
+ * @param vbl openpete's VBL count at the record. */
+static void psxtrace_words_row(uint32_t rec, uint32_t vbl) {
+    static int s_parsed = 0;
+    static FILE* s_fp = NULL;
+    static unsigned s_addr = 0, s_n = 0;
+    if (!s_parsed) {
+        s_parsed = 1;
+        const char* e = getenv("OPENPETE_PSXTRACE_WORDS");
+        char path[512];
+        if (e && *e && sscanf(e, "%x:%u:%511s", &s_addr, &s_n, path) == 3 && s_n > 0 && s_n <= 64
+            && (s_addr & 3u) == 0) {
+            s_fp = fopen(path, "w");
+            if (s_fp) fprintf(s_fp, "psxtrace-words 1 build=openpete addr=0x%08X count=%u\n# rec vbl word...\n", s_addr, s_n);
+            OPL_INFO_F("psxtrace", "words: 0x%08X x%u -> %s%s", s_addr, s_n, path, s_fp ? "" : " (open failed)");
+        } else if (e && *e) {
+            OPL_ERROR_F("psxtrace", "OPENPETE_PSXTRACE_WORDS: expected HEX:N:PATH (N 1-64, word-aligned), got %s", e);
+        }
+    }
+    if (!s_fp) return;
+    const uint8_t* ram = openpete_psx_get_ram();
+    fprintf(s_fp, "%u %u", rec, vbl);
+    for (unsigned i = 0; i < s_n; i++) {
+        int32_t w;
+        memcpy(&w, ram + ((s_addr + 4u * i) & (OPENPETE_PSX_RAM_SIZE - 1u)), 4);
+        fprintf(s_fp, " %d", w);
+    }
+    fputc('\n', s_fp);
+    fflush(s_fp);
+}
+
 /** @brief Compare one record's VBL delta with openpete's: histograms, the VBL event ratchet, the schedule's deficit, and the exact policy.
  *
  * Under the schedule a VBL the reference spent inside a tick's work is
@@ -947,6 +986,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
             OPL_INFO_F("psxtrace", "ram dump: frame=%u -> %s%s", frame_no, s_rd_path, fp ? "" : " (open failed)");
         }
     }
+    psxtrace_words_row(frame_no, (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device));
     /* Compute openpete's hashes for THIS frame. */
     uint64_t op_per[OPENPETE_PSXTRACE_MAX_REGIONS];
     uint64_t total_op = gameplay_hash_compute_ex(op_per);

@@ -1,4 +1,5 @@
 #include "openpete_host_input.h"
+#include "openpete_fiber.h"
 #include "openpete_host_mouse.h"
 #include "openpete_input_lock.h"
 #include "openpete_input_log.h"
@@ -14,6 +15,7 @@
 #include "openpete_time.h"
 #include "openpete_pace_log.h"
 
+#include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
@@ -548,6 +550,84 @@ static void vgamepad_drive_scripted(void)
         SDL_SetJoystickVirtualAxis(s_vpad, a, s_vpad_script_axis[a]);
 }
 
+/* Timed pad stream (OPENPETE_PAD_STREAM=PATH, with OPENPETE_INPUT_VGAMEPAD=1):
+ * a harness input source that drives the first virtual pad from events
+ * stamped on the VBL clock, so the stream enters the live path (SDL gamepad
+ * state, PsyCross decode, the keymap, the latch and the pad write) at the
+ * SDL device. A line is `<t> <control> <value>`, `#` starts a comment: t in
+ * VBLs (openpete_vbl units, fractional), control an SDL gamepad axis name
+ * with a value in -32768..32767 or an SDL gamepad button name with 0|1.
+ * Lines are in nondecreasing t. The live path has no time inside a VBL:
+ * the sample taken before the yield that delivers VBL n carries every event
+ * with t < n, so an event at n - 1 + f for any 0 < f < 1 reaches the guest
+ * at VBL n, or at the first VBL a later sample covers when one host
+ * iteration consumes several. */
+typedef struct { double t; int axis; int button; int value; } pad_stream_ev_t;
+static pad_stream_ev_t* s_ps_ev;
+static int s_ps_n = -1, s_ps_next;
+static unsigned long long s_ps_applied, s_ps_mid_vbl, s_ps_stick_samples;
+
+/** @brief Load OPENPETE_PAD_STREAM once; return the event count (0 when unset or unreadable). */
+static int pad_stream_load(void)
+{
+    if (s_ps_n >= 0) return s_ps_n;
+    s_ps_n = 0;
+    const char* path = getenv("OPENPETE_PAD_STREAM");
+    if (!path || !*path) return 0;
+    FILE* f = fopen(path, "r");
+    if (!f) { OPL_ERROR_F("input", "OPENPETE_PAD_STREAM: cannot open %s", path); return 0; }
+    char line[160];
+    while (fgets(line, sizeof line, f)) {
+        char* hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+        double t; char name[48]; int v;
+        if (sscanf(line, "%lf %47s %d", &t, name, &v) != 3) continue;
+        pad_stream_ev_t ev = { t, (int)SDL_GetGamepadAxisFromString(name),
+                               (int)SDL_GetGamepadButtonFromString(name), v };
+        if (ev.axis == SDL_GAMEPAD_AXIS_INVALID && ev.button == SDL_GAMEPAD_BUTTON_INVALID) {
+            OPL_ERROR_F("input", "OPENPETE_PAD_STREAM: unknown control '%s'", name);
+            continue;
+        }
+        pad_stream_ev_t* g = realloc(s_ps_ev, sizeof *g * (size_t)(s_ps_n + 1));
+        if (!g) break;
+        s_ps_ev = g;
+        s_ps_ev[s_ps_n++] = ev;
+    }
+    fclose(f);
+    OPL_INFO_F("input", "OPENPETE_PAD_STREAM: %d events from %s", s_ps_n, path);
+    return s_ps_n;
+}
+
+/** @brief Apply every stream event due before the coming VBL to the first virtual pad's scripted state.
+ *
+ * The coming yield delivers VBL openpete_vbl + 1; every event with t below
+ * that index is applied, in file order. Counts the events applied, those
+ * stamped inside a VBL (t not a whole number) and the samples whose left
+ * stick is off centre, and logs the three once the stream is exhausted. */
+static void pad_stream_step(void)
+{
+    if (pad_stream_load() <= 0) return;
+    /* The stream owns the pad from the first sample: centred and released
+     * until its first event, never the built-in synthetic pattern. */
+    if (!s_vpad_scripted) openpete_host_input_vpad_script_axis(SDL_GAMEPAD_AXIS_LEFTX, 0);
+    const double next_vbl = (double)SDL_GetAtomicInt(&openpete_vbl) + 1.0;
+    while (s_ps_next < s_ps_n && s_ps_ev[s_ps_next].t < next_vbl) {
+        const pad_stream_ev_t* ev = &s_ps_ev[s_ps_next++];
+        if (ev->axis != SDL_GAMEPAD_AXIS_INVALID)
+            openpete_host_input_vpad_script_axis(ev->axis, ev->value);
+        else
+            openpete_host_input_vpad_script_button(ev->button, ev->value);
+        s_ps_applied++;
+        if (ev->t != floor(ev->t)) s_ps_mid_vbl++;
+        if (s_ps_next == s_ps_n)
+            OPL_INFO_F("input", "pad-stream: %llu event(s) applied by vbl %.0f, %llu mid-VBL; "
+                       "%llu sample(s) with the left stick off centre",
+                       s_ps_applied, next_vbl, s_ps_mid_vbl, s_ps_stick_samples);
+    }
+    if (s_vpad_script_axis[SDL_GAMEPAD_AXIS_LEFTX] || s_vpad_script_axis[SDL_GAMEPAD_AXIS_LEFTY])
+        s_ps_stick_samples++;
+}
+
 /** @brief Set every attached virtual pad's buttons and left stick from the VBL-indexed synthetic pattern.
  *
  * The pattern matches synth_pad's (one of seven buttons per 8-VBL phase,
@@ -562,6 +642,7 @@ static void vgamepad_drive_scripted(void)
 static void vgamepad_drive(unsigned frame)
 {
     if (!s_vpad) return;
+    pad_stream_step();
     if (s_vpad_scripted) { vgamepad_drive_scripted(); return; }
 
     static const int kBtn[] = {

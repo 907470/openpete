@@ -2255,6 +2255,26 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             ENVIRONMENT "OPENPETE_BIN=${_gbin}")
     endforeach()
 
+    # Live controller input against DuckStation, one row per game: the
+    # game's timed pad stream (tests/livepad/) through openpete's live input
+    # path and through DuckStation's live mapping (-bk2-phys), Spyro's
+    # position and every region compared per record on the clock row
+    # (tests/harness/check_livepad.sh). Selects --stick-response console
+    # and skips on a build without it, or without the fork's -bk2-phys.
+    # Run by `ctest -L livepad`; `slow` keeps it out of the default run.
+    foreach(_g spyro-1 spyro-2 spyro-3)
+        openpete_game_bin(${_g} _gbin _gargs)
+        add_test(NAME livepad_${_g}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_livepad.sh --game ${_g})
+        set_tests_properties(livepad_${_g} PROPERTIES
+            LABELS "slow;livepad"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            ENVIRONMENT "OPENPETE_BIN=${_gbin}")
+    endforeach()
+
     # The windowed oracle row: the same golden verified with the native
     # renderer drawing into a real window under llvmpipe, the eager present
     # thread active. Headless never runs that path, so a presentation-side

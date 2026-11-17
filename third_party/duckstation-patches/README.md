@@ -4,7 +4,7 @@ The openpete project's own changes to DuckStation: the `duckstation-regtest`
 psxtrace capture module and its recorders, which write the reference trace
 the oracle gate (`tests/harness/check_psx_oracle.sh`) replays and the
 per-record GTE hash sidecar (`<trace>.gte`, patch 0028) it compares, plus a
-headless EGL build fix, an SPU final-mix WAV dump, and the card probes (PC-keyed RAM snapshots, the card window recorder, bk2 playback, card export and import) and the card transfer start recorder. Each file is
+headless EGL build fix, an SPU final-mix WAV dump, and the card probes (PC-keyed RAM snapshots, the card window recorder, bk2 playback, card export and import), the card transfer start recorder, live-mapping bk2 playback and the per-record guest words recorder. Each file is
 `git format-patch` output, one commit per file, applied in the order
 `series` lists.
 
@@ -41,6 +41,7 @@ Patches that change what a capture records, by number:
 | 0042 | `-psxtrace-card-active HEX`: `<trace>.card`, each card transfer's start (a nonzero store to the driver's transfer-active byte) with its tick offset from the VBLANK |
 | 0045 | `-bk2-groups-out PATH`: the inputs each consume group took; `-bk2-lead-groups PATH`: `-bk2-lead 1` predicts from those counts instead of the movie's (`scripts/capture_psx_oracle_ds.sh` reruns a consume-keyed capture until no row is mispredicted, writing `<trace>.bk2groups`) |
 | 0046 | `<trace>.vblpos` version 2: each row gains `rt rk`, the first game-code load (outside exception handlers, between the `rfe` and `t`, in `t`'s record) of a main-RAM word game code stored inside the row's handler (the VSync callback) and its ordinal among the record's game-code loads of the word, or `- -`; the trailer gains `read_resolved` |
+| 0047 | `-bk2-phys`: the `-bk2` movie's player 1 stick columns are SDL axis values, delivered through the live input path at its default settings; `-psxtrace-words HEX:N`: `<trace>.words`, the N guest words from HEX at every record (`tests/harness/check_livepad.sh`). A capture without either option is unchanged |
 
 Apply (from the openpete checkout root; `--no-build` skips the build):
 

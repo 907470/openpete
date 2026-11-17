@@ -140,6 +140,16 @@
 #                                  (regtest -bk2-lead-groups), at most
 #                                  BK2_PASSES (default 4) passes; the run is
 #                                  refused when the last pass still mispredicts
+#           --bk2-phys             the --bk2 movie's stick columns are SDL axis
+#                                  values (-32768..32767), delivered through
+#                                  DuckStation's live input path at its
+#                                  default settings
+#                                  instead of as the stick bytes (regtest
+#                                  -bk2-phys); the run must apply rows
+#           --words HEX:N          write the N guest words from HEX at every
+#                                  record to <out>.words (regtest
+#                                  -psxtrace-words): a value such as Spyro's
+#                                  position, compared record by record
 #           --pad-script PATH      drive the port 1 controller from PATH
 #                                  (RAM-conditioned steps, regtest -pad-script);
 #                                  the full log is kept in <out>.log and a run
@@ -160,6 +170,9 @@
 #                                  $OPENPETE_REGIONS_MANIFEST, else Spyro 1's)
 # A golden verified with its .vsync/.loads/.srand siblings beside it runs
 # openpete under the reference's timing (core/diag/psxtrace_schedule.c).
+# OPENPETE_DS_DIR names another DuckStation checkout than
+# third_party/duckstation (a worktree reading the main checkout's build);
+# its head, build stamp and clean state are checked as the default's.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -172,7 +185,7 @@ VBLPOS=0; SPUQ=(); SPUREG=()
 CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; WATCH_WORD=""; NO_CARD=0; CD_IRQ=0; CD_READ_PC_MIN=""; PAD_CMDS=0; CDSYNC_PC=""; SIO0_WORD=""; CARD_ACTIVE=""; VSYNC_QUERY_SKIP=""; GTE_DUMP=""
 VSYNC_CB_PCS=()
 PAD_SCRIPT=""; SPU_DUMP=0; CARD_EXPORT=""
-RCNT2_PCS=(); CARD_IMPORT=""; CARD_EXPORT_END=""; CARD_WINDOW=0; BK2=""; BK2_CONSUME_PC=""; BK2_LEAD=""
+RCNT2_PCS=(); CARD_IMPORT=""; CARD_EXPORT_END=""; CARD_WINDOW=0; BK2=""; BK2_CONSUME_PC=""; BK2_LEAD=""; BK2_PHYS=0; WORDS=""
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 MANIFEST="${OPENPETE_REGIONS_MANIFEST:-games/spyro-1/manifest/gameplay_state_regions.toml}"
 
@@ -239,6 +252,8 @@ while [[ $# -gt 0 ]]; do
         --bk2) BK2="$2"; shift 2 ;;
         --bk2-consume-pc) BK2_CONSUME_PC="$2"; shift 2 ;;
         --bk2-lead) BK2_LEAD="$2"; shift 2 ;;
+        --bk2-phys) BK2_PHYS=1; shift ;;
+        --words) WORDS="$2"; shift 2 ;;
         --vblpos) VBLPOS=1; shift ;;
         --spuq) SPUQ+=("$2"); shift 2 ;;
         --spureg) SPUREG+=("$2"); shift 2 ;;
@@ -249,7 +264,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$OUT" ]] || { echo "[capture-ds] --out required" >&2; exit 64; }
 
-DS_BIN="third_party/duckstation/build-regtest/bin/duckstation-regtest"
+DS_DIR="${OPENPETE_DS_DIR:-third_party/duckstation}"
+DS_BIN="$DS_DIR/build-regtest/bin/duckstation-regtest"
 
 if [[ ! -x "$DS_BIN" ]]; then
     echo "[capture-ds] binary missing: $DS_BIN" >&2
@@ -264,7 +280,6 @@ fi
 # in applied-head.txt, and that worktree must be clean. The record is read
 # from the worktree file: it changes in the same openpete commit as the
 # series, so at capture time it may be uncommitted.
-DS_DIR="third_party/duckstation"
 DS_PIN="$(tr -d ' \n' < third_party/duckstation-patches/applied-head.txt 2>/dev/null || true)"
 [[ "$DS_PIN" =~ ^[0-9a-f]{40}$ ]] || {
     echo "[capture-ds] refusing: third_party/duckstation-patches/applied-head.txt holds no commit id" >&2; exit 1; }
@@ -335,9 +350,11 @@ if [[ -n "$BK2" ]]; then
     REC_ARGS+=(-bk2 "$BK2")
     [[ -n "$BK2_CONSUME_PC" ]] && REC_ARGS+=(-bk2-consume-pc "$BK2_CONSUME_PC")
     [[ -n "$BK2_LEAD" ]] && REC_ARGS+=(-bk2-lead "$BK2_LEAD")
+    [[ "$BK2_PHYS" == 1 ]] && REC_ARGS+=(-bk2-phys)
     [[ -n "$BK2_CONSUME_PC" ]] && REC_ARGS+=(-bk2-groups-out "$OUT.bk2groups")
 fi
 REC_ARGS+=(-psxtrace-gte)
+[[ -n "$WORDS" ]] && REC_ARGS+=(-psxtrace-words "$WORDS")
 if [[ "$VBLPOS" == 1 ]]; then
     [[ -n "$GAME" && -n "$VSYNC_PC" ]] || {
         echo "[capture-ds] --vblpos needs --game (library spans, self-entry list) and --vsync-pc" >&2; exit 64; }
@@ -370,7 +387,7 @@ BK2_PASS_ARGS=()
 while :; do
 rm -f "${OUT:?}.cardwin" "${OUT:?}.rcnt2"
 rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$OUT.cdirq" "$OUT.padcmd" "$OUT.cdsync" "$OUT.sio0" "$OUT.card" \
-      "$OUT.gte" "$OUT.gtedump" "$OUT.vblpos" "$OUT.spuq" "$OUT.spureg" "$OUT.wav" "$OUT.log"
+      "$OUT.gte" "$OUT.gtedump" "$OUT.vblpos" "$OUT.spuq" "$OUT.spureg" "$OUT.wav" "$OUT.log" "$OUT.words"
 # DuckStation's -frames is *presentation* frames (not GamestateDraw hits).
 # Pad generously: ~1000 startup + 4× the requested record count handles
 # the worst case (4-vbl-per-game-frame splash logos before the title-
@@ -470,6 +487,21 @@ if [[ -n "$BK2" ]]; then
         fi
     fi
     echo "[capture-ds] bk2: $BK2 ${B_SUM:+($B_SUM)} passes=$BK2_PASS"
+    if [[ "$BK2_PHYS" == 1 ]]; then
+        B_PHYS="$(sed -n 's/^.*bk2: phys rows applied=\([0-9]*\).*/\1/p' "$OUT.log" | tail -1)"
+        if [[ -z "$B_PHYS" || "$B_PHYS" == 0 ]]; then
+            echo "[capture-ds] FAIL: --bk2-phys applied no row (fork without -bk2-phys?) (see $OUT.log)" >&2
+            exit 1
+        fi
+    fi
+fi
+if [[ -n "$WORDS" ]]; then
+    W_RECS="$(sed -n 's/^# records=\([0-9]*\).*/\1/p' "$OUT.words" 2>/dev/null || true)"
+    if [[ -z "$W_RECS" || "$W_RECS" == 0 ]]; then
+        echo "[capture-ds] FAIL: --words $WORDS wrote no $OUT.words rows" >&2
+        exit 1
+    fi
+    echo "[capture-ds] words: $W_RECS records of $WORDS -> $OUT.words"
 fi
 if [[ "$SPU_DUMP" == 1 ]]; then
     WAV_FRAMES="$(python3 -c 'import sys, wave; print(wave.open(sys.argv[1]).getnframes())' "$OUT.wav" 2>/dev/null || true)"
