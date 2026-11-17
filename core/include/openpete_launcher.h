@@ -404,6 +404,66 @@ int  openpete_library_disc_identity(const char* disc_path, char* serial, size_t 
  * @return 0 when an entry's disc.cue exists, -1 otherwise. */
 int  openpete_library_game_disc(const char* game, char* cue, size_t cue_cap);
 
+/* Return to the launcher (the settings menu's EXIT GAME).
+ *
+ * A game session whose entry the player picked on the game page ends at
+ * EXIT GAME through the ordinary teardown (cards, settings, mods, threads),
+ * and the process then starts the launcher again from a fresh image: execv
+ * of the executable on POSIX (the same process id), a new process on
+ * Windows. The relaunch carries OPENPETE_LAUNCHER_RETURN, read and removed
+ * from the environment at entry (openpete_launcher_return_arm), which names
+ * the return count, the game exited and the game window's last state; the
+ * returned launcher shows the game page with that game's box focused and
+ * its window in that state. Every other start (a --disc or bug-report
+ * replay, a --game or --ingest boot that showed no page, headless) exits at
+ * EXIT GAME as any quit does. */
+
+/** @brief Arm the return at process entry: keep argv for the relaunch, read and remove OPENPETE_LAUNCHER_RETURN, register the relaunch with atexit.
+ *
+ * Call first in main, before anything registers an atexit handler, so the
+ * relaunch runs after every other handler (the log file's close among them).
+ * @param argc The argument count.
+ * @param argv The arguments as the process received them. */
+void openpete_launcher_return_arm(int argc, char** argv);
+
+/** @brief Ask for the return to the launcher when this session's entry was picked on the game page.
+ *
+ * The caller then requests the shutdown (openpete_request_shutdown) either way.
+ * @return 1 when the process will relaunch the launcher after its teardown, 0 when it exits. */
+int  openpete_launcher_return_request(void);
+
+/** @brief Withdraw a requested return and refuse later requests: the window closed, a quit signal or the quit key arrived, so the process ends.
+ *
+ * Async-signal-safe: two atomic stores. */
+void openpete_launcher_return_cancel(void);
+
+/** @brief Withdraw a requested return when the session's exit status is not OPENPETE_EXIT_OK.
+ *
+ * @param rc The game entry's exit status. */
+void openpete_launcher_return_settle(int rc);
+
+/** @brief Report how many returns to the launcher preceded this process image.
+ *
+ * @return The count read from OPENPETE_LAUNCHER_RETURN, 0 for a first start. */
+int  openpete_launcher_return_count(void);
+
+/** @brief Return the game the previous image exited from.
+ *
+ * @return The game id, or NULL for a first start. */
+const char* openpete_launcher_return_game(void);
+
+/** @brief Write the previous image's game window state into the launcher's options: fullscreen, maximized or the windowed size.
+ *
+ * No-op for a first start. The window's position is handed to the window
+ * creation separately (openpete_native_launcher_set_position).
+ * @param neutral The game-neutral options the launcher opens with. */
+void openpete_launcher_return_apply(openpete_options_t* neutral);
+
+/** @brief Report whether the player picked this session's entry on the game page (and not by --disc, --game, --ingest or without screens).
+ *
+ * @return 1 when picked on the page, else 0. */
+int  openpete_launcher_picked_on_page(void);
+
 #ifdef __cplusplus
 }
 #endif

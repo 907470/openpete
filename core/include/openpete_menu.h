@@ -227,7 +227,9 @@ void openpete_menu_adjust(int dx);
 /** @brief Press the EXIT GAME row when the cursor is on it.
  *
  * The first press arms the row (its label reads REALLY EXIT?); the second
- * requests a cooperative shutdown through openpete_request_shutdown. Moving
+ * requests a cooperative shutdown through openpete_request_shutdown, after
+ * asking for the return to the launcher (openpete_launcher_return_request),
+ * which a session picked on the launcher's game page takes. Moving
  * the cursor or reopening the menu disarms it. No-op unless open and the
  * cursor row is the centred action row. */
 void openpete_menu_activate(void);

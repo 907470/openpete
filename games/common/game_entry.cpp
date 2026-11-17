@@ -13,6 +13,7 @@
 #include "game_pick.h"
 #include "launcher_assets.h"
 #include "openpete_bugreport_replay.h"
+#include "openpete_launcher.h"
 #include "openpete_paths.h"
 
 #include <algorithm>
@@ -150,12 +151,17 @@ static void install_dump() {
  * The game is the one --disc names, else the launcher's pick over every
  * linked game's library entries (game_pick.h), which installs each game
  * whose jobs it runs; the final install here makes the picked game the
- * running game before its entry.
+ * running game before its entry. The return to the launcher is armed first
+ * (openpete_launcher_return_arm) and withdrawn when the entry's status is
+ * not OPENPETE_EXIT_OK.
  * @param argc The argument count.
  * @param argv The arguments.
  * @return The game entry's exit status, or 1 when the executable links no game. */
 int main(int argc, char** argv) {
     attach_parent_console();
+    /* First, before any atexit registration: the return to the launcher
+     * relaunches from the last atexit handler to run. */
+    openpete_launcher_return_arm(argc, argv);
     if (openpete_game_build_count == 0) {
         std::fprintf(stderr, "openpete: this executable links no game\n");
         return 1;
@@ -182,5 +188,7 @@ int main(int argc, char** argv) {
     install_others_first(b);
     openpete_game_build_install(b);
     install_dump();
-    return b->main(argc, argv);
+    const int rc = b->main(argc, argv);
+    openpete_launcher_return_settle(rc);
+    return rc;
 }

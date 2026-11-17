@@ -1905,28 +1905,6 @@ static bool mod_row_matches(const ImGuiTextFilter &f,
 static bool mod_owns_custom_levels(const char *mod_id);
 static void draw_custom_level_rows(const char *mod_id);
 
-/** @brief Open the mods root directory in the platform's file manager, creating it first when it is missing.
- *
- * SDL_OpenURL hands a plain path to the shell on Windows and to xdg-open on
- * Linux; macOS takes a file:// URL. A failure is logged. */
-static void open_mods_folder(void)
-{
-    const char *dir = openpete_mods_root_dir();
-    if (!dir) return;
-    (void)SDL_CreateDirectory(dir);   /* fails harmlessly when it exists */
-    char url[1100];
-#if defined(__APPLE__)
-    snprintf(url, sizeof url, "file://%s", dir);
-#else
-    snprintf(url, sizeof url, "%s", dir);
-#endif
-    if (SDL_OpenURL(url))
-        OPL_INFO_F("devui", "opened the mods folder %s", dir);
-    else
-        OPL_WARN_F("devui", "could not open the mods folder %s: %s", dir,
-                   SDL_GetError());
-}
-
 /** @brief Draw the Open folder button at the right end of the line just submitted.
  *
  * Disabled when no mods root resolved; the tooltip names the folder.
@@ -1938,7 +1916,7 @@ static void draw_mods_folder_button(float right)
     ImGui::SameLine(right - w);
     const char *dir = openpete_mods_root_dir();
     if (!dir) ImGui::BeginDisabled();
-    if (ImGui::Button(cap)) open_mods_folder();
+    if (ImGui::Button(cap)) (void)openpete_mods_open_folder(nullptr);
     if (!dir) ImGui::EndDisabled();
     if (dir && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("%s", dir);

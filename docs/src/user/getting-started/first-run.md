@@ -39,14 +39,20 @@ seconds after the fade ends. While the shader compile runs (see
 corner shows its progress, **Compiling shaders 42%**, beside a turning
 circle.
 
+The **Mods** chip in the top-left corner opens the [mods folder](../customizing/mods.md#installing-a-mod)
+in the file manager (Explorer on Windows), creating the folder when it does
+not exist yet.
+
 | Action | Keyboard | Gamepad | Mouse |
 | --- | --- | --- | --- |
 | Move the focus one box | ++left++ ++right++ | D-pad, left stick | point at a box |
 | Start the game, or add its disc to an empty box | ++enter++ | South face button (Xbox A) | click the box |
 | Add a disc | ++space++ | West face button (Xbox X) | drop a file on the window |
+| Move the focus to the **Mods** chip, and back to the boxes | ++up++, then ++down++ or ++right++ | D-pad, left stick | |
+| Open the mods folder | ++enter++ on the **Mods** chip | South face button on it | click the **Mods** chip |
 | Quit | ++esc++, or close the window | East face button (Xbox B), twice | |
 
-++up++ and ++down++ do nothing on the page. After a key or a pad button
+The focused **Mods** chip draws its name in orange. After a key or a pad button
 moves the focus, it stays on that box until the mouse moves. The first press
 of the East face button shows **Press again to quit**; a second press within
 2 seconds quits, and otherwise the message goes away.

@@ -60,8 +60,11 @@ const openpete_launcher_game* launcher_game(void);
 /** @brief Run the game page over the library's entries (launcher_page_draw): each game's box picks its most recently played entry.
  *
  * Opens the launcher's window when it is not open. Left and right (keys,
- * d-pad, left stick) move the focus one box without wrapping; up and down
- * do nothing; the pointer takes the focus only after it moves. The focus
+ * d-pad, left stick) move the focus one box without wrapping; up moves it to
+ * the Mods chip at the top-left corner, and down or right from the chip
+ * back to the box it left; Enter, South or a click on the chip opens the
+ * mods folder (openpete_mods_open_folder) and the page stays; the pointer
+ * takes the focus only after it moves. The focus
  * starts on the box of the game launcher_focus_game names, else the first.
  * Enter, the gamepad's south button or a click activates a box: a box with
  * an entry picks it, an empty box opens the file dialog. Escape or closing
@@ -76,7 +79,8 @@ const openpete_launcher_game* launcher_game(void);
  * without a screen at once (launcher_scripted_drop);
  * OPENPETE_LAUNCHER_SELECT set to an index below @p count picks that entry
  * after the first frame, and OPENPETE_LAUNCHER_SELECT_GAME set to a game id
- * picks the first entry of that game; with OPENPETE_LAUNCHER_SELECT_IDLE set
+ * picks the first entry of that game (a comma list picks its n-th game
+ * after the n-th return to the launcher, scripted_pick); with OPENPETE_LAUNCHER_SELECT_IDLE set
  * the scripted pick also waits until no launcher job runs or is queued.
  * Launcher jobs are pumped between frames (launcher_jobs_pump).
  * @param labels The entry labels, for the log.
@@ -90,9 +94,10 @@ int launcher_select(const char* const* labels, const char* const* games, int cou
  * it (launcher_focus_hover) only once the pointer has moved since
  * (launcher_focus_pointer_moved). */
 struct launcher_focus {
-    int index;   /* the focused box */
+    int index;   /* the focused box, or the box the focus returns to from the Mods chip */
     int count;   /* the boxes */
     bool held;   /* a key or pad placed the focus and the pointer has not moved since */
+    bool mods;   /* the focus is on the Mods chip (launcher_focus_mods) */
 };
 
 /** @brief Move the focus one box left or right, without wrapping, and hold it against a still pointer.
@@ -103,12 +108,20 @@ struct launcher_focus {
  * @return 1 when the focused box changed, else 0. */
 int launcher_focus_move(launcher_focus* f, int dir);
 
+/** @brief Move the focus onto the Mods chip (up from the boxes) or back to the box it left (down or right from the chip), and hold it against a still pointer.
+ *
+ * Logs the move.
+ * @param f The focus.
+ * @param on true to focus the chip, false to return to the boxes.
+ * @return 1 when the focus moved, else 0. */
+int launcher_focus_mods(launcher_focus* f, bool on);
+
 /** @brief Release a held focus: the pointer moved, so the box under it may take the focus.
  *
  * @param f The focus. */
 void launcher_focus_pointer_moved(launcher_focus* f);
 
-/** @brief Give the focus to the box under the pointer unless a key or pad holds it.
+/** @brief Give the focus to the box under the pointer unless a key or pad holds it; the Mods chip's focus moves to that box too.
  *
  * @param f The focus.
  * @param hovered The box under the pointer, or -1 for none.

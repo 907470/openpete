@@ -32,7 +32,9 @@ Copy the mod's folder, or its `.zip`, into the `mods` folder:
 
 `--mods-dir PATH`<!-- id: flag:--mods-dir --> (config key `mods_dir`,
 variable `OPENPETE_MODS_DIR`) names another folder. `--config-report`
-prints the folder in use.
+prints the folder in use. The **Mods** chip on the launcher's
+[game page](../getting-started/first-run.md#the-game-page) opens the folder in use,
+creating it when it does not exist.
 
 A `.zip` is unpacked into `mods/.unpacked/<id>/` on the next start, where
 `<id>` is the zip's file name without `.zip`. The zip must hold `mod.toml`

@@ -18,6 +18,7 @@
 #include "openpete_osd.h"           /* announce every change the player makes */
 #include "openpete_freecam.h"        /* freecam active/toggle (FREECAM row) */
 #include "openpete_mods.h"           /* loaded-mod enumeration (MOD rows) */
+#include "openpete_launcher.h"        /* EXIT GAME back to the launcher */
 #include "no_lod.h"         /* openpete_no_lod_set, openpete_fog_mode_set */
 #include "openpete_host_input.h"     /* the published mouse snapshot */
 #include "openpete_host_mouse.h"     /* totals, ownership, probe */
@@ -407,9 +408,12 @@ static void apply_row(int row) {
         break;
     case ROW_QUIT:
         /* Cooperative: the host-fiber loop drains and tears down on its next
-         * iteration, so the memory card flushes like any other exit. */
+         * iteration, so the memory card flushes like any other exit. A
+         * session picked on the launcher's game page then starts the
+         * launcher again (openpete_launcher_return_request). */
         if (s_quit_armed >= 2) {
             OPL_INFO_F("menu", "%s", "exit requested");
+            (void)openpete_launcher_return_request();
             openpete_request_shutdown();
         }
         break;

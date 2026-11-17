@@ -7652,6 +7652,42 @@ static bool nr_run_is_synchronous(bool headless, const openpete_options_t *opts)
     return headless || opts->screenshot_intermediate_count > 0;
 }
 
+/* The position the next launcher window is created at
+ * (openpete_native_launcher_set_position); set = 0 for the system's choice. */
+static struct { int set, x, y; } s_launch_pos;
+
+void openpete_native_launcher_set_position(int x, int y)
+{
+    s_launch_pos.set = 1;
+    s_launch_pos.x = x;
+    s_launch_pos.y = y;
+}
+
+/** @brief Create the launcher's window, at the position openpete_native_launcher_set_position stored when one is set.
+ *
+ * A fullscreen window created at a position takes the display that
+ * position lies on.
+ * @param title The window title.
+ * @param w The width, window coordinates.
+ * @param h The height.
+ * @param flags The window flags.
+ * @return The window, or NULL. */
+static SDL_Window *nr_create_launcher_window(const char *title, int w, int h, SDL_WindowFlags flags)
+{
+    if (!s_launch_pos.set) return SDL_CreateWindow(title, w, h, flags);
+    const SDL_PropertiesID p = SDL_CreateProperties();
+    SDL_SetStringProperty(p, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, w);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, h);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_X_NUMBER, s_launch_pos.x);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_Y_NUMBER, s_launch_pos.y);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, (Sint64)flags);
+    SDL_Window *win = SDL_CreateWindowWithProperties(p);
+    SDL_DestroyProperties(p);
+    OPL_INFO_F("native", "launcher window created at %d,%d", s_launch_pos.x, s_launch_pos.y);
+    return win;
+}
+
 int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int win_h,
                                   int open, const char *title)
 {
@@ -7666,7 +7702,9 @@ int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int
      * events: Win32 delivers a window's messages only to its creator. */
     SDL_Window *win = s_precreated_win;
     s_precreated_win = NULL;
-    if (!win) win = SDL_CreateWindow(title ? title : "openpete", w, h, nr_window_flags(opts, open));
+    if (win && s_launch_pos.set) SDL_SetWindowPosition(win, s_launch_pos.x, s_launch_pos.y);
+    if (!win) win = nr_create_launcher_window(title ? title : "openpete", w, h, nr_window_flags(opts, open));
+    s_launch_pos.set = 0;
     if (!win) {
         snprintf(s_launch_error, sizeof s_launch_error,
                  "The window could not be created (%s).", SDL_GetError());
@@ -25361,6 +25399,41 @@ void openpete_native_render_record_flush(void)
         openpete_record_submit_frame(buf, w, h, /*top_down=*/1, tag);
 }
 
+/* The game window's state when the teardown destroyed it, for the
+ * relaunched launcher to open in (openpete_native_window_final_state). */
+static struct {
+    int recorded, fullscreen, maximized, x, y, w, h;
+} s_final_window;
+
+/** @brief Record a window's fullscreen and maximized flags, position and size before it is destroyed; call on the window's thread.
+ *
+ * @param win The window; NULL records nothing. */
+static void nr_record_final_window(SDL_Window *win)
+{
+    if (!win) return;
+    const SDL_WindowFlags f = SDL_GetWindowFlags(win);
+    s_final_window.fullscreen = (f & SDL_WINDOW_FULLSCREEN) ? 1 : 0;
+    s_final_window.maximized = (f & SDL_WINDOW_MAXIMIZED) ? 1 : 0;
+    SDL_GetWindowPosition(win, &s_final_window.x, &s_final_window.y);
+    SDL_GetWindowSize(win, &s_final_window.w, &s_final_window.h);
+    s_final_window.recorded = 1;
+    OPL_INFO_F("native", "game window at teardown: fullscreen=%d maximized=%d at %d,%d size %dx%d",
+               s_final_window.fullscreen, s_final_window.maximized, s_final_window.x,
+               s_final_window.y, s_final_window.w, s_final_window.h);
+}
+
+int openpete_native_window_final_state(int *fullscreen, int *maximized, int *x, int *y, int *w, int *h)
+{
+    if (!s_final_window.recorded) return 0;
+    *fullscreen = s_final_window.fullscreen;
+    *maximized = s_final_window.maximized;
+    *x = s_final_window.x;
+    *y = s_final_window.y;
+    *w = s_final_window.w;
+    *h = s_final_window.h;
+    return 1;
+}
+
 void openpete_native_render_shutdown(void)
 {
     openpete_png_async_drain();   /* the player screenshots still queued */
@@ -25534,6 +25607,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_pipeline(s_nr.dev, s_nr.vram_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.blit_pipe);
     rhi_destroy(s_nr.dev);
+    nr_record_final_window(s_nr.window);
     SDL_DestroyWindow(s_nr.window);
     free(s_nr.readback);
     /* s_nr.vram_mirror is the static native VRAM model (native_vram.c) - not freed. */

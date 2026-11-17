@@ -64,12 +64,27 @@ Cases:
             exit 3 with the missing-disc diagnostic.
   input     T11, the game page's commands (windowed, three-game library): arrow keys, the d-pad and
             the left stick's X move the focus one box without wrap (the stick re-centres between
-            moves); up and down do nothing; Escape quits at once; East asks once ("quit ask chip
+            moves); up moves it to the Mods chip and down back to its box; Escape quits at once; East asks once ("quit ask chip
             shown"), the ask lapses after 2 s, and a second East inside 2 s quits; the pointer takes
             the focus only after it moves, so a key move holds against a still pointer; Space and
             West open the file picker for the focused box's game; Enter and South start the focused
             box's game; a disc of another game dropped on the page focuses that game's box when the
             page returns.
+  mods-chip The Mods chip at the game page's top-left corner (page.mods in the manifest, also on the empty
+            library's page): key up and the d-pad up reach it, down and right return to the box, left and
+            up on it do nothing; Enter, South and a click each open the mods folder the loader reads
+            (OPENPETE_LAUNCHER_OPEN_URL_STUB=1 logs the path and opens nothing), which is created.
+  exit-return  EXIT GAME (injected through OPENPETE_MOUSE_INJECT) in a session picked on the game page
+            returns to the launcher, three times over a library of Spyro 1 and 2 (picks Spyro 2, Spyro 1,
+            Spyro 2 by OPENPETE_LAUNCHER_SELECT_GAME's list), then the page quits: each relaunch carries
+            the return count and the game exited, the page focuses that game's box, the one-shot flags
+            (--frame-limit, --max-runtime-seconds) are left out once, memory cards the first Spyro 2
+            session provisioned load in the second, every page runs with equal descriptor counts and
+            thread counts within 2, and the three returns' timings are reported (teardown, exec, first
+            present), exit 0.
+  exit-direct  EXIT GAME in a --disc session and a directly booted --game session refuses the return and
+            ends the process, exit 0.
+  exit-close  A window close and SIGTERM end a session picked on the game page without a relaunch, exit 0.
   picker    T11 and D39's disc choice through the drawn picker (windowed): under gamescope
             (GAMESCOPE_WAYLAND_DISPLAY set) Space opens the drawn picker and never the file dialog;
             the pad walks it over a folder the check made (OPENPETE_LAUNCHER_PICKER_ROOTS): South
@@ -167,6 +182,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import statistics
 import struct
 import subprocess
@@ -1780,6 +1796,241 @@ def input_run(a, d, tag, acts, extra=None, args=None, timeout=300):
     return cl.launch(a.binary, d, tag, ["--launcher-window", "1280x800"] + (args or []), env, timeout=timeout)
 
 
+# The settings menu's EXIT GAME, injected into a game session (OPENPETE_MOUSE_INJECT): open the menu, Up to
+# the EXIT row (the cursor wraps from the first row), Return arms it, Return again fires it.
+EXIT_SCRIPT = ("2500ms menu 1\n3000ms keydown Up\n3060ms keyup Up\n3300ms keydown Return\n3360ms keyup Return\n"
+               "3600ms keydown Return\n3660ms keyup Return\n")
+
+
+def exit_script(d, name, extra=""):
+    """Write the EXIT GAME injection script (plus `extra` lines) into the case directory; return its path."""
+    path = os.path.join(d, name + ".inject")
+    with open(path, "w") as f:
+        f.write(EXIT_SCRIPT + extra)
+    return path
+
+
+def proc_counts(pid):
+    """The process's thread and open-descriptor counts, or None when it is gone; each descriptor's target
+    is printed for a diagnosis."""
+    try:
+        fds = sorted(os.listdir(f"/proc/{pid}/fd"), key=int)
+        targets = []
+        for f in fds:
+            try:
+                targets.append(f + "->" + os.readlink(f"/proc/{pid}/fd/{f}"))
+            except OSError:
+                pass
+        print(f"[launcher-flow] pid {pid} descriptors: {' '.join(targets)}")
+        return len(os.listdir(f"/proc/{pid}/task")), len(fds)
+    except OSError:
+        return None
+
+
+def sampled_launch(a, d, tag, args, env, card, timeout, marker):
+    """cl.launch in a thread while the main thread samples the process (its XDG_DATA_HOME is the case's)
+    each time the log gains a `marker` line: returns (rc, log, [(thread count, fd count) per marker line])."""
+    res = {}
+
+    def run():
+        try:
+            res["r"] = cl.launch(a.binary, d, tag, args, env, timeout=timeout, card=card)
+        except cl.Skip as e:
+            res["skip"] = e
+
+    t = threading.Thread(target=run)
+    t.start()
+    path, seen, samples = os.path.join(d, tag + ".log"), 0, []
+    while t.is_alive():
+        time.sleep(0.1)
+        try:
+            with open(path, errors="replace") as f:
+                n = len(re.findall(marker, f.read()))
+        except OSError:
+            continue
+        if n > seen:
+            seen = n
+            time.sleep(0.4)
+            pid = launcher_pid(d, timeout=2.0)
+            c = proc_counts(pid) if pid else None
+            if c:
+                samples.append(c)
+    t.join()
+    if "skip" in res:
+        raise res["skip"]
+    rc, log = res["r"]
+    return rc, log, samples
+
+
+def return_timings(log):
+    """Per return: (teardown ms from the second EXIT press to the relaunch, ms from the relaunch to the next
+    image's entry, ms from that image's start to its first launcher present), from the return's steady-clock
+    log lines and the launcher's first_present stamp."""
+    req = [int(x) for x in re.findall(r"return: requested from [\w -]+ at steady (\d+) ms", log)]
+    rel = [int(x) for x in re.findall(r"returning to the launcher \([^)]*\) at steady (\d+) ms", log)]
+    ent = [int(x) for x in re.findall(r"return \d+: image entered at steady (\d+) ms", log)]
+    first = [float(x) for x in re.findall(r"stamp first_present ([\d.]+) ms after process start", log)][1:]
+    return [(r1 - r0, e - r1, round(f)) for r0, r1, e, f in zip(req, rel, ent, first)]
+
+
+def case_exit_return(a):
+    """EXIT GAME in a session picked on the game page returns to the launcher, three times in a row."""
+    d = cl.case_dir(a.out, "exit-return")
+    seed_entry(d, "spyro-1", 2)
+    seed_entry(d, "spyro-2", 1)
+    card = os.path.join(d, "cards")
+    os.makedirs(card)
+    env = {"OPENPETE_LAUNCHER_SELECT_GAME": "spyro-2,spyro-1,spyro-2", "OPENPETE_LAUNCHER_PICK_DELAY_MS": "1500",
+           "OPENPETE_MOUSE_INJECT": exit_script(d, "exit"), "OPENPETE_LAUNCHER_INPUT": "6000:quit"}
+    # Flags the relaunch leaves out (kDropped): each bounds one session, and the first relaunch's argv
+    # holds them no longer, so they are dropped once.
+    args = ["--launcher-window", "1280x800", "--frame-limit", "100000", "--max-runtime-seconds", "900"]
+    rc, log, samples = sampled_launch(a, d, "exit-return", args, env, card, 900, r"stamp first_present")
+    bad = []
+    returns = re.findall(r"returning to the launcher \(OPENPETE_LAUNCHER_RETURN=(\d+):([\w-]+)", log)
+    picks = re.findall(r"game picked: ([\w-]+)", log)
+    want = [("1", "spyro-2"), ("2", "spyro-1"), ("3", "spyro-2")]
+    if returns != want:
+        bad.append(f"returns {returns}, want {want}")
+    if picks != ["spyro-2", "spyro-1", "spyro-2"]:
+        bad.append(f"picks {picks}, want spyro-2, spyro-1, spyro-2")
+    dropped = re.findall(r"return: (--[\w-]+) left out of the relaunch", log)
+    if dropped != ["--frame-limit", "--max-runtime-seconds"]:
+        bad.append(f"dropped flags {dropped}: want --frame-limit and --max-runtime-seconds at the first relaunch")
+    focus = re.findall(r"command: focus starts on box \d+ \(([\w-]+), the game returned from\)", log)
+    if focus != ["spyro-2", "spyro-1", "spyro-2"]:
+        bad.append(f"returned focus {focus}, want spyro-2, spyro-1, spyro-2")
+    # Memory cards: the first Spyro 2 session provisions the cards, the second loads them from disk (what
+    # the first wrote survived its teardown and the relaunch); each card file is a whole 128 KiB image.
+    prov = re.findall(r"provisioned formatted card \d at (\S+)", log)
+    loaded = re.findall(r"loaded card \d from (\S+)", log)
+    images = [f for f in glob.glob(os.path.join(card, "*.mcr")) if os.path.getsize(f) == 131072]
+    if not prov or not set(prov) <= set(loaded) or len(images) != len(set(prov)):
+        bad.append(f"cards: provisioned {prov}, loaded {loaded}, whole images {images}")
+    # Every image's game page runs with the same threads and descriptors: nothing leaks across a relaunch.
+    if len(samples) != 4 or len({fd for _, fd in samples}) != 1 or max(t for t, _ in samples) - min(
+            t for t, _ in samples) > 2:
+        bad.append(f"(threads, descriptors) per page {samples}: want 4 samples, equal descriptors, threads within 2")
+    gaps = return_timings(log)
+    if len(gaps) != 3:
+        bad.append(f"return timings {gaps}: want 3")
+    if rc != 0 or "command: quit" not in log:
+        bad.append(f"exit {rc}, final quit {'logged' if 'command: quit' in log else 'absent'}")
+    return verdict("exit-return", bad, f"{len(returns)} returns, (threads, fds) per page {samples}, cards "
+                   f"provisioned {len(prov)} loaded {len(loaded)}, (teardown, exec, first present) ms {gaps}")
+
+
+def case_exit_direct(a):
+    """EXIT GAME in a session that showed no game page (--disc, and a --game entry booted directly) ends the
+    process with exit 0 and no relaunch."""
+    d = cl.case_dir(a.out, "exit-direct")
+    e = seed_entry(d, "spyro-1", 1)
+    env = {"OPENPETE_MOUSE_INJECT": exit_script(d, "exit")}
+    bad, legs = [], 0
+    for tag, args in (("disc", ["--disc", os.path.join(e, "disc.cue")]), ("game", ["--game", "spyro-1"])):
+        rc, log = cl.launch(a.binary, d, tag, ["--launcher-window", "1280x800"] + args, env, timeout=600)
+        legs += 1
+        if "menu: exit requested" not in log:
+            bad.append(f"{tag}: EXIT GAME not reached (exit {rc})")
+        if "did not start from the game page: the process exits" not in log or "returning to the launcher" in log:
+            bad.append(f"{tag}: the return was not refused, or the process relaunched")
+        if rc != 0 or "reason=user-quit" not in log:
+            bad.append(f"{tag}: exit {rc}, want 0 with reason user-quit")
+    return verdict("exit-direct", bad, f"{legs} legs")
+
+
+def case_exit_close(a):
+    """The quit paths other than EXIT GAME end a session picked on the game page: a window close, and
+    SIGTERM sent from outside once the game runs."""
+    d = cl.case_dir(a.out, "exit-close")
+    seed_entry(d, "spyro-1", 1)
+    bad, legs = [], 0
+    close_only = os.path.join(d, "close.inject")
+    with open(close_only, "w") as f:
+        f.write("3000ms close\n")
+    for tag in ("close", "sigterm"):
+        env = {"OPENPETE_LAUNCHER_SELECT_GAME": "spyro-1", "OPENPETE_LAUNCHER_INPUT": "8000:quit"}
+        if tag == "close":
+            env["OPENPETE_MOUSE_INJECT"] = close_only
+            rc, log = cl.launch(a.binary, d, tag, ["--launcher-window", "1280x800"], env, timeout=600)
+        else:
+            res = {}
+            t = threading.Thread(target=lambda: res.update(r=cl.launch(a.binary, d, tag, ["--launcher-window",
+                                                                                          "1280x800"], env,
+                                                                       timeout=600)))
+            t.start()
+            path, sent = os.path.join(d, tag + ".log"), False
+            deadline = time.time() + 300
+            while t.is_alive() and not sent and time.time() < deadline:
+                time.sleep(0.2)
+                try:
+                    with open(path, errors="replace") as f:
+                        up = "boot: identified spyro-1" in f.read()
+                except OSError:
+                    continue
+                if up:
+                    time.sleep(4.0)
+                    pid = launcher_pid(d, timeout=5.0)
+                    if pid:
+                        os.kill(pid, signal.SIGTERM)
+                        sent = True
+            t.join()
+            rc, log = res["r"]
+            if not sent:
+                bad.append(f"{tag}: no SIGTERM sent")
+        legs += 1
+        if "game picked: spyro-1" not in log:
+            bad.append(f"{tag}: no game started (exit {rc})")
+        if "returning to the launcher" in log or log.count("stamp first_present") != 1:
+            bad.append(f"{tag}: the launcher started again")
+        if rc != 0:
+            bad.append(f"{tag}: exit {rc}")
+    return verdict("exit-close", bad, f"{legs} legs")
+
+
+def case_mods_chip(a):
+    """The Mods chip: drawn at the top-left corner on the game page and the empty library's page, reached
+    by key up and the d-pad, pressed by Enter, South and a click, each opening the mods folder the loader
+    reads (stubbed), which is created."""
+    bad, counts = [], {}
+    mods = None
+    for tag, lib, acts in (("keys", True, ("key=up", "key=enter", "key=down", "key=right", "key=up", "key=left",
+                                           "key=enter", "key=escape")),
+                           ("pad", True, ("pad=up", "pad=south", "pad=down", "pad=up", "pad=right", "key=escape")),
+                           ("click", False, ("click=@page.mods", "key=escape"))):
+        d = cl.case_dir(a.out, "mods-chip-" + tag)
+        if lib:
+            seed_entry(d, "spyro-1", 2)
+            seed_entry(d, "spyro-2", 1)
+        mods = os.path.join(d, "data", "openpete", "mods")
+        base = os.path.join(d, "m")
+        rc, log = input_run(a, d, tag, inputs(*acts), extra={"OPENPETE_LAUNCHER_OPEN_URL_STUB": "1",
+                                                             "OPENPETE_LAUNCHER_MANIFEST": base})
+        presses = re.findall(r"command: Mods chip pressed \(([\w ]+)\)", log)
+        opened = re.findall(r"mods folder: opened (\S+) \(stubbed: nothing opened\)", log)
+        ups = len(re.findall(r"command: focus up from box \d+ to the Mods chip", log))
+        backs = len(re.findall(r"command: focus from the Mods chip back to box \d+", log))
+        counts[tag] = (len(presses), ups, backs)
+        want = {"keys": (["Enter or South"] * 2, 2, 1), "pad": (["Enter or South"], 2, 2),
+                "click": (["click"], 0, 0)}[tag]
+        if presses != want[0] or ups != want[1] or backs != want[2]:
+            bad.append(f"{tag}: presses {presses}, ups {ups}, backs {backs}; want {want}")
+        if len(opened) != len(presses) or any(os.path.realpath(o) != os.path.realpath(mods) for o in opened):
+            bad.append(f"{tag}: opened {opened}, want {mods} once per press")
+        if not os.path.isdir(mods):
+            bad.append(f"{tag}: {mods} was not created")
+        if tag == "keys" and (focus_moves(log) != [("right", 0, 1)] or "left does nothing on the Mods chip" not in log):
+            bad.append(f"{tag}: box moves {focus_moves(log)}, want only right 0 -> 1 (left on the chip is inert)")
+        screen = "selector" if lib else "drop"
+        m = cl.read_json(f"{base}.{screen}.json")
+        item = m and next((it for it in m["items"] if it["id"] == "page.mods"), None)
+        if not item or item["rect"][0] > 40 or item["rect"][1] > 40:
+            bad.append(f"{tag}: page.mods {item and item['rect']} not at the top-left corner of the {screen} screen")
+        if rc != 0:
+            bad.append(f"{tag}: exit {rc}")
+    return verdict("mods-chip", bad, ", ".join(f"{k} (presses, ups, backs) {v}" for k, v in counts.items()))
+
+
 def case_input(a):
     """T11: keys, pad and pointer drive the game page's focus, activation, file picker and quit."""
     d = cl.case_dir(a.out, "input")
@@ -1793,14 +2044,15 @@ def case_input(a):
         if got != want:
             bad.append(f"{tag}: focus moves {got}, want {want}")
 
-    # Keys: no wrap at either edge, up/down inert, Escape quits at once.
+    # Keys: no wrap at either edge, up to the Mods chip and down back to the box, Escape quits at once.
     rc, log = input_run(a, d, "keys", inputs("key=left", "key=right", "key=right", "key=right", "key=up",
                                              "key=down", "key=left", "key=escape"))
     expect_moves("keys", log, [("left", 0, 0), ("right", 0, 1), ("right", 1, 2), ("right", 2, 2),
                                ("left", 2, 1)])
-    counts["keys inert"] = len(re.findall(r"command: (up|down) does nothing", log))
-    if counts["keys inert"] != 2:
-        bad.append(f"keys: {counts['keys inert']} up/down lines, want 2")
+    counts["keys chip"] = len(re.findall(r"command: focus (up from box 2 to the Mods chip|from the Mods chip back "
+                                         r"to box 2)", log))
+    if counts["keys chip"] != 2:
+        bad.append(f"keys: {counts['keys chip']} Mods chip moves, want up and back from box 2")
     if rc != 0 or "command: quit (Escape, the window closed" not in log or "game picked" in log:
         bad.append(f"keys: exit {rc}, Escape quit {'logged' if 'Escape or the window' in log else 'absent'}")
 
@@ -1819,8 +2071,8 @@ def case_input(a):
         bad.append(f"pad: {len(asks)} asks (want 2), chip {chip} (want shown, hidden, shown)")
     if rc != 0 or not re.search(r"command: quit \(east again \d+ ms after the ask\)", log) or "game picked" in log:
         bad.append(f"pad: exit {rc}, second-East quit {'logged' if 'east again' in log else 'absent'}")
-    if len(re.findall(r"command: (up|down) does nothing", log)) != 3:
-        bad.append("pad: d-pad up/down and stick Y did not each log one inert command")
+    if len(re.findall(r"command: focus (up from box 1 to the Mods chip|from the Mods chip back to box 1)", log)) != 3:
+        bad.append("pad: d-pad up, down and the stick's Y did not move the focus to the Mods chip, back and to it")
 
     # The pointer takes the focus only after it moves: a key move holds against a still pointer.
     rc, log = input_run(a, d, "pointer", inputs(entry_point(2), "key=left", 900, entry_point(2, 10), "key=escape"))
@@ -2561,6 +2813,8 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "quit-copy": case_quit_copy, "quit-translate": case_quit_translate, "quit-build": case_quit_build,
          "quit-assets": case_quit_assets, "quit-east-once": case_quit_east_once,
          "quit-east-twice": case_quit_east_twice, "quit-escape": case_quit_escape, "quit-close": case_quit_close,
+         "exit-return": case_exit_return, "exit-direct": case_exit_direct, "exit-close": case_exit_close,
+         "mods-chip": case_mods_chip,
          "quit-page-sigterm": case_quit_page_sigterm, "error-refuse": case_error_refuse,
          "error-staged": case_error_staged, "error-build": case_error_build, "ingest-retry": case_ingest_retry,
          "error-link": case_error_link}

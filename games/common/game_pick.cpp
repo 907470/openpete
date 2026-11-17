@@ -290,6 +290,8 @@ const openpete_game_build_t* openpete_game_pick(int argc, char** argv, int* exit
     (void)openpete_log_file_open(neutral.log_file ? neutral.log_file
                                                   : openpete_config_env("OPENPETE_LOG_FILE"));
 
+    /* A return from a game opens the launcher in the game window's state. */
+    openpete_launcher_return_apply(&neutral);
     openpete_launcher_begin(neutral_desc(), &neutral, !neutral.headless);
     if (const int lock = openpete_launcher_lock(); lock != 0) {
         if (lock == -1) {

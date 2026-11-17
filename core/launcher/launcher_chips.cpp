@@ -149,6 +149,28 @@ void level_chip(float scale) {
 
 }  // namespace
 
+bool launcher_mods_chip_draw(float scale, bool focused) {
+    launcher_push_body_font(kCornerPx * scale);
+    const std::string text = launcher_chip_case("Mods");
+    const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
+    const float x0 = kCornerMargin * scale, y0 = kCornerMargin * scale;
+    const Corner c = {ImVec2(x0, y0),
+                      ImVec2(x0 + ts.x + 2.0f * kCornerPadX * scale, y0 + ts.y + 2.0f * kCornerPadY * scale),
+                      ImVec2(x0 + kCornerPadX * scale, y0 + kCornerPadY * scale)};
+    launcher_shape_panel("page.mods.panel", c.a, c.b, scale, kChipAlpha);
+    const float tx = std::trunc(c.text.x), ty = std::trunc(c.text.y);
+    launcher_manifest_item("page.mods", "text", tx, ty, tx + ts.x, ty + ts.y);
+    ImGui::GetWindowDrawList()->AddText(c.text, ImGui::GetColorU32(focused ? IM_COL32(240, 138, 30, 255)
+                                                                            : IM_COL32_WHITE),
+                                        text.c_str());
+    ImGui::SetCursorScreenPos(c.a);
+    const bool pressed = ImGui::InvisibleButton("##page.mods", ImVec2(c.b.x - c.a.x, c.b.y - c.a.y),
+                                                (ImGuiButtonFlags)ImGuiButtonFlags_PressedOnClick);
+    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    ImGui::PopFont();
+    return pressed;
+}
+
 void launcher_corner_chips_draw(float scale, bool shader_step) {
     launcher_push_body_font(kCornerPx * scale);
     if (!shader_step) shader_chip(scale);

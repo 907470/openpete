@@ -40,6 +40,7 @@
 #include "launcher_picker.h"
 #include "launcher_shapes.h"
 #include "launcher_chips.h"
+#include "openpete_mods.h"   /* openpete_mods_open_folder: the Mods chip */
 #include "launcher_progress.h"
 #include "launcher_sky.h"
 #include "launcher_quit.h"
@@ -98,6 +99,8 @@ struct View {
     bool quit_asked = false;              /* the east button's ask shows ("Press again to quit") */
     launcher_picker_result picked = LAUNCHER_PICKER_STAYS;   /* what a click in the drawn picker did */
     bool clicked = false;                 /* the left mouse button was pressed this frame */
+    bool mods_focus = false;              /* the keyboard and pad focus is on the Mods chip */
+    bool mods_pressed = false;            /* a click pressed the Mods chip this frame */
 };
 
 struct State {
@@ -459,6 +462,7 @@ void draw_view(void* ud) {
         v.picked = launcher_picker_draw(f.scale, f.ox, f.oy);
     } else {
         if (!s.panel_only) {
+            v.mods_pressed = launcher_mods_chip_draw(f.scale, v.mods_focus);
             v.activated = launcher_page_draw(v.entry_games, v.count, v.focus, &v.hovered);
             launcher_page_lines_draw(v.entry_games, v.count, f.scale);
         }
@@ -1352,13 +1356,24 @@ bool scripted_due() {
 
 /** @brief Harness: the entry OPENPETE_LAUNCHER_SELECT_GAME names (the first of that game), else the index OPENPETE_LAUNCHER_SELECT names, or -1 when unset or out of range.
  *
+ * OPENPETE_LAUNCHER_SELECT_GAME is a comma-separated list read by the
+ * return count (openpete_launcher_return_count): a first start picks the
+ * first game, the image after the n-th return to the launcher the (n+1)-th,
+ * and an image past the list's end picks nothing.
  * @param games Each entry's game id.
  * @param count The entry count.
  * @return The scripted pick. */
 int scripted_pick(const char* const* games, int count) {
-    if (const char* g = getenv("OPENPETE_LAUNCHER_SELECT_GAME"); g && *g) {
+    if (const char* list = getenv("OPENPETE_LAUNCHER_SELECT_GAME"); list && *list) {
+        const char* g = list;
+        for (int n = openpete_launcher_return_count(); n > 0 && g; n--) {
+            g = strchr(g, ',');
+            if (g) g++;
+        }
+        if (!g) return -1;
+        const size_t len = strcspn(g, ",");
         for (int i = 0; i < count; i++)
-            if (games && games[i] && !strcmp(games[i], g)) return i;
+            if (games && games[i] && strlen(games[i]) == len && !strncmp(games[i], g, len)) return i;
         return -1;
     }
     const char* e = getenv("OPENPETE_LAUNCHER_SELECT");
@@ -1427,7 +1442,7 @@ int panel_command(Ask a, bool clicked) {
 /** @brief Act on one command on the game page: move the focus, activate or browse for the focused box, quit at once, or ask once before quitting.
  *
  * Escape and the window closing quit at once; the east button asks once
- * (launcher_quit_ask_press); up and down do nothing.
+ * (launcher_quit_ask_press); up moves the focus to the Mods chip; down does nothing.
  * @param a The command.
  * @param focus The page's focus.
  * @param ask The east button's ask state.
@@ -1456,10 +1471,44 @@ int page_command(Ask a, launcher_focus& focus, launcher_quit_ask& ask, const cha
         case Ask::Left: case Ask::Right:
             (void)launcher_focus_move(&focus, a == Ask::Left ? -1 : 1);
             return kPageStays;
-        case Ask::Up: case Ask::Down:
-            OPL_INFO_F("launcher", "command: %s does nothing on the game page", a == Ask::Up ? "up" : "down");
+        case Ask::Up:
+            (void)launcher_focus_mods(&focus, true);
+            return kPageStays;
+        case Ask::Down:
+            OPL_INFO_F("launcher", "%s", "command: down does nothing on the game's boxes");
             return kPageStays;
         default: return kPageStays;
+    }
+}
+
+/** @brief Open the mods folder for a press of the Mods chip (openpete_mods_open_folder over the launcher's options).
+ *
+ * @param how What pressed it, for the log. */
+void mods_chip_press(const char* how) {
+    OPL_INFO_F("launcher", "command: Mods chip pressed (%s)", how);
+    (void)openpete_mods_open_folder(s.opts);
+}
+
+/** @brief Act on one command while the Mods chip holds the focus: Enter and South open the mods folder, down and right return to the boxes, Escape, the window closing, East, a drop and Space act as on the boxes, up and left do nothing.
+ *
+ * @param a The command.
+ * @param focus The page's focus.
+ * @param ask The east button's ask state.
+ * @param games Each library entry's game id.
+ * @param count The entry count.
+ * @return As page_command. */
+int mods_chip_command(Ask a, launcher_focus& focus, launcher_quit_ask& ask, const char* const* games, int count) {
+    switch (a) {
+        case Ask::Pick:
+            mods_chip_press("Enter or South");
+            return kPageStays;
+        case Ask::Down: case Ask::Right:
+            (void)launcher_focus_mods(&focus, false);
+            return kPageStays;
+        case Ask::Up: case Ask::Left:
+            OPL_INFO_F("launcher", "command: %s does nothing on the Mods chip", a == Ask::Up ? "up" : "left");
+            return kPageStays;
+        default: return page_command(a, focus, ask, games, count);
     }
 }
 
@@ -1554,22 +1603,26 @@ int page_loop(const char* const* games, int count, int scripted) {
     /* The page opens on the box of the game a disc was just added for, else
      * the first, held: the pointer takes the focus only after it moves. */
     const int first = launcher_page_box_of_game(games, count, launcher_focus_game());
-    if (first >= 0) OPL_INFO_F("launcher", "command: focus starts on box %d (%s, the disc just added)", first,
-                               launcher_focus_game());
+    if (first >= 0)
+        OPL_INFO_F("launcher", "command: focus starts on box %d (%s, %s)", first, launcher_focus_game(),
+                   openpete_launcher_return_count() > 0 ? "the game returned from" : "the disc just added");
     launcher_focus_game_set(nullptr);
-    launcher_focus focus = {std::max(0, first), launcher_page_box_count(games, count), true};
+    launcher_focus focus = {std::max(0, first), launcher_page_box_count(games, count), true, false};
     launcher_quit_ask ask = {};
     s.pointer_moved = false;
     for (;;) {
         v.activated = LAUNCHER_PAGE_NONE;
         v.picked = LAUNCHER_PICKER_STAYS;
         v.hovered = -1;
-        v.focus = focus.index;
+        v.focus = focus.mods ? -1 : focus.index;
+        v.mods_focus = focus.mods;
+        v.mods_pressed = false;
         const bool asked = launcher_quit_ask_shown(&ask, SDL_GetTicks());
         if (asked != v.quit_asked)
             OPL_INFO_F("launcher", "command: quit ask chip %s", asked ? "shown" : "hidden");
         v.quit_asked = asked;
         present(v);
+        if (v.mods_pressed) mods_chip_press("click");
         (void)launcher_focus_hover(&focus, v.hovered);
         launcher_jobs_pump();
         if (const int r = page_frame_result(v, scripted, games); r != kPageStays) return r;
@@ -1577,7 +1630,10 @@ int page_loop(const char* const* games, int count, int scripted) {
         if (s.pointer_moved) launcher_focus_pointer_moved(&focus);
         s.pointer_moved = false;
         int r = panel_command(a, false);
-        if (r == kPagePass) r = launcher_picker_shown() ? picker_command(a) : page_command(a, focus, ask, games, count);
+        if (r == kPagePass)
+            r = launcher_picker_shown() ? picker_command(a)
+                : focus.mods            ? mods_chip_command(a, focus, ask, games, count)
+                                        : page_command(a, focus, ask, games, count);
         if (r != kPageStays) return r;
     }
 }

@@ -90,7 +90,7 @@ static SDL_MouseID inj_mouse_id(void)
 typedef enum {
     INJ_MOVE, INJ_DOWN, INJ_UP, INJ_CLICK2, INJ_REL, INJ_WHEEL, INJ_MENU, INJ_CAPTURE,
     INJ_SHOT, INJ_KEYDOWN, INJ_KEYUP, INJ_PAD, INJ_PADAXIS, INJ_REBIND, INJ_UNBIND,
-    INJ_RESTORE, INJ_TEXT
+    INJ_RESTORE, INJ_TEXT, INJ_CLOSE
 } inj_verb_t;
 
 typedef struct {
@@ -207,7 +207,18 @@ static int inj_parse_text(inj_line_t* L, const char* verb, int n, const char* ar
     return 1;
 }
 
-/** @brief Parse the verbs with a parser of their own: the binding page's requests (inj_parse_rebind) and text (inj_parse_text).
+/** @brief Parse the close verb: a window-close request, no arguments.
+ * @param L the line; written on a match.
+ * @param verb the verb word.
+ * @return 1 when the verb is close, else 0. */
+static int inj_parse_close(inj_line_t* L, const char* verb)
+{
+    if (strcmp(verb, "close") != 0) return 0;
+    L->verb = INJ_CLOSE;
+    return 1;
+}
+
+/** @brief Parse the verbs with a parser of their own: the binding page's requests (inj_parse_rebind), text (inj_parse_text) and close (inj_parse_close).
  * @param L the line; written on a match.
  * @param verb the verb word.
  * @param n the number of words sscanf read (time and verb included).
@@ -218,7 +229,8 @@ static int inj_parse_text(inj_line_t* L, const char* verb, int n, const char* ar
 static int inj_parse_own_line(inj_line_t* L, const char* verb, int n,
                               const char* arg1, const char* arg2, const char* arg3)
 {
-    return inj_parse_rebind(L, verb, n, arg1, arg2, arg3) || inj_parse_text(L, verb, n, arg1);
+    return inj_parse_rebind(L, verb, n, arg1, arg2, arg3) || inj_parse_text(L, verb, n, arg1) ||
+           inj_parse_close(L, verb);
 }
 
 /** @brief Parse a script line's verb and arguments into its injection line.
@@ -256,6 +268,7 @@ static int inj_parse_verb(inj_line_t* L, const char* verb, int n,
         L->verb = INJ_CAPTURE; L->a = (float)atoi(arg1);
     } else if (!strcmp(verb, "shot")) {
         L->verb = INJ_SHOT;
+
     } else if ((!strcmp(verb, "keydown") || !strcmp(verb, "keyup")) && n >= 3) {
         /* The key is an SDL scancode name ("F", "O", "Escape"). */
         L->verb = !strcmp(verb, "keydown") ? INJ_KEYDOWN : INJ_KEYUP;
@@ -278,8 +291,8 @@ static int inj_parse_verb(inj_line_t* L, const char* verb, int n,
  * name and 0|1 or an SDL gamepad axis name and its value (the first
  * OPENPETE_INPUT_VGAMEPAD virtual pad), and the binding page's requests:
  * rebind <domain.action> <slot|add> [hold], unbind <domain.action> <slot>
- * and restore <domain.action>, and text <characters> (one SDL text-input
- * event, `_` standing for a space). A line with a bad time, verb, arity
+ * and restore <domain.action>, text <characters> (one SDL text-input
+ * event, `_` standing for a space), and close (a window-close request). A line with a bad time, verb, arity
  * or button name is logged and skipped. An unreadable file is logged and loads
  * nothing. Growth stops at the first failed allocation, keeping the lines
  * already read. Lines are read into a 256-byte buffer, so a longer line is
@@ -359,6 +372,19 @@ static void inj_push_key(int scancode, int down)
     ev.key.scancode = (SDL_Scancode)scancode;
     ev.key.key = SDL_GetKeyFromScancode((SDL_Scancode)scancode, SDL_KMOD_NONE, false);
     ev.key.down = down ? true : false;
+    SDL_PushEvent(&ev);
+}
+
+/** @brief Push one scripted window-close request for the mouse window, as the window manager's close button sends it.
+ *
+ * Not input: the input lock passes it, as it passes a real close. */
+static void inj_push_close(void)
+{
+    SDL_Event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+    ev.window.timestamp = SDL_GetTicksNS();
+    ev.window.windowID = mouse_window() ? SDL_GetWindowID(mouse_window()) : 0;
     SDL_PushEvent(&ev);
 }
 
@@ -502,6 +528,7 @@ static void inj_step(unsigned iter)
         case INJ_UNBIND: openpete_rebind_request_remove(L->button, L->slot); break;
         case INJ_RESTORE: openpete_rebind_request_restore(L->button); break;
         case INJ_TEXT:    inj_push_text(L->text); break;
+        case INJ_CLOSE:   inj_push_close(); break;
         }
         if (s_probe)
             OPL_INFO_F("mouse", "inject iter=%u ms=%u line=%d verb=%d", iter, ms,

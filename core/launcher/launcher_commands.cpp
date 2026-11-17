@@ -1,6 +1,6 @@
 /* launcher_commands.cpp - the game page's command state: the focus over its
- * boxes (moved by keys and the pad, taken by the pointer only after it
- * moves), the ask-once quit of the east button, and the game whose box takes
+ * boxes and the Mods chip (moved by keys and the pad, taken by the pointer
+ * only after it moves), the ask-once quit of the east button, and the game whose box takes
  * the focus when the page next shows. The event-to-command map is ask_of in
  * launcher.cpp; this file holds no SDL or imgui state. */
 #include "launcher_internal.h"
@@ -29,12 +29,23 @@ int launcher_focus_move(launcher_focus* f, int dir) {
     return to != from;
 }
 
+int launcher_focus_mods(launcher_focus* f, bool on) {
+    f->held = true;
+    if (f->mods == on) return 0;
+    f->mods = on;
+    if (on) OPL_INFO_F("launcher", "command: focus up from box %d to the Mods chip", f->index);
+    else OPL_INFO_F("launcher", "command: focus from the Mods chip back to box %d", f->index);
+    return 1;
+}
+
 void launcher_focus_pointer_moved(launcher_focus* f) { f->held = false; }
 
 bool launcher_focus_hover(launcher_focus* f, int hovered) {
-    if (f->held || hovered < 0 || hovered >= f->count || hovered == f->index) return false;
-    OPL_INFO_F("launcher", "command: focus follows the pointer from box %d to box %d", f->index, hovered);
+    if (f->held || hovered < 0 || hovered >= f->count || (hovered == f->index && !f->mods)) return false;
+    OPL_INFO_F("launcher", "command: focus follows the pointer from %s %d to box %d", f->mods ? "the Mods chip, box" : "box",
+               f->index, hovered);
     f->index = hovered;
+    f->mods = false;
     return true;
 }
 

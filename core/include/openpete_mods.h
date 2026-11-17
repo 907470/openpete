@@ -107,6 +107,18 @@ int openpete_mods_init(const openpete_options_t* opts);
  * @return The path, or NULL before discovery ran or when no root resolved. */
 const char* openpete_mods_root_dir(void);
 
+/** @brief Open the mods root directory in the platform's file manager, creating it first when it is missing.
+ *
+ * The directory is the one mods_root resolves from @p opts (--mods-dir,
+ * OPENPETE_MODS_DIR, else the data location), or with NULL the one the boot
+ * discovery resolved (openpete_mods_root_dir). SDL_OpenURL hands a plain
+ * path to the shell on Windows and to the desktop portal or xdg-open on
+ * Linux; macOS takes a file:// URL. Under the harness variable
+ * OPENPETE_LAUNCHER_OPEN_URL_STUB=1 it logs the directory and opens nothing.
+ * @param opts The options, or NULL for the discovered root.
+ * @return 0 when opened (or stubbed), -1 when no root resolves or the open failed. */
+int openpete_mods_open_folder(const openpete_options_t* opts);
+
 /** @brief Register every discovered mod's [[binding]] defaults with the keymap without loading any mod.
  *
  * Discovers mods the way openpete_mods_init does, parses each mod.toml,

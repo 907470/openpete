@@ -357,11 +357,13 @@ def run_session(cmd, env, out, timeout, stdout=None):
     return rc
 
 
-def launch(binary, d, tag, args, env=None, timeout=120, screen=SCREEN, panel=0):
+def launch(binary, d, tag, args, env=None, timeout=120, screen=SCREEN, panel=0, card=None):
     """One windowed run under a fresh virtual display and the window manager; returns (rc, log text).
 
     The window manager reserves a bottom panel of `panel` pixels in the work area. The run starts once
-    the manager has advertised itself (its ready file), so the window maps under it."""
+    the manager has advertised itself (its ready file), so the window maps under it. With `card` (a
+    directory) the run uses memory cards there (OPENPETE_CARD_DIR, OPENPETE_CARD_GUARD) instead of
+    --no-card."""
     if not shutil.which("xvfb-run"):
         raise Skip("xvfb-run not found")
     wm = WM or os.path.join(os.path.dirname(binary), "openpete_xvfb_wm")
@@ -372,13 +374,16 @@ def launch(binary, d, tag, args, env=None, timeout=120, screen=SCREEN, panel=0):
     e.update({"SDL_VIDEODRIVER": "x11", "OPENPETE_MSGBOX_SKIP": "1",
               "XDG_DATA_HOME": os.path.join(d, "data"), "XDG_STATE_HOME": os.path.join(d, "state"),
               "XDG_CONFIG_HOME": os.path.join(d, "config")})
+    if card:
+        e.update({"OPENPETE_CARD_DIR": card, "OPENPETE_CARD_GUARD": "1"})
     e.update(env or {})
     ready = os.path.join(d, tag + ".wm-ready")
     config = [] if "--config" in args else ["--no-config"]
+    cards = [] if card else ["--no-card"]
     cmd = ["xvfb-run", "-a", "-s", f"-screen 0 {screen}x24", "sh", "-c",
            '"$0" --panel "$1" --ready "$2" & until [ -e "$2" ]; do sleep 0.05; done; shift 2; exec "$@"',
-           wm, str(panel), ready, binary] + config + ["--no-card", "--vibration", "0", "--input-lock",
-                                                       "--mute", "1"] + args
+           wm, str(panel), ready, binary] + config + cards + ["--vibration", "0", "--input-lock",
+                                                              "--mute", "1"] + args
     log = os.path.join(d, tag + ".log")
     with open(log, "w") as f:
         rc = run_session(cmd, e, f, timeout)

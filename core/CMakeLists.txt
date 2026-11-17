@@ -175,6 +175,7 @@ add_library(openpete_core STATIC
     launcher/launcher_commands.cpp
     launcher/launcher_shapes.cpp
     launcher/launcher_chips.cpp
+    launcher/launcher_return.cpp
     launcher/launcher_progress.cpp
     launcher/launcher_sky.cpp
     launcher/launcher_picker.cpp

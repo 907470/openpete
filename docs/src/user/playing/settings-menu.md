@@ -91,9 +91,20 @@ setting and, under [Controls](dev-overlay.md#controls), the key bindings are. Wh
 ## EXIT GAME
 
 The first press on **EXIT GAME** <!-- id: menu:menu.quit --> changes the row
-to **REALLY EXIT?**; the second quits.
-Moving to another row disarms it. The memory cards are written before the
-program exits, as on any other quit.
+to **REALLY EXIT?**; the second ends the game.
+Moving to another row disarms it. The memory cards and changed settings are
+written first, as on any other quit.
+
+A game chosen on the launcher's
+[game page](../getting-started/first-run.md#the-game-page) returns to the
+game page, with that game's box focused, and any game can be started again.
+The launcher window opens where the game window was: fullscreen when the game
+was fullscreen, else at the game window's size and position. A game started
+with `--disc`, or with a `--game` that started the game
+without showing the game page exits the program instead.
+
+Closing the window (the window's close button, ++alt+f4++) or the `quit` key
+action, when bound, always exits the program.
 
 ## Settings the menu does not show
 

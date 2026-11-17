@@ -72,6 +72,25 @@ void openpete_native_set_icon(const void* rgba32, int w, int h);
 int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int win_h,
                                   int open, const char *title);
 
+/** @brief Create the launcher's window at a position on the next openpete_native_launcher_open, so it opens on the display the position lies on.
+ *
+ * Window coordinates, as SDL_GetWindowPosition reports them. One use: the
+ * open that creates the window consumes it.
+ * @param x The window's left edge.
+ * @param y The window's top edge. */
+void openpete_native_launcher_set_position(int x, int y);
+
+/** @brief Report the game window's last state, recorded on the window's thread when the native teardown destroyed it.
+ *
+ * @param fullscreen Receives 1 when it was fullscreen.
+ * @param maximized Receives 1 when it was maximized.
+ * @param x Receives its left edge, window coordinates.
+ * @param y Receives its top edge.
+ * @param w Receives its width, window coordinates.
+ * @param h Receives its height.
+ * @return 1 when a window was destroyed and its state recorded, else 0. */
+int openpete_native_window_final_state(int *fullscreen, int *maximized, int *x, int *y, int *w, int *h);
+
 /** @brief Return why the last openpete_native_launcher_open failed, as a sentence for the player.
  *
  * @return The reason, or "" when no open has failed. */

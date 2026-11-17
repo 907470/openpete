@@ -67,6 +67,7 @@
 #include "../host/host_spawn.h" /* silent compiler spawn + cc identity */
 #include "openpete_atomic_file.h" /* the unpacked zip's stamp */
 #include "miniz.h"              /* zip mods (folder or zip, identical) */
+#include <SDL3/SDL.h>            /* SDL_OpenURL, SDL_CreateDirectory: the mods folder */
 
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -5711,6 +5712,35 @@ static int mods_root(const openpete_options_t* opts, char* mods_dir,
         return 0;
     }
     return openpete_paths_data_dir("mods", mods_dir, mods_dir_cap, 0);
+}
+
+int openpete_mods_open_folder(const openpete_options_t* opts) {
+    char dir[MOD_PATH_MAX];
+    if (opts) {
+        if (mods_root(opts, dir, sizeof dir) != 0) return -1;
+    } else if (s_mods_root_dir[0]) {
+        snprintf(dir, sizeof dir, "%s", s_mods_root_dir);
+    } else {
+        return -1;
+    }
+    (void)SDL_CreateDirectory(dir);   /* fails harmlessly when it exists */
+    char url[MOD_PATH_MAX + 8];
+#if defined(__APPLE__)
+    snprintf(url, sizeof url, "file://%s", dir);
+#else
+    snprintf(url, sizeof url, "%s", dir);
+#endif
+    const char* stub = getenv("OPENPETE_LAUNCHER_OPEN_URL_STUB");
+    if (stub && *stub && *stub != '0') {
+        OPL_INFO_F("mods", "mods folder: opened %s (stubbed: nothing opened)", dir);
+        return 0;
+    }
+    if (!SDL_OpenURL(url)) {
+        OPL_WARN_F("mods", "mods folder: could not open %s: %s", dir, SDL_GetError());
+        return -1;
+    }
+    OPL_INFO_F("mods", "mods folder: opened %s", dir);
+    return 0;
 }
 
 /** @brief Fill a mod ref with a candidate id and its mod dir.

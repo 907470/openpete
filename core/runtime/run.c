@@ -10,6 +10,7 @@
 #include "openpete_bugreport_replay.h"
 #include "openpete.h"
 #include "openpete_crash.h"
+#include "openpete_launcher.h"   /* openpete_launcher_return_cancel */
 #include "openpete_fatal.h"
 #include "openpete_mutex_once.h"
 #include "openpete_fiber.h"
@@ -540,6 +541,7 @@ static bool openpete_handle_event(SDL_Event* ev) {
     }
     if (ev->type == SDL_EVENT_QUIT) {
         g_shutdown_requested = 1;
+        openpete_launcher_return_cancel();   /* a quit ends the process */
         return false;  /* never reaches PsyCross, so PsyX_Exit stays unreachable */
     }
     /* Double-click toggles native-window fullscreen (see the host loop) -
@@ -555,6 +557,7 @@ static bool openpete_handle_event(SDL_Event* ev) {
     }
     if (ev->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
         g_shutdown_requested = 1;
+        openpete_launcher_return_cancel();   /* closing the window ends the process */
         return false;
     }
     /* The pump runs on the window's owner, the one thread that may read its
@@ -605,6 +608,7 @@ static bool openpete_handle_event(SDL_Event* ev) {
 
         if (openpete_keymap_key_binds(OPK_QUIT, ev->key.scancode)) {
             g_shutdown_requested = 1;
+            openpete_launcher_return_cancel();   /* the quit key ends the process */
             return false;
         }
         /* Escape with quit unbound or rebound elsewhere: swallow it anyway
@@ -629,6 +633,7 @@ static void openpete_on_sigint(int sig) {
         _exit(130);  /* 128 + SIGINT */
     }
     g_shutdown_requested = 1;
+    openpete_launcher_return_cancel();   /* async-signal-safe: one atomic store */
 #ifndef _WIN32
     atomic_store(&g_quit_backstop_armed, 1);
     alarm(QUIT_BACKSTOP_S);

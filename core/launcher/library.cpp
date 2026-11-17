@@ -269,6 +269,9 @@ char s_entry_dir[4096];
  * an entry boots. */
 char s_selected_game[32];
 int  s_booted;
+/* 1 when the player picked the last selected entry on the game page; 0 for
+ * a --game entry booted directly or a pick made without screens. */
+bool s_page_pick;
 
 /** @brief Write the module path the launcher's game names for a library entry.
  *
@@ -580,6 +583,7 @@ void mark_failed_boxes(const std::vector<Meta*>& order) {
 int pick_entry(const openpete_options_t* opts, std::vector<Meta>& entries, Meta*& pick,
                bool allow_direct = true) {
     const bool direct = allow_direct && opts->game_selector && opts->game_selector[0];
+    s_page_pick = false;
     const std::string id = !direct ? "" : launcher_neutral() ? opts->game_selector
                                                               : launcher_game()->game_id;
     pick = nullptr;
@@ -604,8 +608,10 @@ int pick_entry(const openpete_options_t* opts, std::vector<Meta>& entries, Meta*
     if (sel == LAUNCHER_SEL_NOSCREEN)
         std::fprintf(stderr, "[library] %zu entr%s, no screen - booting the most recently played '%s'\n",
                      entries.size(), entries.size() == 1 ? "y" : "ies", pick->label.c_str());
-    else
+    else {
         pick = order[(size_t)sel];
+        s_page_pick = true;
+    }
     return 0;
 }
 
@@ -1030,12 +1036,22 @@ int resolve_ingest(openpete_options_t* opts, bool screens, char* module_path_out
  * @return 0 on a boot, a bypass or no entry, else a LAUNCHER_LIB_* value. */
 int resolve_pick(openpete_options_t* opts, char* module_path_out, size_t module_path_cap) {
     const bool screens = launcher_screens();
+    /* A return from a game shows the game page: the inputs that boot an
+     * entry without it applied to the first start. */
+    if (openpete_launcher_return_count() > 0 && screens) {
+        if (opts->ingest_path || (opts->game_selector && opts->game_selector[0]))
+            OPL_INFO_F("library", "return: %s%s%s ignored: the game page shows", opts->ingest_path ? "--ingest" : "",
+                       opts->ingest_path && opts->game_selector ? " and " : "", opts->game_selector ? "--game" : "");
+        opts->ingest_path = nullptr;
+        if (const char* g = openpete_launcher_return_game()) launcher_focus_game_set(g);
+    }
     if (opts->ingest_path) {
         const int rc = resolve_ingest(opts, screens, module_path_out, module_path_cap);
         if (rc != kPassAgain) return rc;
     }
     if (opts->disc_path || opts->exe_path) return 0;
-    bool direct = opts->game_selector && opts->game_selector[0];   /* --game picks until the library shows */
+    bool direct = opts->game_selector && opts->game_selector[0] &&   /* --game picks until the library shows */
+                  !(openpete_launcher_return_count() > 0 && screens);
     for (;;) {
         Meta chosen;
         const int rc = pick_pass(opts, screens, direct, chosen);
@@ -1165,6 +1181,8 @@ const char* openpete_launcher_build_id(void) {
     static const std::string id = build_id();
     return id.c_str();
 }
+
+int openpete_launcher_picked_on_page(void) { return s_booted && s_page_pick ? 1 : 0; }
 
 const char* openpete_launcher_selected_game(void) {
     return s_booted ? s_selected_game : nullptr;
