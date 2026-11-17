@@ -146,6 +146,8 @@ source scripts/lib/own_children.sh
 # PsyCross's GL and the native renderer's Vulkan run on the CPU rasterizers.
 # shellcheck source=scripts/lib/swrender.sh
 source scripts/lib/swrender.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 sw_render_env
 
 # The native feed rides every run (see the header); the exit row is checked
@@ -422,12 +424,11 @@ rm -f "$LOG"
 # software Vulkan (llvmpipe) in a real window at the display's cadence,
 # and its verdict counts only when the present thread presented.
 MODE=(--headless)
+OP_XVFB=()
 WINDOWED="${OPENPETE_ORACLE_WINDOWED:-0}"
 if [[ "$WINDOWED" != "0" ]]; then
-    if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
-        echo "[psx-oracle] windowed row needs a display (DISPLAY/WAYLAND_DISPLAY unset)" >&2
-        exit 64
-    fi
+    # The window is on a private Xvfb display (scripts/lib/xvfb.sh).
+    op_xvfb_prefix psx-oracle 1280x960
     if [[ "${VK_ICD_FILENAMES:-}" != *lvp_icd* ]]; then
         echo "[psx-oracle] windowed row needs the llvmpipe Vulkan driver (lvp_icd.x86_64.json)" >&2
         exit 64
@@ -454,7 +455,7 @@ done
 # TERM, INT or HUP to the script stops them (scripts/lib/own_children.sh);
 # pipefail makes the job's status the binary's.
 op_own_run bash -c 'set -o pipefail; log="$1"; shift; "$@" 2>&1 | tee "$log"' _ "$LOG" \
-    "$BIN" "${MODE[@]}" \
+    "${OP_XVFB[@]}" "$BIN" "${MODE[@]}" \
     --no-config \
     "${MODS_OFF[@]}" \
     --disc "$DISC" --disc-cache 0 \

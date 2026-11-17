@@ -40,6 +40,8 @@ EXE  = ROOT / "build" / "linux-release" / "openpete"
 DISC = ROOT / "games" / "spyro-1" / "spyro-1" / "build" / "SCUS-94228.cue"
 BK2  = ROOT / "games" / "spyro-1" / "bk2" / "frame-time-test.bk2"
 TOTAL_FRAMES = 3419  # baseline run-length; harness reseeds within this range
+# The window opens on a private Xvfb display (scripts/lib/xvfb.sh); set in main.
+XVFB = []
 
 
 def make_pattern(rng, total, density=0.4, max_segments=8):
@@ -61,7 +63,7 @@ def fmt_pattern(ranges):
 def run_once(label, unlock_spec, out_dir):
     pos = out_dir / f"{label}.csv"
     log = out_dir / f"{label}.log"
-    cmd = [
+    cmd = XVFB + [
         str(EXE),
         "--disc", str(DISC), "--disc-cache", "0",
         "--bk2", str(BK2),
@@ -119,6 +121,11 @@ def main():
     if not EXE.exists():
         print(f"[setup] missing build: {EXE}", file=sys.stderr)
         sys.exit(2)
+    prefix, skip = hostenv.xvfb_prefix("bk2-determinism", "1280x960")
+    if prefix is None:
+        print(f"[setup] {skip}", file=sys.stderr)
+        sys.exit(64)
+    XVFB[:] = prefix
 
     rng = random.Random(args.seed)
 

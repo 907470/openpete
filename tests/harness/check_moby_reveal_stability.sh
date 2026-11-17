@@ -45,16 +45,18 @@
 #                      off_added_values=<v,...> cand=<n> occl=<n>
 #                      px=<n> px_engaged=<0|1> verdict=PASS|FAIL|VACUOUS
 #
-# Every launch passes --input-lock --vibration 0 --background 1. Without a
-# display the runs are wrapped in xvfb-run when it is installed.
+# Every launch passes --input-lock --vibration 0 --background 1 and runs on a
+# private Xvfb display (scripts/lib/xvfb.sh).
 #
 # Usage: tests/harness/check_moby_reveal_stability.sh [--build-dir=DIR] [--out=DIR] [--window=WxH]
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (no display and no xvfb-run, no
+# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (no xvfb-run, no
 # binary, disc or python3 with PIL and numpy).
 set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 # Unattended launcher: every run this script starts is silenced.
 # (scripts/fences/rumble_guard.py enforces this.)
@@ -83,12 +85,7 @@ ROW_TIMEOUT=400
 [[ -f "$PG_DISC" ]] || { echo "reveal-stability: SKIP (no disc at $PG_DISC)"; exit 64; }
 python3 -c 'import PIL, numpy' 2>/dev/null ||
     { echo "reveal-stability: SKIP (python3 without PIL and numpy)"; exit 64; }
-WRAP=()
-if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
-    command -v xvfb-run >/dev/null ||
-        { echo "reveal-stability: SKIP (no display and no xvfb-run)"; exit 64; }
-    WRAP=(xvfb-run -a -s "-screen 0 1280x800x24")
-fi
+op_xvfb_prefix reveal-stability 1280x800
 
 [[ -n "$OUT" ]] || OUT="${PG_BUILD_DIR:-build/linux-release}/reveal-stability"
 mkdir -p "$OUT"
@@ -98,7 +95,7 @@ rm -f "${OUT:?}"/on.log "${OUT:?}"/off.log "${OUT:?}"/on__*.png "${OUT:?}"/off__
 run_leg() {
     local tag=$1; shift
     op_own_run env OPENPETE_VIBRATION=0 OPENPETE_REVEAL_CENSUS=1 "$@" \
-        "${WRAP[@]}" timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" "${PG_RUN_ARGS[@]}" \
+        "${OP_XVFB[@]}" timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" "${PG_RUN_ARGS[@]}" \
         --no-config --disc "$PG_DISC" --no-card --mute 1 \
         --vibration 0 --input-lock --background 1 \
         --skip-to-level "$LEVEL" --lod extended --window "$WINDOW" \

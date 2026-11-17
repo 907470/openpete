@@ -23,11 +23,13 @@
 #
 # Usage: tests/harness/check_audio_host_mix.sh [--build-dir=DIR] [--record]
 # Exit 0 PASS, 2 FAIL, 64 SKIP (binary or disc missing, no compiler for
-# the mod, or --record without a display).
+# the mod, or --record without xvfb-run).
 set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 record=0
 for a in "$@"; do
@@ -65,11 +67,9 @@ fi
 args=(--tone "$OUT/mods/sfx-play-probe/assets/sfx/own/probe.wav"
       --base "$OUT/base.raw" --mod "$OUT/mod.raw" --mod-log "$OUT/mod.log")
 if (( record )); then
-    if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
-        echo "[audio-host-mix] SKIP (--record needs a display)"; exit 64
-    fi
+    op_xvfb_prefix audio-host-mix 1280x960
     rm -f "$OUT/rec.mkv" "$OUT/rec.log"
-    OPENPETE_VIBRATION=0 op_own_run timeout -k 10 1200 "$PG_BIN" --no-config --disc "$PG_DISC" --disc-cache 0 \
+    OPENPETE_VIBRATION=0 op_own_run "${OP_XVFB[@]}" timeout -k 10 1200 "$PG_BIN" --no-config --disc "$PG_DISC" --disc-cache 0 \
         --input-lock --vibration 0 --window 640x480 --mods-dir "$OUT/mods" --no-card --mute 0 \
         --frame-limit 8000 --record "$OUT/rec.mkv" >"$OUT/rec.log" 2>&1 </dev/null
     [[ -f "$OUT/rec.mkv" ]] || { echo "[audio-host-mix] verdict=FAIL: no recording (see $OUT/rec.log)"; exit 2; }

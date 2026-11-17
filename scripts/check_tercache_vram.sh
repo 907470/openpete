@@ -94,6 +94,8 @@ cd "$(dirname "$0")/.."
 source scripts/lib/game.sh
 # shellcheck source=scripts/lib/wslenv.sh
 source scripts/lib/wslenv.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 # Unattended launcher: no player uses the pad and the buzzing appears in no
 # log, so every run this script starts is silenced.
@@ -133,11 +135,17 @@ PROBE_FRAME_LIMIT=400
 LEG_RUNTIME=900
 LEG_TIMEOUT=960
 
-[[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
-    { echo "tercache-vram: SKIP (no display)"; exit 64; }
-
 [[ -n "$EXE" ]] || EXE="$(win_tree_exe "$WIN_BUILD_DIR" "$GAME")"
 [[ -x "$EXE" ]] || { echo "tercache-vram: SKIP (no exe at $EXE)"; exit 64; }
+# A Windows .exe opens its window on the Windows desktop; a Linux binary
+# opens it on a private Xvfb display (scripts/lib/xvfb.sh).
+OP_XVFB=()
+if [[ "$EXE" == *.exe ]]; then
+    [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
+        { echo "tercache-vram: SKIP (no display)"; exit 64; }
+else
+    op_xvfb_prefix tercache-vram 1280x960
+fi
 [[ -f "$PG_DISC" ]] || { echo "tercache-vram: SKIP (no disc at $PG_DISC)"; exit 64; }
 
 [[ -n "$OUT" ]] || OUT="$WIN_BUILD_DIR/tercache-vram/$GAME"
@@ -183,7 +191,7 @@ run_leg() {  # tag balloon-spec frame-limit level extra-env...
     local -a envs=(OPENPETE_VIBRATION=0 OPENPETE_TERRAIN_GPU_DBG=1 "$@")
     [[ -n "$balloon" ]] && envs+=("OPENPETE_RHI_BALLOON=$balloon")
     wslenv_forward "${envs[@]}"
-    timeout "$LEG_TIMEOUT" env "${WSLENV_ARGS[@]}" "$EXE" \
+    timeout "$LEG_TIMEOUT" env "${WSLENV_ARGS[@]}" "${OP_XVFB[@]}" "$EXE" \
         --disc "$DISC_ARG" --no-config --no-card --mute 1 \
         --vibration 0 --input-lock --perf-stats off --osd off \
         --renderer vk --window 664x448 --vsync 0 \

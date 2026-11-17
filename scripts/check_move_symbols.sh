@@ -31,6 +31,7 @@
 # Exit: 0 clean, 1 usage or missing artifact, 3 the symbol sets differ,
 # 8 a declared rename engaged nothing.
 
+# xvfb-guard: no-launch (reads the binary's symbols with nm)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

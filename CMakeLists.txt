@@ -1188,7 +1188,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # performance readout publish glyph vertices from the game's own font,
     # decoded from guest RAM (Spyro 1) or read from the disc (Spyro 2 and 3,
     # in every level). Rows in games/<slug>/corpus/text-font-corpus.manifest.
-    # Windowed (the producer is inert headless); exits 64 without a display.
+    # Windowed on a private Xvfb display (the producer is inert headless);
+    # exits 64 without xvfb-run.
     foreach(_font_game spyro-1 spyro-2 spyro-3)
         add_test(NAME text_font_${_font_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_text_font.sh
@@ -1691,8 +1692,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # zero nothing is ever snapshotted and the pause backdrop is a flat fill of
     # the clear colour. The source frame is chosen in the live compose, which
     # no headless run executes, so the presentation golden cannot see the class
-    # and this check drives a real window. Skips (exit 64) without a display,
-    # a binary, a disc or the bk2; a missing manifest fails (exit 1), so a row
+    # and this check drives a real window on a private Xvfb display. Skips
+    # (exit 64) without xvfb-run, a binary, a disc or the bk2; a missing manifest fails (exit 1), so a row
     # exists only for a game that has the manifest. The corpus directory is a
     # configure dependency: adding a game's manifest adds its row on the next
     # build.
@@ -1717,7 +1718,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # and compares every paused present's terrain-cache draw count with the
     # count of the scene shown before it. The paused repaint returns under
     # --headless and eager production needs a window, so no headless capture
-    # reaches the path. Skips (exit 64) without a display, a binary or a disc.
+    # reaches the path. Runs on a private Xvfb display; skips (exit 64) without
+    # xvfb-run, a binary or a disc.
     foreach(_pr_game spyro-1 spyro-2 spyro-3)
         add_test(NAME pause_repaint_${_pr_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_pause_repaint.sh
@@ -1736,8 +1738,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # retained terrain, a retained-terrain state overwritten while its scene
     # is unretired, or a canonical present composing fewer triangles of a
     # render path than its scene was published with. Eager production needs a
-    # window, so no headless capture reaches the path. Skips (exit 64) without
-    # a display, a binary or a disc.
+    # window, so no headless capture reaches the path. Runs on a private Xvfb
+    # display; skips (exit 64) without xvfb-run, a binary or a disc.
     foreach(_rp_game spyro-1 spyro-2 spyro-3)
         add_test(NAME eager_ring_pressure_${_rp_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_eager_ring_pressure.sh
@@ -1846,8 +1848,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # under Xvfb the present thread's cost floors the grid at one slot per
     # span on a loaded host. Eager production needs a window, so no headless
     # gate reaches the planner; eager_ladder_test replays a recorded stall.
-    # Runs under xvfb-run without a display; skips (exit 64) without either,
-    # or without a binary, disc, card or bk2.
+    # Runs on a private Xvfb display; skips (exit 64) without xvfb-run, or
+    # without a binary, disc, card or bk2.
     add_test(NAME eager_ladder_recovery_spyro-3
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_eager_ladder_recovery.sh
                      --build-dir=${CMAKE_BINARY_DIR})
@@ -1864,8 +1866,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # rect, culled once its decode refreshes the cache, admitted again when it
     # ages) or a deterministic sub-tick capture differs with the occlusion
     # confirmation switched off. Headless runs build no occlusion grid, so no
-    # headless gate reaches it. Runs under xvfb-run without a display; skips
-    # (exit 64) without either, or without a binary, disc or PIL.
+    # headless gate reaches it. Runs on a private Xvfb display; skips (exit
+    # 64) without xvfb-run, or without a binary, disc or PIL.
     add_test(NAME moby_reveal_stability_spyro-2
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_reveal_stability.sh
                      --build-dir=${CMAKE_BINARY_DIR})
@@ -1881,7 +1883,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # once per canonical present; no device call may come from a thread that
     # does not own the display (seam 0), over at least 400 drains with eager
     # engaged. Exit 3 = vacuous (fewer drains, or eager never engaged) and
-    # fails; 64 = SKIP (no display and no xvfb-run, no binary or disc).
+    # fails; 64 = SKIP (no xvfb-run, no binary or disc).
     add_test(NAME display_seam_spyro-2
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_display_seam.sh
                      --build-dir=${CMAKE_BINARY_DIR})

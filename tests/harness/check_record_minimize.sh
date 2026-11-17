@@ -22,6 +22,7 @@
 # Exit 0 PASS, 1 FAIL, 2 VACUOUS, 3 REFUSED (an openpete process already runs on
 # Windows), 64 SKIP (no exe, no powershell.exe or no disc).
 
+# xvfb-guard: windows-only (the run is the Windows .exe on the Windows desktop)
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 EXE="$ROOT/build/windows-mingw/openpete.exe"

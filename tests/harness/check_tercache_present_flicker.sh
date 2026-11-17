@@ -61,7 +61,7 @@
 #   OPENPETE_TC_FLICKER_EXE   the exe to drive (default: the build's
 #                             windows-mingw openpete.exe, one executable for
 #                             every game, run with --game); a Linux binary
-#                             runs windowed on $DISPLAY or $WAYLAND_DISPLAY
+#                             runs windowed on a private Xvfb display
 #   OPENPETE_TC_FLICKER_OUT   output directory (default: the build tree)
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (exe, disc, display or python3/PIL
 # missing, or the game has no measured pose).
@@ -71,6 +71,8 @@ cd "$(dirname "$0")/../.."
 source scripts/lib/game.sh
 # shellcheck source=scripts/lib/wslenv.sh
 source scripts/lib/wslenv.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 # Unattended launcher: every run this script starts is silenced.
 # (scripts/fences/rumble_guard.py enforces this.)
@@ -138,10 +140,11 @@ python3 -c 'import PIL, numpy, scipy' 2>/dev/null ||
 if [[ "$EXE" == *.exe ]]; then
     [[ -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]] ||
         { echo "tercache-flicker: SKIP (no WSL interop to run $EXE)"; exit 64; }
-else
-    [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
-        { echo "tercache-flicker: SKIP (no display)"; exit 64; }
 fi
+# A Windows .exe opens its window on the Windows desktop; a Linux binary
+# opens it on a private Xvfb display (scripts/lib/xvfb.sh).
+OP_XVFB=()
+[[ "$EXE" == *.exe ]] || op_xvfb_prefix tercache-flicker 2048x1536
 
 OUT="${OPENPETE_TC_FLICKER_OUT:-$PG_BUILD_DIR/tercache-flicker}"
 mkdir -p "$OUT"
@@ -158,7 +161,7 @@ attempt=1
 limit=$((PRESENTS_START + 100))
 while :; do
     rm -f "$LOG" "$OUT_ABS/$GAME"__*.png
-    env "${WSLENV_ARGS[@]}" "$EXE" --game "$GAME" \
+    env "${WSLENV_ARGS[@]}" "${OP_XVFB[@]}" "$EXE" --game "$GAME" \
         --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
         --renderer vk --aspect "$ASPECT" --lod extended --terrain-cache 1 "${PATH_ARGS[@]}" \
         --skip-to-level "$LEVEL" --freecam-pose "$POSE" \
@@ -265,7 +268,7 @@ attempt=1
 limit=$((PATH_START + PATH_N + 100))
 while :; do
     rm -f "$PLOG" "$OUT_ABS/$GAME"-path__*.png
-    env "${WSLENV_ARGS[@]}" "$EXE" --game "$GAME" \
+    env "${WSLENV_ARGS[@]}" "${OP_XVFB[@]}" "$EXE" --game "$GAME" \
         --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
         --renderer vk --aspect "$ASPECT" --lod extended --terrain-cache 1 "${PATH_ARGS[@]}" \
         --skip-to-level "$LEVEL" --freecam-path "$PATH_SPEC" \

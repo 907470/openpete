@@ -74,8 +74,8 @@
 # stall does not make the verdict VACUOUS.
 #
 # Every launch passes --input-lock --vibration 0 --background 1, so physical
-# input cannot reach the run and the window takes no focus. Without a display
-# the runs are wrapped in xvfb-run when it is installed.
+# input cannot reach the run and the window takes no focus. The runs are on a
+# private Xvfb display (scripts/lib/xvfb.sh).
 #
 # Verdict line:
 #   [ladder-recovery] game=spyro-3 window=<from>,<to> base=<n> raised=<n>
@@ -90,11 +90,13 @@
 # Usage: tests/harness/check_eager_ladder_recovery.sh [--build-dir=DIR] [--out=DIR]
 #            [--render-fps=N] [--inject-us=N] [--tick-scale=F] [--window=FROM,TO]
 #            [--analyze=INJECT_PACE[,ENTRY_PACE]]
-# Exit 0 PASS, 1 FAIL, 2 VACUOUS, 64 SKIP (no display, binary, disc or card).
+# Exit 0 PASS, 1 FAIL, 2 VACUOUS, 64 SKIP (no xvfb-run, binary, disc or card).
 set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 # Unattended launcher: every run this script starts is silenced.
 # (scripts/fences/rumble_guard.py enforces this.)
@@ -143,12 +145,7 @@ else
 [[ -x "$PG_BIN" ]] || { echo "ladder-recovery: SKIP (no binary at $PG_BIN)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "ladder-recovery: SKIP (no disc at $PG_DISC)"; exit 64; }
 [[ -f "$CARD_SRC" && -f "$BK2" ]] || { echo "ladder-recovery: SKIP (no $CARD_SRC or $BK2)"; exit 64; }
-WRAP=()
-if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
-    command -v xvfb-run >/dev/null ||
-        { echo "ladder-recovery: SKIP (no display and no xvfb-run)"; exit 64; }
-    WRAP=(xvfb-run -a -s "-screen 0 1280x960x24")
-fi
+op_xvfb_prefix ladder-recovery 1280x960
 
 [[ -n "$OUT" ]] || OUT="${PG_BUILD_DIR:-build/linux-release}/ladder-recovery"
 mkdir -p "$OUT"
@@ -164,7 +161,7 @@ run_leg() {
     local card="$OUT/$GAME-card1.mcr" log="$OUT/$GAME-$tag.log" pace="$OUT/$GAME-$tag.oppl"
     cp "$CARD_SRC" "$card"
     op_own_run env OPENPETE_VIBRATION=0 OPENPETE_TERRAIN_CACHE_FORCE=1 "$@" \
-        "${WRAP[@]}" timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
+        "${OP_XVFB[@]}" timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
         --no-config --disc "$PG_DISC" --card1 "$card" --no-card2 --mute 1 \
         --vibration 0 --input-lock --background 1 \
         --renderer vk --render-fps "$RENDER_FPS" --vsync 1 --tick-scale "$scale" \

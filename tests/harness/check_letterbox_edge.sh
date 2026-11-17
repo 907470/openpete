@@ -31,6 +31,8 @@ export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/sandbox.sh
 source scripts/lib/sandbox.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 OUT="build/letterbox-edge"
 ROWS=()
@@ -47,17 +49,11 @@ BIN="${OPENPETE_BIN:-build/linux-release/openpete}"
 DISC="${OPENPETE_DISC:-games/spyro-2/spyro-2/build/SCUS-94425.cue}"
 VBL=1800
 
-if ! command -v xvfb-run >/dev/null 2>&1; then
-    echo "[letterbox-edge] SKIP: xvfb-run not installed; the rows need a windowed present" >&2
-    exit 64
-fi
+# The rows need a windowed present, on a private Xvfb display.
+op_xvfb_prefix letterbox-edge 2048x1536
 [[ -x "$BIN" ]] || { echo "[letterbox-edge] SKIP: no binary at $BIN" >&2; exit 64; }
 [[ -f "$DISC" ]] || { echo "[letterbox-edge] SKIP: no disc at $DISC" >&2; exit 64; }
 
-# The window goes to the Xvfb display: SDL would pick a Wayland compositor
-# (WSLg) over X11 when WAYLAND_DISPLAY is set.
-unset WAYLAND_DISPLAY
-export SDL_VIDEODRIVER=x11
 
 mkdir -p "$OUT"
 fail=0 vacuous=0
@@ -67,7 +63,7 @@ for row in "${ROWS[@]}"; do
     png="$OUT/${tag}__${VBL}-vk.png"; log="$OUT/${tag}.log"
     rm -f "${png:?}" "${log:?}"
     OPENPETE_LOG="native:debug,*:info" timeout 600 \
-        xvfb-run -a -s "-screen 0 2048x1536x24" \
+        "${OP_XVFB[@]}" \
         "$BIN" --game spyro-2 --no-config --disc "$DISC" --no-card --mute 1 \
             --input-lock --vibration 0 --renderer vk --lod original \
             --osd off --version-osd off --perf-stats off \

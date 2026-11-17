@@ -90,7 +90,7 @@
 # Usage: scripts/check_occl_flicker.sh [--game SLUG] [--build-dir=DIR]
 #   OPENPETE_OCCL_FLICKER_EXE   the exe to drive (default: the worktree's
 #                               windows-mingw build of the game); a Linux
-#                               binary runs windowed on $DISPLAY
+#                               binary runs windowed on a private Xvfb display
 #   OPENPETE_OCCL_FLICKER_ONLY  freecam or bk2: run that leg kind alone
 #   OPENPETE_OCCL_FLICKER_OUT   output directory (default: the build tree)
 # Exit 0 PASS, 1 FAIL, 64 SKIP (exe, disc or python3 missing, or the game has
@@ -101,6 +101,8 @@ cd "$(dirname "$0")/.."
 source scripts/lib/game.sh
 # shellcheck source=scripts/lib/wslenv.sh
 source scripts/lib/wslenv.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 # Unattended launcher: no player uses the pad and the buzzing appears in no
 # log, so every run this script starts is silenced.
@@ -156,6 +158,10 @@ EXE="${OPENPETE_OCCL_FLICKER_EXE:-$(win_tree_exe "$PG_BUILD_DIR" "$GAME")}"
 DISC_ABS="$(cd "$(dirname "$PG_DISC")" 2>/dev/null && pwd -P)/$(basename "$PG_DISC")"
 [[ -x "$EXE" && -f "$DISC_ABS" ]] ||
     { echo "occl-flicker: SKIP (exe or disc missing: $EXE)"; exit 64; }
+# A Windows .exe opens its window on the Windows desktop; a Linux binary
+# opens it on a private Xvfb display (scripts/lib/xvfb.sh).
+OP_XVFB=()
+[[ "$EXE" == *.exe ]] || op_xvfb_prefix occl-flicker 2048x1536
 python3 -c '' 2>/dev/null || { echo "occl-flicker: SKIP (python3 missing)"; exit 64; }
 
 OUT="${OPENPETE_OCCL_FLICKER_OUT:-$PG_BUILD_DIR/occl-flicker}"
@@ -199,7 +205,7 @@ for LEG in $LEGS; do
     attempt=1
     while :; do
         rm -f "$LOG"
-        env "${WSLENV_ARGS[@]}" "$EXE" \
+        env "${WSLENV_ARGS[@]}" "${OP_XVFB[@]}" "$EXE" \
             --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
             --renderer vk --skip-to-level "$LEVEL" --lod extended \
             --vsync 0 --render-fps 60 \
@@ -419,7 +425,7 @@ for LEG in $BK2_LEGS; do
     done
     wslenv_forward "${BENVS[@]}"
     rm -f "$LOG"
-    env "${WSLENV_ARGS[@]}" "$EXE" \
+    env "${WSLENV_ARGS[@]}" "${OP_XVFB[@]}" "$EXE" \
         --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
         --renderer vk --lod extended --terrain-visibility game \
         --tick-scale "$TSCALE" --vsync 0 --render-fps 60 \

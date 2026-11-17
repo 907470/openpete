@@ -68,11 +68,13 @@
 #   tests/harness/check_freeze_backdrop.sh [--game SLUG] [--build-dir=DIR]
 #                                    [--filter=SUBSTR] [--out DIR]
 # Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
-# names the path), 64 SKIP (no display, binary, disc or bk2 missing).
+# names the path), 64 SKIP (no xvfb-run, binary, disc or bk2 missing).
 set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 # Unattended launcher: no player uses the pad and the buzzing appears in no
 # log, so every run this script starts is silenced.
@@ -112,10 +114,10 @@ ROW_TIMEOUT=960
 
 MANIFEST="$(pg_corpus_manifest "$GAME" freeze-backdrop-corpus.manifest)"
 pg_manifest "$MANIFEST" pipe
-# A live window is the whole point of the check; a session with no display has
-# nothing to measure and skips rather than reporting a verdict it did not earn.
-[[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
-    { echo "freeze-backdrop: SKIP (no display)"; exit 64; }
+# A live window is the whole point of the check; it runs on a private Xvfb
+# display, and a host without xvfb-run skips rather than reporting a verdict
+# it did not earn.
+op_xvfb_prefix freeze-backdrop 1280x960
 [[ -x "$PG_BIN" ]] || { echo "freeze-backdrop: SKIP (no binary at $PG_BIN)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "freeze-backdrop: SKIP (no disc at $PG_DISC)"; exit 64; }
 
@@ -132,7 +134,7 @@ run_row() {  # tag movie frame-limit
     rm -f "$log"
     local -a bk2_arg=(); [[ -n "$movie" ]] && bk2_arg=(--bk2 "$movie")
     op_own_run env OPENPETE_VIBRATION=0 OPENPETE_FREEZE_DBG=1 "${ROW_ENV[@]}" \
-        timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
+        "${OP_XVFB[@]}" timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
         --no-config --disc "$PG_DISC" --disc-cache 0 --no-card --mute 1 \
         --vibration 0 --input-lock --background 1 \
         --renderer vk --window "${WIDTH}x${HEIGHT}" --vsync 0 \

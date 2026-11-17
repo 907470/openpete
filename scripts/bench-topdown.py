@@ -37,7 +37,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fences"))
 import bench_guard
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
-from hostenv import child_env, scratch_cards  # noqa: E402
+from hostenv import child_env, scratch_cards, xvfb_prefix  # noqa: E402
 import game_conf  # noqa: E402
 
 # Unattended launcher: every run this script starts has controller vibration
@@ -115,7 +115,7 @@ def run_level(exe, game, level, args, out_dir):
                 "--screenshot-output", tr(shot)]
     # PIPE, not a file FD: a redirected fd collides with the exe's
     # --profile-out fopen on Windows (see bench-corpus.py).
-    p = subprocess.run(cmd, cwd=os.path.dirname(exe) or None,
+    p = subprocess.run(list(args.xvfb) + cmd, cwd=os.path.dirname(exe) or None,
                        env=child_env(RUN_KNOBS),
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = (p.stdout or b"").decode("utf-8", "replace")
@@ -187,6 +187,14 @@ def main():
     if not args.levels and args.game != "spyro-1":
         ap.error("--game %s has no built-in level list; pass --levels" % args.game)
 
+    # A Windows .exe opens its window on the Windows desktop; a Linux binary
+    # opens it on a private Xvfb display (scripts/lib/xvfb.sh).
+    args.xvfb = []
+    if not args.exe.endswith(".exe"):
+        args.xvfb, skip = xvfb_prefix("bench-topdown", "1920x1080")
+        if args.xvfb is None:
+            print(skip)
+            return EXIT_SKIP
     bench_guard.check(args.exe, allow_untuned=args.allow_untuned)
     bench_guard.print_surface(args.exe, args.mods_dir, args.texpack_dir)
 

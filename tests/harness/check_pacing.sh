@@ -45,6 +45,8 @@ cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
 . scripts/lib/wslenv.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 # Refuse before spending 6 minutes on legs whose knobs would not arrive: this
 # gate has already once run its entire Windows path unpaced and uninjected,
 # reported VACUOUS for one leg and PASS for another, and neither was true of
@@ -119,13 +121,16 @@ run_leg() {   # name, mode(headless|windowed), extra env assignments...
   # A window takes keyboard and mouse focus; the user's input would reach
   # the run and change what it measures.
   [ "$mode" = windowed ] && extra+=(--input-lock)
+  # A Linux window opens on a private Xvfb display (scripts/lib/xvfb.sh).
+  local -a pre=()
+  [ "$mode" = windowed ] && [ "$PLATFORM" != windows ] && pre=("${OP_XVFB[@]}")
   echo "[pacing] leg $name ($mode, ${SECONDS_PER_LEG}s)"
   # Forward the knobs through WSLENV: a Windows .exe launched from WSL does
   # not inherit the Linux environment, and a knob that fails to arrive is
   # silent - the run proceeds with the default and reports numbers about a
   # configuration nobody asked for.
   wslenv_forward "$@"
-  if ! env "${WSLENV_ARGS[@]}" "$EXE" --disc "$DISC" --frame-limit "$VBLS" \
+  if ! env "${WSLENV_ARGS[@]}" "${pre[@]}" "$EXE" --disc "$DISC" --frame-limit "$VBLS" \
        --pace-log "$log" "${extra[@]}" >"$OUT/$name.out" 2>&1; then
     echo "[pacing] FAIL: leg $name did not run; see $OUT/$name.out" >&2
     return 1
@@ -151,11 +156,17 @@ run_leg grid headless "${COMMON[@]}" || exit 2
 
 # The shed contract needs presents, which headless does not produce: only 16
 # intermediates in a 60 s headless run, against thousands windowed. Run it
-# windowed, and SKIP rather than pass if there is no display - a contract
-# that cannot execute has not been demonstrated.
+# windowed, and SKIP rather than pass if no window can be made (on Linux, a
+# private Xvfb display) - a contract that cannot execute has not been
+# demonstrated.
 shed_possible=1
-if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && [ "$PLATFORM" != windows ]; then
-  shed_possible=0
+OP_XVFB=()
+if [ "$PLATFORM" != windows ]; then
+  if op_xvfb_set 1280x960; then
+    echo "[pacing] display: $OP_XVFB_DESC" >&2
+  else
+    shed_possible=0
+  fi
 fi
 if [ $shed_possible -eq 1 ]; then
   run_leg shed-base   windowed "${COMMON[@]}" || shed_possible=0
@@ -173,7 +184,9 @@ if [ $level_possible -eq 1 ]; then
   run_leg_level() {
     local log="$OUT/gate-in-level.pacelog"
     wslenv_forward "${COMMON[@]}"
-    env "${WSLENV_ARGS[@]}" "$EXE" --disc "$DISC" --skip-to-level "$LEVEL" \
+    local -a pre=()
+    [ "$PLATFORM" != windows ] && pre=("${OP_XVFB[@]}")
+    env "${WSLENV_ARGS[@]}" "${pre[@]}" "$EXE" --disc "$DISC" --skip-to-level "$LEVEL" \
         --frame-limit "$LEVEL_VBLS" --pace-log "$log" --input-lock \
         >"$OUT/in-level.out" 2>&1 || return 1
     [ -s "$log" ] || return 1

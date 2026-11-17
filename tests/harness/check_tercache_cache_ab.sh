@@ -53,6 +53,8 @@ cd "$(dirname "$0")/../.."
 source scripts/lib/game.sh
 # shellcheck source=scripts/lib/wslenv.sh
 source scripts/lib/wslenv.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 # Unattended launcher: every run this script starts is silenced.
 # (scripts/fences/rumble_guard.py enforces this.)
@@ -97,10 +99,17 @@ MARGIN=16
 LEG_RUNTIME=600
 LEG_TIMEOUT=660
 
-[[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
-    { echo "tercache-ab: SKIP (no display)"; exit 64; }
 [[ -n "$EXE" ]] || EXE="$(win_tree_exe "$WIN_BUILD_DIR" "$GAME")"
 [[ -x "$EXE" ]] || { echo "tercache-ab: SKIP (no exe at $EXE)"; exit 64; }
+# A Windows .exe opens its window on the Windows desktop; a Linux binary
+# opens it on a private Xvfb display (scripts/lib/xvfb.sh).
+OP_XVFB=()
+if [[ "$EXE" == *.exe ]]; then
+    [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
+        { echo "tercache-ab: SKIP (no display)"; exit 64; }
+else
+    op_xvfb_prefix tercache-ab 1280x960
+fi
 [[ -f "$PG_DISC" ]] || { echo "tercache-ab: SKIP (no disc at $PG_DISC)"; exit 64; }
 MOVIE="games/$GAME/bk2/$BK2"
 [[ -f "$MOVIE" ]] || { echo "tercache-ab: SKIP (no bk2 at $MOVIE)"; exit 64; }
@@ -152,7 +161,7 @@ run_leg() {  # tag extra-args...
         wslenv_forward OPENPETE_VIBRATION=0 \
                        OPENPETE_TERRAIN_GPU_CENSUS=1 \
                        OPENPETE_TERRAIN_NEARCEN=1
-        timeout "$LEG_TIMEOUT" env "${WSLENV_ARGS[@]}" "$EXE" \
+        timeout "$LEG_TIMEOUT" env "${WSLENV_ARGS[@]}" "${OP_XVFB[@]}" "$EXE" \
             --disc "$DISC_ARG" --no-config --no-card --mute 1 \
             --vibration 0 --mouse 0 --input-lock --perf-stats off --osd off \
             --renderer vk --window "${WIDTH}x${HEIGHT}" --vsync 0 --render-fps 0 \

@@ -38,6 +38,8 @@ export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/sandbox.sh
 source scripts/lib/sandbox.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 OUT="build/screenshot-async"
 while (( $# )); do
@@ -52,17 +54,10 @@ DISC="${OPENPETE_DISC:-games/spyro-3/spyro-3/build/SCUS-94467.cue}"
 LIMIT=4800
 WINDOW=180
 
-if ! command -v xvfb-run >/dev/null 2>&1; then
-    echo "[screenshot-async] SKIP: xvfb-run not installed; the screenshot needs a windowed present" >&2
-    exit 64
-fi
+# The screenshot needs a windowed present, on a private Xvfb display.
+op_xvfb_prefix screenshot-async 1024x768
 [[ -x "$BIN" ]] || { echo "[screenshot-async] SKIP: no binary at $BIN" >&2; exit 64; }
 [[ -f "$DISC" ]] || { echo "[screenshot-async] SKIP: no disc at $DISC" >&2; exit 64; }
-
-# The window goes to the Xvfb display: SDL would pick a Wayland compositor
-# (WSLg) over X11 when WAYLAND_DISPLAY is set.
-unset WAYLAND_DISPLAY
-export SDL_VIDEODRIVER=x11
 
 mkdir -p "$OUT"
 inject="$OUT/inject.txt"
@@ -79,7 +74,7 @@ run_leg() {
     env OPENPETE_SANDBOX="$root" OPENPETE_CARD_DIR="$root/cards" ALSOFT_DRIVERS=null \
         OPENPETE_PRECOMPILE_FORCE=1 OPENPETE_MOUSE_INJECT="$inject" \
         OPENPETE_AUDIO_FEED_LOG="$OUT/$tag-feed.log" OPENPETE_SHOT_WRITE_DELAY_MS=40 "$@" \
-        timeout -k 10 600 xvfb-run -a -s "-screen 0 1024x768x24" \
+        timeout -k 10 600 "${OP_XVFB[@]}" \
         "$BIN" --game spyro-3 --no-config --disc "$DISC" --disc-cache 0 --no-card --mute 0 \
             --background --input-lock --vibration 0 --renderer vk --aspect 4:3 \
             --skip-to-level 32 --frame-limit "$LIMIT" >"$OUT/$tag.log" 2>&1

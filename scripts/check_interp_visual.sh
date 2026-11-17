@@ -45,6 +45,8 @@ export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/.."
 # The player's memory cards are never opened: runs boot on scratch cards.
 source scripts/lib/scratch_cards.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 START=${1:-800}
 COUNT=${2:-8}
@@ -71,10 +73,13 @@ if [[ ! -x "$BIN" ]]; then
 fi
 . scripts/lib/wslenv.sh
 wslenv_forward OPENPETE_VIBRATION=0
+# A Linux binary opens its window on a private Xvfb display.
+OP_XVFB=()
+[[ "$BIN" == *.exe ]] || op_xvfb_prefix interp-visual 1280x960
 
 for fps in 0 60 480; do
     echo "[interp-visual] --render-fps $fps"
-    timeout 90s env "${WSLENV_ARGS[@]}" "$BIN" \
+    timeout 90s env "${WSLENV_ARGS[@]}" "${OP_XVFB[@]}" "$BIN" \
         --disc games/spyro-1/spyro-1/build/SCUS-94228.cue --disc-cache 0 \
         --render-fps "$fps" \
         --frame-limit "$FRAME_LIMIT" \

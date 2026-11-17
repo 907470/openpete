@@ -6,6 +6,7 @@
 #
 # Usage: tests/harness/check_gapfill_corpus.sh [--game SLUG] [--build-dir=DIR]
 #        [--only=SUBSTR] [--keep=DIR]
+# xvfb-guard: no-launch (the binary path is handed to the headless corpus runner)
 set -euo pipefail
 
 # Unattended launcher: silence controller vibration for every run this script

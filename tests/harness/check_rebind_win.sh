@@ -23,6 +23,7 @@
 #   tests/harness/check_rebind_win.sh [EXE]
 # Exit: 0 PASS, 1 FAIL, 2 VACUOUS, 64 SKIP (no exe or disc).
 
+# xvfb-guard: windows-only (the run is the Windows .exe on the Windows desktop)
 set -u
 cd "${OPENPETE_ROOT:-$(pwd)}"
 

@@ -46,8 +46,9 @@ Verdict:
 
 Platforms: --platform windows (default) runs the cross-built exe in
 build/windows-mingw (or --exe) through WSL interop on the real GPU and SKIPs
-without it. --platform linux runs the linux-release binary (or --exe) on the
-display in DISPLAY (xvfb-run -a) under lavapipe and SKIPs without a display.
+without it. --platform linux runs the linux-release binary (or --exe) on a
+private Xvfb display (scripts/lib/xvfb.sh) under lavapipe and SKIPs without
+xvfb-run.
 Every launch passes --input-lock --vibration 0 --background 1. The run's
 outputs are deleted before it and asserted after it.
 
@@ -66,7 +67,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
 import game_conf  # noqa: E402
-from hostenv import child_env, sw_render_env  # noqa: E402
+from hostenv import child_env, sw_render_env, xvfb_prefix  # noqa: E402
 
 ROW = "s3_sunrise_high"
 GAME = "spyro-3"
@@ -100,7 +101,7 @@ def windows_exe():
     return None
 
 
-def run_row(platform, exe, out, frames, window, ssaa, budget=0):
+def run_row(platform, exe, out, frames, window, ssaa, budget=0, prefix=()):
     """Launch the row once; return (log path, clip path, exit code).
 
     budget > 0 ends the run on --record-frames budget, with --frame-limit
@@ -136,7 +137,7 @@ def run_row(platform, exe, out, frames, window, ssaa, budget=0):
     if platform == "linux":
         sw_render_env(env)
     try:
-        p = subprocess.run(argv, cwd=os.path.dirname(os.path.abspath(exe)), env=env,
+        p = subprocess.run(list(prefix) + argv, cwd=os.path.dirname(os.path.abspath(exe)), env=env,
                            timeout=TIMEOUT[platform],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         text, rc = p.stdout.decode("utf-8", "replace"), p.returncode
@@ -240,14 +241,19 @@ def main():
         if not os.path.isfile(exe):
             print("[record-cfr-complete] SKIP: no binary at %s" % exe)
             return EXIT_SKIP
-        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-            print("[record-cfr-complete] SKIP: no display (run under xvfb-run -a)")
+        # The screen holds the window: 1280x960, or the window when larger.
+        ww, wh = (int(v) for v in (a.window or WINDOW["linux"]).split("x"))
+        prefix, skip = xvfb_prefix("record-cfr-complete",
+                                   "%dx%d" % (max(ww, 1280), max(wh, 960)))
+        if prefix is None:
+            print("[record-cfr-complete] " + skip)
             return EXIT_SKIP
     if not os.path.isfile(os.path.join(ROOT, game_conf.resolve(ROOT, GAME)["disc"])):
         print("[record-cfr-complete] SKIP: no %s disc" % GAME)
         return EXIT_SKIP
     log, clip, rc = run_row(a.platform, exe, a.out, a.frames,
-                            a.window or WINDOW[a.platform], a.ssaa, a.record_frames)
+                            a.window or WINDOW[a.platform], a.ssaa, a.record_frames,
+                            prefix if a.platform == "linux" else ())
     return analyze(a.platform, log, clip, rc, a.record_frames)
 
 

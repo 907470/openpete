@@ -17,6 +17,7 @@
 # Exit:  0 pass, 1 fail, 2 vacuous (the negative control did not fail),
 #        64 skip (no binary).
 
+# xvfb-guard: no-launch (OPENPETE_TOOLTIP_VOCAB scans and exits before a window)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

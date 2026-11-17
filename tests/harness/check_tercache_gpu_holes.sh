@@ -60,6 +60,8 @@ cd "$(dirname "$0")/../.."
 source scripts/lib/game.sh
 # shellcheck source=scripts/lib/wslenv.sh
 source scripts/lib/wslenv.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 # Unattended launcher: no player uses the pad and the buzzing appears in no
 # log, so every run this script starts is silenced.
@@ -119,11 +121,17 @@ pg_manifest "$PG_FREECAM_MANIFEST" pipe
 # A live window on a real GPU is the whole point of the check; a headless
 # invocation (ctest on a build box, a session with no display) has nothing to
 # measure and skips rather than reporting a verdict it did not earn.
-[[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
-    { echo "tercache-holes: SKIP (no display)"; exit 64; }
-
 [[ -n "$EXE" ]] || EXE="$(win_tree_exe "$WIN_BUILD_DIR" "$GAME")"
 [[ -x "$EXE" ]] || { echo "tercache-holes: SKIP (no exe at $EXE)"; exit 64; }
+# A Windows .exe opens its window on the Windows desktop; a Linux binary
+# opens it on a private Xvfb display (scripts/lib/xvfb.sh).
+OP_XVFB=()
+if [[ "$EXE" == *.exe ]]; then
+    [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
+        { echo "tercache-holes: SKIP (no display)"; exit 64; }
+else
+    op_xvfb_prefix tercache-holes 1280x960
+fi
 [[ -f "$PG_DISC" ]] || { echo "tercache-holes: SKIP (no disc at $PG_DISC)"; exit 64; }
 python3 -c 'import PIL' 2>/dev/null ||
     { echo "tercache-holes: SKIP (python3 or PIL missing)"; exit 64; }
@@ -181,7 +189,7 @@ run_leg() {  # tag level pose start extra-args...
                        OPENPETE_TERRAIN_GPU_CENSUS=1 \
                        OPENPETE_TERRAIN_NEARCEN=1 \
                        OPENPETE_LOAD_CENSUS=1
-        timeout "$LEG_TIMEOUT" env "${WSLENV_ARGS[@]}" "$EXE" \
+        timeout "$LEG_TIMEOUT" env "${WSLENV_ARGS[@]}" "${OP_XVFB[@]}" "$EXE" \
             --disc "$DISC_ARG" --no-config --no-card --mute 1 \
             --vibration 0 --mouse 0 --input-lock --perf-stats off --osd off \
             --renderer vk --lod extended --window "${WIDTH}x${HEIGHT}" --vsync 0 \

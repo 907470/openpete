@@ -18,8 +18,9 @@
 #   - zero `GUEST RAM WRITTEN` lines and M == 0.
 #
 # The run is the native renderer under lavapipe in a window on a private
-# Xvfb display (xvfb-run), with --render-fps 60 above the 29.913 Hz tick rate
-# so non-drawing VBLs plan sub-tick presents. It paces to the display:
+# Xvfb display (scripts/lib/xvfb.sh, applied by check_psx_oracle.sh), with
+# --render-fps 60 above the 29.913 Hz tick rate so non-drawing VBLs plan
+# sub-tick presents. It paces to the display:
 # about 12 minutes for the 20k-record Spyro 1 golden.
 #
 # Usage:
@@ -44,6 +45,8 @@ set -euo pipefail
 
 export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/../.."
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 GAME="spyro-1"
 PASSTHRU=()
@@ -58,10 +61,7 @@ for _a in "$@"; do
     fi
 done
 
-if ! command -v xvfb-run >/dev/null 2>&1; then
-    echo "[ram-guard] xvfb-run not installed; the row runs on a private X display" >&2
-    exit 64
-fi
+op_xvfb_set 1280x960 || { echo "[ram-guard] SKIP: $OP_XVFB_WHY" >&2; exit 64; }
 
 if [[ -n "${OPENPETE_RAMGUARD_LOG:-}" ]]; then
     LOG="$OPENPETE_RAMGUARD_LOG"
@@ -71,10 +71,7 @@ else
 fi
 rm -f "$LOG"
 
-# The window goes to the Xvfb display: SDL would pick a Wayland compositor
-# (WSLg) over X11 when WAYLAND_DISPLAY is set.
-unset WAYLAND_DISPLAY
-export SDL_VIDEODRIVER=x11
+# The oracle's windowed row puts its window on the private display.
 export OPENPETE_ORACLE_WINDOWED=1
 export OPENPETE_SUBTICK_RAM_GUARD=1
 export OPENPETE_ORACLE_LOG="$LOG"
@@ -86,8 +83,7 @@ fi
 # but the run must not depend on that). --render-fps 60 first so a caller's
 # flag overrides it (the options parser takes the last occurrence).
 set +e
-xvfb-run -a -s "-screen 0 1024x768x24" \
-    tests/harness/check_psx_oracle.sh --game "$GAME" -- \
+tests/harness/check_psx_oracle.sh --game "$GAME" -- \
     --input-lock --render-fps 60 "${PASSTHRU[@]}"
 rc=$?
 set -e

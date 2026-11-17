@@ -30,8 +30,8 @@
 # eager never engaged or drains < MIN_DRAINS (too few handbacks to reach the
 # race); FAIL otherwise.
 #
-# Every launch passes --input-lock --vibration 0 --background 1 --no-card.
-# Without a display the run is wrapped in xvfb-run.
+# Every launch passes --input-lock --vibration 0 --background 1 --no-card
+# and runs on a private Xvfb display (scripts/lib/xvfb.sh).
 #
 # Verdict line:
 #   [display-seam] game=spyro-2 eager=<0|1> drains=<n> seam=<n>
@@ -40,12 +40,14 @@
 # --analyze=LOG skips the run and grades an existing log of the same row.
 #
 # Usage: tests/harness/check_display_seam.sh [--build-dir=DIR] [--out=DIR] [--analyze=LOG]
-# Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (no display and no xvfb-run, no
+# Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (no xvfb-run, no
 # binary or no disc).
 set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 # Unattended launcher: every run this script starts is silenced.
 # (scripts/fences/rumble_guard.py enforces this.)
@@ -74,18 +76,13 @@ if [[ -n "$ANALYZE" ]]; then
 else
     [[ -x "$PG_BIN" ]] || { echo "display-seam: SKIP (no binary at $PG_BIN)"; exit 64; }
     [[ -f "$PG_DISC" ]] || { echo "display-seam: SKIP (no disc at $PG_DISC)"; exit 64; }
-    WRAP=()
-    if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
-        command -v xvfb-run >/dev/null ||
-            { echo "display-seam: SKIP (no display and no xvfb-run)"; exit 64; }
-        WRAP=(xvfb-run -a -s "-screen 0 1280x960x24")
-    fi
+    op_xvfb_prefix display-seam 1280x960
     [[ -n "$OUT" ]] || OUT="${PG_BUILD_DIR:-build/linux-release}/display-seam"
     mkdir -p "$OUT"
     LOG="$OUT/$GAME.log"
     rm -f "$LOG" "$OUT"/a__*.png
     op_own_run env OPENPETE_VIBRATION=0 OPENPETE_IDENT_AUDIT=300 \
-        "${WRAP[@]}" timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
+        "${OP_XVFB[@]}" timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
         --game "$GAME" --no-config --disc "$PG_DISC" --no-card --mute 1 \
         --vibration 0 --input-lock --background 1 --renderer vk \
         --frame-limit "$FRAME_LIMIT" --max-runtime-seconds "$ROW_RUNTIME" \

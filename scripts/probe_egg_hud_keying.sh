@@ -25,6 +25,10 @@ export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/.."
 # The player's memory cards are never opened: runs boot on scratch cards.
 source scripts/lib/scratch_cards.sh
+# The window opens on a private Xvfb display.
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
+op_xvfb_prefix egg-keying 1024x768
 BIN="${OPENPETE_BIN:-build/linux-release/openpete}"
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 WORK="$(mktemp -d /tmp/openpete-eggkey.XXXXXX)"
@@ -32,7 +36,7 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/mods"; ln -sfn "$PWD/mods/egg-hud-3d" "$WORK/mods/egg-hud-3d"
 echo egg-hud-3d > "$WORK/mods/enabled.txt"
 rm -f "$WORK/run.log"
-OPENPETE_INTERP_OBJS_KEYLOG=1 timeout 600 "$BIN" --disc "$DISC" --disc-cache 0 \
+OPENPETE_INTERP_OBJS_KEYLOG=1 "${OP_XVFB[@]}" timeout 600 "$BIN" --disc "$DISC" --disc-cache 0 \
  --window 640x480 --fullscreen 0 --render-fps 60 \
     --bk2 games/spyro-1/bk2/egg-inventory.bk2 --skip-to-level stone_hill \
     --frame-limit 4200 --mods-dir "$WORK/mods" >"$WORK/run.log" 2>&1

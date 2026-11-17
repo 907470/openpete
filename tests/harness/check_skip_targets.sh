@@ -34,7 +34,7 @@
 #           The token mode:windowed runs the row windowed instead (below).
 #
 # Windowed rows (mode:windowed): the run opens a window on a virtual X
-# display (xvfb-run -a, SDL_VIDEODRIVER=x11, WAYLAND_DISPLAY unset) with the
+# display (scripts/lib/xvfb.sh: xvfb-run -a, SDL_VIDEODRIVER=x11) with the
 # native renderer, --input-lock --vibration 0 and
 # OPENPETE_CARRY_EPOCH_PROBE=1, so the skip's present hold engages, which a
 # headless run never does. Beyond the release-line test the row passes only
@@ -54,6 +54,8 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 export OPENPETE_VIBRATION=0
 
 BUILD="build/linux-release"; FILTER=""
@@ -98,11 +100,11 @@ run() {
     local tag="$1" args="$2" frames="$3" expect="$4"; shift 4
     local -a argv; read -ra argv <<<"$args"
     if windowed "$expect"; then
-        if ! command -v xvfb-run >/dev/null; then
-            echo "xvfb-run not found" >"$OUT/$tag.log"; echo 127 >"$OUT/$tag.rc"; return
+        if ! op_xvfb_set 1280x720; then
+            echo "$OP_XVFB_WHY" >"$OUT/$tag.log"; echo 127 >"$OUT/$tag.rc"; return
         fi
-        env -u WAYLAND_DISPLAY SDL_VIDEODRIVER=x11 OPENPETE_CARRY_EPOCH_PROBE=1 "$@" \
-            timeout -k 10 900 xvfb-run -a -s "-screen 0 1280x720x24" \
+        env OPENPETE_CARRY_EPOCH_PROBE=1 "$@" \
+            timeout -k 10 900 "${OP_XVFB[@]}" \
             "$PG_BIN" --no-config --disc "$PG_DISC" "${PG_RUN_ARGS[@]}" \
             --no-card --mute 1 --input-lock --vibration 0 --renderer vk \
             --lod original --osd off --version-osd off --perf-stats off \

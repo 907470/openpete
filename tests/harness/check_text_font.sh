@@ -16,19 +16,22 @@
 #   expect  none   every consumer published zero glyph vertices all run
 #           disc   every consumer published glyph vertices, read from the disc
 #
-# The rows run windowed: the producer is inert without the native display (a
-# headless run publishes nothing), so a machine without a display SKIPs.
+# The rows run windowed on a private Xvfb display (scripts/lib/xvfb.sh): the
+# producer is inert without the native display (a headless run publishes
+# nothing), so a machine without xvfb-run SKIPs.
 #
 #   tests/harness/check_text_font.sh [--game SLUG] [--build-dir=DIR]
 #
 # Exit 0 PASS, 1 FAIL or a missing corpus manifest (the message names the
-# path), 64 SKIP (binary, disc or display missing).
+# path), 64 SKIP (binary, disc or xvfb-run missing).
 # OPENPETE_FRAME_LIMIT overrides the per-row limit: 1800 on Spyro 1, 2373 on
 # Spyro 2 and 3 (their feed key counts the 573 fast-boot VBLs).
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 BUILD="build/linux-release"
 for a in "$@"; do case "$a" in --build-dir=*) BUILD="${a#--build-dir=}";; esac; done
@@ -44,9 +47,7 @@ OUT="${TEXT_FONT_OUT:-$BUILD/text-font/$GAME}"
 if [[ ! -x "$PG_BIN" || ! -f "$PG_DISC" ]]; then
     echo "check_text_font: SKIP ($PG_BIN or $PG_DISC missing)"; exit 64
 fi
-if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
-    echo "check_text_font: SKIP (no display; the producer is inert headless)"; exit 64
-fi
+op_xvfb_prefix check_text_font 1280x960
 
 mkdir -p "$OUT"
 rm -f "$OUT"/*.log
@@ -61,7 +62,7 @@ while IFS='|' read -r name level expect; do
     skip=(--skip-to-level "$level")
     [[ "$level" == - ]] && skip=()
     OPENPETE_OSD_DEMO=3 OPENPETE_MENU_DEMO=1 OPENPETE_TEXT_GLYPH_CENSUS=1 \
-        op_own_run timeout -k 10 600 "$PG_BIN" --no-config --vibration 0 --mouse 0 --input-lock --disc "$PG_DISC" \
+        op_own_run "${OP_XVFB[@]}" timeout -k 10 600 "$PG_BIN" --no-config --vibration 0 --mouse 0 --input-lock --disc "$PG_DISC" \
         --renderer vk --aspect 4:3 --lod original --no-card --mute 1 \
         --perf-stats fps "${skip[@]}" --frame-limit "$FRAMES" \
         > "$log" 2>&1

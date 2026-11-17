@@ -35,14 +35,15 @@
 #                               under a COMPOSITE postfx chain, which moves
 #                               the overlay to the post-chain render site.
 #
-# Each leg opens a real 640x480 window on the current display and drives it
-# unattended. Clicking one steers the overlay it is measuring, so leave the
-# windows alone while it runs.
+# Each leg opens a real 640x480 window on a private Xvfb display
+# (scripts/lib/xvfb.sh) and drives it unattended. Under
+# OPENPETE_HARNESS_REAL_DISPLAY=1 the windows open on the session's display,
+# and clicking one steers the overlay it is measuring.
 #
 # Usage: tests/harness/check_mod_imgui.sh [--game SLUG] [--out=DIR] [--frames=N]
 #                                   [--keep]
 # Exit:  0 all six legs pass | 1 a leg failed | 64 skipped (missing
-#        binary / disc / display / Vulkan loader)
+#        binary / disc / xvfb-run / Vulkan loader)
 #
 # The fixture mod is Spyro 1's, so --game names the game whose binary and
 # disc are used and refuses every other slug rather than loading a mod the
@@ -64,6 +65,8 @@ export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 GAME="$(pg_parse_game "$@")" || exit 64
 
@@ -103,9 +106,10 @@ HOVER_XY="124,438"
 [[ -x "$BIN"  ]] || { echo "SKIP: missing binary $BIN (build the preset first)" >&2; exit 64; }
 [[ -f "$DISC" ]] || { echo "SKIP: missing disc $DISC" >&2; exit 64; }
 [[ -d "$FIXTURE" ]] || { echo "SKIP: missing fixture $FIXTURE" >&2; exit 64; }
-[[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] || {
-    echo "SKIP: no display - the dev overlay exists only in a windowed run" >&2
+op_xvfb_set 1280x960 || {
+    echo "SKIP: $OP_XVFB_WHY - the dev overlay exists only in a windowed run" >&2
     exit 64; }
+echo "[mod-imgui] display: $OP_XVFB_DESC" >&2
 if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so'; then
     [[ -e /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ]] || {
         echo "SKIP: no Vulkan loader (libvulkan.so.1)" >&2; exit 64; }
@@ -151,7 +155,7 @@ run_leg() {
     local extra=()
     local -a envs=()
     [[ -n "${LEG_INJECT:-}" ]] && envs+=(OPENPETE_DEVUI_INJECT_MOUSE="$LEG_INJECT")
-    env "${envs[@]}" "$BIN" --disc "$DISC" --disc-cache 0 \
+    env "${envs[@]}" "${OP_XVFB[@]}" "$BIN" --disc "$DISC" --disc-cache 0 \
            "${PG_RUN_ARGS[@]}" \
            --renderer vk --window "${WIN_W}x${WIN_H}" \
            --devui-open "${LEG_OPEN:-1}" \

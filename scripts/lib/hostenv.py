@@ -16,6 +16,7 @@ import atexit
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 
 
@@ -139,3 +140,22 @@ def sw_render_env(env):
     env.setdefault("GALLIUM_DRIVER", "llvmpipe")
     env.pop("MESA_LOADER_DRIVER_OVERRIDE", None)
     return env
+
+
+XVFB_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xvfb.sh")
+
+
+def xvfb_prefix(tag, screen, env=None):
+    """The argv prefix that runs a windowed child on a private Xvfb display.
+
+    The Python side of scripts/lib/xvfb.sh, which holds the policy (a private
+    Xvfb display with WAYLAND_DISPLAY removed and SDL_VIDEODRIVER=x11, or the
+    session's display under OPENPETE_HARNESS_REAL_DISPLAY=1). Returns
+    (prefix, None), the prefix to put before the binary's argv, or
+    (None, line) with the SKIP line when no display can be given.
+    """
+    r = subprocess.run(["bash", XVFB_SH, "--check", tag, screen], env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    if r.returncode != 0:
+        return None, r.stdout.strip() or f"{tag}: SKIP (no display)"
+    return ["bash", XVFB_SH, tag, screen, "--"], None

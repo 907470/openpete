@@ -56,11 +56,13 @@
 #
 # Usage: tests/harness/check_pause_repaint.sh [--game SLUG] [--build-dir=DIR]
 #                                             [--out=DIR]
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (no display, binary or disc).
+# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (no xvfb-run, binary or disc).
 set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 # Unattended launcher: every run this script starts is silenced.
 # (scripts/fences/rumble_guard.py enforces this.)
@@ -89,8 +91,7 @@ MIN_PAUSED=20
 ROW_RUNTIME=900
 ROW_TIMEOUT=960
 
-[[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
-    { echo "pause-repaint: SKIP (no display)"; exit 64; }
+op_xvfb_prefix pause-repaint 1280x960
 [[ -x "$PG_BIN" ]] || { echo "pause-repaint: SKIP (no binary at $PG_BIN)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "pause-repaint: SKIP (no disc at $PG_DISC)"; exit 64; }
 
@@ -101,7 +102,7 @@ rm -f "$LOG"
 
 op_own_run env OPENPETE_VIBRATION=0 OPENPETE_PRESENT_TRACE=1 OPENPETE_TERRAIN_CACHE_FORCE=1 \
     OPENPETE_PAUSE_AT_VBL="$PAUSE_VBL,$EVERY,$STEPS" \
-    timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
+    "${OP_XVFB[@]}" timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
     --no-config --disc "$PG_DISC" --disc-cache 0 --no-card --mute 1 \
     --vibration 0 --input-lock --background 1 \
     --renderer vk --window 640x448 \

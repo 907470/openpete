@@ -53,6 +53,8 @@ set -o pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 ROWS=() WINDOWED=0 BLESS=0 REF_BIN=""
 prev=""
@@ -99,7 +101,7 @@ run_windowed() {
     cards="$(mktemp -d "$OPENPETE_CARD_DIR/run.XXXXXX")" || return 1
     rm -f "$log"
     op_own_run env OPENPETE_VIBRATION=0 "OPENPETE_CARD_DIR=$cards" "${PG_CAPTURE_ENV[@]}" \
-        xvfb-run -a -s "-screen 0 1280x960x24" \
+        "${OP_XVFB[@]}" \
         timeout -k "$OP_OWN_GRACE" 5400 "$bin" --no-config --disc "$PG_DISC" --disc-cache 0 \
         --mute 1 --vibration 0 --input-lock --background 1 --renderer vk --vsync 0 \
         --window 640x480 --aspect 4:3 --lod original --record-cfr 119.652 \
@@ -134,7 +136,7 @@ run_row() {
     PG_CAPTURE_ENV=("XDG_STATE_HOME=$STATE_HOME" "OPENPETE_LOOP_TRACE=$dir/trace.lt" "${ROW_ENV[@]}")
     local rc
     if [[ "$kind" == windowed ]]; then
-        command -v xvfb-run >/dev/null || return 2
+        op_xvfb_set 1280x960 || return 2
         run_windowed "$bin" "$dir/run.log" "${ROW_ARGS[@]}"
         rc=$?
     else

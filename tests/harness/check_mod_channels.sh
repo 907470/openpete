@@ -35,6 +35,8 @@ cd "$(dirname "$0")/../.."
 # controller vibration for it.
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/xvfb.sh
+source scripts/lib/xvfb.sh
 
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
@@ -482,7 +484,7 @@ hold_rung() {  # hold_rung <scene> <frame-limit> <toggle tick>
     local scene="$1" limit="$2" tick="$3" md="$WORK/mods-hold" n want cards
     local log="$WORK/hold.log"
     say "material composition: a live-entered composable mod is held at draw time ($scene, toggle at tick $tick)"
-    if ! command -v xvfb-run >/dev/null 2>&1; then bad "hold: xvfb-run not installed"; return; fi
+    if ! op_xvfb_set 1024x768; then bad "hold: $OP_XVFB_WHY"; return; fi
     local -a movie=() extra=()
     if [ "$scene" != attract ]; then
         movie=(--bk2 "$PG_BK2_DIR/$scene.bk2")
@@ -498,14 +500,13 @@ hold_rung() {  # hold_rung <scene> <frame-limit> <toggle tick>
     echo mat-chain-dt-a > "$md/enabled.txt"
     rm -f "${log:?}"
     cards="$(mktemp -d "$OPENPETE_CARD_DIR/run.XXXXXX")" || { bad "hold: no card directory"; return; }
-    # The window goes to the Xvfb display: SDL would pick a Wayland
-    # compositor (WSLg) over X11 when WAYLAND_DISPLAY is set.
+    # The window goes to a private Xvfb display (scripts/lib/xvfb.sh).
     # OPENPETE_PRECOMPILE_FORCE=1: a software device skips the boot precompile,
     # which a GPU runs, so every draw before the toggle would wait on a late compile.
-    env -u WAYLAND_DISPLAY -u OPENPETE_MODS SDL_VIDEODRIVER=x11 OPENPETE_VIBRATION=0 OPENPETE_PRECOMPILE_FORCE=1 \
+    env -u OPENPETE_MODS OPENPETE_VIBRATION=0 OPENPETE_PRECOMPILE_FORCE=1 \
         OPENPETE_CARD_DIR="$cards" OPENPETE_MODS_DIR="$md" OPENPETE_MATERIAL_STATS=1 \
         OPENPETE_MODS_TOGGLE="$tick:mat-chain-dt-b:1" \
-        timeout -k 10 900 xvfb-run -a -s "-screen 0 1024x768x24" \
+        timeout -k 10 900 "${OP_XVFB[@]}" \
         "$PG_BIN" --game "$PG_GAME" --no-config --disc "$PG_DISC" --disc-cache 0 --no-card --mute 1 \
             --input-lock --vibration 0 --renderer vk --aspect 4:3 --lod original \
             "${movie[@]}" --frame-limit "$limit" > "$log" 2>&1

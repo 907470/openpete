@@ -40,9 +40,8 @@ Verdict:
 Platforms: --platform windows (default) runs the cross-built exe in
 build/windows-mingw on the real GPU and SKIPs (64) without it; the bench
 preconditions (scripts/fences/bench_guard.py) refuse (65) a contended
-machine. --platform linux runs the linux-release binary on the display in
-DISPLAY (a virtual one: xvfb-run -a) on lavapipe, and SKIPs without a
-display; its contention is reported, not refused, since the verdict
+machine. --platform linux runs the linux-release binary on a private Xvfb
+display (scripts/lib/xvfb.sh) on lavapipe, and SKIPs without xvfb-run; its contention is reported, not refused, since the verdict
 compares two instruments of one run. --analyze OPP PACE LOG judges captured
 files instead of running.
 
@@ -70,7 +69,7 @@ import bench_guard  # noqa: E402
 import game_conf  # noqa: E402
 import pacelog  # noqa: E402
 from _opp_reader import read_opp, OppTraceError  # noqa: E402
-from hostenv import child_env, sw_render_env  # noqa: E402
+from hostenv import child_env, sw_render_env, xvfb_prefix  # noqa: E402
 
 ROW = "s1_h0_r1"
 GAME = "spyro-1"
@@ -99,7 +98,7 @@ def windows_exe():
     return None
 
 
-def run_row(platform, exe, out, frames):
+def run_row(platform, exe, out, frames, prefix=()):
     """Launch the row once; return (opp, pace, log) paths or exit."""
     os.makedirs(out, exist_ok=True)
     base = os.path.join(out, "%s_%s" % (ROW, platform))
@@ -127,7 +126,7 @@ def run_row(platform, exe, out, frames):
     if platform == "linux":
         sw_render_env(env)
     try:
-        p = subprocess.run(argv, cwd=os.path.dirname(exe), env=env, timeout=330,
+        p = subprocess.run(list(prefix) + argv, cwd=os.path.dirname(exe), env=env, timeout=330,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         text, rc = p.stdout.decode("utf-8", "replace"), p.returncode
     except subprocess.TimeoutExpired as e:
@@ -236,14 +235,16 @@ def main():
         if not os.path.isfile(exe):
             print("[present-cadence] SKIP: no binary at %s" % exe)
             return EXIT_SKIP
-        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-            print("[present-cadence] SKIP: no display (run under xvfb-run -a)")
+        prefix, skip = xvfb_prefix("present-cadence", "1280x960")
+        if prefix is None:
+            print("[present-cadence] " + skip)
             return EXIT_SKIP
         bench_guard.check(exe, functional=True)
     if not os.path.isfile(game_conf.resolve(ROOT, GAME)["disc"]):
         print("[present-cadence] SKIP: no %s disc" % GAME)
         return EXIT_SKIP
-    opp, pace, log = run_row(a.platform, exe, a.out, a.frames)
+    opp, pace, log = run_row(a.platform, exe, a.out, a.frames,
+                             prefix if a.platform == "linux" else ())
     return analyze(opp, pace, log, a.tol_us)
 
 
