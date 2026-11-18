@@ -1149,7 +1149,8 @@ add_test(NAME sfx_smpl_walk_test COMMAND sfx_smpl_walk_test)
 # looping sample-override voices across the loop seam, and host clips,
 # against the psx-spx formula over the sequence each voice plays. The TU
 # includes PsyX_SPUAL.cpp and stubs its other PsyCross dependencies.
-add_executable(spual_interp_test spual_interp_test.cpp)
+add_executable(spual_interp_test spual_interp_test.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/src/audio/PsyX_SPUEnvelope.cpp)
 target_include_directories(spual_interp_test PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include
     ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include/psx
@@ -1160,6 +1161,25 @@ target_link_libraries(spual_interp_test PRIVATE SDL3::SDL3-static ${OPENAL_LIBRA
 target_compile_options(spual_interp_test PRIVATE -Wno-unused-parameter -Wno-maybe-uninitialized)
 set_target_properties(spual_interp_test PROPERTIES CXX_STANDARD 20)
 add_test(NAME spual_interp_test COMMAND spual_interp_test)
+
+# spu_envelope_test - the SPU level generators of PsyX_SPUEnvelope.cpp (a
+# voice's ADSR envelope, its ENVX, and the volume-register sweeps) against
+# the reference's measured levels, every 44.1 kHz boundary of every case of
+# tests/unit/data/spu-envelope/reference.env (tools/spu_envelope_measure.py),
+# with no case exempt. spu_envelope_test_wrong builds the test with every
+# attack tick off by one, which must report an attack case as mismatching.
+foreach(_spu_env_variant test test_wrong)
+    add_executable(spu_envelope_${_spu_env_variant} spu_envelope_test.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/PsyCross/src/audio/PsyX_SPUEnvelope.cpp)
+    target_include_directories(spu_envelope_${_spu_env_variant} PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/PsyCross/src/audio)
+    set_target_properties(spu_envelope_${_spu_env_variant} PROPERTIES CXX_STANDARD 20)
+    add_test(NAME spu_envelope_${_spu_env_variant} COMMAND spu_envelope_${_spu_env_variant}
+             ${CMAKE_CURRENT_SOURCE_DIR}/data/spu-envelope/reference.env)
+endforeach()
+target_compile_definitions(spu_envelope_test_wrong PRIVATE SPU_ENV_TEST_WRONG=1)
+set_tests_properties(spu_envelope_test_wrong PROPERTIES
+    PASS_REGULAR_EXPRESSION "attack_lin_s0b_st0 mismatches")
 
 # xa_image_end_test - the XA decoder's image reads stay inside the disc
 # image while the drive head runs past its last sector, and it reads up to

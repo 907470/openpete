@@ -171,8 +171,10 @@ extern int g_cdXaStartVBL;
  *     critical-section flag, the latched VBLANK and the dropped count.
  * 10 = the CD section carries the CD-ROM controller model (registers,
  *     response FIFO, interrupt queue, VBL count).
- * 11 = the card section (port FLAG bytes, the card each port held). */
-#define OPENPETE_STATE_ABI 11u
+ * 11 = the card section (port FLAG bytes, the card each port held).
+ * 12 = SPUALVoiceState and the SPU common block hold the envelope and
+ *     sweep generators of PsyX_SPUEnvelope.h and a latched key-off. */
+#define OPENPETE_STATE_ABI 12u
 
 /* Just the register file - the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */
