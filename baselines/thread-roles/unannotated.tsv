@@ -1917,7 +1917,6 @@ core/renderer/openpete_interp.c	-	s_reset_gen	static	-
 core/renderer/openpete_interp.c	-	s_snap	static	-	
 core/renderer/openpete_interp.c	-	s_total_captures	static	-	
 core/renderer/openpete_interp.c	-	s_total_dedupe_skips	static	-	
-core/renderer/openpete_interp.c	openpete_interp_capture	s_crd	local	-	
 core/renderer/openpete_interp.c	ra_commit_env_on	v	local	once	= -1, one filler, first reference tests it
 core/renderer/openpete_interp_objs.c	-	BLOB	static	-	
 core/renderer/openpete_interp_objs.c	-	SLOTS	static	-	

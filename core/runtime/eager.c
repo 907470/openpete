@@ -768,10 +768,13 @@ static void eager_plan_record(op_time_t now, const eager_span_t *sp, op_time_t p
                                     (s_eager.tick_late > 0 ? OP_PACE_EP_LATE : 0u) |
                                     (s_eager.pinned > 0 ? OP_PACE_EP_PINNED : 0u) |
                                     (s_eager.policy == 1 ? OP_PACE_EP_GREEDY : 0u) |
-                                    (s_eager.span_fill ? OP_PACE_EP_FILL : 0u));
+                                    (s_eager.span_fill ? OP_PACE_EP_FILL : 0u) |
+                                    (openpete_interp_curr_is_dup() ? OP_PACE_EP_HEAD_DUP : 0u));
+    const openpete_interp_snapshot_t *head = openpete_interp_curr_snapshot();
     openpete_pace_eager_plan(openpete_frame, now, flags, s_eager.level, s_eager.ladder.level, sp->ns,
                              afford, planned, s_eager.span_pub, period, budget, eager_tail_cost(), s_eager.lag,
-                             s_eager.vbl_ema, s_eager.tick_late);
+                             s_eager.vbl_ema, s_eager.tick_late, s_eager.anchor_age,
+                             head ? (int)(openpete_frame - head->tick) : -1);
 }
 
 /* The scheduler's per-span state as profiler counters, in eager_prof_plan's order. */

@@ -99,8 +99,12 @@ enum {
      * production runs (the fields of the OPENPETE_EAGER_DBG plan line):
      * index = openpete_frame, flags = OP_PACE_EP_*, aux = span level (low
      * byte) and standing level (high byte), t_ns = the plan instant, a =
-     * budget ns (bits 0-31, saturated) and the scenes the previous span
-     * published into the scene ring (bits 32-47), b = per-scene tail cost
+     * budget ns (bits 0-31, saturated), the scenes the previous span
+     * published into the scene ring (bits 32-47), the span anchor's age
+     * (the plan instant less the anchor) in 10 us units (bits 48-60,
+     * saturated; 0 when anchored on the plan instant) and the VBLs from the
+     * interp ring head's capture to the plan's VBL (bits 61-63, saturated at
+     * 7), b = per-scene tail cost
      * ns, c = lag ns, d = non-drawing VBL cost ns, e = tick start lateness ns, f = slots (bits 0-15), afford
      * (16-31), planned scenes (32-47), planned grid period in us (48-63,
      * saturated). */
@@ -120,7 +124,8 @@ enum {
     OP_PACE_EP_GREEDY = 1u << 3,  /* OPENPETE_EAGER_POLICY=greedy */
     OP_PACE_EP_RING   = 1u << 4,  /* with CUT: the scene ring stayed full (the present thread's drain) */
     OP_PACE_EP_WITHHELD = 1u << 5, /* with CUT: production was withheld (world not live, or not resumed) */
-    OP_PACE_EP_FILL   = 1u << 6   /* the fill cadence planned the span on a display grid */
+    OP_PACE_EP_FILL   = 1u << 6,  /* the fill cadence planned the span on a display grid */
+    OP_PACE_EP_HEAD_DUP = 1u << 7 /* the interp ring head was committed as a duplicate of its predecessor */
 };
 
 /* TICK_SPLIT accumulators (the duration slots, in record order). */
@@ -683,12 +688,14 @@ void openpete_pace_tick_split(uint32_t vbl_index, int64_t tick_ns);
  * @param tail_ns The per-scene tail cost.
  * @param lag_ns The animation lag.
  * @param vbl_ns The non-drawing VBL's mean cost.
- * @param late_ns The tick's start lateness. */
+ * @param late_ns The tick's start lateness.
+ * @param anchor_age_ns The plan instant less the span anchor; 0 when anchored on the plan instant.
+ * @param head_vbls The VBLs from the interp ring head's capture to the plan's VBL. */
 void openpete_pace_eager_plan(uint32_t vbl_index, int64_t t_ns, uint8_t flags,
                               int level, int std_level, int slots, int afford,
                               int planned, int made, int64_t period_ns, int64_t budget_ns,
                               int64_t tail_ns, int64_t lag_ns, int64_t vbl_ns,
-                              int64_t late_ns);
+                              int64_t late_ns, int64_t anchor_age_ns, int head_vbls);
 
 /** @brief Write one GPU_FRAME record for a harvested frame's timestamp zones.
  * @param token The frame's RHI token.

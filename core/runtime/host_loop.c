@@ -134,7 +134,7 @@ static void tick_interp_capture(op_time_t sim_period_ns) OP_REQUIRES(sim)
 {
     host_trace_bit(HT_F_INTERP_CAP, 1);
     op_time_t stamp = host_vbl_stamp(&s_vbl_stamp, openpete_frame, sim_period_ns);
-    openpete_interp_capture(openpete_frame, stamp);
+    openpete_interp_capture(openpete_frame, stamp, openpete_present_pending);
     /* Under deterministic capture the objs ring takes the VBL clock
      * the direct ring stamps its commits with, so per-object sub-tick
      * interps (moby positions/rotation, particles, sparkles, HUD

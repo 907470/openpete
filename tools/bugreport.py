@@ -124,7 +124,7 @@ PACE_TICK_SPLIT, PACE_EAGER_PLAN, PACE_GPU_FRAME = 15, 16, 17
 PACE_CANONICAL, PACE_INTERMEDIATE, PACE_REPEAT = 0, 1, 2
 PACE_F_NOT_LIVE = 64
 PACE_EP_CUT, PACE_EP_LATE, PACE_EP_PINNED, PACE_EP_GREEDY = 1, 2, 4, 8
-PACE_EP_RING, PACE_EP_WITHHELD, PACE_EP_FILL = 16, 32, 64
+PACE_EP_RING, PACE_EP_WITHHELD, PACE_EP_FILL, PACE_EP_HEAD_DUP = 16, 32, 64, 128
 PACE_WINDOW_S = 30.0
 # TICK_SPLIT slots in record order: (slot, high word) per duration (core/include/openpete_pace_log.h);
 # slot 4 is the record's f. host_other is 0 in a log written before the exclusive layout.
@@ -457,7 +457,9 @@ def plan_decode(r):
     """An EAGER_PLAN record as a dict (the fields of the OPENPETE_EAGER_DBG plan line; times in ms).
 
     `fill` is the fill cadence's flag; `made` is the scenes the previous span published (0 in a log
-    written before the field)."""
+    written before the field). `anchor_ms` is the plan instant less the span anchor (0 when anchored on
+    the plan instant), `head_vbls` the VBLs from the interp ring head's capture to the plan's VBL and
+    `head_dup` whether that head is a duplicate commit; all three are 0 in a log written before them."""
     f = r[10] or 0
     a = r[5] or 0
     return {"index": r[3], "t_ns": r[4], "flags": r[1], "cut": bool(r[1] & PACE_EP_CUT),
@@ -466,7 +468,9 @@ def plan_decode(r):
             "level": r[2] & 0xFF, "std": (r[2] >> 8) & 0xFF,
             "budget": (a & 0xFFFFFFFF) / 1e6, "made": (a >> 32) & 0xFFFF, "tail": r[6] / 1e6, "lag": r[7] / 1e6, "vbl": r[8] / 1e6,
             "late_ms": (r[9] or 0) / 1e6, "slots": f & 0xFFFF, "afford": (f >> 16) & 0xFFFF,
-            "planned": (f >> 32) & 0xFFFF, "period_ms": ((f >> 48) & 0xFFFF) / 1000.0}
+            "planned": (f >> 32) & 0xFFFF, "period_ms": ((f >> 48) & 0xFFFF) / 1000.0,
+            "anchor_ms": ((a >> 48) & 0x1FFF) / 100.0, "head_vbls": (a >> 61) & 7,
+            "head_dup": bool(r[1] & PACE_EP_HEAD_DUP)}
 
 
 def gpu_decode(r):

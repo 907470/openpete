@@ -63,7 +63,6 @@ core/renderer/native_render.c	render_frame_common	44	0
 core/renderer/native_render.c	scene_probes	28	0	
 core/renderer/native_render.c	sync_vram_texture_locked	87	0	
 core/renderer/native_render.c	tp_pack_fog	26	0	
-core/renderer/openpete_interp.c	openpete_interp_capture	27	0	
 core/rhi/rhi_vulkan.c	create_render_target_impl	31	0	
 core/rhi/rhi_vulkan.c	device_objects_destroy	31	0	
 core/rhi/rhi_vulkan.c	rhi_create_impl	29	0	

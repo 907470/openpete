@@ -18,6 +18,7 @@
 #include "openpete_discontinuity.h"
 #include "openpete_psx.h"
 #include "openpete_log.h"
+#include "openpete_thread_roles.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -76,6 +77,9 @@ static uint32_t s_distinct_gap = INTERP_MIN_DISTINCT_GAP;
 /* The head slot was committed as a duplicate of the slot before it, so the
  * tick distance to it measures the static hold, not the logic's cadence. */
 static int      s_head_is_dup  = 0;
+/* The newest VBL on which the game run drew a frame that owes a present; 0
+ * before the first. Duplicate commits are phased onto it (capture). */
+static uint32_t s_draw_tick OP_GUARDED_BY(sim) = 0;   /* thread-roles: capture runs on sim, once per VBL */
 
 void openpete_interp_register_regions(const openpete_interp_region_t* regions,
                                       size_t count) {
@@ -222,6 +226,9 @@ op_time_t openpete_interp_curr_tick_ns(void) {
 const openpete_interp_snapshot_t* openpete_interp_curr_snapshot(void) {
     return (s_initialized && s_snap[s_head].valid) ? &s_snap[s_head] : NULL;
 }
+int openpete_interp_curr_is_dup(void) {
+    return (s_initialized && s_snap[s_head].valid) ? s_head_is_dup : 0;
+}
 int openpete_interp_paired(void) {
     if (!s_initialized || !s_enabled) return 0;
     const openpete_interp_snapshot_t* curr = &s_snap[s_head];
@@ -229,25 +236,35 @@ int openpete_interp_paired(void) {
     return (curr->valid && prev->valid && curr->total_bytes == prev->total_bytes);
 }
 
-void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
-    if (!s_initialized || !s_enabled) return;
-    if (!s_regions || s_region_count == 0) return;
-    s_last_tick = tick;
-    s_last_tick_seen = 1;
+/** @brief Report whether a duplicate committed at VBL @p tick lands on the game's drawing phase.
+ *
+ * The phase reference is the newest VBL the game drew on, or the head's own
+ * VBL before any draw (or when the reference lies past @p tick, after a state
+ * load moved the VBL counter back). A VBL a whole number of cadences from the
+ * reference is on the phase; with draws every cadence it is the drawing VBL.
+ * @param tick The VBL of the capture.
+ * @param cadence The duplicate cadence in VBLs, at least 1.
+ * @param head_tick The head snapshot's VBL.
+ * @return 1 when on the phase, else 0. */
+static int interp_on_draw_phase(uint32_t tick, uint32_t cadence, uint32_t head_tick) OP_REQUIRES(sim) {
+    const uint32_t ref = (s_draw_tick && s_draw_tick <= tick) ? s_draw_tick : head_tick;
+    return (tick - ref) % cadence == 0;
+}
 
-    /* Build the candidate snapshot into scratch FIRST, so we can compare it to
-     * the current head before deciding whether to advance the ring. */
-    const openpete_interp_snapshot_t* curr = &s_snap[s_head];
-    uint32_t total = curr->total_bytes;
-    for (size_t r = 0; r < s_region_count; ++r) {
-        const openpete_interp_region_t* reg = &s_regions[r];
-        void* host = openpete_psx_to_host_span(reg->psx_addr, reg->length);
-        uint32_t off = curr->region_offsets[r];
-        if (host) memcpy(s_cap_scratch + off, host, reg->length);
-        else      memset(s_cap_scratch + off, 0, reg->length);   /* unmapped -> deterministic */
-    }
-    s_total_captures++;
+/* What a capture does with the ring: skip it, roll a distinct state, or roll a duplicate. */
+enum { INTERP_CAP_SKIP = 0, INTERP_CAP_DISTINCT = 1, INTERP_CAP_DUP = 2 };
 
+/** @brief Decide whether the candidate in scratch skips the ring, rolls as a distinct state, or rolls as a duplicate of the head.
+ *
+ * Updates the measured gap between distinct states when a distinct roll
+ * follows a distinct head that had not held past the cadence, and counts a
+ * skip.
+ * @param tick The VBL of the capture.
+ * @param curr The head snapshot.
+ * @param prev_seen The VBL of the previous capture (@p tick when none).
+ * @return INTERP_CAP_SKIP, INTERP_CAP_DISTINCT or INTERP_CAP_DUP. */
+static int interp_capture_verdict(uint32_t tick, const openpete_interp_snapshot_t* curr,
+                                  uint32_t prev_seen) OP_REQUIRES(sim) {
     /* Dedupe AT CAPTURE: Spyro's logic runs at 30 Hz on a 60 Hz VBL fiber, so
      * the transform-bearing state advances only every OTHER tick - yet this
      * capture fires every tick. A naive 2-slot ring (advance + fill every time)
@@ -259,9 +276,11 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
      * recent DISTINCT states, and curr->tick_ns stays pinned to when that state
      * FIRST appeared - exactly the [prev,curr] bracket alpha spans. A state
      * held past the cadence is committed as a duplicate (below). */
+    const uint32_t total = curr->total_bytes;
     const int identical = (curr->valid && total > 0 &&
                            memcmp(s_cap_scratch, curr->data, total) == 0);
-    int dup_roll = 0;
+    const uint32_t cadence = (s_distinct_gap < INTERP_MIN_DISTINCT_GAP)
+                           ? INTERP_MIN_DISTINCT_GAP : s_distinct_gap;
     if (identical) {
         /* A state that has held for the logic's own cadence is static, not
          * mid-cadence: commit the duplicate so the ring holds a pair whose
@@ -278,45 +297,86 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
          * one tick late lands every gap+1 ticks, so the ring's stamps advance
          * on a (gap+1)-tick grid while presents keep running per tick, and
          * every alpha-driven animation cycles against a period that is not the
-         * tick's - the whole-scene judder at a held camera. */
-        uint32_t held = (tick > curr->tick) ? tick - curr->tick : 0;
-        const uint32_t cadence = (s_distinct_gap < INTERP_MIN_DISTINCT_GAP)
-                               ? INTERP_MIN_DISTINCT_GAP : s_distinct_gap;
-        if (held < cadence) {
-            s_total_dedupe_skips++;
-            return;
-        }
-        dup_roll = 1;
-    } else if (curr->valid && !s_head_is_dup && tick > curr->tick) {
-        /* Measured between distinct states only: a duplicate roll's own gap is
-         * the cadence it was committed at, and feeding those back would let a
-         * measurement error in one static episode persist through the next. */
-        uint32_t g = tick - curr->tick;
+         * tick's - the whole-scene judder at a held camera.
+         *
+         * The cadence grid is phased onto the VBLs the game draws on. A load
+         * can land the state that then holds on the other VBL parity from the
+         * one the game draws on afterwards; a grid kept on that state's own
+         * VBL stamps every duplicate one VBL before the frame the canonical
+         * present shows, so every alpha keyed on the head (the canonical
+         * present's, the eager span's end) reads half a tick late until the
+         * state next changes. Waiting for the drawing phase delays one
+         * duplicate by at most cadence - 1 VBLs, once; the grid keeps the
+         * cadence after it. */
+        const uint32_t held = (tick > curr->tick) ? tick - curr->tick : 0;
+        if (held >= cadence && interp_on_draw_phase(tick, cadence, curr->tick)) return INTERP_CAP_DUP;
+        s_total_dedupe_skips++;
+        return INTERP_CAP_SKIP;
+    }
+    /* Measured between distinct states only: a duplicate roll's own gap is
+     * the cadence it was committed at, and a head that held past the cadence
+     * while its duplicate waited for the drawing phase measures the hold;
+     * feeding either back would let a measurement error in one static
+     * episode persist through the next. */
+    const int held_past = prev_seen > curr->tick && prev_seen - curr->tick >= cadence;
+    if (curr->valid && !s_head_is_dup && !held_past && tick > curr->tick) {
+        const uint32_t g = tick - curr->tick;
         s_distinct_gap = (g > INTERP_MAX_DISTINCT_GAP) ? INTERP_MAX_DISTINCT_GAP : g;
     }
+    return INTERP_CAP_DISTINCT;
+}
 
-    /* OPENPETE_CAP_ROLL_DBG: one line per ROLL - which frame, and the first
-     * words of region 0 (the game's camera) before/after. Forensics for
-     * degenerate pairs (prev==curr in one region while another rolled). */
-    {
-        static int s_crd = -1;
-        if (s_crd < 0) { const char* e = getenv("OPENPETE_CAP_ROLL_DBG"); s_crd = (e && *e && *e != '0'); }
-        if (s_crd) {
-            uint32_t oldw = 0, neww = 0;
-            memcpy(&oldw, curr->data + 0x28, 4);      /* region0 + CAM pos.x (Spyro 1) */
-            memcpy(&neww, s_cap_scratch + 0x28, 4);
-            fprintf(stderr, "[cap-roll f=%u tick=%u] r0X %d -> %d%s\n",
-                    tick, tick, (int32_t)oldw, (int32_t)neww,
-                    (int32_t)oldw == (int32_t)neww ? "  (CAM-DEGENERATE)" : "");
-        }
+/** @brief Write the OPENPETE_CAP_ROLL_DBG line of one ring roll.
+ *
+ * One line per roll: the VBL and the first word of region 0's camera
+ * position before and after, marked when equal. Forensics for degenerate
+ * pairs (prev==curr in one region while another rolled). The environment is
+ * read once and latched.
+ * @param tick The VBL of the roll.
+ * @param curr The head snapshot the roll follows. */
+static void interp_cap_roll_dbg(uint32_t tick, const openpete_interp_snapshot_t* curr) OP_REQUIRES(sim) {
+    static int s_crd OP_GUARDED_BY(sim) = -1;   /* thread-roles: written by the first roll's capture, on sim */
+    if (s_crd < 0) { const char* e = getenv("OPENPETE_CAP_ROLL_DBG"); s_crd = (e && *e && *e != '0'); }
+    if (!s_crd) return;
+    uint32_t oldw = 0, neww = 0;
+    memcpy(&oldw, curr->data + 0x28, 4);      /* region0 + CAM pos.x (Spyro 1) */
+    memcpy(&neww, s_cap_scratch + 0x28, 4);
+    fprintf(stderr, "[cap-roll f=%u tick=%u] r0X %d -> %d%s\n",
+            tick, tick, (int32_t)oldw, (int32_t)neww,
+            (int32_t)oldw == (int32_t)neww ? "  (CAM-DEGENERATE)" : "");
+}
+
+void openpete_interp_capture(uint32_t tick, op_time_t tick_ns, int drew) OP_REQUIRES(sim) {
+    if (!s_initialized || !s_enabled) return;
+    if (!s_regions || s_region_count == 0) return;
+    if (drew) s_draw_tick = tick;
+    const uint32_t prev_seen = s_last_tick_seen ? s_last_tick : tick;
+    s_last_tick = tick;
+    s_last_tick_seen = 1;
+
+    /* Build the candidate snapshot into scratch FIRST, so we can compare it to
+     * the current head before deciding whether to advance the ring. */
+    const openpete_interp_snapshot_t* curr = &s_snap[s_head];
+    const uint32_t total = curr->total_bytes;
+    for (size_t r = 0; r < s_region_count; ++r) {
+        const openpete_interp_region_t* reg = &s_regions[r];
+        void* host = openpete_psx_to_host_span(reg->psx_addr, reg->length);
+        uint32_t off = curr->region_offsets[r];
+        if (host) memcpy(s_cap_scratch + off, host, reg->length);
+        else      memset(s_cap_scratch + off, 0, reg->length);   /* unmapped -> deterministic */
     }
+    s_total_captures++;
+
+    const int verdict = interp_capture_verdict(tick, curr, prev_seen);
+    if (verdict == INTERP_CAP_SKIP) return;
+    interp_cap_roll_dbg(tick, curr);
 
     if (s_det_mode && s_det_period > 0) tick_ns = interp_det_stamp(tick, curr);
 
     /* State advanced - commit to the next ring slot. snap[s_head] becomes the
      * "latest distinct tick"; the two prior slots hold prev and prev2. */
     s_head = (s_head + 1) % 3;
-    s_head_is_dup = dup_roll;
+    s_head_is_dup = verdict == INTERP_CAP_DUP;
     openpete_interp_snapshot_t* slot = &s_snap[s_head];
     slot->tick    = tick;
     slot->tick_ns = tick_ns;

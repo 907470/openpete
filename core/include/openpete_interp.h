@@ -39,6 +39,7 @@
 #include <stdint.h>
 
 #include "openpete_time.h"
+#include "openpete_thread_roles.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -147,17 +148,21 @@ int  openpete_interp_enabled(void);
  * while the game fiber is yielded; reads PSX RAM only. The candidate is
  * built in scratch (an unmapped region reads as zeros) and compared with
  * the ring's head. A differing candidate rolls the ring and, when the head
- * was itself a distinct state, updates the measured tick gap between
- * distinct states (capped at 4). An identical candidate is skipped until
- * the head has held for that gap (at least 2), then committed as a
- * duplicate, so a held screen pairs a state with itself and the bracket
- * stays installed. Under deterministic capture @p tick_ns is replaced by
- * @p tick times half the period, raised to one period past the head when
- * that does not exceed the head's stamp. No-op when disabled or when
- * the region table is empty.
+ * was itself a distinct state that had not held past that gap, updates the
+ * measured tick gap between distinct states (capped at 4). An identical
+ * candidate is skipped until the head has held for that gap (at least 2) and
+ * the capture's VBL is a whole number of gaps from the newest VBL on which
+ * the game drew (the head's own VBL before any drew), then committed as a
+ * duplicate, so a held screen pairs a state with itself, the bracket stays
+ * installed, and the duplicate's stamp is the stamp of the VBL whose drawn
+ * frame the canonical present shows. Under deterministic capture @p tick_ns
+ * is replaced by @p tick times half the period, raised to one period past
+ * the head when that does not exceed the head's stamp. No-op when disabled
+ * or when the region table is empty.
  * @param tick VBL counter of the capture (openpete_frame).
- * @param tick_ns Present-clock stamp of the capture. */
-void openpete_interp_capture(uint32_t tick, op_time_t tick_ns);
+ * @param tick_ns Present-clock stamp of the capture.
+ * @param drew Nonzero when the game run of this VBL drew a frame that owes a present. */
+void openpete_interp_capture(uint32_t tick, op_time_t tick_ns, int drew) OP_REQUIRES(sim);
 
 /** @brief Set the virtual present clock that sub-tick alpha is computed against.
  *
@@ -232,6 +237,14 @@ op_time_t openpete_interp_det_vbl_stamp(uint32_t tick);
  * @return The head snapshot, or NULL before init or until the ring holds
  *         one. */
 const openpete_interp_snapshot_t* openpete_interp_curr_snapshot(void);
+
+/** @brief Report whether the newest stored snapshot was committed as a duplicate of the one before it.
+ *
+ * A duplicate is committed when the registered regions have held for the
+ * logic's cadence (openpete_interp_capture); its tick is the commit's VBL,
+ * not the VBL on which the state first appeared.
+ * @return 1 when the head is a duplicate commit, else 0 (also before init). */
+int       openpete_interp_curr_is_dup(void);
 
 /** @brief Report whether a sub-tick interpolation bracket is available.
  *
