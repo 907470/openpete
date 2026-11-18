@@ -86,6 +86,13 @@ compiled again until its sources, the mod SDK or the compiler change;
 `src/` in the mods folder, listed in `enabled.txt` or not, then exits; the
 exit status is nonzero when a compile fails.
 
+`--mod-hot-reload [0|1]`<!-- id: flag:--mod-hot-reload --> (config key
+`mod_hot_reload`, variable `OPENPETE_MOD_HOT_RELOAD`, default
+`0`<!-- id: knob:mod_hot_reload -->) is for mod authors: a running mod with
+`src/` is compiled and reloaded in place when its files change. The
+[modding guide](../../modding/testing-and-iteration.md#hot-reload)
+describes it.
+
 A package built without the mod SDK has no `sdk` folder. Its log says so,
 code mods are not compiled, and mods made only of `mod.toml` and assets
 load as usual. A mod that ships a prebuilt library in

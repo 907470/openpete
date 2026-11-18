@@ -31,6 +31,27 @@ Alternatively, compile every mod with a `src/` directory without booting the gam
 
 Exit status is nonzero if any mod failed to compile.
 
+### Hot reload
+
+`--mod-hot-reload` (or `OPENPETE_MOD_HOT_RELOAD=1`, or `mod_hot_reload =
+true` in `openpete.toml`) reloads a running code mod in place when its
+`src/`, the SDK, its `config.toml` or its `shaders/` change. The game
+checks every 64 [ticks](glossary.md#tick) and logs
+`hot reload: <id> (source change)` or `(config or shader change)`.
+
+A reload compiles and opens the new object first; a compile failure is
+logged and the running object stays. Once the new object opens, the old
+object's shutdown hook runs, its registrations are removed, `mod.toml` and
+`config.toml` are read again and `openpete_mod_entry` runs again. A
+failure from there leaves the mod inactive until the next successful
+reload. Host state the mod keeps in its own variables does not carry
+over; the [arena](glossary.md#arena) does. A mod disabled in the Mods tab
+stays disabled. Rewind and runahead history recorded before the reload
+is discarded.
+
+`--mod-hot-reload 0` turns it off when the variable or the config file
+turns it on. It is off by default and is read at launch.
+
 ## Logging
 
 `api->log(self, OP_MOD_LOG_INFO, "fmt", ...)` writes one line tagged

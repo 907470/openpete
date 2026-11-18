@@ -2056,22 +2056,27 @@ static void mod_hot_reload(struct openpete_mod* mod) {
                mod->enabled ? "" : " (still disabled)");
 }
 
+/* --mod-hot-reload (OPENPETE_MOD_HOT_RELOAD): 1 arms hot_reload_poll; set
+ * once in openpete_mods_init from opts. */
+static int s_hot_reload = 0;
+
+/** @brief Latch --mod-hot-reload into s_hot_reload and log once when it is armed.
+ * @param opts Parsed options, or NULL for the default (off). */
+static void mods_hot_reload_arm(const openpete_options_t* opts) {
+    s_hot_reload = opts && opts->mod_hot_reload > 0;
+    if (s_hot_reload) OPL_INFO_F("mods", "hot reload armed (dev mode)");
+}
+
 /** @brief Poll the entered source mods for edits every 64th tick boundary and hot-reload the changed ones.
  *
- * Active only when OPENPETE_MOD_HOT_RELOAD is a nonempty string whose first
- * character is not '0', read once on the first call. Each poll rechecks the
+ * Active only under --mod-hot-reload (or OPENPETE_MOD_HOT_RELOAD), which
+ * openpete_mods_init latches into s_hot_reload. Each poll rechecks the
  * SDK prefix, then recomputes, for every entered mod with an object, a src/
  * directory and a build key,
  * the source build key (sources and SDK), the config.toml key and the
  * shader key; any change calls mod_hot_reload. */
 static void hot_reload_poll(void) {
-    static int s_hot = -1;
-    if (s_hot < 0) {
-        const char* e = getenv("OPENPETE_MOD_HOT_RELOAD");
-        s_hot = (e && *e && *e != '0') ? 1 : 0;
-        if (s_hot) OPL_INFO_F("mods", "hot reload armed (dev mode)");
-    }
-    if (!s_hot) return;
+    if (!s_hot_reload) return;
     static unsigned s_cnt = 0;
     if (++s_cnt % 64u) return;
     sdk_prefix_recheck(s_sdk_dir); /* an SDK edit must show up in
@@ -6573,6 +6578,8 @@ int openpete_mods_init(const openpete_options_t* opts) {
 
     /* Before the first mod entry below, which the guard brackets. */
     mods_guard_install(opts);
+
+    mods_hot_reload_arm(opts);
 
     mods_capture_disc_path(opts);
 

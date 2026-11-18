@@ -185,8 +185,10 @@ variable overrides as **pinned**.
 | {{ flag("flag:--no-config") }}<!-- id: flag:--no-config home --> | read no config file |
 | {{ flag("flag:--keys-report") }}<!-- id: flag:--keys-report --> | print every key binding and the section that set it; then exit |
 
-The environment variable `OPENPETE_CONFIG` names a file the same way as
-`--config`; the value `none` reads no file.
+The environment variable `OPENPETE_CONFIG`<!-- id: knob:config --> names a
+file the same way as `--config`; the value `none` reads no file.
+`--config` wins when both are set. Without either, the two files of
+[Where the files are](#where-the-files-are) are read.
 
 `openpete.opts` and `openpete.env`, used by earlier releases, are no longer
 read. A launch that finds one next to the program prints a line saying so;

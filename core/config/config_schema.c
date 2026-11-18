@@ -86,6 +86,7 @@ static const cfg_knob_t g_schema[] = {
     { "mods_dir",         "--mods-dir",         "OPENPETE_MODS_DIR",     CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "mods",             "--mods",             "OPENPETE_MODS",         CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "scan_guard",       "--scan-guard",       "OPENPETE_SCAN_GUARD",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "mod_hot_reload",   "--mod-hot-reload",   "OPENPETE_MOD_HOT_RELOAD", CFG_BOOL, NULL,       NULL,       NULL,       0 },
     { "card_dir",         "--card-dir",         "OPENPETE_CARD_DIR",     CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "log_file",         "--log-file",         "OPENPETE_LOG_FILE",     CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "no_log_file",      "--no-log-file",      NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },

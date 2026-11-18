@@ -788,6 +788,14 @@ static void optstr_get_str(const knob_desc_t *k, char *buf, size_t cap) {
  * Flags read once at startup with no live channel: each getter returns the
  * parsed value, 0 before the options are bound. */
 
+/** @brief Writes the config files the launch read: the --config (or OPENPETE_CONFIG) file, else the exe-directory and per-user openpete.toml, comma-separated; "(none)" under --no-config. */
+static void configfile_get_str(const knob_desc_t *k, char *buf, size_t cap) {
+    (void)k;
+    const char *a = openpete_config_file_path(0), *b = openpete_config_file_path(1);
+    if (a && b) snprintf(buf, cap, "%s, %s", a, b);
+    else        snprintf(buf, cap, "%s", a ? a : (b ? b : "(none)"));
+}
+
 /** @brief 1 when --no-log-file turned the log file off, else 0. */
 static double nologfile_get(const knob_desc_t *k) {
     (void)k;
@@ -799,6 +807,8 @@ static double compilemods_get(const knob_desc_t *k) { (void)k; return g_opts ? (
 static double nocard_get(const knob_desc_t *k) { (void)k; return (g_opts && !g_opts->card_a_present) ? 1.0 : 0.0; }
 /** @brief 0 when the run turned the mod guard's compares off (--scan-guard 0), else 1. */
 static double scanguard_get(const knob_desc_t *k) { (void)k; return (g_opts && g_opts->scan_guard == 0) ? 0.0 : 1.0; }
+/** @brief 1 when the run arms the mod hot-reload watch (--mod-hot-reload or OPENPETE_MOD_HOT_RELOAD), else 0. */
+static double modhot_get(const knob_desc_t *k) { (void)k; return (g_opts && g_opts->mod_hot_reload > 0) ? 1.0 : 0.0; }
 /** @brief 1 when port A holds no memory card (--no-card or --no-card1), else 0. */
 static double nocard1_get(const knob_desc_t *k) { (void)k; return (g_opts && !g_opts->card_a_present) ? 1.0 : 0.0; }
 /** @brief 1 when port B holds no memory card (--no-card or --no-card2), else 0. */
@@ -1266,7 +1276,7 @@ static const knob_desc_t g_builtin[] = {
           "threads). Output is byte-identical at any count (item-order\n"
           "merge)." },
 
-    { "terrain_cache", "Terrain GPU cache", "Display", "--terrain-cache", NULL,
+    { "terrain_cache", "Terrain GPU cache", "Display", "--terrain-cache", "OPENPETE_TERRAIN_CACHE",
       "Retained GPU terrain (default on): unclaimed sectors render from "
       "world-space vertex chunks with the per-face verdicts mirrored in the "
       "vertex stage; claimed sectors (near / blended-over-portal / safety) "
@@ -1821,6 +1831,18 @@ static const knob_desc_t g_builtin[] = {
           "anti-piracy checks hash (default {def}). 0 = let such a store\n"
           "persist. No effect on Spyro 1 and 2." },
 
+    { "mod_hot_reload", "Mod hot reload", "Paths", "--mod-hot-reload", "OPENPETE_MOD_HOT_RELOAD",
+      "Watch every running mod with a src/ directory and reload one in "
+      "place when its sources, the mod SDK, its config.toml or its shaders/ "
+      "change, checked every 64 ticks. For mod authors.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      modhot_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "0", .flag_arg = KNOB_FLAG_ARG_OPTIONAL,
+      .help_arg = "[0|1]", .help_order = 397,
+      .help_text = "reload a running mod in place when its src/, the SDK, its\n"
+          "config.toml or its shaders/ change, checked every 64 ticks\n"
+          "(default {def} = off; for mod authors)" },
+
     { "card_dir", "Memory card dir", "Paths", "--card-dir", "OPENPETE_CARD_DIR",
       "Directory holding the .mcr memory-card images.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
@@ -1880,6 +1902,18 @@ static const knob_desc_t g_builtin[] = {
           "disc's game); without --disc, boots its most recently played\n"
           "library entry, or shows the drop screen when there is none;\n"
           "a disc of another game refuses the launch" },
+
+    { "config", "Config files", "Paths", "--config", "OPENPETE_CONFIG",
+      "The openpete.toml files this launch read. --config PATH (or the "
+      "variable OPENPETE_CONFIG) reads that one file alone and saves to it; "
+      "the value none reads no file. The flag wins over the variable.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, configfile_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .default_note = "env OPENPETE_CONFIG, else openpete.toml next to the executable and openpete.toml in the per-user config directory, both read, the per-user file winning at the same scope",
+      .cli_only = 1,
+      .help_arg = "PATH", .help_order = 27,
+      .help_text = "read only this config file, also the save target; none = read\n"
+          "no file (default: env OPENPETE_CONFIG, else both openpete.toml)" },
 
     { "compile_mods", "Compile mods and exit", "Paths", "--compile-mods", NULL,
       "Compile every mod with a src/ directory in the mods directory against "

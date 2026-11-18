@@ -415,6 +415,66 @@ static void tick_scale_range(void) {
           OPENPETE_TICK_SCALE_MAX);
 }
 
+/** @brief --mod-hot-reload over OPENPETE_MOD_HOT_RELOAD: off by default, the env and the config key arm it, and a typed value wins over the env either way. */
+static void mod_hot_reload_spellings(void) {
+    openpete_options_t o, e;
+    static const char* const none[] = { "--no-config" };
+    static const char* const bare[] = { "--no-config", "--mod-hot-reload" };
+    static const char* const off[]  = { "--no-config", "--mod-hot-reload", "0" };
+    unsetenv_portable("OPENPETE_MOD_HOT_RELOAD");
+
+    g_case = "mod_hot_reload default";
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK && o.mod_hot_reload == 0,
+          "mod_hot_reload = %d, want 0", o.mod_hot_reload);
+    openpete_options_effective(&o, &e);
+    CHECK(e.mod_hot_reload == 0, "effective mod_hot_reload = %d, want 0", e.mod_hot_reload);
+    CHECK(parse(&o, 2, bare) == OPENPETE_EXIT_OK && o.mod_hot_reload == 1,
+          "mod_hot_reload = %d, want 1 from the bare flag", o.mod_hot_reload);
+
+    g_case = "mod_hot_reload env";
+    setenv_portable("OPENPETE_MOD_HOT_RELOAD", "1");
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK && o.mod_hot_reload == 1,
+          "mod_hot_reload = %d, want 1 from the env", o.mod_hot_reload);
+    CHECK(parse(&o, 3, off) == OPENPETE_EXIT_OK && o.mod_hot_reload == 0,
+          "mod_hot_reload = %d, want the typed 0 over OPENPETE_MOD_HOT_RELOAD=1", o.mod_hot_reload);
+    setenv_portable("OPENPETE_MOD_HOT_RELOAD", "0");
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK && o.mod_hot_reload == 0,
+          "mod_hot_reload = %d, want 0 from OPENPETE_MOD_HOT_RELOAD=0", o.mod_hot_reload);
+    CHECK(parse(&o, 2, bare) == OPENPETE_EXIT_OK && o.mod_hot_reload == 1,
+          "mod_hot_reload = %d, want the typed flag over OPENPETE_MOD_HOT_RELOAD=0", o.mod_hot_reload);
+    unsetenv_portable("OPENPETE_MOD_HOT_RELOAD");
+
+    g_case = "mod_hot_reload config";
+    CHECK(parse_cfg(&o, "mod_hot_reload = true\n", 0, NULL) == OPENPETE_EXIT_OK &&
+          o.mod_hot_reload == 1, "mod_hot_reload = %d, want 1 from the key", o.mod_hot_reload);
+    CHECK(parse_cfg(&o, "[env]\nOPENPETE_MOD_HOT_RELOAD = \"1\"\n", 0, NULL) == OPENPETE_EXIT_OK &&
+          o.mod_hot_reload == 1, "mod_hot_reload = %d, want 1 from [env]", o.mod_hot_reload);
+    unsetenv_portable("OPENPETE_MOD_HOT_RELOAD");
+}
+
+/** @brief OPENPETE_CONFIG names the config file when --config is absent, and a typed --config wins over it. */
+static void config_flag_beats_env(void) {
+    openpete_options_t o;
+    char other[600];
+    snprintf(other, sizeof other, "%s.env.toml", g_toml);
+    FILE* f = fopen(other, "wb");
+    if (!f) { fprintf(stderr, "cannot write %s\n", other); exit(2); }
+    fputs("tick_scale = 2\n", f);
+    fclose(f);
+    setenv_portable("OPENPETE_CONFIG", other);
+
+    g_case = "OPENPETE_CONFIG alone";
+    CHECK(parse(&o, 0, NULL) == OPENPETE_EXIT_OK && o.tick_scale == 2.0,
+          "tick_scale = %g, want 2 from the OPENPETE_CONFIG file", o.tick_scale);
+
+    g_case = "--config over OPENPETE_CONFIG";
+    CHECK(parse_cfg(&o, "tick_scale = 0.5\n", 0, NULL) == OPENPETE_EXIT_OK && o.tick_scale == 0.5,
+          "tick_scale = %g, want 0.5 from the --config file", o.tick_scale);
+
+    unsetenv_portable("OPENPETE_CONFIG");
+    remove(other);
+}
+
 int main(void) {
     scrub_inherited_env();
     const char* tmp = getenv("TMPDIR");
@@ -428,6 +488,8 @@ int main(void) {
     resolved_env_fields();
     effective_resolves_sentinels();
     tick_scale_range();
+    mod_hot_reload_spellings();
+    config_flag_beats_env();
     remove(g_toml);
     if (g_fail) printf("options_validate_test: FAILED (%d)\n", g_fail);
     else        printf("options_validate_test: ok\n");

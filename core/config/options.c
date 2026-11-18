@@ -523,7 +523,7 @@ void openpete_options_set_default_renderer(openpete_options_t* opts,
 
 /* Every flag the parser accepts that has no knob registry row and is not a
  * config schema alias (--no-lod): the one-shot reports and the preamble's
- * --config pair, --help, the deprecated --show-fps, and the debug and
+ * --no-config, --help, the deprecated --show-fps, and the debug and
  * diagnostic flags. The surface dump lists them beside the registry's flags,
  * so the two together name every parser literal. `block` is the --help block
  * that prints the flag ("none" = not printed; "preamble" = the fixed help
@@ -532,8 +532,6 @@ void openpete_options_set_default_renderer(openpete_options_t* opts,
 static const openpete_help_only_t k_help_only[] = {
     { "--help",                              KNOB_FLAG_ARG_NONE,     NULL, "none",     NULL, NULL, 0, NULL },
     { "-h",                                  KNOB_FLAG_ARG_NONE,     NULL, "none",     NULL, NULL, 0, NULL },
-    { "--config",                            KNOB_FLAG_ARG_REQUIRED, NULL, "preamble",
-      "env OPENPETE_CONFIG, else openpete.toml next to the executable and openpete.toml in the per-user config directory, both read, the per-user file winning at the same scope", NULL, 0, NULL },
     { "--no-config",                         KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL, NULL, 0, NULL },
     { "--config-report",                     KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL, NULL, 0, NULL },
     { "--keys-report",                       KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL, NULL, 0, NULL },
@@ -880,7 +878,7 @@ static void print_help(const char* display_name, const char* argv0,
         "  persistent settings, in layers: global < [game.ID] < [disc.SERIAL] < [disc.SHA]\n"
         "  < [saved] < environment < bk2 sidecar < the flags you type. Inside a layer,\n"
         "  bare keys < [env] < [args]. --config-report shows what won and what it beat.\n"
-        "  --config PATH  use only this file      --no-config  ignore every config file\n"
+        "  --no-config  ignore every config file\n"
         "  --config-report  print the resolution table and exit\n"
         "  Keys and pad buttons rebind the same way, under [keys.pad] / [keys.host]\n"
         "  in any scope (e.g. [game.spyro-1.keys.host]). Bind a key by its name\n"
@@ -1007,6 +1005,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->terrain_cache = -1;
     opts->disc_cache    = -1;
     opts->scan_guard    = -1;   /* resolve_env_spellings: OPENPETE_SCAN_GUARD, else 1 */
+    opts->mod_hot_reload = -1;  /* resolve_env_spellings: OPENPETE_MOD_HOT_RELOAD, else 0 */
     /* -1 = the game's own default (game_get_load_delay_default), resolved by
      * run.c; resolve_env_spellings applies OPENPETE_LOAD_DELAY. */
     opts->load_delay    = -1;
@@ -1772,6 +1771,14 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
             return OPENPETE_EXIT_SETUP_ERROR;
         }
         opts->scan_guard = v[0] == '1'; i++;
+    } else if (strcmp(a, "--mod-hot-reload") == 0) {
+        /* Optional value, as --input-lock: an explicit 0 overrides the env spelling. */
+        opts->mod_hot_reload = 1;
+        if (i + 1 < argc) {
+            const char* n = argv[i + 1];
+            if      (strcmp(n, "1") == 0 || strcmp(n, "on")  == 0) { opts->mod_hot_reload = 1; i++; }
+            else if (strcmp(n, "0") == 0 || strcmp(n, "off") == 0) { opts->mod_hot_reload = 0; i++; }
+        }
     } else if (strcmp(a, "--compile-mods") == 0) {
         opts->compile_mods = 1;
     } else if (strcmp(a, "--dump-sfx-pack") == 0) {
@@ -2248,14 +2255,27 @@ static int env_value(const char* name, const char** out) {
     return 1;
 }
 
+/** @brief Resolve one unset 0/1 field from its env spelling: the default when the variable is unset or empty, else 0 when the value starts with '0' (or, with by_atoi, when atoi gives 0), else 1.
+ * @param field The field; left alone unless it holds the -1 unset sentinel.
+ * @param name The variable.
+ * @param def The value when the variable is unset or empty.
+ * @param by_atoi 1 to take atoi's verdict, 0 to test the first character. */
+static void env_switch(int* field, const char* name, int def, int by_atoi) {
+    const char* e = NULL;
+    if (*field >= 0) return;
+    if (!env_value(name, &e)) *field = def;
+    else *field = by_atoi ? (atoi(e) != 0) : (*e != '0');
+}
+
 /** @brief Resolve the fields openpete_options_init leaves unset for their env spelling: the env value, else the built-in default.
  *
  * Runs after the flag walk, so a typed flag has claimed its field already,
  * and after the config resolver has applied the openpete.toml [env] tables.
- * OPENPETE_NOTEX, OPENPETE_WIREFRAME and OPENPETE_HIDE_HUD are on unless
- * they start with '0'; OPENPETE_HIDE_CLASSES is taken as written; OPENPETE_TERRAIN_CACHE
- * and OPENPETE_DISC_CACHE take atoi's verdict (default 1); OPENPETE_SCAN_GUARD
- * is off when it starts with '0' (default 1);
+ * OPENPETE_NOTEX, OPENPETE_WIREFRAME, OPENPETE_HIDE_HUD and
+ * OPENPETE_MOD_HOT_RELOAD are on unless they start with '0' (default 0);
+ * OPENPETE_TERRAIN_CACHE and OPENPETE_DISC_CACHE take atoi's verdict
+ * (default 1); OPENPETE_SCAN_GUARD is off when it starts with '0' (default
+ * 1); OPENPETE_HIDE_CLASSES is taken as written;
  * OPENPETE_TERRAIN_VISIBILITY=game selects the game's verdict (default
  * frustum). OPENPETE_LOAD_DELAY is applied with atoi when set; unset,
  * load_delay stays -1 and run.c applies the game's default.
@@ -2263,20 +2283,15 @@ static int env_value(const char* name, const char** out) {
  * @param opts The options block. */
 static void resolve_env_spellings(openpete_options_t* opts) {
     const char* e = NULL;
-    if (opts->notex < 0)
-        opts->notex = env_value("OPENPETE_NOTEX", &e) && *e != '0';
-    if (opts->wireframe < 0)
-        opts->wireframe = env_value("OPENPETE_WIREFRAME", &e) && *e != '0';
-    if (opts->hide_hud < 0)
-        opts->hide_hud = env_value("OPENPETE_HIDE_HUD", &e) && *e != '0';
+    env_switch(&opts->notex,          "OPENPETE_NOTEX",          0, 0);
+    env_switch(&opts->wireframe,      "OPENPETE_WIREFRAME",      0, 0);
+    env_switch(&opts->hide_hud,       "OPENPETE_HIDE_HUD",       0, 0);
+    env_switch(&opts->terrain_cache,  "OPENPETE_TERRAIN_CACHE",  1, 1);
+    env_switch(&opts->disc_cache,     "OPENPETE_DISC_CACHE",     1, 1);
+    env_switch(&opts->scan_guard,     "OPENPETE_SCAN_GUARD",     1, 0);
+    env_switch(&opts->mod_hot_reload, "OPENPETE_MOD_HOT_RELOAD", 0, 0);
     if (!opts->hide_classes && env_value("OPENPETE_HIDE_CLASSES", &e))
         opts->hide_classes = strdup(e);   /* outlives a later setenv or [env] release */
-    if (opts->terrain_cache < 0)
-        opts->terrain_cache = env_value("OPENPETE_TERRAIN_CACHE", &e) ? (atoi(e) != 0) : 1;
-    if (opts->disc_cache < 0)
-        opts->disc_cache = env_value("OPENPETE_DISC_CACHE", &e) ? (atoi(e) != 0) : 1;
-    if (opts->scan_guard < 0)
-        opts->scan_guard = !(env_value("OPENPETE_SCAN_GUARD", &e) && *e == '0');
     if (opts->load_delay < 0 && env_value("OPENPETE_LOAD_DELAY", &e))
         opts->load_delay = atoi(e);
     if (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_UNSET)
@@ -2308,6 +2323,7 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->terrain_cache < 0)         out->terrain_cache = 1;
     if (out->disc_cache < 0)            out->disc_cache = 1;
     if (out->scan_guard < 0)            out->scan_guard = 1;
+    if (out->mod_hot_reload < 0)        out->mod_hot_reload = 0;
     if (out->terrain_visibility == OPENPETE_TERRAIN_VIS_UNSET)
         out->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
     if (out->cadence == OPENPETE_CADENCE_UNSET) out->cadence = OPENPETE_CADENCE_EVEN;
