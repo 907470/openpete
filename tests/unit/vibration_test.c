@@ -1,17 +1,14 @@
-/* vibration_test - controller vibration: the measured motor response,
- * and the --vibration preset's state machine over guest RAM.
+/* vibration_test - controller vibration: the byte-to-motor conversion's
+ * public properties and the --vibration strength scale, and the --vibration
+ * preset's state machine over guest RAM.
  *
- * Two halves, and the first is the one that matters most for regressions.
- *
- * The CURVE has a single correct answer, the reference controller's
- * measured response, and it is
- * exactly the kind of value a later "it feels too strong / too weak" report
- * gets mis-fixed by scaling. Pinning the reference points here means such a
- * tweak has to be a deliberate, visible divergence rather than a quiet drift.
- * The numbers below are not this code's output written down after the fact -
- * they are the reference's, and the one that would catch a naive
- * reimplementation is the normal-rumble row: 0.199, where a plausible
- * byte/255 gives 0.471.
+ * The per-byte motor intensity is rumble_response_test's: it compares every
+ * byte of each motor with the measured table. This test checks the
+ * properties the vibration path relies on whatever the table holds: a zero
+ * byte is silent at every strength, the small motor's on bit drives it at
+ * full scale, the large motor is monotonic, and the strength scale is a
+ * kill switch at 0, the unscaled response at 10 and at -1 (unset), and
+ * proportional between.
  *
  * The PRESET half is a state machine over guest RAM - when it stamps, when it
  * re-stamps over the game's own reseeds, when it hands the setting back - all
@@ -23,7 +20,6 @@
 #include "openpete_rumble.h"
 #include "psx_runtime.h"
 
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,54 +64,25 @@ static void expect(const char *what, uint32_t addr, uint32_t want) {
     }
 }
 
-/* ---- the curve ---------------------------------------------------------- */
+/* ---- the byte-to-motor conversion -------------------------------------- */
 
-/* Reference points of the measured response, input offset 8 included.
- * `linear` is what a naive byte/255 would have produced, recorded so the gap
- * this test exists to defend is visible in the source rather than implied. */
-static const struct {
-    int         raw;
-    int         is_small;
-    double      want;
-    double      naive_linear;
-    const char* what;
-} k_curve[] = {
-    { 0,   0, 0.0000, 0.0000, "large motor, commanded zero stays hard zero" },
-    { 1,   0, 0.0201, 0.0039, "large motor, 1 (bias lifts it off the floor)" },
-    { 64,  0, 0.1096, 0.2510, "large motor, 64" },
-    { 120, 0, 0.1989, 0.4706, "large motor, 120 = Spyro's NORMAL rumble" },
-    { 160, 0, 0.3286, 0.6275, "large motor, 160 = Spyro's DRAGON rumble" },
-    { 255, 0, 1.0000, 1.0000, "large motor, full scale" },
-    /* The small motor is a single on/off bit, not a magnitude. The old code
-     * multiplied that bit by 255 and floored at 4096, delivering "on" at 6% -
-     * which made the electric-shock effect ({1, 0}: small motor only)
-     * effectively silent. */
-    { 0,   1, 0.0000, 0.0000, "small motor off" },
-    { 1,   1, 1.0000, 1.0000, "small motor on = FULL, not 6%" },
-    { 255, 1, 1.0000, 1.0000, "small motor, any odd byte reads as on" },
-};
+static void test_motor(void) {
+    /* The small motor reads bit 0 only, and "on" is full scale. */
+    if (openpete_rumble_response(1, 1) != 1.0f ||
+        openpete_rumble_response(255, 1) != 1.0f ||
+        openpete_rumble_response(2, 1) != 0.0f)
+        fail("small motor is not bit 0 at full scale");
+    if (openpete_rumble_motor_u16(1, 1, 10) != 65535)
+        fail("small motor on did not reach the top of the u16 range");
 
-static void test_curve(void) {
-    size_t i;
-    for (i = 0; i < sizeof k_curve / sizeof k_curve[0]; i++) {
-        float got = openpete_rumble_motor_strength(k_curve[i].raw,
-                                                   k_curve[i].is_small);
-        if (fabs((double)got - k_curve[i].want) > 0.0005) {
-            printf("FAIL: %s: got %.4f, want %.4f\n",
-                   k_curve[i].what, (double)got, k_curve[i].want);
-            rc = 1;
-        }
-    }
-
-    /* Monotonic across the whole byte range: the curve re-shapes, it must
-     * never re-order. A non-monotonic curve would make a harder-commanded
-     * rumble feel weaker, which is close to impossible to diagnose by feel. */
+    /* Monotonic across the whole byte range, so a harder-commanded rumble
+     * never drives the large motor weaker. */
     {
         int b;
         float prev = -1.0f;
         for (b = 0; b <= 255; b++) {
-            float v = openpete_rumble_motor_strength(b, 0);
-            if (v < prev) { fail("large-motor curve is not monotonic"); break; }
+            float v = openpete_rumble_response(b, 0);
+            if (v < prev) { fail("large-motor response is not monotonic"); break; }
             prev = v;
         }
     }
@@ -126,7 +93,7 @@ static void test_curve(void) {
     if (openpete_rumble_motor_u16(120, 0, 0) != 0)
         fail("strength 0 must be a hard kill switch");
     if (openpete_rumble_motor_u16(120, 0, -1) != openpete_rumble_motor_u16(120, 0, 10))
-        fail("unset strength (-1) must be parity, i.e. identical to 10");
+        fail("unset strength (-1) must read as 10");
     {
         /* Half strength halves the amplitude - the guest toggle has no
          * intensity of its own, so this scale is the only thing that makes
@@ -137,8 +104,7 @@ static void test_curve(void) {
         else if (abs((int)full / 2 - (int)half) > 2)
             fail("strength 5 is not half of strength 10");
     }
-    /* A zero byte stays silent at every strength: the bias must never lift a
-     * commanded zero into a buzz. */
+    /* A zero byte stays silent at every strength. */
     {
         int s;
         for (s = -1; s <= 10; s++)
@@ -265,7 +231,7 @@ int main(void) {
     s_cpu.read_word  = fake_read;
     s_cpu.write_word = fake_write;
 
-    test_curve();
+    test_motor();
     test_preset();
 
     if (rc == 0) printf("vibration_test: ok\n");

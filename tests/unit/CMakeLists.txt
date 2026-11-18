@@ -422,16 +422,17 @@ target_include_directories(audio_volume_test PRIVATE
 set_target_properties(audio_volume_test PROPERTIES C_STANDARD 99)
 add_test(NAME audio_volume_test COMMAND audio_volume_test)
 
-# vibration_test - the measured motor response and the --vibration
-# preset's state machine. Two TUs, both deliberately SDL-free: rumble_curve.c
-# is the curve alone (the reference constants a later "it feels too strong"
-# tweak would otherwise drift silently), vibration.c is the guest-side
-# preset over a fake CPUState. The rest of the vibration path needs a real pad
-# and is covered by the virtual-pad rumble oracle instead - see
+# vibration_test - the --vibration strength scaling to SDL's motor range and
+# the --vibration preset's state machine. SDL-free: rumble_response.c and
+# rumble_motor.c are the byte-to-motor conversion, vibration.c is the
+# guest-side preset over a fake CPUState. The per-byte response itself is
+# rumble_response_test's. The rest of the vibration path needs a real pad and
+# is covered by the virtual-pad rumble oracle instead - see
 # scripts/check_rumble.sh.
 add_executable(vibration_test
     vibration_test.c
-    ${CMAKE_SOURCE_DIR}/core/input/rumble_curve.c
+    ${CMAKE_SOURCE_DIR}/core/input/rumble_response.c
+    ${CMAKE_SOURCE_DIR}/core/input/rumble_motor.c
     ${CMAKE_SOURCE_DIR}/games/spyro-1/features/vibration.c)
 target_include_directories(vibration_test PRIVATE
     ${CMAKE_SOURCE_DIR}/games/spyro-1
@@ -439,10 +440,19 @@ target_include_directories(vibration_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/host
     ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(vibration_test PROPERTIES C_STANDARD 99)
-if(NOT WIN32)
-    target_link_libraries(vibration_test PRIVATE m)
-endif()
 add_test(NAME vibration_test COMMAND vibration_test)
+
+# rumble_response_test - the motor intensity per actuator byte,
+# openpete_rumble_response, against the measured table data/rumble-response/
+# (tools/rumble_response_measure.py), with two known-wrong curves the
+# comparator must reject. SDL-free.
+add_executable(rumble_response_test
+    rumble_response_test.c
+    ${CMAKE_SOURCE_DIR}/core/input/rumble_response.c)
+target_include_directories(rumble_response_test PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
+set_target_properties(rumble_response_test PROPERTIES C_STANDARD 11)
+add_test(NAME rumble_response_test COMMAND rumble_response_test
+         ${CMAKE_CURRENT_SOURCE_DIR}/data/rumble-response/reference.tsv)
 
 # stick_response_test - --stick-response's mappings over the whole SDL axis
 # range, console against the measured table data/stick-response/

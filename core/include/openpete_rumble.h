@@ -41,20 +41,17 @@
  * tests/unit/data/rumble-response/reference.tsv; the function returns that
  * table's row for every byte of each motor, bit for bit, and
  * tests/unit/rumble_response_test.c checks all 512. The small motor is 1 on
- * an odd byte and 0 on an even one. The large motor is 0 at byte 0; for
- * any other byte it is the cubic from the Pokopom pad plugin (copyright
- * (c) 2012 KrossX, MIT licence), evaluated in double at byte + 8, divided
- * by 65535 and clamped to 1, an input offset and output scale fitted to
- * the measured table; it is nondecreasing and reaches 1 at byte 247.
+ * an odd byte and 0 on an even one; the large motor reads a 256-entry table
+ * of the measured bit patterns, 0 at byte 0 and nondecreasing to 1.
  * @param raw_byte the actuator byte; clamped to 0..255.
  * @param is_small nonzero selects the small motor (actuator byte 0), zero
  *        the large motor (actuator byte 1).
  * @return the intensity, 0..1. */
-float openpete_rumble_motor_strength(int raw_byte, int is_small);
+float openpete_rumble_response(int raw_byte, int is_small);
 
 /** @brief Convert an actuator byte to SDL's u16 motor range, scaled by a 0..10 host strength.
  *
- * The byte goes through openpete_rumble_motor_strength, is scaled by strength / 10
+ * The byte goes through openpete_rumble_response, is scaled by strength / 10
  * and by 65535 in float, and is truncated toward zero. A strength of 10
  * applies the measured response unscaled and 0 silences; -1 (unset) and any
  * value outside 0..10 read as 10.

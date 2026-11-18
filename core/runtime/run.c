@@ -1867,7 +1867,7 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_set_sfx_volume(opts->sfx_volume);
     openpete_set_music_volume(opts->music_volume);
 
-    /* --vibration: the host-side strength (0..10, -1 = parity), plus the
+    /* --vibration: the host-side strength (0..10, -1 = unset, read as 10), plus the
      * context gates. Headless is a refusal rather than a default - a run with
      * no window has no player, and every gate battery, capture and
      * scripted launch is one.
