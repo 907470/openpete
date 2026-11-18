@@ -2991,7 +2991,7 @@ static const knob_desc_t g_builtin_debug[] = {
       .env = "OPENPETE_TERRAIN_DRAIN_SKIP",
       .help = "Terrain sub-cell key packing, taken at each walk: 1 = a skipped sub-cell carries the sentinel key; 0 = it is keyed at the face's least key and drawn (default 1).",
       .type = KNOB_BOOL, .mut = KNOB_LIVE, .get_num = drainskip_get, .set_num = drainskip_set,
-      .boot_src = KNOB_SRC_DEFAULT, .def_str = "1" },
+      .boot_src = KNOB_SRC_DEFAULT, .def_str = "on" },
     ENVROW_LATCHED("TERRAIN_ENVMODEL", "Debug", "1",
         "The walker model drives a sector's HP banks on a tick the game's walkers skipped it (default 1; 0 = the older pose in memory draws)."),
     ENVROW_LATCHED("TERRAIN_FANOUT_MIN", "Debug", "400",
