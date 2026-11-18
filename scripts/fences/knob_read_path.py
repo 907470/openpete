@@ -49,10 +49,6 @@ ALLOW = {
                     "config layer; every boot call of openpete_log_init passes "
                     "the openpete_config_env value as level_spec, which "
                     "overrides its getenv",
-    "OPENPETE_NOTEX": "open defect: games/common/renderer/terrain.c's GPU-cache "
-                      "blocker reads the variable, while --notex, the bare key "
-                      "and the settings row set opts->notex only; the fix reads "
-                      "the native notex state, not a second env path",
 }
 
 SRC_EXT = (".c", ".cc", ".cpp", ".h", ".hpp", ".inc")

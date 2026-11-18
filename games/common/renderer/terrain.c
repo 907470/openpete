@@ -10947,9 +10947,10 @@ static void tgpu_resize_adopt_prepare(void) {
  * CPU walk, or change walk math the shader mirrors only at the default;
  * any of them set and nonempty blocks the GPU cache. So do
  * OPENPETE_TERRAIN_FOGDPCS=0, OPENPETE_TERRAIN_CULL other than 3,
- * OPENPETE_PORTAL_GUARD nonzero, OPENPETE_MOBY_TRUESCOPE=0, OPENPETE_TRUE_W
- * set, and OPENPETE_NOTEX nonzero. The verdict is latched on the first
- * call.
+ * OPENPETE_PORTAL_GUARD nonzero, OPENPETE_MOBY_TRUESCOPE=0 and
+ * OPENPETE_TRUE_W set. The untextured and wireframe views do not block it:
+ * terrain_shade.glsl takes the scene pipelines' NOTEX specialization
+ * constant. The verdict is latched on the first call.
  * @return 1 when the GPU cache is blocked, else 0. */
 static int tgpu_env_block(void) {
     static int v = -1;
@@ -10982,8 +10983,6 @@ static int tgpu_env_block(void) {
               if (e && *e && *e == '0') v = 1; }
     if (!v) { const char* e = getenv("OPENPETE_TRUE_W");            /* W-mask bisect instrument */
               if (e && *e) v = 1; }
-    if (!v) { const char* e = getenv("OPENPETE_NOTEX");             /* scene NOTEX spec constant */
-              if (e && *e && *e != '0') v = 1; }
     return v;
 }
 

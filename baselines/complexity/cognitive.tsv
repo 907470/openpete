@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 96ff557aa086d560767b9d18a38da2221ca81a6e
+# head: c99cb9cf56da088f031fe251056d4e1730648f33
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -135,7 +135,7 @@ games/common/renderer/terrain.c	terrain_texrecords	26	0
 games/common/renderer/terrain.c	terrain_vislist	94	0	
 games/common/renderer/terrain.c	tgpu_build_sector	33	0	
 games/common/renderer/terrain.c	tgpu_ensure	39	0	
-games/common/renderer/terrain.c	tgpu_env_block	30	0	
+games/common/renderer/terrain.c	tgpu_env_block	26	0	
 games/common/renderer/terrain.c	tgpu_pack_scan_faces	40	0	
 games/common/renderer/terrain.c	tn_face_gate	124	0	
 games/common/renderer/terrain.c	tn_tridump	29	0	
