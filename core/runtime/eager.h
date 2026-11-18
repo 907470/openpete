@@ -8,6 +8,7 @@
 #include "openpete.h"
 #include "openpete_frame_time_log.h"
 #include "openpete_time.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /** @brief Report whether eager production holds the display (the present thread presents).
  * @return 1 while engaged, else 0. */
@@ -54,7 +55,7 @@ int eager_hold_done(void);
  * @param produce_end The next sim deadline; intermediate production stops 0.5 ms before it.
  * @param world_live Nonzero when canonical presents are flowing. */
 void eager_canonical(op_time_t now, op_time_t slot, op_time_t period,
-                     op_time_t prod_end, op_time_t produce_end, int world_live);
+                     op_time_t prod_end, op_time_t produce_end, int world_live) OP_REQUIRES(sim);
 
 /** @brief Record the world-liveness verdict on an iteration after the canonical block, and produce more of the plan when the iteration drew nothing and the world is live.
  *
@@ -63,7 +64,7 @@ void eager_canonical(op_time_t now, op_time_t slot, op_time_t period,
  * @param deadline The time production must stop by.
  * @param period The render-grid period in nanoseconds.
  * @return 1 when production ran, else 0. */
-int eager_idle(int world_live, int may_produce, op_time_t deadline, op_time_t period);
+int eager_idle(int world_live, int may_produce, op_time_t deadline, op_time_t period) OP_REQUIRES(sim);
 
 /** @brief Fold one VBL's execution into the update-VBL and tick averages the eager planner reads.
  *
@@ -91,7 +92,7 @@ void eager_note_vbl(op_time_t ex, op_time_t start_late, int drawing);
  * @param ftl The run's frame-time log; recorded through for every present
  *        the present thread makes.
  * @param opts The parsed options. */
-void host_eager_start(openpete_frame_time_log_t* ftl, const openpete_options_t* opts);
+void host_eager_start(openpete_frame_time_log_t* ftl, const openpete_options_t* opts) OP_REQUIRES(sim);
 
 /** @brief Log the eager-production totals and the count of sub-tick re-extracts presented, eager and inline.
  * @param inline_rex The sub-tick re-extracts the inline intermediate present made. */

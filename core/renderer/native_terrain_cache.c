@@ -8,6 +8,7 @@
 #include "openpete_config.h"          /* OPENPETE_TERRAIN_SECDELTA, a device-creation knob */
 #include "openpete_time.h"            /* op_now: the growth event timings */
 #include "openpete_tile_census.h"     /* tc_tri_in_view: the near-cut census's view test */
+#include "openpete_profile.h"         /* OP_PROF_SCOPE: the device service's parts */
 
 #include <math.h>
 #include <stdatomic.h>
@@ -36,7 +37,7 @@
 #define TC_PREV_CAP 65536u
 
 /* Allocation sites the refusal knob (tc_refuse) can target. */
-enum { TC_SITE_EDGE, TC_SITE_GROW, TC_SITE_CONS, TC_SITE_STORE, TC_SITE_RING, TC_SITE_N };
+enum { TC_SITE_EDGE, TC_SITE_GROW, TC_SITE_CONS, TC_SITE_STORE, TC_SITE_RING, TC_SITE_HELD, TC_SITE_N };
 
 /* Colour/depth slots of a cell-record pipeline set. No FILL: cells are HP
  * faces, and the hole-fill backing is LP only. */
@@ -57,7 +58,28 @@ typedef struct {
     uint32_t    serial;               /* nonzero, distinct per pair made: the
                                        * identity a state's marks are checked
                                        * against (tc_state.mark_pair) */
+    uint32_t    phys;                 /* capacity the buffers were made at; a
+                                       * recycled pair runs at cap <= phys */
+    uint64_t    bytes;                /* device bytes of vb and pv together */
 } tc_pair;
+
+/* Level-edge memory census and the counters of the edge's deferred device
+ * work (OPENPETE_TC_RETIRE_SPREAD, OPENPETE_TC_EDGE_RECYCLE): s_tc.edgecen,
+ * written by the device-owning thread, printed by shutdown before it zeroes
+ * s_tc. */
+typedef struct {
+    uint64_t live_bytes, peak_bytes;  /* pairs and stores made and not freed  */
+    uint32_t spread_pairs;            /* outgoing objects destroyed one per service call */
+    uint32_t spread_span;             /* service calls the last retire took, from its floors passing */
+    uint32_t spread_build;            /* rz_old_build of the retire spread_span measures */
+    uint32_t spread_first;            /* service call at which that retire's floors passed */
+    uint32_t recycle_hits;            /* replacement pairs taken from a spare   */
+    uint32_t recycle_misses;          /* replacement pairs made fresh, a spare present */
+    uint64_t recycle_bytes;           /* device bytes of the hits               */
+    uint32_t spares_parked;           /* retired pairs kept as an arena's spare */
+    uint32_t held_releases;           /* allocation failures answered by freeing held objects */
+    uint32_t held_refusals;           /* of those, provoked by OPENPETE_TC_REFUSE site held */
+} tc_edge_census;
 
 /* One buffer of an arena and its allocator. Each buffer numbers its vertices
  * from 0 and is drawn by its own rhi_draw, so a chunk is addressed by the
@@ -408,6 +430,9 @@ static struct {
     uint32_t         alloc_fail[OPTC_ARENA_COUNT];
     /* ---- growth census (openpete_tercache_print_exit_row) ---- */
     int              rz_window;      /* builder: a level-edge request awaits adoption */
+    int              rz_old_due;     /* device thread: the retired pairs passed their drain floors */
+    tc_pair         *spare[OPTC_ARENA_COUNT];  /* device thread: a retired pair kept for the next edge (OPENPETE_TC_EDGE_RECYCLE) */
+    tc_edge_census   edgecen;        /* device thread: the level-edge census */
     _Atomic uint32_t rz_failed;      /* device -> builder: refused replacements */
     uint32_t         rz_failed_seen; /* builder's copy of rz_failed            */
     uint32_t         bakes, window_bakes;
@@ -478,6 +503,14 @@ enum { TC_EXH_GROW = 1, TC_EXH_CONS = 2, TC_EXH_EDGE = 4, TC_EXH_SLOTS = 8,
  * whichever teardown ran first. */
 static openpete_tercache_stats_t s_tc_final;
 static int s_tc_final_valid;
+
+/** @brief Add device bytes to the cache's live total and raise its peak.
+ * @param b Bytes made. */
+static void tce_add(uint64_t b)
+{
+    s_tc.edgecen.live_bytes += b;
+    if (s_tc.edgecen.live_bytes > s_tc.edgecen.peak_bytes) s_tc.edgecen.peak_bytes = s_tc.edgecen.live_bytes;
+}
 
 
 /** @brief Load the current buffer pair of one arena buffer.
@@ -592,7 +625,7 @@ static long s_refuse_cnt[TC_SITE_N], s_refuse_skip[TC_SITE_N];
  * @param p The item's first character; parsing stops at a comma or the end. */
 static void tc_refuse_item(const char *p)
 {
-    static const char *const names[TC_SITE_N] = { "edge", "grow", "cons", "store", "ring" };
+    static const char *const names[TC_SITE_N] = { "edge", "grow", "cons", "store", "ring", "held" };
     for (int k = 0; k < TC_SITE_N; k++) {
         const size_t n = strlen(names[k]);
         if (strncmp(p, names[k], n) != 0 || p[n] != ':') continue;
@@ -607,8 +640,10 @@ static void tc_refuse_item(const char *p)
  *
  * OPENPETE_TC_REFUSE is a comma list of `site:count[@skip]`, site one of
  * edge (the level-edge replacement), grow (a growth buffer), cons (a
- * consolidation buffer), store (a previous-tick store replacement) or ring
- * (a position-ring run, builder thread, openpete_tercache_ring_alloc):
+ * consolidation buffer), store (a previous-tick store replacement), ring
+ * (a position-ring run, builder thread, openpete_tercache_ring_alloc) or
+ * held (the first attempt of a pair or store made while retired objects
+ * are held, tc_pair_make_held):
  * past the first @p skip allocations at the site, the next @p count are
  * refused, `*` meaning every one. Read once; device-owning thread only,
  * like every allocation it gates. Outside the knob registry; a harness
@@ -675,7 +710,21 @@ static void tc_pair_free(rhi_device *dev, tc_pair *pr)
     if (!pr) return;
     if (pr->vb) rhi_destroy_buffer(dev, pr->vb);
     if (pr->pv) rhi_destroy_buffer(dev, pr->pv);
+    s_tc.edgecen.live_bytes -= pr->bytes;
     free(pr);
+}
+
+/** @brief Return the next pair serial of the process-wide counter, skipping 0.
+ *
+ * A pair made fresh and a spare a replacement recycles both take one, so
+ * every pair of a replacement is newer than every outgoing pair.
+ * @return The serial. */
+static uint32_t tc_pair_serial_next(void)
+{
+    static _Atomic(uint32_t) s_serial;
+    uint32_t v;
+    do v = atomic_fetch_add_explicit(&s_serial, 1u, memory_order_relaxed) + 1u; while (v == 0);
+    return v;
 }
 
 /** @brief Allocate one arena buffer pair on the device.
@@ -691,17 +740,18 @@ static void tc_pair_free(rhi_device *dev, tc_pair *pr)
  * @return The pair, or NULL on an allocation failure. */
 static tc_pair *tc_pair_make(rhi_device *dev, int arena, uint32_t cap)
 {
-    static uint32_t s_serial;
     tc_pair *pr = (tc_pair *)calloc(1, sizeof(*pr));
     if (!pr) return NULL;
-    pr->cap = cap;
-    if (++s_serial == 0) s_serial = 1;
-    pr->serial = s_serial;
+    pr->cap = pr->phys = cap;
+    pr->serial = tc_pair_serial_next();
     pr->vb = rhi_create_vertex_buffer_device(dev, (size_t)cap * tc_elem_size(arena));
+    if (pr->vb) pr->bytes += (uint64_t)cap * tc_elem_size(arena);
     if (OPTC_ARENA_IS_ANIM(arena))
         pr->pv = rhi_create_vertex_buffer_device(dev, (size_t)cap * sizeof(rhi_terrain_prev));
     else if (OPTC_ARENA_IS_NEAR(arena))
         pr->pv = rhi_create_vertex_buffer_device(dev, (size_t)cap * sizeof(rhi_terrain_nearctx));
+    if (pr->pv) pr->bytes += tc_pair_bytes(arena, cap) - (uint64_t)cap * tc_elem_size(arena);
+    tce_add(pr->bytes);
     const int twin_owed = OPTC_ARENA_IS_ANIM(arena) || OPTC_ARENA_IS_NEAR(arena);
     if (!pr->vb || (twin_owed && !pr->pv)) { tc_pair_free(dev, pr); return NULL; }
     if (!rhi_buffer_device_local(pr->vb) || (pr->pv && !rhi_buffer_device_local(pr->pv)))
@@ -726,6 +776,7 @@ static tc_store *tc_store_make(rhi_device *dev, uint32_t cap)
     st->serial = s_serial;
     st->buf = rhi_create_storage_buffer_device(dev, (size_t)cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t));
     if (!st->buf) { free(st); return NULL; }
+    tce_add((uint64_t)cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t));
     atomic_fetch_add_explicit(&s_tc.stores_alive, 1, memory_order_relaxed);
     if (!rhi_buffer_device_local(st->buf))
         atomic_fetch_add_explicit(&s_tc.nonlocal_bufs, 1u, memory_order_relaxed);
@@ -738,7 +789,10 @@ static tc_store *tc_store_make(rhi_device *dev, uint32_t cap)
 static void tc_store_free(rhi_device *dev, tc_store *st)
 {
     if (!st) return;
-    if (st->buf) rhi_destroy_buffer(dev, st->buf);
+    if (st->buf) {
+        rhi_destroy_buffer(dev, st->buf);
+        s_tc.edgecen.live_bytes -= (uint64_t)st->cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t);
+    }
     free(st);
     atomic_fetch_sub_explicit(&s_tc.stores_alive, 1, memory_order_relaxed);
 }
@@ -770,6 +824,7 @@ static void tc_arena_free_all(rhi_device *dev, int arena)
     }
     tc_pair_free(dev, s_tc.rz_new[arena]);  s_tc.rz_new[arena]  = NULL;
     tc_pair_free(dev, s_tc.ovf_new[arena]); s_tc.ovf_new[arena] = NULL;
+    tc_pair_free(dev, s_tc.spare[arena]);   s_tc.spare[arena]   = NULL;
 }
 
 /* push-constant block (mirrors terrain.vert TerrainPC) */
@@ -1209,6 +1264,22 @@ static void tc_exhaust_warn(void);
 
 static void tc_rb_free(rhi_device *dev);
 
+/** @brief Print the level-edge census row (tercache-edge) to stderr.
+ *
+ * Called by shutdown after the arena and store frees and before s_tc is
+ * zeroed, so live_bytes reads 0 unless a device object leaked. */
+static void tc_edgecen_print(void)
+{
+    const tc_edge_census *e = &s_tc.edgecen;
+    fprintf(stderr, "tercache-edge: live_bytes=%llu peak_bytes=%llu spread_pairs=%u spread_span=%u "
+            "recycle_hits=%u recycle_misses=%u recycle_bytes=%llu spares_parked=%u "
+            "held_releases=%u held_refusals=%u\n",
+            (unsigned long long)e->live_bytes, (unsigned long long)e->peak_bytes,
+            e->spread_pairs, e->spread_span, e->recycle_hits, e->recycle_misses,
+            (unsigned long long)e->recycle_bytes, e->spares_parked, e->held_releases,
+            e->held_refusals);
+}
+
 void openpete_tercache_shutdown(rhi_device *dev)
 {
     if (!dev) return;
@@ -1265,6 +1336,7 @@ void openpete_tercache_shutdown(rhi_device *dev)
     }
     free(s_tc.prev_shadow);
     free(s_tc.prev_alloc.free_list);
+    if (s_tc.ready) tc_edgecen_print();
     memset(&s_tc, 0, sizeof(s_tc));
 }
 
@@ -2024,6 +2096,10 @@ static void tc_retire_queue_drain(uint32_t svc)
     atomic_store_explicit(&s_tc.rq_tail, t, memory_order_release);
 }
 
+static int tc_retire_free(int one, int park);
+static tc_store *tc_store_make_held(uint32_t cap);
+static tc_pair *tc_pair_make_held(int arena, uint32_t cap);
+
 /** @brief Size the CPU shadow of the store to a replacement store's capacity, zeroed, and return the units the allocator may hand out.
  *
  * Builder thread, at a level-edge adoption: the shadow mirrors every unit
@@ -2104,7 +2180,7 @@ static void tc_store_fulfil(int retiring)
 {
     if (atomic_load_explicit(&s_tc.stores_alive, memory_order_relaxed) >= OPTC_STORES_ALIVE) return;
     if (!atomic_exchange_explicit(&s_tc.prev_req, 0, memory_order_acquire)) return;
-    s_tc.prev_new = tc_refuse(TC_SITE_STORE) ? NULL : tc_store_make(s_tc.dev, s_tc.prev_want);
+    s_tc.prev_new = tc_refuse(TC_SITE_STORE) ? NULL : tc_store_make_held(s_tc.prev_want);
     if (retiring && s_tc.prev_new) {
         atomic_fetch_add_explicit(&s_tc.retire_answers, 1u, memory_order_relaxed);
         if (s_tc.prev_new == s_tc.rz_old_store ||
@@ -2551,6 +2627,41 @@ static void tc_adopt_pending(void)
     }
 }
 
+/** @brief Read a 0/1 switch from the environment once into a first-use cache.
+ * @param cache The switch's cache, -1 before the first read.
+ * @param name Environment variable name.
+ * @param dflt Value when the variable is unset or empty.
+ * @return 0 when the value starts with '0', 1 for any other non-empty value, else dflt. */
+static int tc_env_switch(OP_ONCE_INT *cache, const char *name, int dflt)
+{
+    int v = op_once_int_get(cache);
+    if (v < 0) {
+        const char *e = getenv(name);
+        v = op_once_int_fill(cache, (e && *e) ? *e != '0' : dflt);
+    }
+    return v;
+}
+
+/** @brief Return whether OPENPETE_TC_RETIRE_SPREAD asks the level-edge retire to destroy one outgoing object per service call; read once.
+ * @return 1 when set and not starting with '0', else 0. */
+static int tc_retire_spread(void)
+{
+    static OP_ONCE_INT v = -1;
+    return tc_env_switch(&v, "OPENPETE_TC_RETIRE_SPREAD", 0);
+}
+
+/* OPENPETE_TC_EDGE_RECYCLE when unset: 0 frees the outgoing level's pairs,
+ * 1 keeps one per arena as a spare. The registry row's default follows. */
+#define TC_EDGE_RECYCLE_DEFAULT 0
+
+/** @brief Return whether OPENPETE_TC_EDGE_RECYCLE keeps a retired pair per arena for the next level edge's replacement; read once.
+ * @return The variable's 0/1 value, TC_EDGE_RECYCLE_DEFAULT when unset. */
+static int tc_edge_recycle(void)
+{
+    static OP_ONCE_INT v = -1;
+    return tc_env_switch(&v, "OPENPETE_TC_EDGE_RECYCLE", TC_EDGE_RECYCLE_DEFAULT);
+}
+
 /** @brief Destroy the pairs and the store a replacement retired once both drain floors have passed.
  *
  * Device-owning thread, from openpete_tercache_present_service. The floors
@@ -2558,22 +2669,160 @@ static void tc_adopt_pending(void)
  * counter, the window a freed range already waits out, which covers the
  * one-build presentation lag) and more than RHI_FRAMES_IN_FLIGHT service
  * calls (the frames whose recorded command buffers may still bind the
- * outgoing buffers). On destruction the handshake returns to IDLE.
+ * outgoing buffers). Under OPENPETE_TC_RETIRE_SPREAD one object is
+ * destroyed per call and the state stays RETIRE until the last; otherwise
+ * all at once. Once every pair and the store are gone the handshake
+ * returns to IDLE.
  * @param svc Service call count including the current call. */
 static void tc_retire_drain(uint32_t svc)
 {
     const uint32_t builds = atomic_load_explicit(&s_tc.build_ctr, memory_order_acquire);
     if (builds - s_tc.rz_old_build <= TC_DEFER_PRESENTS) return;
     if (svc - s_tc.rz_old_svc <= RHI_FRAMES_IN_FLIGHT) return;
-    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
-        for (int b = 0; b <= TC_BUF_SLOTS; b++) {
-            tc_pair_free(s_tc.dev, s_tc.rz_old[a][b]);
-            s_tc.rz_old[a][b] = NULL;
-        }
+    s_tc.rz_old_due = 1;
+    const int spread = tc_retire_spread();
+    if (s_tc.edgecen.spread_span == 0 || s_tc.rz_old_build != s_tc.edgecen.spread_build) {
+        s_tc.edgecen.spread_build = s_tc.rz_old_build;
+        s_tc.edgecen.spread_first = svc;
     }
-    tc_store_free(s_tc.dev, s_tc.rz_old_store);
-    s_tc.rz_old_store = NULL;
+    if (tc_retire_free(spread, tc_edge_recycle()) && spread) s_tc.edgecen.spread_pairs++;
+    s_tc.edgecen.spread_span = svc - s_tc.edgecen.spread_first + 1u;
+}
+
+/** @brief Keep a retired pair as its arena's spare, the larger of it and the spare already kept.
+ *
+ * Device-owning thread; the pair has passed its drain floors, so no frame
+ * binds it.
+ * @param arena Arena index.
+ * @param pr The retired pair.
+ * @return 1 when a pair was destroyed (the smaller of the two), else 0. */
+static int tc_spare_park(int arena, tc_pair *pr)
+{
+    tc_pair *sp = s_tc.spare[arena];
+    s_tc.edgecen.spares_parked++;
+    if (!sp) { s_tc.spare[arena] = pr; return 0; }
+    if (pr->phys > sp->phys) { s_tc.spare[arena] = pr; pr = sp; }
+    tc_pair_free(s_tc.dev, pr);
+    return 1;
+}
+
+/** @brief Return the retire list's first occupied entry, or NULL when the list is empty.
+ * @param arena Receives the entry's arena index.
+ * @return The entry. */
+static tc_pair **tc_retired_next(int *arena)
+{
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++)
+        for (int b = 0; b <= TC_BUF_SLOTS; b++)
+            if (s_tc.rz_old[a][b]) { *arena = a; return &s_tc.rz_old[a][b]; }
+    return NULL;
+}
+
+/** @brief Remove the retired store and pairs, one destroyed object or all, and on the last return the handshake to IDLE.
+ *
+ * Device-owning thread, once the drain floors have passed (rz_old_due).
+ * The store goes first: a store replacement waits while OPTC_STORES_ALIVE
+ * stores exist, and the retired one counts. A pair kept as a spare costs
+ * no device call and does not end a one-object call.
+ * @param one Nonzero to return after the first destroyed object while any remain.
+ * @param park Nonzero to keep each pair as its arena's spare (tc_spare_park).
+ * @return 1 when an object was destroyed, else 0. */
+static int tc_retire_free(int one, int park)
+{
+    int freed = 0, a = 0;
+    if (s_tc.rz_old_store) {
+        tc_store_free(s_tc.dev, s_tc.rz_old_store);
+        s_tc.rz_old_store = NULL;
+        freed = 1;
+        if (one) return 1;
+    }
+    for (tc_pair **e; (e = tc_retired_next(&a)) != NULL; ) {
+        tc_pair *pr = *e;
+        *e = NULL;
+        const int d = park ? tc_spare_park(a, pr) : (tc_pair_free(s_tc.dev, pr), 1);
+        freed |= d;
+        /* one destroyed object per service call; the state stays RETIRE */
+        if (one && d && tc_retired_next(&a)) return 1;
+    }
+    s_tc.rz_old_due = 0;
     atomic_store_explicit(&s_tc.rz_state, TC_RZ_IDLE, memory_order_release);
+    return freed;
+}
+
+/** @brief Return whether device objects are held past today's order: a due spread retire or a spare.
+ * @return 1 when any is held, else 0. */
+static int tc_held_exists(void)
+{
+    if (s_tc.rz_old_due) return 1;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++)
+        if (s_tc.spare[a]) return 1;
+    return 0;
+}
+
+/** @brief Destroy every held object, the due retire and the spares, which restores today's order of frees.
+ *
+ * Device-owning thread, after an allocation failed while objects were held.
+ * @param provoked Nonzero when OPENPETE_TC_REFUSE site held made the failure. */
+static void tc_release_held(int provoked)
+{
+    s_tc.edgecen.held_releases++;
+    if (provoked) s_tc.edgecen.held_refusals++;
+    if (s_tc.rz_old_due) (void)tc_retire_free(0, 0);
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        tc_pair_free(s_tc.dev, s_tc.spare[a]);
+        s_tc.spare[a] = NULL;
+    }
+}
+
+/** @brief Make a pair, and on a failure while objects are held destroy them and retry once.
+ *
+ * Device-owning thread. OPENPETE_TC_REFUSE site held fails the first
+ * attempt while objects are held, so the retry path runs on demand.
+ * @param arena Arena index.
+ * @param cap Capacity in elements.
+ * @return The pair, or NULL when the retry failed too or nothing was held. */
+static tc_pair *tc_pair_make_held(int arena, uint32_t cap)
+{
+    const int held = tc_held_exists();
+    const int provoked = held && tc_refuse(TC_SITE_HELD);
+    tc_pair *pr = provoked ? NULL : tc_pair_make(s_tc.dev, arena, cap);
+    if (pr || !held) return pr;
+    tc_release_held(provoked);
+    return tc_pair_make(s_tc.dev, arena, cap);
+}
+
+/** @brief Make a previous-tick store, and on a failure while objects are held destroy them and retry once.
+ * @param cap Capacity in store units.
+ * @return The store, or NULL when the retry failed too or nothing was held. */
+static tc_store *tc_store_make_held(uint32_t cap)
+{
+    const int held = tc_held_exists();
+    const int provoked = held && tc_refuse(TC_SITE_HELD);
+    tc_store *st = provoked ? NULL : tc_store_make(s_tc.dev, cap);
+    if (st || !held) return st;
+    tc_release_held(provoked);
+    return tc_store_make(s_tc.dev, cap);
+}
+
+/** @brief Take an arena's spare for a replacement when its buffers hold a capacity, else NULL.
+ *
+ * The spare runs at the requested capacity, so its allocator, draws and
+ * claims are the ones a fresh pair of that capacity has; the bytes past it
+ * are never addressed. It takes a fresh serial, so it is newer than every
+ * outgoing pair.
+ * @param arena Arena index.
+ * @param cap Requested capacity in elements.
+ * @return The spare, or NULL. */
+static tc_pair *tc_spare_take(int arena, uint32_t cap)
+{
+    tc_pair *sp = s_tc.spare[arena];
+    if (!sp) return NULL;
+    if (sp->phys < cap) { s_tc.edgecen.recycle_misses++; return NULL; }
+    s_tc.spare[arena] = NULL;
+    sp->cap = cap;
+    sp->serial = tc_pair_serial_next();
+    s_tc.edgecen.recycle_hits++;
+    s_tc.edgecen.recycle_bytes += sp->bytes;
+    return sp;
 }
 
 /** @brief Allocate one fresh pair per arena and a fresh previous-tick store for the stored level and mark the replacement READY.
@@ -2591,10 +2840,12 @@ static void tc_resize_fulfil(void)
     const int level = atomic_load_explicit(&s_tc.level_id, memory_order_acquire);
     int ok = !tc_refuse(TC_SITE_EDGE);
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
-        made[a] = ok ? tc_pair_make(s_tc.dev, a, tc_initial_cap(a, s_tc.rz_est)) : NULL;
+        const uint32_t want = tc_initial_cap(a, s_tc.rz_est);
+        made[a] = ok ? tc_spare_take(a, want) : NULL;
+        if (ok && !made[a]) made[a] = tc_pair_make_held(a, want);
         if (!made[a]) ok = 0;
     }
-    tc_store *st = ok ? tc_store_make(s_tc.dev, s_tc.rz_store_cap) : NULL;
+    tc_store *st = ok ? tc_store_make_held(s_tc.rz_store_cap) : NULL;
     if (!st) ok = 0;
     if (!ok) {
         atomic_fetch_add_explicit(&s_tc.rz_failed, 1u, memory_order_release);
@@ -2648,7 +2899,7 @@ static void tc_overflow_fulfil(int retiring)
         if (!(mask & (1u << a))) continue;
         const int site = s_tc.arena[a].ovf_kind == TC_REQ_CONS ? TC_SITE_CONS : TC_SITE_GROW;
         const op_time_t t0 = op_now();   /* clock-guard: wall (allocation cost) */
-        tc_pair *pr = tc_refuse(site) ? NULL : tc_pair_make(s_tc.dev, a, s_tc.ovf_want[a]);
+        tc_pair *pr = tc_refuse(site) ? NULL : tc_pair_make_held(a, s_tc.ovf_want[a]);
         s_tc.ovf_fulfil_ns[a] = (uint64_t)(op_now() - t0);   /* clock-guard: wall */
         if (!pr && !s_tc.ovf_fail_logged[a]) {
             s_tc.ovf_fail_logged[a] = 1;
@@ -2671,10 +2922,10 @@ void openpete_tercache_present_service(void)
     if (!s_tc.ready || !s_tc.dev) return;
     const uint32_t svc = atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed) + 1u;
     atomic_store_explicit(&s_tc.svc_calls, svc, memory_order_relaxed);
-    tc_retire_queue_drain(svc);
+    { OP_PROF_SCOPE("tc.retireq"); tc_retire_queue_drain(svc); }
     int st = atomic_load_explicit(&s_tc.rz_state, memory_order_acquire);
     if (st == TC_RZ_RETIRE) {
-        tc_retire_drain(svc);
+        { OP_PROF_SCOPE("tc.retire"); tc_retire_drain(svc); }
         st = atomic_load_explicit(&s_tc.rz_state, memory_order_relaxed);
     }
     if (st == TC_RZ_READY) return;   /* the builder has not adopted yet */
@@ -2688,14 +2939,17 @@ void openpete_tercache_present_service(void)
         if (st != TC_RZ_IDLE ||
             atomic_load_explicit(&s_tc.stores_alive, memory_order_relaxed) >= OPTC_STORES_ALIVE)
             return;
-        if (atomic_exchange_explicit(&s_tc.rz_req, 0, memory_order_acquire)) tc_resize_fulfil();
+        if (atomic_exchange_explicit(&s_tc.rz_req, 0, memory_order_acquire)) {
+            OP_PROF_SCOPE("tc.resize");
+            tc_resize_fulfil();
+        }
         return;
     }
     /* Growth is answered in IDLE and while a replacement retires: the
      * retiring pairs and store are only on rz_old and rz_old_store, which
      * no answer names (retire_old_touches). */
-    tc_overflow_fulfil(st == TC_RZ_RETIRE);
-    tc_store_fulfil(st == TC_RZ_RETIRE);
+    { OP_PROF_SCOPE("tc.ovf"); tc_overflow_fulfil(st == TC_RZ_RETIRE); }
+    { OP_PROF_SCOPE("tc.store"); tc_store_fulfil(st == TC_RZ_RETIRE); }
 }
 
 /* ---- content estimate (openpete_tercache_set_content) ------------------ */

@@ -19818,6 +19818,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) OP_REQUIRES(sim) {
       if (lvl != s_lpg_lvl) {
           edge_prev = s_lpg_lvl;
           edge = 1;
+          openpete_native_note_level_edge();
           s_lpg_lvl = lvl;
           s_lpg_mean_ok = 0;
           s_lpg_acc_n = 0;

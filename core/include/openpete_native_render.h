@@ -909,6 +909,16 @@ void openpete_native_set_terrain_drain_legacy(int legacy);
  * any other value or none is 0.
  * @return 1 or 0. */
 int  openpete_native_terrain_drain_legacy(void);
+/** @brief Count a level edge: the terrain walk read a level id other than the previous walk's.
+ *
+ * Sim thread. A portal entry keeps canonical presents flowing through the
+ * load, so the world never turns not-live there; this count is the event
+ * the eager planner reads for the new level's first walk instead.
+ * Renderer state only. */
+void openpete_native_note_level_edge(void) OP_REQUIRES(sim);
+/** @brief Return the number of level edges counted so far; sim thread.
+ * @return The count, starting at 0. */
+unsigned openpete_native_level_edges(void) OP_REQUIRES(sim);
 
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,

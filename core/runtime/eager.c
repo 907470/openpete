@@ -124,6 +124,9 @@ static struct {
     int       count_runs;             /* OPENPETE_EAGER_COUNT_RUNS: clean spans that give back one scene */
     int       rewarm_on;              /* OPENPETE_EAGER_REWARM (default 1): re-warm the cost averages at the world going live */
     int       live_prev;              /* world_live at the previous call that set it */
+    int       rewarm_edge_on;         /* OPENPETE_EAGER_REWARM_EDGE (default 0): a level edge opens the re-warm window too */
+    unsigned  edges_seen;             /* openpete_native_level_edges() at the previous call */
+    unsigned  edge_windows;           /* re-warm windows a level edge opened */
     int       warm_left;              /* scenes left in the re-warm window */
     int       span_warm;              /* the open span was planned inside the re-warm window */
     int       policy;                 /* 0 divisor, 1 greedy */
@@ -206,7 +209,7 @@ int eager_hold_done(void)
  * span's clean run that gives back one scene. OPENPETE_EAGER_REWARM=0
  * turns off the re-warm window at the world going live (eager_note_live).
  * Later calls do nothing. */
-static void eager_init(void)
+static void eager_init(void) OP_REQUIRES(sim)
 {
     static int inited;
     if (inited) return;
@@ -222,6 +225,9 @@ static void eager_init(void)
     s_eager.lag_pin = (g && *g) ? (op_time_t)atoll(g) * 1000 : 0;
     const char *rw = getenv("OPENPETE_EAGER_REWARM");
     s_eager.rewarm_on = !(rw && *rw == '0');
+    const char *re = getenv("OPENPETE_EAGER_REWARM_EDGE");
+    s_eager.rewarm_edge_on = re && *re && *re != '0';
+    s_eager.edges_seen = openpete_native_level_edges();
     const char *cs = getenv("OPENPETE_EAGER_COUNT_SPARE");
     if (cs && *cs && atoi(cs) >= 0) s_eager.count_spare = atoi(cs);
     const char *cr = getenv("OPENPETE_EAGER_COUNT_RUNS");
@@ -1100,15 +1106,23 @@ static int eager_produce(op_time_t deadline, op_time_t period)
 
 /** @brief Record whether the world is live, opening the cost averages' re-warm window when it turns live.
  *
- * At a not-live to live edge (boot, a level load, a discontinuity's hold)
- * and with OPENPETE_EAGER_REWARM on, the next EAGER_REWARM_SCENES scenes may
- * lower the scene cost average to their own cost (eager_produce_one), and the
- * present thread's render and present averages likewise
- * (openpete_present_thread_rewarm).
+ * At a not-live to live edge (boot, a load that stops canonical presents,
+ * a discontinuity's hold) and with OPENPETE_EAGER_REWARM on, the next
+ * EAGER_REWARM_SCENES scenes may lower the scene cost average to their own
+ * cost (eager_produce_one), and the present thread's render and present
+ * averages likewise (openpete_present_thread_rewarm). A level edge the
+ * terrain walk counted since the previous call (openpete_native_level_edges)
+ * opens the window too under OPENPETE_EAGER_REWARM_EDGE: a portal entry
+ * keeps canonical presents flowing through its load, so the world never
+ * turns not-live there.
  * @param world_live Nonzero when canonical presents are flowing. */
-static void eager_note_live(int world_live)
+static void eager_note_live(int world_live) OP_REQUIRES(sim)
 {
-    if (world_live && !s_eager.live_prev && s_eager.rewarm_on) {
+    const unsigned edges = openpete_native_level_edges();
+    const int edge = edges != s_eager.edges_seen && s_eager.rewarm_edge_on;
+    s_eager.edges_seen = edges;
+    if (world_live && (!s_eager.live_prev || edge) && s_eager.rewarm_on) {
+        if (edge && s_eager.live_prev) s_eager.edge_windows++;
         s_eager.warm_left = EAGER_REWARM_SCENES;
         openpete_present_thread_rewarm(EAGER_REWARM_SCENES);
     }
@@ -1131,7 +1145,7 @@ static unsigned eager_canon_gap(void)
 
 /* Documented at the declaration in eager.h. */
 void eager_canonical(op_time_t now, op_time_t slot, op_time_t period,
-                     op_time_t prod_end, op_time_t produce_end, int world_live)
+                     op_time_t prod_end, op_time_t produce_end, int world_live) OP_REQUIRES(sim)
 {
     const op_time_t curr = openpete_interp_curr_tick_ns();
     op_time_t first = slot;
@@ -1175,7 +1189,7 @@ void eager_canonical(op_time_t now, op_time_t slot, op_time_t period,
 }
 
 /* Documented at the declaration in eager.h. */
-int eager_idle(int world_live, int may_produce, op_time_t deadline, op_time_t period)
+int eager_idle(int world_live, int may_produce, op_time_t deadline, op_time_t period) OP_REQUIRES(sim)
 {
     /* While canonical presents are not flowing (CD load, level transition,
      * a long producer stall) the guest is rewriting RAM and a re-extract
@@ -1207,13 +1221,15 @@ static void eager_report(void)
     OPL_INFO_F("eager", "%u span(s): %u scene(s) produced, %u skipped (instant passed), "
                "%u refused (ring full), %u cut short (%u deadline, %u ring); level now %s%d (%u down, %u up); "
                "scene cost %.3f ms ema, %.3f ms dev; lag %.3f ms (tick %.3f ms ema, %.3f dev); policy %s; "
-               "%u span(s) above the level; %u first slot(s) pulled back; cadence %s, %u fill span(s)",
+               "%u span(s) above the level; %u first slot(s) pulled back; cadence %s, %u fill span(s); "
+               "%u re-warm window(s) opened by a level edge",
                s_eager.spans, s_eager.produced, s_eager.skipped_late, s_eager.refused,
                s_eager.cut, s_eager.cut_deadline, s_eager.cut_ring, s_eager.policy ? "n/a " : "", s_eager.ladder.level, s_eager.level_down, s_eager.level_up,
                (double)s_eager.cost_ema / 1e6, (double)s_eager.cost_dev / 1e6,
                (double)s_eager.lag / 1e6, (double)s_eager.tick_ema / 1e6, (double)s_eager.tick_dev / 1e6,
                s_eager.policy ? "greedy" : "divisor", s_eager.span_held, s_eager.trimmed,
-               openpete_get_cadence() == OPENPETE_CADENCE_FILL ? "fill" : "even", s_eager.fill_spans);
+               openpete_get_cadence() == OPENPETE_CADENCE_FILL ? "fill" : "even", s_eager.fill_spans,
+               s_eager.edge_windows);
 }
 
 /** @brief Drop the eager scene plan on a guest discontinuity (a savestate load from a file, or a non-quiet in-memory state load).
@@ -1249,7 +1265,7 @@ static void eager_present_cb(void *ctx, int kind, double alpha, int paired)
 }
 
 /* Documented at the declaration in eager.h. */
-void host_eager_start(openpete_frame_time_log_t* ftl, const openpete_options_t* opts)
+void host_eager_start(openpete_frame_time_log_t* ftl, const openpete_options_t* opts) OP_REQUIRES(sim)
 {
     openpete_set_cadence(opts->cadence);
     if (!(openpete_native_scene_enabled() && !opts->headless && openpete_present_thread_start()))

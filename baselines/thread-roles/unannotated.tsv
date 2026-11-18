@@ -1881,7 +1881,6 @@ core/renderer/native_terrain_cache.c	tc_dead_stamp	s_dead	local	-
 core/renderer/native_terrain_cache.c	tc_dead_stamp	s_dead_sz	local	-	
 core/renderer/native_terrain_cache.c	tc_dup_draw	n	local	once	= -1, one filler, first reference tests it
 core/renderer/native_terrain_cache.c	tc_initial_cap_env	ov	local	once	= -1, one filler, first reference tests it
-core/renderer/native_terrain_cache.c	tc_pair_make	s_serial	local	-	
 core/renderer/native_terrain_cache.c	tc_prev_cap_env	read	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_terrain_cache.c	tc_prev_cap_env	v	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_terrain_cache.c	tc_preview_batch_make	sec	local	-	

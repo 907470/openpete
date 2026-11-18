@@ -19603,6 +19603,11 @@ int openpete_native_terrain_drain_legacy(void) {
 
 int openpete_native_terrain_visibility_active(void) { return s_terrain_vis; }
 
+/* Counted by the terrain walk, read by the eager planner; both run on the sim thread. */
+static unsigned s_level_edges OP_GUARDED_BY(sim);
+void openpete_native_note_level_edge(void) OP_REQUIRES(sim) { s_level_edges++; }
+unsigned openpete_native_level_edges(void) OP_REQUIRES(sim) { return s_level_edges; }
+
 /* Queued; variant_apply_pending requests the rebuild at the next present. */
 void openpete_native_set_texture_mapping(int affine) {
     op_live_set(&s_texmap_want, affine ? 1 : 0);
