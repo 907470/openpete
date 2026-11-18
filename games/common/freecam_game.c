@@ -33,6 +33,7 @@
 #include "game_extras.h"        /* game_is_gameplay_live */
 #include "openpete_freecam.h"
 #include "openpete_bugrec.h"
+#include "openpete_config.h"     /* openpete_config_env */
 #include "openpete_fiber.h"     /* openpete_speculative / openpete_replaying */
 #include "openpete_host_mouse.h" /* probe log */
 #include "openpete_log.h"
@@ -1283,7 +1284,7 @@ void freecam_maybe_autoengage(CPUState* cpu) {
     static int s_done = 0;
     if (s_done) return;
     if (player_pose_pending()) return;   /* the placement fires first */
-    const char* pose = getenv("OPENPETE_FREECAM_POSE");
+    const char* pose = openpete_config_env("OPENPETE_FREECAM_POSE");
     const char* path = getenv("OPENPETE_FREECAM_PATH");
     const char* eng  = getenv("OPENPETE_FREECAM");
     int want = (pose && *pose) || (path && *path) ||
