@@ -6108,6 +6108,7 @@ static struct {
     int           shell_twin_n;
     rhi_pipeline *occl_pipe;          /* occl_downsample.frag: prepass depth -> grid (may be NULL) */
     rhi_texture  *occl_grid;          /* OCCL_GW×OCCL_GH grid RT (may be NULL -> no culling) */
+    rhi_texture  *occl_rows;          /* OCCL_GW×od_h row-reduced pre-pass, the grid's source (NULL -> no culling) */
 } s_nr;
 
 /* When set, draw_native_scene maps the PSX screen to the FULL render target
@@ -10055,6 +10056,23 @@ static int s_cz_tris;    /* entries every index run holds */
 static int s_cz_verts;   /* vertices every vertex run and scene GPU buffer holds */
 static int compose_reserve(int scene_n);
 
+/** @brief Recreate occl_rows, the moby occlusion grid's row-reduced source, at the grid's width by opaque_depth's height.
+ *
+ * The first reduce draw writes one texel per grid column per pre-pass row,
+ * so the target's height follows the opaque_depth allocation, which bounds
+ * every pre-pass viewport. Without opaque_depth, or when the target cannot
+ * be created, occl_rows stays NULL and native_occl_reduce renders no grid.
+ * Runs outside a frame, after the device has been waited idle. */
+static void occl_rows_realloc(void)
+{
+    if (s_nr.occl_rows) { rhi_destroy_texture(s_nr.dev, s_nr.occl_rows); s_nr.occl_rows = NULL; }
+    if (!s_nr.opaque_depth || !s_nr.occl_grid || s_nr.od_h <= 0) return;
+    s_nr.occl_rows = rhi_create_render_target(s_nr.dev, OCCL_GW, (uint32_t)s_nr.od_h);
+    if (!s_nr.occl_rows)
+        OPL_WARN_F("native", "occlusion row target %dx%d unavailable; moby occlusion culling off",
+                   OCCL_GW, s_nr.od_h);
+}
+
 /** @brief Create or grow opaque_depth, the world-opaque depth pre-pass target, to the larger of the reference and window sizes.
  *
  * The presented pixel grid bounds the useful discard-edge precision, so the
@@ -10064,8 +10082,9 @@ static int compose_reserve(int scene_n);
  * or moby occlusion culling is active, the two consumers of the pre-pass.
  * A device without a sampled depth target logs once and the function stays
  * a no-op for the run, leaving the Spyro shadow on the depth-tested
- * fallback. Creates GPU resources and waits idle, so it runs outside a
- * frame beside ensure_ss_rtt. */
+ * fallback. A (re)allocation recreates the occlusion row target at the new
+ * height (occl_rows_realloc). Creates GPU resources and waits idle, so it
+ * runs outside a frame beside ensure_ss_rtt. */
 static void ensure_opaque_depth(void)
 {
     static int s_failed = 0;
@@ -10094,6 +10113,7 @@ static void ensure_opaque_depth(void)
         s_failed = 1;
         OPL_WARN_F("native", "depth-sampled RT unavailable; Spyro shadow uses the depth-tested fallback");
     }
+    occl_rows_realloc();
 }
 
 
@@ -12903,26 +12923,50 @@ static void occl_meta_now(occl_meta_t *mm, unsigned presents)
     mm->cam = *ps_occl_cam();
 }
 
+/** @brief Draw one axis of the occlusion grid reduce from @p src into @p dst.
+ *
+ * occl_downsample.frag reduces axis @p axis of @p src, @p extent texels in
+ * @p cells blocks, to one texel per block; the draw covers @p vw by @p vh
+ * texels of @p dst from its origin.
+ * @param src Packed-depth source texture, sampled at set 0.
+ * @param dst Render target written.
+ * @param axis 0 reduces along x, 1 along y.
+ * @param cells Blocks on the reduced axis.
+ * @param extent Source texels on the reduced axis.
+ * @param vw Texels drawn across @p dst.
+ * @param vh Texels drawn down @p dst. */
+static void occl_reduce_axis(rhi_texture *src, rhi_texture *dst, int axis, int cells,
+                             int extent, int vw, int vh)
+{
+    struct { int axis, cells, extent, pad; } pc = { axis, cells, extent, 0 };
+    rhi_begin_render_target(s_nr.dev, dst, 0.0f, 0.0f, 0.0f, 1.0f);
+    rhi_set_viewport(s_nr.dev, vw, vh);
+    bind_scene_pipe(s_nr.occl_pipe);
+    rhi_bind_texture_set(s_nr.dev, src, 0);
+    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
+    rhi_draw(s_nr.dev, 6, 0);
+    rhi_end_render_target(s_nr.dev, dst);
+}
+
 /** @brief Count this present and reduce its depth pre-pass into the grid render target.
  *
- * Runs on the presenting thread inside a device frame.
+ * Two draws (occl_downsample.frag): the pre-pass viewport's rows reduce
+ * into occl_rows, OCCL_GW texels per row, then occl_rows' columns reduce
+ * into the OCCL_GW x OCCL_GH grid. Both draws cut their axis into the same
+ * integer-floored blocks, so each cell holds the maximum over its whole 2D
+ * block of the pre-pass. Runs on the presenting thread inside a device
+ * frame.
  * @return The present's counter value when the grid was rendered, else 0. */
 static unsigned native_occl_reduce(void)
 {
     const unsigned presents = (unsigned)SDL_AddAtomicInt(&s_occl_presents, 1) + 1u;
     occl_atomic_dec_positive(&s_occl_suspend);
-    if (!occl_active() || !s_od_ready || !s_nr.fs_quad_vb) return 0;
+    if (!occl_active() || !s_od_ready || !s_nr.fs_quad_vb || !s_nr.occl_rows) return 0;
 
-    /* Reduce this present's pre-pass into the grid RT (viewport = full RT). */
-    struct { int gw, gh, pvw, pvh; } pc =
-        { OCCL_GW, OCCL_GH, (int)s_od_vw, (int)s_od_vh };
-    rhi_begin_render_target(s_nr.dev, s_nr.occl_grid, 0.0f, 0.0f, 0.0f, 1.0f);
-    bind_scene_pipe(s_nr.occl_pipe);
-    rhi_bind_texture_set(s_nr.dev, s_nr.opaque_depth, 0);   /* WORLD-only packed depth */
-    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
-    rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
-    rhi_draw(s_nr.dev, 6, 0);
-    rhi_end_render_target(s_nr.dev, s_nr.occl_grid);
+    const int pvw = (int)s_od_vw, pvh = (int)s_od_vh;
+    occl_reduce_axis(s_nr.opaque_depth, s_nr.occl_rows, 0, OCCL_GW, pvw, OCCL_GW, pvh);
+    occl_reduce_axis(s_nr.occl_rows, s_nr.occl_grid, 1, OCCL_GH, pvh, OCCL_GW, OCCL_GH);
     return presents;
 }
 
@@ -24891,6 +24935,84 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
     freeze_render_into(&s_nr.shot_frozen, cap_wf, 1, NULL);
 }
 
+/** @brief Return the largest 24-bit packed depth over a block of an RGBA8 readback.
+ * @param px Readback, @p stride texels per row, R the high byte.
+ * @param stride Texels per row of @p px.
+ * @param x0 First column.
+ * @param x1 One past the last column.
+ * @param y0 First row.
+ * @param y1 One past the last row.
+ * @return The maximum, 0 for an empty block. */
+static uint32_t occl_verify_block_max(const uint8_t *px, int stride, int x0, int x1, int y0, int y1)
+{
+    uint32_t m = 0;
+    for (int y = y0; y < y1; y++) {
+        const uint8_t *row = px + ((size_t)y * (size_t)stride + (size_t)x0) * 4u;
+        for (int x = x0; x < x1; x++, row += 4) {
+            const uint32_t q = ((uint32_t)row[0] << 16) | ((uint32_t)row[1] << 8) | row[2];
+            if (q > m) m = q;
+        }
+    }
+    return m;
+}
+
+/** @brief Return the 24-bit packed depth of grid cell @p i of an RGBA8 readback, R the high byte. */
+static uint32_t occl_verify_cell(const uint8_t *grid, int i)
+{
+    const uint8_t *g = grid + (size_t)i * 4u;
+    return ((uint32_t)g[0] << 16) | ((uint32_t)g[1] << 8) | g[2];
+}
+
+/** @brief Return the first source texel of block @p c of an axis cut into @p cells blocks over @p extent texels.
+ *
+ * c*extent/cells, the bound occl_downsample.frag uses; with @p neg set,
+ * c*(extent/cells), the negative control's bound, which differs whenever
+ * extent is not a multiple of cells. */
+static int occl_verify_bound(int c, int extent, int cells, int neg)
+{
+    return neg ? c * (extent / cells) : c * extent / cells;
+}
+
+/** @brief Compare a read-back occlusion grid against a CPU reduce of the pre-pass it was built from.
+ *
+ * OPENPETE_OCCL_REDUCE_VERIFY=1 arms it on the headless occlusion service:
+ * after the grid is read back, the pre-pass colour is read back too and each
+ * cell's maximum is recomputed over its block of the pre-pass viewport
+ * (occl_verify_bound on both axes) and compared with the grid's cell. =2
+ * cuts the blocks at the negative control's bound, which must mismatch at a
+ * viewport not divisible by the grid. One stderr line per compared present
+ * carries its cells, mismatches and near cells (cells below the grid's
+ * largest value, so a uniform grid counts none); a harness sums the lines.
+ * Waits the device idle; an instrument, display-only.
+ * @param grid OCCL_GW*OCCL_GH RGBA texels, R the high byte. */
+static void occl_reduce_verify(const uint8_t *grid)
+{
+    const char *e = getenv("OPENPETE_OCCL_REDUCE_VERIFY");
+    const int mode = (e && *e) ? atoi(e) : 0;
+    if (mode <= 0 || !s_nr.opaque_depth || s_nr.od_w <= 0 || s_nr.od_h <= 0) return;
+    const size_t bytes = (size_t)s_nr.od_w * (size_t)s_nr.od_h * 4u;
+    uint8_t *px = malloc(bytes);
+    int w = 0, h = 0;
+    if (!px || !rhi_read_render_target(s_nr.dev, s_nr.opaque_depth, px, bytes, &w, &h)) { free(px); return; }
+    const int pvw = (int)s_od_vw, pvh = (int)s_od_vh, neg = mode == 2;
+    uint32_t top = 0;
+    for (int i = 0; i < OCCL_GW * OCCL_GH; i++)
+        if (occl_verify_cell(grid, i) > top) top = occl_verify_cell(grid, i);
+    int miss = 0, near = 0;
+    for (int i = 0; i < OCCL_GW * OCCL_GH; i++) {
+        const int cx = i % OCCL_GW, cy = i / OCCL_GW;
+        const uint32_t want = occl_verify_block_max(px, w,
+            occl_verify_bound(cx, pvw, OCCL_GW, neg), occl_verify_bound(cx + 1, pvw, OCCL_GW, neg),
+            occl_verify_bound(cy, pvh, OCCL_GH, neg), occl_verify_bound(cy + 1, pvh, OCCL_GH, neg));
+        const uint32_t got = occl_verify_cell(grid, i);
+        miss += got != want;
+        near += got < top;
+    }
+    free(px);
+    fprintf(stderr, "[occl-verify] mode=%d viewport=%dx%d alloc=%dx%d cells=%d mismatches=%d near_cells=%d\n",
+            mode, pvw, pvh, w, h, OCCL_GW * OCCL_GH, miss, near);
+}
+
 void openpete_native_occl_service_headless(void)
 {
     if (!s_nr.enabled || !s_nr.headless || !s_nr.dev) return;
@@ -24920,8 +25042,10 @@ void openpete_native_occl_service_headless(void)
     static uint8_t raw[OCCL_GW * OCCL_GH * 4];
     int gw = 0, gh = 0;
     if (presents && rhi_read_render_target(s_nr.dev, s_nr.occl_grid, raw, sizeof raw, &gw, &gh)
-        && gw == OCCL_GW && gh == OCCL_GH)
+        && gw == OCCL_GW && gh == OCCL_GH) {
+        occl_reduce_verify(raw);
         occl_decode_publish(raw, &m, presents);
+    }
 }
 
 #define OCCL_CENSUS_MAX 4
@@ -26351,6 +26475,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt);
     rhi_destroy_texture(s_nr.dev, s_nr.opaque_depth);
     rhi_destroy_texture(s_nr.dev, s_nr.occl_grid);
+    rhi_destroy_texture(s_nr.dev, s_nr.occl_rows);
     rhi_destroy_pipeline(s_nr.dev, s_nr.occl_pipe);
     rhi_destroy_buffer(s_nr.dev, s_nr.prepass_vb);
     rhi_destroy_pipeline(s_nr.dev, s_nr.prepass_pipe);
