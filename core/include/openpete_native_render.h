@@ -74,14 +74,22 @@ int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int
 
 /** @brief Create the launcher's window at a position on the next openpete_native_launcher_open, so it opens on the display the position lies on.
  *
- * Window coordinates, as SDL_GetWindowPosition reports them. One use: the
- * open that creates the window consumes it.
- * @param x The window's left edge.
- * @param y The window's top edge. */
-void openpete_native_launcher_set_position(int x, int y);
+ * Window coordinates, as SDL_GetWindowPosition reports them. With @p centre
+ * the window is centred on the usable bounds of the display holding the
+ * point (the primary display when none does). A window created fullscreen
+ * returns to this position when it leaves fullscreen. One use: the open
+ * that creates the window consumes it.
+ * @param x The window's left edge, or a point on the display to centre on.
+ * @param y The window's top edge, or the point's y.
+ * @param centre Non-zero to centre on the point's display. */
+void openpete_native_launcher_set_position(int x, int y, int centre);
 
 /** @brief Report the game window's last state, recorded on the window's thread when the native teardown destroyed it.
  *
+ * A fullscreen window reports the geometry it last had when it entered
+ * fullscreen from a window neither maximized nor fullscreen; when it never
+ * did (it opened fullscreen), the width and height are 0 and the position
+ * is its display's origin.
  * @param fullscreen Receives 1 when it was fullscreen.
  * @param maximized Receives 1 when it was maximized.
  * @param x Receives its left edge, window coordinates.

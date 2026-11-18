@@ -440,14 +440,16 @@ void openpete_launcher_return_apply(openpete_options_t* neutral) {
                                                                                                 : "windowed");
     if (!in.window) return;
     neutral->launcher_fullscreen = in.fullscreen ? 1 : 0;
-    /* A fullscreen window's size is its display's: the launcher keeps its
-     * own windowed size for when the player leaves fullscreen. */
+    /* A fullscreen window carries the windowed geometry it returns to, or
+     * size 0x0 at its display's origin when it had none: the launcher then
+     * keeps its own windowed size, centred on that display, for when the
+     * player leaves fullscreen. */
     if (!in.fullscreen && in.maximized) {
         neutral->launcher_window_maximized = 1;
-    } else if (!in.fullscreen && in.w > 0 && in.h > 0) {
+    } else if (in.w > 0 && in.h > 0) {
         neutral->launcher_window_maximized = 0;
         neutral->launcher_window_w = in.w;
         neutral->launcher_window_h = in.h;
     }
-    openpete_native_launcher_set_position(in.x, in.y);
+    openpete_native_launcher_set_position(in.x, in.y, in.fullscreen && (in.w <= 0 || in.h <= 0));
 }

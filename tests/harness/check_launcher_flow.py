@@ -90,6 +90,15 @@ Cases:
             to another value: no page's image is given either variable (/proc/<pid>/environ), and each
             relaunch names the variables it left at their entry state (both after Spyro 1,
             OPENPETE_TEXPACK_DIR without OPENPETE_NOTEX after Spyro 2), exit 0.
+  exit-fullscreen  EXIT GAME from a fullscreen game, then leaving fullscreen in the relaunched launcher (Alt+Enter),
+            gives a window whose position is the windowed position the window had before it went
+            fullscreen, or centred on the screen when it never had one; four legs: the game opened
+            fullscreen from a windowed launcher (game-fullscreen), the launcher and the game opened
+            fullscreen (launcher-fullscreen), fullscreen toggled in the game (game-toggle), and a windowed
+            exit, whose relaunched launcher opens at the game window's last position (windowed). Each
+            leg's position is read by the launcher's geometry action; engagement: the teardown and
+            return lines name the fullscreen (windowed for the last leg) window, the relaunched launcher
+            logs its toggle off, exit 0.
   exit-direct  EXIT GAME in a --disc session and a directly booted --game session refuses the return and
             ends the process, exit 0.
   exit-close  A window close and SIGTERM end a session picked on the game page without a relaunch, exit 0.
@@ -1932,6 +1941,88 @@ def case_exit_return(a):
                    f"provisioned {len(prov)} loaded {len(loaded)}, (teardown, exec, first present) ms {gaps}")
 
 
+# The launcher's windowed position before the pick (resize=1000x700 keeps it, so a centred window of the
+# size the game exits with lands elsewhere), the screen it is centred on, and the relaunched launcher's
+# actions: its state, Alt+Enter, its state after leaving fullscreen, quit. The first image hands off at about
+# 2 s, before its Alt+Enter is due.
+EXIT_FS_LAUNCHER = "1000:geometry,6000:altenter,8000:geometry,10000:quit"
+# The game's fullscreen toggle (game-toggle): the settings menu opens on its DISPLAY row, Right flips it and
+# the menu closes; EXIT GAME's menu then opens on the first row again, 3 s later than EXIT_SCRIPT's.
+EXIT_FS_TOGGLE = "2500ms menu 1\n2800ms keydown Right\n2860ms keyup Right\n3300ms menu 0\n" + re.sub(
+    r"^(\d+)ms", lambda m: f"{int(m.group(1)) + 3000}ms", EXIT_SCRIPT, flags=re.M)
+
+
+def script_file(d, name, text):
+    """Write an injection script into the case directory; return its path."""
+    path = os.path.join(d, name + ".inject")
+    with open(path, "w") as f:
+        f.write(text)
+    return path
+
+
+def window_geometry(log):
+    """The launcher's geometry lines: [(x, y, w, h, fullscreen)] in log order."""
+    return [tuple(int(v) for v in m) for m in re.findall(
+        r"window geometry: at (-?\d+),(-?\d+) size (\d+)x(\d+) fullscreen=(\d)", log)]
+
+
+def case_exit_fullscreen(a):
+    """EXIT GAME from a fullscreen game, then Alt+Enter in the relaunched launcher: the window leaves fullscreen
+    at the position it had before it went fullscreen, or centred when it had none."""
+    d = cl.case_dir(a.out, "exit-fullscreen")
+    seed_entry(d, "spyro-1", 1)
+    sw, sh = cl.SCREEN_SIZE
+    legs = [  # (tag, launcher args, first-image actions, game injection extra, expected position rule)
+        ("game-fullscreen", ["--fullscreen", "1"], "500:resize=1000x700,", "", "before"),
+        ("launcher-fullscreen", ["--launcher-fullscreen", "1", "--fullscreen", "1"], "", "", "centred"),
+        ("game-toggle", [], "500:resize=1000x700,", EXIT_FS_TOGGLE, "before"),
+        ("windowed", [], "500:resize=1000x700,", "", "teardown"),
+    ]
+    bad, detail = [], []
+    for tag, extra, first, inject, rule in legs:
+        env = {"OPENPETE_LAUNCHER_SELECT_GAME": "spyro-1", "OPENPETE_LAUNCHER_PICK_DELAY_MS": "2000",
+               "OPENPETE_MOUSE_INJECT": script_file(d, tag, inject or EXIT_SCRIPT),
+               "OPENPETE_LAUNCHER_INPUT": first + EXIT_FS_LAUNCHER}
+        args = ["--launcher-window", "1280x800", "--frame-limit", "100000", "--max-runtime-seconds", "300"] + extra
+        rc, log = cl.launch(a.binary, d, tag, args, env, timeout=300)
+        geo = window_geometry(log)
+        tear = re.findall(r"game window at teardown: fullscreen=(\d) maximized=\d at (-?\d+),(-?\d+)", log)
+        ret = re.findall(r"return 1: image entered at steady \d+ ms; from [\w-]+, the game window (\w+)", log)
+        want_fs = "0" if rule == "teardown" else "1"
+        want_ret = "windowed" if rule == "teardown" else "fullscreen"
+        toggle = re.findall(r"launcher: fullscreen (on|off)", log)
+        game_toggle = re.findall(r"native: fullscreen (on|off)", log)
+        # Engagement: the game window was (or was not) fullscreen at the teardown, the relaunched image read
+        # that, the relaunched launcher toggled out of (into, for the windowed leg) fullscreen, and the
+        # game-toggle leg's game toggled into fullscreen.
+        want_toggle = ["on" if rule == "teardown" else "off"]
+        want_game = ["on"] if inject else []
+        if len(tear) != 1 or tear[0][0] != want_fs or ret != [want_ret] or toggle != want_toggle or \
+                game_toggle != want_game:
+            bad.append(f"{tag}: not engaged: teardown {tear}, return {ret}, launcher toggle {toggle}, "
+                       f"game toggle {game_toggle}")
+        # Image 1 before the pick, image 2 at entry, image 2 after its toggle; the windowed leg's toggle
+        # enters fullscreen, so its third reading is fullscreen.
+        if rc != 0 or len(geo) != 3:
+            bad.append(f"{tag}: exit {rc}, geometry readings {geo}: want 3")
+            detail.append(f"{tag} {geo}")
+            continue
+        before, entry, after = geo
+        if rule == "teardown":
+            got, want = entry, (int(tear[0][1]), int(tear[0][2])) if tear else None
+            if entry[4] != 0 or (got[0], got[1]) != want:
+                bad.append(f"{tag}: relaunched launcher at {got[:2]} fullscreen={entry[4]}, want windowed at {want}")
+        else:
+            got = after
+            want = (before[0], before[1]) if rule == "before" else ((sw - after[2]) // 2, (sh - after[3]) // 2)
+            if entry[4] != 1 or after[4] != 0 or (after[0], after[1]) != want:
+                bad.append(f"{tag}: after leaving fullscreen at {after[:2]} size {after[2]}x{after[3]} "
+                           f"(fullscreen {entry[4]}->{after[4]}), want {want} ({rule})")
+        detail.append(f"{tag}: before {before[:2]} {before[2]}x{before[3]}, relaunched {entry[:2]} "
+                      f"fs={entry[4]}, after toggle {after[:2]} {after[2]}x{after[3]} fs={after[4]}")
+    return verdict("exit-fullscreen", bad, "; ".join(detail))
+
+
 # The config file of exit-return-env: game A (Spyro 1) alone sets two variables in its scope, game B (Spyro 2)
 # sets one of them to another value.
 EXIT_ENV_CONFIG = ('[game.spyro-1.env]\nOPENPETE_NOTEX = "1"\nOPENPETE_TEXPACK_DIR = "packs-a"\n'
@@ -2913,6 +3004,7 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "quit-assets": case_quit_assets, "quit-east-once": case_quit_east_once,
          "quit-east-twice": case_quit_east_twice, "quit-escape": case_quit_escape, "quit-close": case_quit_close,
          "exit-return": case_exit_return, "exit-return-env": case_exit_return_env, "exit-direct": case_exit_direct, "exit-close": case_exit_close,
+         "exit-fullscreen": case_exit_fullscreen,
          "mods-chip": case_mods_chip, "unsupported-mark": case_unsupported_mark,
          "quit-page-sigterm": case_quit_page_sigterm, "error-refuse": case_error_refuse,
          "error-staged": case_error_staged, "error-build": case_error_build, "ingest-retry": case_ingest_retry,

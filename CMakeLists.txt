@@ -2155,7 +2155,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                                 preview preview-hold preview-stop
                                 quit-copy quit-translate quit-build quit-assets quit-east-once
                                 quit-east-twice quit-escape quit-close quit-page-sigterm error-refuse error-staged error-build ingest-retry
-                                error-link mods-chip exit-return exit-return-env exit-direct exit-close unsupported-mark)
+                                error-link mods-chip exit-return exit-return-env exit-direct exit-close exit-fullscreen unsupported-mark)
             add_test(NAME launcher_flow_${_launcher_case}
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher_flow.py

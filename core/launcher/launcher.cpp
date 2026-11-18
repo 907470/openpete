@@ -27,7 +27,7 @@
 // harness variable OPENPETE_LAUNCHER_INPUT=<ms>:<action>[,...] performs each
 // action that long after the first launcher frame: altenter, browse (Space),
 // click=<x>/<y>, click=@<element id>, dblclick and quit post the input events, maximize, restore and resize=WxH call the
-// window operations a window manager answers, and key=, pad=, stick= and
+// window operations a window manager answers, geometry logs the window's position, size and state, and key=, pad=, stick= and
 // mouse= post key, gamepad and pointer events (scripted_event). OPENPETE_LAUNCHER_MANIFEST=<base>
 // writes each screen's first frame's elements, by the reference layout's ids, to
 // <base>.<screen>.json (launcher_manifest.cpp). The contrast check's harness
@@ -1136,14 +1136,23 @@ bool scripted_event(const std::string& a, SDL_Window* win, SDL_Event& e) {
     return true;
 }
 
-/** @brief Harness: call the window operation of a window action: maximize, restore, minimize, hide, show, resize=WxH or display=<Hz>.
+/** @brief Harness: call the window operation of a window action: maximize, restore, minimize, hide, show, resize=WxH, display=<Hz> or geometry.
  *
  * display=<Hz> stubs the refresh query and posts a display change of the
- * window, as a move to a display of that refresh does.
+ * window, as a move to a display of that refresh does. geometry logs the
+ * window's position and size in window coordinates and its fullscreen and
+ * maximized flags, as SDL last read them from the window manager.
  * @param a The action; any other is ignored. */
 void scripted_window_op(const std::string& a) {
     int w = 0, h = 0;
-    if (a == "maximize")
+    if (a == "geometry") {
+        SDL_Window* win = openpete_native_launcher_window();
+        int x = 0, y = 0;
+        if (!win || !SDL_GetWindowPosition(win, &x, &y) || !SDL_GetWindowSize(win, &w, &h)) return;
+        const SDL_WindowFlags f = SDL_GetWindowFlags(win);
+        OPL_INFO_F("launcher", "window geometry: at %d,%d size %dx%d fullscreen=%d maximized=%d", x, y, w, h,
+                   (f & SDL_WINDOW_FULLSCREEN) ? 1 : 0, (f & SDL_WINDOW_MAXIMIZED) ? 1 : 0);
+    } else if (a == "maximize")
         (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_MAXIMIZE, 0, 0);
     else if (a == "restore")
         (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_RESTORE, 0, 0);

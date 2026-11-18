@@ -7686,14 +7686,63 @@ static bool nr_run_is_synchronous(bool headless, const openpete_options_t *opts)
 }
 
 /* The position the next launcher window is created at
- * (openpete_native_launcher_set_position); set = 0 for the system's choice. */
-static struct { int set, x, y; } s_launch_pos;
+ * (openpete_native_launcher_set_position); set = 0 for the system's choice,
+ * centre = 1 to centre on the display holding x,y. */
+static struct { int set, centre, x, y; } s_launch_pos;
 
-void openpete_native_launcher_set_position(int x, int y)
+void openpete_native_launcher_set_position(int x, int y, int centre)
 {
     s_launch_pos.set = 1;
+    s_launch_pos.centre = centre != 0;
     s_launch_pos.x = x;
     s_launch_pos.y = y;
+}
+
+/* The game window's state when the teardown destroyed it, for the
+ * relaunched launcher to open in (openpete_native_window_final_state), and
+ * the window's windowed geometry the teardown records for a fullscreen
+ * window: windowed is the geometry (not fullscreen, not maximized) the
+ * window had when it last entered fullscreen through nr_set_fullscreen, or
+ * the geometry a fullscreen launcher window was created to return to;
+ * windowed.known = 0 when the window has had none. The one window of the
+ * process (the launcher's, then the adopted game window) owns windowed. */
+static struct {
+    int recorded, fullscreen, maximized, x, y, w, h;
+    struct { int known, x, y, w, h; } windowed;
+} s_final_window;
+
+/** @brief Switch a window into or out of borderless-desktop fullscreen, first recording its windowed geometry when it enters from a window that is neither fullscreen nor maximized.
+ *
+ * SDL keeps the geometry a fullscreen window returns to but does not report
+ * it; the record (s_final_window.windowed) is what the window's teardown
+ * hands to the relaunched launcher, which leaves fullscreen to that
+ * geometry.
+ * @param win The window.
+ * @param on true to enter fullscreen, false to leave it. */
+static void nr_set_fullscreen(SDL_Window *win, bool on)
+{
+    const SDL_WindowFlags f = SDL_GetWindowFlags(win);
+    if (on && !(f & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED))) {
+        SDL_GetWindowPosition(win, &s_final_window.windowed.x, &s_final_window.windowed.y);
+        SDL_GetWindowSize(win, &s_final_window.windowed.w, &s_final_window.windowed.h);
+        s_final_window.windowed.known = s_final_window.windowed.w > 0 && s_final_window.windowed.h > 0;
+    }
+    if (on) SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
+    SDL_SetWindowFullscreen(win, on);
+}
+
+/** @brief Resolve the stored launcher position to SDL window coordinates: the stored point, or SDL_WINDOWPOS_CENTERED_DISPLAY of the display holding it.
+ *
+ * @param x Receives the x coordinate.
+ * @param y Receives the y coordinate. */
+static void nr_launch_pos_resolve(int *x, int *y)
+{
+    *x = s_launch_pos.x;
+    *y = s_launch_pos.y;
+    if (!s_launch_pos.centre) return;
+    const SDL_Point pt = {s_launch_pos.x, s_launch_pos.y};
+    const SDL_DisplayID d = SDL_GetDisplayForPoint(&pt);   /* 0: SDL centres on the primary */
+    *x = *y = (int)SDL_WINDOWPOS_CENTERED_DISPLAY(d);
 }
 
 /** @brief Create the launcher's window, at the position openpete_native_launcher_set_position stored when one is set.
@@ -7708,16 +7757,19 @@ void openpete_native_launcher_set_position(int x, int y)
 static SDL_Window *nr_create_launcher_window(const char *title, int w, int h, SDL_WindowFlags flags)
 {
     if (!s_launch_pos.set) return SDL_CreateWindow(title, w, h, flags);
+    int x, y;
+    nr_launch_pos_resolve(&x, &y);
     const SDL_PropertiesID p = SDL_CreateProperties();
     SDL_SetStringProperty(p, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
     SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, w);
     SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, h);
-    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_X_NUMBER, s_launch_pos.x);
-    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_Y_NUMBER, s_launch_pos.y);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_X_NUMBER, x);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_Y_NUMBER, y);
     SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, (Sint64)flags);
     SDL_Window *win = SDL_CreateWindowWithProperties(p);
     SDL_DestroyProperties(p);
-    OPL_INFO_F("native", "launcher window created at %d,%d", s_launch_pos.x, s_launch_pos.y);
+    OPL_INFO_F("native", "launcher window created %s %d,%d", s_launch_pos.centre ? "centred on the display at" : "at",
+               s_launch_pos.x, s_launch_pos.y);
     return win;
 }
 
@@ -7735,8 +7787,21 @@ int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int
      * events: Win32 delivers a window's messages only to its creator. */
     SDL_Window *win = s_precreated_win;
     s_precreated_win = NULL;
-    if (win && s_launch_pos.set) SDL_SetWindowPosition(win, s_launch_pos.x, s_launch_pos.y);
-    if (!win) win = nr_create_launcher_window(title ? title : "openpete", w, h, nr_window_flags(opts, open));
+    if (win && s_launch_pos.set) {
+        int x, y;
+        nr_launch_pos_resolve(&x, &y);
+        SDL_SetWindowPosition(win, x, y);
+    }
+    const SDL_WindowFlags flags = nr_window_flags(opts, open);
+    /* A fullscreen window created at a stored position returns to it at the
+     * created size; a centred or system-chosen one has no geometry recorded. */
+    s_final_window.windowed.known = !win && s_launch_pos.set && !s_launch_pos.centre &&
+                                    (flags & SDL_WINDOW_FULLSCREEN) && !(flags & SDL_WINDOW_MAXIMIZED);
+    s_final_window.windowed.x = s_launch_pos.x;
+    s_final_window.windowed.y = s_launch_pos.y;
+    s_final_window.windowed.w = w;
+    s_final_window.windowed.h = h;
+    if (!win) win = nr_create_launcher_window(title ? title : "openpete", w, h, flags);
     s_launch_pos.set = 0;
     if (!win) {
         snprintf(s_launch_error, sizeof s_launch_error,
@@ -7947,8 +8012,7 @@ int openpete_native_launcher_window_op(openpete_launcher_window_op_t op, int w, 
     switch (op) {
     case OPENPETE_LAUNCHER_WINDOW_FULLSCREEN_TOGGLE: {
         const bool fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) != 0;
-        if (!fs) SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
-        SDL_SetWindowFullscreen(win, !fs);
+        nr_set_fullscreen(win, !fs);
         return fs ? 0 : 1;
     }
     case OPENPETE_LAUNCHER_WINDOW_MAXIMIZE: SDL_MaximizeWindow(win); break;
@@ -8186,8 +8250,7 @@ static void nr_apply_game_window_placement(SDL_Window *win, const openpete_optio
         OPL_INFO_F("native", "%s", "--fullscreen: the window is already fullscreen");
     } else if (opts->fullscreen) {
         nr_present_black_shown(s_nr.dev);
-        SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
-        SDL_SetWindowFullscreen(win, true);
+        nr_set_fullscreen(win, true);
         OPL_INFO_F("native", "%s", "--fullscreen: borderless desktop at launch");
     }
     if (s_background_requested)
@@ -8249,8 +8312,7 @@ static void nr_adopt_window_state(SDL_Window *win, rhi_device *dev,
         if (want_max) SDL_MaximizeWindow(win);
         else SDL_SetWindowSize(win, w, h);
         (void)SDL_SyncWindow(win);
-        SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
-        SDL_SetWindowFullscreen(win, true);
+        nr_set_fullscreen(win, true);
         nr_present_at_window_size(win, dev);
         OPL_INFO_F("native", "adopted window: fullscreen at once, %s set as its windowed state",
                    want_max ? "maximized" : "the game's size");
@@ -8879,13 +8941,11 @@ void openpete_native_toggle_fullscreen(void)
 {
     if (!s_nr.enabled || !s_nr.window) return;
     bool fs = (SDL_GetWindowFlags(s_nr.window) & SDL_WINDOW_FULLSCREEN) != 0;
-    if (!fs)
-        SDL_SetWindowFullscreenMode(s_nr.window, NULL);  /* borderless desktop */
     /* The size change this causes lands in ONE step, so neither settle window
      * applies to it: adopt it as soon as it is seen. */
     s_nr.resize_immediate_at_ns = SDL_GetTicksNS(); /* clock-guard: wall */ /* resize debounce */
     rhi_present_trace_arm(s_nr.dev, fs ? "toggle to windowed" : "toggle to fullscreen");
-    SDL_SetWindowFullscreen(s_nr.window, !fs);
+    nr_set_fullscreen(s_nr.window, !fs);
     SDL_SetAtomicInt(&s_nr_fullscreen, !fs);
     OPL_INFO_F("native", "fullscreen %s", !fs ? "on (borderless desktop)" : "off");
     /* Announced HERE rather than at the call sites: Alt+Enter, the fullscreen
@@ -26454,14 +26514,14 @@ void openpete_native_render_record_flush(void)
         openpete_record_submit_frame(buf, w, h, /*top_down=*/1, tag);
 }
 
-/* The game window's state when the teardown destroyed it, for the
- * relaunched launcher to open in (openpete_native_window_final_state). */
-static struct {
-    int recorded, fullscreen, maximized, x, y, w, h;
-} s_final_window;
 
 /** @brief Record a window's fullscreen and maximized flags, position and size before it is destroyed; call on the window's thread.
  *
+ * A fullscreen window records the windowed geometry it returns to
+ * (s_final_window.windowed) in place of the display's, or, when it has
+ * none, size 0x0 at its display's origin: a window created at a fullscreen
+ * window's position, leaving fullscreen, would put its frame above the
+ * display.
  * @param win The window; NULL records nothing. */
 static void nr_record_final_window(SDL_Window *win)
 {
@@ -26471,6 +26531,19 @@ static void nr_record_final_window(SDL_Window *win)
     s_final_window.maximized = (f & SDL_WINDOW_MAXIMIZED) ? 1 : 0;
     SDL_GetWindowPosition(win, &s_final_window.x, &s_final_window.y);
     SDL_GetWindowSize(win, &s_final_window.w, &s_final_window.h);
+    if (s_final_window.fullscreen && s_final_window.windowed.known) {
+        s_final_window.x = s_final_window.windowed.x;
+        s_final_window.y = s_final_window.windowed.y;
+        s_final_window.w = s_final_window.windowed.w;
+        s_final_window.h = s_final_window.windowed.h;
+    } else if (s_final_window.fullscreen) {
+        SDL_Rect b;
+        if (SDL_GetDisplayBounds(SDL_GetDisplayForWindow(win), &b)) {
+            s_final_window.x = b.x;
+            s_final_window.y = b.y;
+        }
+        s_final_window.w = s_final_window.h = 0;
+    }
     s_final_window.recorded = 1;
     OPL_INFO_F("native", "game window at teardown: fullscreen=%d maximized=%d at %d,%d size %dx%d",
                s_final_window.fullscreen, s_final_window.maximized, s_final_window.x,
