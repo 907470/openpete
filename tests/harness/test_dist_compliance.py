@@ -128,6 +128,12 @@ def main():
         case("NOTICE row with no manifest row", 1, "NOTICE.md rows with no licence text",
              rows=[r for r in MANIFEST_ROWS if not r.startswith("libb")],
              files={k: v for k, v in FILES.items() if k != "packaging/licences/libb.txt"}),
+        case("vendored licence under a component no package contains", 0, "",
+             extra={"third_party/unused/dep/x/LICENSE": "x\n"}),
+        case("vendored licence under an unshipped directory inside a shipped one", 1,
+             "third_party/liba/tools/dep/LICENSE",
+             rows=MANIFEST_ROWS + ["liba tools\tnone\t-\t-\tthird_party/liba"],
+             extra={"third_party/liba/tools/dep/LICENSE": "x\n"}),
         case("gitignored directory is not walked", 0, "",
              extra={"third_party/built/COPYING": "x\n"}),
     ]

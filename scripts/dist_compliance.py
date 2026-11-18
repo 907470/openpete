@@ -170,6 +170,24 @@ def third_party_dirs(files):
     return out - gitignored_dirs()
 
 
+def unshipped_sources(rows):
+    """Return the source directories that only scope-none rows name.
+
+    A component no package contains needs no text for the licence files of
+    what it vendors; its row accounts for every file beneath its source.
+    @param rows The manifest rows.
+    @return The set of such directories, without a trailing slash.
+    """
+    none, shipped = set(), set()
+    for _comp, scope, _text, _shipped, source in rows:
+        if source == "-":
+            continue
+        for s in source.split(","):
+            (none if scope == "none" else shipped).add(s.rstrip("/"))
+    return {n for n in none
+            if not any(s == n or s.startswith(n + "/") for s in shipped)}
+
+
 def check_coverage(rows):
     """Refuse a licence file, third_party/ directory or packaging text no row accounts for."""
     texts = {r[2] for r in rows}
@@ -182,8 +200,10 @@ def check_coverage(rows):
                 fail(f"'{comp}' names source {s}, which does not exist")
             sources.add(s.rstrip("/"))
     files = third_party_files()
+    unshipped = unshipped_sources(rows)
     orphan = sorted(p for p in files
-                    if LICENCE_NAME.match(os.path.basename(p)) and p not in texts)
+                    if LICENCE_NAME.match(os.path.basename(p)) and p not in texts
+                    and not any(p.startswith(u + "/") for u in unshipped))
     if orphan:
         fail("third_party licence files in no " + MANIFEST + " row: "
              + ", ".join(orphan))
