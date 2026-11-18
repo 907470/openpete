@@ -1,0 +1,26 @@
+# Moby occlusion census rows (tests/harness/check_moby_occlusion.sh).
+# Rows: <name> | <level> | <freecam pose> | <checks>
+# checks, space-separated:
+#   max_ratio=R   the extended leg's sub-tick simple-kind triangles are at most
+#                 R times the original leg's (the extended reveal admits no
+#                 hidden record into the decode)
+#   unchanged     the extended leg's sub-tick simple-kind triangles equal the
+#                 reference leg's (OPENPETE_MOBY_SIMPLE_OCCL=0): the visible
+#                 extension is kept
+#   engage        the extended leg's occlusion cull culls at least one record
+#                 of either kind
+#   report        no count criterion; the census is printed
+# Every row also requires every screenshot of the extended leg to be
+# byte-identical to the reference leg's.
+#
+# Poses from freecam-corpus.manifest, each a camera pitched within 50 units
+# of level near the ground. Per sub-tick present, simple-kind records decoded
+# and triangles on the extended leg / the reference leg (simple-kind test
+# off) / the original leg, and records culled over the extended leg's window:
+# sunrise_spring_ground: 132 records, 593 / 3,922 / 179 triangles, 4,753 culled.
+# dino_mines_ground: 65 records, 52 / 1,328 / 52 triangles, 2,914 culled;
+#   max_ratio=2 holds only while hidden simple records stay out of the decode.
+# desert_ruins_ground: 45 records, 321 / 1,085 / 14 triangles, 1,860 culled.
+sunrise_spring_ground | sunrise_spring | pos=(102255, 56733, 22972) yaw=-1891 pitch=6 | engage
+dino_mines_ground     | dino_mines     | pos=(117750, 74875, 20832) yaw=-2001 pitch=44 | max_ratio=2 engage
+desert_ruins_ground   | desert_ruins   | pos=(94495, 87532, 24558) yaw=-1394 pitch=11  | engage

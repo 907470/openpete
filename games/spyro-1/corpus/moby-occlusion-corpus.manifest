@@ -1,0 +1,21 @@
+# Moby occlusion census rows (tests/harness/check_moby_occlusion.sh).
+# Rows: <name> | <level> | <freecam pose> | <checks>
+# checks, space-separated:
+#   engage        the extended leg's occlusion cull culls at least one record
+#   report        no count criterion; the census is printed
+# Every row also requires every screenshot of the extended leg to be
+# byte-identical to the reference leg's.
+#
+# Spyro 1 has no simple pass (its shaded draw hook draws the simple models),
+# so its census carries the animated kind only and the simple-kind checks
+# (max_ratio, unchanged) do not apply. Each row is a camera pitched within
+# 100 units of level, near the ground.
+#
+# Poses from freecam-corpus.manifest. Per sub-tick present, extended leg
+# against original: records decoded, records culled over the window.
+# dark_hollow_ground: 20 / 20 decoded, 672 / 126 culled.
+# town_square_wall: 7 / 7 decoded, 409 / 199 culled.
+# artisans_hill: 2 / 2 decoded, 315 / 126 culled.
+dark_hollow_ground | dark_hollow | pos=(15607, 62161, 18376) yaw=3735 pitch=87    | engage
+town_square_wall   | town_square | pos=(109911, 108961, 10607) yaw=1026 pitch=75  | engage
+artisans_hill      | artisans    | pos=(100000, 50000, 12000) yaw=512 pitch=-100  | engage

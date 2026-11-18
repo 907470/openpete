@@ -1462,7 +1462,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endforeach()
 
     # Moby occlusion census. Per row of
-    # games/spyro-2/corpus/moby-occlusion-corpus.manifest, three headless legs at
+    # games/<game>/corpus/moby-occlusion-corpus.manifest, three headless legs at
     # one freecam pose (extended LOD, extended LOD with the simple-kind
     # occlusion test off, original LOD) with sub-tick presents, reading the
     # per-kind decode census: records, culled records, vertices and triangles.
@@ -1471,15 +1471,19 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # decode exceeds a row's bound over original LOD, when a row's visible
     # extension changes, or when an extended screenshot differs from the leg
     # with the test off; vacuous without bracketed sub-tick presents, census
-    # lines or, where the row asks, a culled record.
-    add_test(NAME moby_occlusion_spyro2
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_occlusion.sh
-                     --game spyro-2 --build-dir=${CMAKE_BINARY_DIR})
-    set_tests_properties(moby_occlusion_spyro2 PROPERTIES
-        LABELS "presentation;moby"
-        TIMEOUT 1800
-        SKIP_RETURN_CODE 64
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # lines or, where the row asks, a culled record. Spyro 1 has no simple
+    # pass, so its rows read the animated kind alone.
+    foreach(_occl_game spyro-1 spyro-2 spyro-3)
+        string(REPLACE "-" "" _occl_tag "${_occl_game}")
+        add_test(NAME moby_occlusion_${_occl_tag}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_occlusion.sh
+                         --game ${_occl_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(moby_occlusion_${_occl_tag} PROPERTIES
+            LABELS "presentation;moby"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
 
     # Vulkan validation errors on the boot-to-level path. One headless run per
     # game under --renderer vk with VK_LAYER_KHRONOS_validation loaded, from

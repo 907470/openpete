@@ -31,9 +31,10 @@
 # manifest header).
 # Engagement (VACUOUS, exit 1): a leg with fewer than MIN_BRACKETED bracketed
 # intermediate captures, fewer than MIN_LINES sub-tick census lines of a kind
-# a check reads (both kinds on ext and ref, the simple kind on orig for a
-# max_ratio row), or a missing screenshot; a row marked engage whose ext leg
-# culls no record in the span.
+# a check reads (both kinds on ext and ref, the animated kind alone on Spyro 1,
+# which has no simple pass; the simple kind on orig for a max_ratio row), or a
+# missing screenshot; a row marked engage whose ext leg culls no record in the
+# span.
 #
 # Usage: tests/harness/check_moby_occlusion.sh [--game SLUG] [--build-dir=DIR]
 #            [--filter SUBSTR] [--keep DIR]
@@ -118,12 +119,19 @@ while IFS='|' read -r name level pose checks; do
 done < "$MANIFEST"
 (( ${#rows[@]} )) || { echo "moby-occlusion: FAIL (no manifest row selected)"; exit 1; }
 
-python3 - "$OUT" "$CANON_VBL" "$INTER_VBLS" "$MIN_BRACKETED" "$MIN_LINES" "${rows[@]}" <<'PYEOF'
+# Spyro 1 draws its simple models in the shaded draw hook, with no simple pass
+# of its own (games/spyro-1/renderer/moby_game.c, simple_pass = NULL), so no
+# simple-kind census line or simple-kind occlusion test exists there.
+SIMPLE_KIND=1
+[[ "$GAME" == spyro-1 ]] && SIMPLE_KIND=0
+
+python3 - "$OUT" "$CANON_VBL" "$INTER_VBLS" "$MIN_BRACKETED" "$MIN_LINES" "$SIMPLE_KIND" "${rows[@]}" <<'PYEOF'
 import filecmp, os, re, statistics, sys
 
 out, canon, inter = sys.argv[1], int(sys.argv[2]), [int(x) for x in sys.argv[3].split(',')]
 min_br, min_lines = int(sys.argv[4]), int(sys.argv[5])
-rows = [r.split('|', 1) for r in sys.argv[6:]]
+simple_kind = sys.argv[6] == '1'
+rows = [r.split('|', 1) for r in sys.argv[7:]]
 
 kind_re = re.compile(r'\[moby-kind vbl=(\d+) leg=(\w+) kind=([\w-]+)\] recs=(\d+) occl=(\d+) verts=(\d+) tris=(\d+)')
 inter_re = re.compile(r'wrote intermediate .* on frame (\d+) \(target=(\d+), paired=\d+, bracketed=(\d+)')
@@ -176,7 +184,8 @@ for name, checks in rows:
         if c['bracketed'] < min_br:
             vac.append('%s: %d bracketed intermediate captures < %d' % (leg, c['bracketed'], min_br))
         # The ext and ref legs carry every check; the orig leg only the ratio.
-        need = ('anim', 'simple') if leg != 'orig' else (('simple',) if 'max_ratio=' in checks else ())
+        need = (('anim', 'simple') if simple_kind else ('anim',)) if leg != 'orig' else \
+            (('simple',) if 'max_ratio=' in checks else ())
         for kind in need:
             if c.get(kind + '_n', 0) < min_lines:
                 vac.append('%s: %d %s sub-tick census lines < %d' % (leg, c.get(kind + '_n', 0), kind, min_lines))
@@ -185,12 +194,13 @@ for name, checks in rows:
             vac.append('%s: %d screenshots missing' % (leg, len(missing)))
     # Image identity: ext against the leg with the simple-kind test off.
     if 'ext' in cen and 'ref' in cen:
-        diff = [os.path.basename(a) for a, b in zip(shots(name, 'ext'), shots(name, 'ref'))
-                if os.path.exists(a) and os.path.exists(b) and not filecmp.cmp(a, b, shallow=False)]
+        pairs = [(a, b) for a, b in zip(shots(name, 'ext'), shots(name, 'ref'))
+                 if os.path.exists(a) and os.path.exists(b)]
+        diff = [os.path.basename(a) for a, b in pairs if not filecmp.cmp(a, b, shallow=False)]
         if diff:
             fail.append('%d ext screenshots differ from ref (%s)' % (len(diff), ', '.join(diff[:4])))
         else:
-            notes.append('images ext==ref (%d)' % len(shots(name, 'ext')))
+            notes.append('images ext==ref (%d compared)' % len(pairs))
     st = lambda leg: cen.get(leg, {}).get('simple_tris')
     for chk in checks.split():
         if chk.startswith('max_ratio='):
