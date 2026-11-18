@@ -15,6 +15,7 @@
                            * game_validate_cheats_arg (--cheats names) */
 
 #include "openpete_paths.h" /* where --bk2-record output is allowed to live */
+#include "openpete_pose_text.h" /* --freecam-pose grammar */
 #include "openpete_docs_url.h" /* OPENPETE_DOCS_URL - the --help footer */
 #include "openpete_stick_response.h" /* --stick-response values */
 #include "openpete_render_res.h"  /* --resolution grammar */
@@ -1616,6 +1617,11 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
         i++;
     } else if (strcmp(a, "--freecam-pose") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        char why[256];
+        if (openpete_pose_text_check(v, why, sizeof why) != 0) {
+            fprintf(stderr, "openpete: --freecam-pose: %s\n", why);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
         flag_setenv("OPENPETE_FREECAM_POSE", v);
         i++;
     } else if (strcmp(a, "--player-pose") == 0) {
@@ -2196,6 +2202,31 @@ static int env_onoff_fallback(const char* name, int* slot) {
     return OPENPETE_EXIT_OK;
 }
 
+/** @brief Refuse an OPENPETE_FREECAM_POSE the pose grammar rejects: warn and unset it, or fail under strict mode.
+ *
+ * A typed --freecam-pose was checked by its arm before it set the variable,
+ * so only an exported or [env] value reaches the refusal. Unsetting the
+ * variable keeps the default, the camera following the player, instead of
+ * the runtime reader's reading of the malformed text. The game-neutral parse
+ * writes no environment and only reports.
+ * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR when refusals_fail. */
+static int env_freecam_pose_check(void) {
+    const char* v = openpete_config_env("OPENPETE_FREECAM_POSE");
+    char why[256];
+    if (!v || !*v || openpete_pose_text_check(v, why, sizeof why) == 0) return OPENPETE_EXIT_OK;
+    openpete_config_diag("openpete: OPENPETE_FREECAM_POSE: %s\n", why);
+    if (env_value_refused("OPENPETE_FREECAM_POSE", v) != OPENPETE_EXIT_OK)
+        return OPENPETE_EXIT_SETUP_ERROR;
+    if (!s_parse_neutral) {
+#ifdef _WIN32
+        _putenv_s("OPENPETE_FREECAM_POSE", "");
+#else
+        unsetenv("OPENPETE_FREECAM_POSE");
+#endif
+    }
+    return OPENPETE_EXIT_OK;
+}
+
 /** @brief Apply the env spellings of dual-spelling flags the command line left unset.
  *
  * Runs after the flag chain, so a typed flag has already claimed its slot.
@@ -2240,6 +2271,8 @@ static int apply_env_spellings(openpete_options_t* opts) {
                                           &opts->launcher_window_maximized) != 0)
             return env_value_refused("OPENPETE_LAUNCHER_WINDOW", v);
     }
+
+    if (env_freecam_pose_check() != 0) return OPENPETE_EXIT_SETUP_ERROR;
 
     /* The legacy input path hands the event pump and the pad decode to
      * PsyCross, where the lock has no filter. */

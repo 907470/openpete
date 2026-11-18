@@ -94,6 +94,14 @@ pg_capture() {
 
     rm -rf "${run_root:?}"
 
+    # A run the game refused at option parse (a malformed --freecam-pose,
+    # an unknown level) exits before it writes anything; its first
+    # "openpete: " line names the refused argument.
+    if [[ $rc -ne 0 ]]; then
+        local refusal
+        refusal="$(grep -m1 '^openpete: ' "$log" 2>/dev/null)"
+        [[ -n "$refusal" ]] && echo "pg_capture: run exited $rc: $refusal" >&2
+    fi
     local o
     for o in "${out_arr[@]}"; do
         [[ -z "$o" || -f "$o" ]] && continue

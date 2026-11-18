@@ -28,7 +28,8 @@
 # nodraw counts sectors drawn by neither path and is not a claim).
 # Engagement, per leg: the capture exists, a census line exists, and the walk
 # saw a sector (secs + claims > 0); otherwise the leg is VACUOUS. A leg whose
-# every sector is claimed (secs 0, claims > 0) engaged and FAILs.
+# every sector is claimed (secs 0, claims > 0) engaged and FAILs. A leg
+# whose game refused its pose at option parse FAILs.
 #
 # --calibrate: the negative control. The selected legs run with
 # OPENPETE_TERRAIN_CANIMNEAR=0, which sends every colour-anim sector whose
@@ -245,7 +246,13 @@ for line in open(results):
         if g:
             grow = g.group(1)
     crash = "=== openpete crash" in text
+    refused = rc != 0 and "openpete: --freecam-pose: " in text
     name = f"{game}/{lid}"
+    if refused:
+        verdict = f"FAIL(pose refused, rc={rc})"
+        fail += 1
+        print(f"{name}\t-\t-\t-\t-\t{grow}\t{verdict}")
+        continue
     if crash or (rc != 0 and os.path.isfile(png)):
         verdict = f"FAIL(rc={rc} crash={int(crash)})"
         fail += 1

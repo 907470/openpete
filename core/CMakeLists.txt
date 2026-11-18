@@ -43,6 +43,7 @@ add_library(openpete_core STATIC
     # portable install, the platform's per-user directories otherwise;
     # SDL-free for the same reason config.c is).
     config/options.c
+    config/pose_text.c
     config/surface_dump.c
     config/tooltip_vocab.c
     config/config.c

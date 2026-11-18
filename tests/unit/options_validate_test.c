@@ -475,6 +475,59 @@ static void config_flag_beats_env(void) {
     remove(other);
 }
 
+/** @brief --freecam-pose and OPENPETE_FREECAM_POSE: a malformed pose fails when typed, falls back from the config file, and is warned and unset from the env; strict mode fails the env. */
+static void freecam_pose_values(void) {
+    openpete_options_t o;
+    static const char* const good[] = { "--no-config", "--freecam-pose",
+                                        "pos=(84992, 45582, 9948) yaw=1024 pitch=160" };
+    static const char* const bad[][3] = {
+        { "--no-config", "--freecam-pose", "pos=(bogus" },
+        { "--no-config", "--freecam-pose", "pos=(1, 2" },
+        { "--no-config", "--freecam-pose", "pos=(1, 2, 3) pitch=5" },
+        { "--no-config", "--freecam-pose", "1.5, 2, 3" },
+        { "--no-config", "--freecam-pose", "bogus" },
+        { "--no-config", "--freecam-pose", "" },
+    };
+    unsetenv_portable("OPENPETE_FREECAM_POSE");
+
+    g_case = "typed freecam-pose";
+    CHECK(parse(&o, 3, good) == OPENPETE_EXIT_OK, "a well-formed --freecam-pose failed the parse");
+    const char* e = getenv("OPENPETE_FREECAM_POSE");
+    CHECK(e && !strcmp(e, good[2]), "OPENPETE_FREECAM_POSE = \"%s\", want the typed pose", e ? e : "");
+    unsetenv_portable("OPENPETE_FREECAM_POSE");
+    for (size_t k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+        g_case = bad[k][2];
+        CHECK(parse(&o, 3, bad[k]) == OPENPETE_EXIT_SETUP_ERROR, "typed --freecam-pose \"%s\" parsed",
+              bad[k][2]);
+        e = getenv("OPENPETE_FREECAM_POSE");
+        CHECK(!e || !*e, "a refused --freecam-pose set OPENPETE_FREECAM_POSE = \"%s\"", e ? e : "");
+    }
+
+    g_case = "config freecam_pose";
+    CHECK(parse_cfg(&o, "freecam_pose = \"pos=(bogus\"\n", 0, NULL) == OPENPETE_EXIT_OK,
+          "a refused config freecam_pose failed the boot parse");
+    e = getenv("OPENPETE_FREECAM_POSE");
+    CHECK(!e || !*e, "a refused config freecam_pose set OPENPETE_FREECAM_POSE = \"%s\"", e ? e : "");
+
+    static const char* const none[] = { "--no-config" };
+    g_case = "env freecam pose";
+    setenv_portable("OPENPETE_FREECAM_POSE", "pos=(bogus");
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK, "a refused OPENPETE_FREECAM_POSE failed the parse");
+    e = getenv("OPENPETE_FREECAM_POSE");
+    CHECK(!e || !*e, "a refused OPENPETE_FREECAM_POSE stayed set: \"%s\"", e ? e : "");
+    setenv_portable("OPENPETE_FREECAM_POSE", "1,2,3");
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK, "a well-formed OPENPETE_FREECAM_POSE failed the parse");
+    e = getenv("OPENPETE_FREECAM_POSE");
+    CHECK(e && !strcmp(e, "1,2,3"), "a well-formed OPENPETE_FREECAM_POSE was dropped");
+
+    g_case = "strict env freecam pose";
+    setenv_portable("OPENPETE_FREECAM_POSE", "pos=(bogus");
+    openpete_options_set_strict(1);
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_SETUP_ERROR, "strict mode kept a refused OPENPETE_FREECAM_POSE");
+    openpete_options_set_strict(0);
+    unsetenv_portable("OPENPETE_FREECAM_POSE");
+}
+
 int main(void) {
     scrub_inherited_env();
     const char* tmp = getenv("TMPDIR");
@@ -490,6 +543,7 @@ int main(void) {
     tick_scale_range();
     mod_hot_reload_spellings();
     config_flag_beats_env();
+    freecam_pose_values();
     remove(g_toml);
     if (g_fail) printf("options_validate_test: FAILED (%d)\n", g_fail);
     else        printf("options_validate_test: ok\n");

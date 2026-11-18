@@ -395,6 +395,19 @@ if(NOT WIN32)
 endif()
 add_test(NAME knob_registry_test COMMAND knob_registry_test)
 
+# pose_text_test - the free-camera pose grammar --freecam-pose is checked
+# against: accepted and refused forms, then every pose in the committed
+# corpus manifests, so a malformed row fails here before a harness runs it.
+# POSIX only (glob).
+if(NOT WIN32)
+    add_executable(pose_text_test
+        pose_text_test.c
+        ${CMAKE_SOURCE_DIR}/core/config/pose_text.c)
+    target_include_directories(pose_text_test PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
+    set_target_properties(pose_text_test PROPERTIES C_STANDARD 11)
+    add_test(NAME pose_text_test COMMAND pose_text_test ${CMAKE_SOURCE_DIR})
+endif()
+
 # paths_lock_wait_test - openpete_paths_lock_wait, the lock a first-boot
 # module build takes on its module directory and a mod save sidecar write
 # takes on its lock file: a waiter takes the lock only after the holding
@@ -612,6 +625,7 @@ if(TARGET SDL3::SDL3-static)
     add_executable(options_validate_test
         options_validate_test.c
         ${CMAKE_SOURCE_DIR}/core/config/options.c
+        ${CMAKE_SOURCE_DIR}/core/config/pose_text.c
         ${CMAKE_SOURCE_DIR}/core/renderer/render_res.c
         ${CMAKE_SOURCE_DIR}/core/config/config.c
         ${CMAKE_SOURCE_DIR}/core/config/config_schema.c
