@@ -4,7 +4,7 @@ The oracle is the gate that decides whether a change lands: a
 DuckStation capture of Spyro 1 running on a real Sony SCPH1001 BIOS is the
 project's proxy for hardware, and openpete must reproduce its
 gameplay-state hashes tick for tick. This document covers both halves - the
-capture side (DuckStation with the psxtrace patch series) and the verify side
+capture side (DuckStation with the psxtrace series) and the verify side
 (`tests/harness/check_psx_oracle.sh`).
 
 ## Why DuckStation
@@ -21,38 +21,48 @@ DuckStation replaced PCSX-Redux as the capture emulator for two reasons.
    differences. The north star is byte-identity with hardware, so
    the retail BIOS is the correct reference.
 
-## The patch series
+## The series
 
 DuckStation is a submodule at `third_party/duckstation` that pins upstream
-`https://github.com/stenzek/duckstation.git` at `e4c55ad0283f`. The
-project's changes are a patch series in `third_party/duckstation-patches/`
-(`git format-patch` files, applied in the order `series` lists), because
+`https://github.com/stenzek/duckstation.git` at `e4c55ad0283f`.
 DuckStation's licence, CC BY-NC-ND 4.0, forbids distributing a modified
-DuckStation, and a published fork is such a distribution. The series:
+DuckStation, and a published fork is such a distribution, so the project's
+additions are a series in `third_party/duckstation-patches/` that holds no
+upstream text: files of its own (`files/`, copied into the DuckStation
+tree at paths upstream does not have) and the lines it inserts into
+upstream files (`hooks.txt`: hook calls, `#include` lines and the NTSC
+scanline overrides), each insertion located by a 64-bit hash of the
+upstream lines next to it. No upstream line is removed or changed. The
+series:
 
 1. Makes the EGL context available on every Linux build, which a
    surfaceless headless build needs.
-2. Adds the psxtrace capture module to `duckstation-regtest` (source files
-   the series creates) plus its CLI flags - `-psxtrace PATH`,
-   `-psxtrace-anchor-pc HEX`
+2. Adds the psxtrace capture module to `duckstation-regtest` plus its CLI
+   flags - `-psxtrace PATH`, `-psxtrace-anchor-pc HEX`
    (default `0x8001ED5C`, Spyro 1 GamestateDraw), `-psxtrace-anchor-hit N`
    (default 1), `-psxtrace-frames N` (0 = bound by `-frames`), and
    `-dump-ram-at-anchor PATH` (2 MB main-RAM dump on the first armed
-   hit) - and, in later patches, the region table file, the recorders
-   described below, `-card1 none`, and an `OPENPETE_SPU_DUMP` final-mix
-   WAV dump.
+   hit) - the region table file, the recorders described below, the pad
+   script, movie playback, card import and export, `-card1 none`, the
+   motor log, and an `OPENPETE_SPU_DUMP` final-mix WAV dump.
+3. Makes NTSC lines alternate 3413 and 3412 GPU ticks and PAL lines 3405
+   (Known artefacts).
 
 `scripts/setup_duckstation.sh` applies the series onto the pin with
-`git am` on a detached HEAD. The committer name and email are constants,
-each committer date is the patch's author date, and system and global git
-configuration, hooks and signing are excluded, so every machine produces
-the same commit ids from the same pin and patch files. The resulting head
-is recorded in `third_party/duckstation-patches/applied-head.txt`; the
-script refuses when the head it produces differs from the record, which
-means the pin or a patch changed without the record. DuckStation's build
-stamps the checkout's HEAD commit into the binary, so the build hash every
-trace header carries is the recorded head. After setup, `git status` in
-the openpete checkout lists `third_party/duckstation` as modified (its
+`scripts/duckstation_hooks.py apply`: it builds the pin's tree with the
+insertions made and the series' files added, using git's object commands
+without filters or local configuration, and commits it with parent the
+pin, a constant author and committer, both dates the pin's committer date
+and a constant message, so the commit id (the applied head) is a function
+of the pin and the series only. `applied-head.txt` records it; the script
+refuses when the head it produces differs from the record, which means the
+pin or the series changed without the record, and refuses by name an
+insertion whose anchor no longer matches the upstream text (after a pin
+bump; the series README describes re-deriving it). `OPENPETE_DS_DIR`
+selects a checkout other than `third_party/duckstation`. DuckStation's
+build stamps the checkout's HEAD commit into the binary, so the build hash
+every trace header carries is the recorded head. After setup, `git status`
+in the openpete checkout lists `third_party/duckstation` as modified (its
 HEAD is the applied head, not the upstream pin); that path is never
 staged.
 
@@ -159,11 +169,10 @@ other recorded events of its record is readable.
 Every tick column (`.vsync` `entry_tick` and `ret_tick`, `.loads`
 `issue_tick` and `done_tick`, `.cdsync` `tick`, `.watch` `tick`,
 `.vblpos` and `.spuq` `tick`) is the CPU tick of the instruction the
-recorder stopped at. Before patch 0029 the recorders read a counter that
-advances only at the emulator's scheduled events, so every call between
-two events shared one value (Spyro 1 `.vsync` rows 795898-795901: a wait's
-return and three later queries at 2315778078); patch 0029 adds the ticks
-the CPU has run since, and the same rows read 2315787079, 2315787088,
+recorder stopped at. A counter that advances only at the emulator's
+scheduled events gives every call between two events one value (Spyro 1 `.vsync` rows 795898-795901: a wait's
+return and three later queries at 2315778078); the recorders add the
+ticks the CPU has run since, and the same rows read 2315787079, 2315787088,
 2315787208 and 2315789070. A tick divided by 768 is an SPU sample.
 
 `--vblpos` (capture script; DuckStation `-psxtrace-vblpos SPANS
@@ -184,7 +193,7 @@ on the VSync recorder's stack, so it needs `--vsync-pc`. Columns:
 | `t_rec` | record being accumulated when `t` was entered |
 | `k` | `t`'s ordinal in `t_rec`: executions at pc == `t` since that record's anchor, outside exception handlers, each preceded by a game-code instruction |
 | `tick` | exact tick of the dispatch (for `nested`, of the enclosing dispatch) |
-| `rt` | the main-RAM word (KSEG0, word-aligned) of the first game-code load, between the `rfe` and `t` and in `t_rec`, of a word the row's VSync callback stored (below); `-` when none (patch 0046; version 1 sidecars have neither column) |
+| `rt` | the main-RAM word (KSEG0, word-aligned) of the first game-code load, between the `rfe` and `t` and in `t_rec`, of a word the row's VSync callback stored (below); `-` when none (version 1 sidecars have neither column) |
 | `rk` | `rt`'s ordinal: game-code loads of that word outside exception handlers since `t_rec`'s anchor, the load included |
 
 Game code is RAM at or above `0x10000` outside the library spans:
@@ -217,7 +226,7 @@ self_entry_skipped= shadow_dropped= records= read_resolved=` (rows with
 an `rt`) accounts for every VBLANK
 after arming (`vbl_irqs = rows + in_wait`, and equals the VBLANK span of
 the capture); the capture refuses `vbl_irqs=0`. The recorder runs on the
-interpreter through two hooks the patch adds to the CPU core: one called
+interpreter through two hooks the series adds to the CPU core: one called
 before each instruction and one called when an exception is raised, with
 CAUSE and EPC.
 
@@ -487,10 +496,11 @@ see dirtiness: `git describe --dirty` finds no tag in the checkout). The
 gate refuses a golden whose build hash differs from the recorded head
 unless `OPENPETE_ORACLE_ALLOW_FORK_DRIFT=<reason>` names why.
 
-A change to a patch, to `series` or to the pin changes the head. Its
-change set regenerates the series (`git format-patch --zero-commit
---no-signature -N <pin>..`), runs `scripts/setup_duckstation.sh --record`
-to rewrite `applied-head.txt`, and the three games' goldens are deleted
+A change to the series or to the pin changes the head. Its change set
+rewrites `hooks.txt` and `files/` with `scripts/duckstation_hooks.py derive`
+from a checkout at the applied head carrying the change, runs
+`scripts/setup_duckstation.sh --record` to rewrite `applied-head.txt`, and
+every oracle golden is deleted
 (`rm tests/golden/<game>/psxtrace-demo-20k.bin*`) and recaptured by the
 next gate run of each game.
 
@@ -500,9 +510,9 @@ next gate run of each game.
 scripts/setup_duckstation.sh
 ```
 
-Idempotent. It initialises the submodule; applies the patch series onto
-the pin, or leaves a checkout already at the recorded head as it is; resets
-a checkout at another head to the pin and re-applies, refusing instead when
+Idempotent. It initialises the submodule; applies the series onto the
+pin, or leaves a checkout already at the recorded head as it is; moves a
+checkout at another head to the applied head, refusing instead when
 the checkout has changes to tracked files or commits on top of the
 recorded head; prints the head; downloads the upstream prebuilt-deps
 tarball (`deps-linux-x64.tar.xz`, release pinned in the script, SHA256
@@ -653,8 +663,8 @@ the set on which both of openpete's stick responses, `linear` and
    consume-keyed).
 2. `tools/livepad.py phys` turns each recorded stick byte back into the
    stream value that produced it.
-3. DuckStation plays those rows with `--bk2-phys` (regtest `-bk2-phys`,
-   patch 0047): each axis value goes through DuckStation's live input path
+3. DuckStation plays those rows with `--bk2-phys` (regtest `-bk2-phys`):
+   each axis value goes through DuckStation's live input path
    at its default settings, keyed on the game's pad-ring consumer one VBL
    early.
    `--words HEX:3` (regtest `-psxtrace-words`) records Spyro's position at
@@ -678,7 +688,7 @@ live sample is latched. `--mapping` selects openpete's `--stick-response`:
 measured from DuckStation's live input path, `linear` the negative
 control, which diverges. The
 rows are `ctest -L livepad` (labelled `slow`); each skips (64) on a build
-without `--stick-response` or a fork without patch 0047.
+without `--stick-response` or a reference binary without `-bk2-phys`.
 `OPENPETE_DS_DIR` points the harness and `scripts/capture_psx_oracle_ds.sh`
 at another DuckStation checkout.
 
@@ -1130,13 +1140,13 @@ tripwire for that audit.
   need fixing before regtest could drive visual regression tests.
 
 - The NTSC line is 227.5 colour-subcarrier cycles, 3412.5 GPU ticks, the
-  period `core/include/openpete_time.h` encodes (2250000/37609 Hz). Patch
-  0030 sets the reference's NTSC lines to alternate 3413 and 3412 GPU
+  period `core/include/openpete_time.h` encodes (2250000/37609 Hz). The
+  series sets the reference's NTSC lines to alternate 3413 and 3412 GPU
   ticks and its PAL line to 3405. The reference frame is then 897487.5
   GPU ticks on average, 566120.83 CPU ticks at a 53693175 Hz GPU clock
   (psx-spx's video clock; the 15 x colour-subcarrier clock, 53693181.8 Hz,
   gives 566120.76); the `.vsync` waited rows of a 2000-record Spyro 1
-  capture read 566120.81 by least squares (566203.76 without the patch). A
+  capture read 566120.81 by least squares (566203.76 with upstream's 3413-tick lines). A
   model that converts reference CPU ticks to VBL fractions uses this one
   period against a golden and against hardware.
 

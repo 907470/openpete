@@ -41,15 +41,14 @@ retail SCPH-1001 BIOS ([DuckStation oracle](duckstation-oracle.md)).
   upstream commit it pins and holds none of DuckStation's files.
   `scripts/setup_duckstation.sh` initialises the submodule from upstream
   at that commit on a developer's machine.
-- `third_party/duckstation-patches/` is openpete's patch series: `git
-  format-patch` files that add the trace recorders, in files the series
-  creates, and edit upstream files where a recorder hooks in. Each patch
-  carries lines of the upstream files it edits as diff context, and some of
-  its hunks replace upstream lines with modified copies. The setup script
-  applies the series to the pinned commit and builds the test binary
-  locally. The series is being restructured so that the recorders and option
-  parsing live in files the series owns and the remaining edits to upstream
-  files are applied from anchor rows that carry no upstream text.
+- `third_party/duckstation-patches/` is openpete's series: whole files of
+  its own (`files/`), copied into the reference tree at paths upstream
+  lacks, and `hooks.txt`, a list of inserted lines, each located by a
+  salted hash of a window of upstream text. The series carries no upstream
+  context, removed or modified line. `scripts/duckstation_hooks.py`, run by
+  the setup script, applies it to the pinned commit and builds the test
+  binary locally; the applied head is a function of the pin and the applied
+  tree.
 - No package contains DuckStation or any part of it.
 
 Data the reference produced (the trace goldens under `tests/golden/`, which
@@ -64,7 +63,7 @@ earlier code that followed it:
 
 | code | measurement | instrument |
 | ---- | ----------- | ---------- |
-| controller motor response, `core/input/rumble_response.c` | `tests/unit/data/rumble-response/reference.tsv` | `tools/rumble_response_measure.py`, `tools/rumble_probe/` |
+| controller motor response (the input offset, output scale and small-motor rule; the cubic is Pokopom's, below), `core/input/rumble_response.c` | `tests/unit/data/rumble-response/reference.tsv` | `tools/rumble_response_measure.py`, `tools/rumble_probe/` |
 | line rasterizer of the unit tests, `tests/unit/psx_gpu_line.c` | `tests/unit/data/gpu-line/line.pixels` | `tools/gpu_blackbox/measure_lines.py` |
 | UI sprite texel stepping, `games/common/renderer/psx_uv.c` | `tests/unit/data/gpu-uv/uv.texels` | `tools/gpu_blackbox/measure_uv.py` |
 | SPU voice envelope, `third_party/PsyCross/src/audio/PsyX_SPUAL.cpp` | `tests/unit/data/spu-envelope/reference.env` | `tools/spu_envelope_measure.py`, `tools/spu_envelope_probe/` |

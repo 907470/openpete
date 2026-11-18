@@ -2,47 +2,56 @@
 # scripts/setup_duckstation.sh - bootstrap the DuckStation regtest build that
 # captures the openpete .psxtrace oracle goldens.
 #
-# third_party/duckstation pins upstream stenzek/duckstation at the commit the
-# psxtrace patch series is based on. DuckStation is CC BY-NC-ND 4.0, which
-# forbids distributing a modified copy, so the project carries its changes as
-# the series in third_party/duckstation-patches/ (listed in `series`) and
-# this script applies them onto the pin with `git am`:
+# third_party/duckstation pins upstream stenzek/duckstation. DuckStation is
+# CC BY-NC-ND 4.0, which forbids distributing a modified copy, so the project
+# carries its changes as the series in third_party/duckstation-patches/,
+# which holds no upstream text: whole files of its own (`files/`) and the
+# lines it inserts into upstream files (`hooks.txt`), each located by a hash
+# of the upstream lines around the insertion point.
+# scripts/duckstation_hooks.py applies it onto the pin:
 #
-#   - detached HEAD at the pin, then `git am` of every patch in order;
-#   - committer name and email are constants and each committer date is the
-#     patch's author date, with system and global git config, hooks and
-#     signing excluded, so every machine produces the same commit ids;
-#   - the resulting head must equal third_party/duckstation-patches/
+#   - the applied tree is the pin's tree with the insertions made and the
+#     series' files added, written without git filters or local config;
+#   - it is committed with parent the pin, a constant author and committer,
+#     both dates the pin's committer date and a constant message, so the
+#     commit id (the applied head) is a function of the pin and the series
+#     only;
+#   - the applied head must equal third_party/duckstation-patches/
 #     applied-head.txt; DuckStation stamps it into the binary as its scm hash
 #     and every trace header carries it, and the oracle gate and the capture
 #     script compare against the file.
 #
+# An insertion whose anchor no longer matches the upstream text (after a pin
+# bump) is refused by name; the series README describes re-deriving it.
+#
 # Idempotent: a checkout already at the recorded head whose last application
-# used the current pin and patch files changes nothing. A checkout at another
-# head is reset to the pin and re-applied when its tracked files are clean and
-# it carries no commits on top of the recorded head; otherwise the script
-# refuses and names the reason. The build step runs on every invocation
-# (ninja is a no-op when nothing changed), so the binary always carries the
-# checkout's head.
+# used the current pin and series changes nothing. A checkout at another head
+# is moved to the applied head when its tracked files are clean and it carries
+# no commits on top of the recorded head; otherwise the script refuses and
+# names the reason. The build step runs on every invocation (ninja is a no-op
+# when nothing changed), so the binary always carries the checkout's head.
 #
 # Usage: scripts/setup_duckstation.sh [--record] [--no-build]
 #   --record    write the applied head to applied-head.txt instead of refusing
 #               on a mismatch (after an intentional change to the series or
 #               the pin; the oracle goldens are then recaptured)
 #   --no-build  apply the series only
+# Environment:
+#   OPENPETE_DS_DIR  the DuckStation checkout to apply into and build
+#                    (default third_party/duckstation); it must hold the pin
+#                    named by third_party/duckstation's gitlink
 #
 # Exit: 0 done; 1 a step failed or a refusal (reason on stderr); 64 usage.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-DS_DIR="third_party/duckstation"
-PATCH_DIR="third_party/duckstation-patches"
-RECORD_FILE="$PATCH_DIR/applied-head.txt"
+PIN_PATH="third_party/duckstation"
+DS_DIR="${OPENPETE_DS_DIR:-$PIN_PATH}"
+SERIES_DIR="third_party/duckstation-patches"
+RECORD_FILE="$SERIES_DIR/applied-head.txt"
 DEPS_VERSION="release-20260404"
 DEPS_FILE="deps-linux-x64.tar.xz"
 DEPS_SHA256="8266f12d3c43e0244411908e71cf150f4d57d5e3b0782ce0a9c295905a3efe7b"
-COMMITTER_NAME="openpete psxtrace series"
-COMMITTER_EMAIL="psxtrace-series@openpete.invalid"
 
 RECORD=0
 BUILD=1
@@ -57,31 +66,26 @@ done
 
 die() { echo "[setup-ds] refusing: $*" >&2; exit 1; }
 
-if [[ ! -f "$DS_DIR/CMakeLists.txt" ]]; then
+if [[ "$DS_DIR" == "$PIN_PATH" && ! -f "$DS_DIR/CMakeLists.txt" ]]; then
     echo "[setup-ds] initialising submodule"
     git submodule update --init --recursive "$DS_DIR"
 fi
+[[ -f "$DS_DIR/CMakeLists.txt" ]] || die "$DS_DIR is not a DuckStation checkout"
 
-# ---- apply the patch series onto the pin -------------------------------------
-PIN="$(git ls-files -s "$DS_DIR" | awk '{print $2}')"
-[[ -n "$PIN" ]] || die "no gitlink for $DS_DIR in the index"
+# ---- apply the series onto the pin -------------------------------------------
+PIN="$(git ls-files -s "$PIN_PATH" | awk '{print $2}')"
+[[ -n "$PIN" ]] || die "no gitlink for $PIN_PATH in the index"
 git -C "$DS_DIR" cat-file -e "$PIN^{commit}" 2>/dev/null \
-    || die "pin $PIN is not in the submodule repository (git -C $DS_DIR fetch upstream)"
+    || die "pin $PIN is not in $DS_DIR (git -C $DS_DIR fetch upstream)"
+[[ -f "$SERIES_DIR/hooks.txt" && -d "$SERIES_DIR/files" ]] \
+    || die "$SERIES_DIR lacks hooks.txt or files/"
 
-PATCHES=()
-while IFS= read -r p; do
-    [[ -z "$p" || "$p" == \#* ]] && continue
-    [[ -f "$PATCH_DIR/$p" ]] || die "series names $p, absent from $PATCH_DIR"
-    PATCHES+=("$(pwd)/$PATCH_DIR/$p")
-done < "$PATCH_DIR/series"
-[[ ${#PATCHES[@]} -gt 0 ]] || die "$PATCH_DIR/series lists no patch"
-
-# Digest of everything the head is a function of: the pin, the series order
-# and every patch file's bytes. Stored in the submodule's git directory after
-# a successful application; a match means the checkout's head is current.
-INPUTS="$( { echo "pin $PIN"; for p in "${PATCHES[@]}"; do
-    echo "$(basename "$p") $(sha256sum < "$p" | cut -d' ' -f1)"; done; } \
-    | sha256sum | cut -d' ' -f1)"
+# Digest of everything the head is a function of: the pin, the manifest and
+# every series-owned file's path and bytes. Stored in the checkout's git
+# directory after a successful application; a match means the head is current.
+INPUTS="$( { echo "pin $PIN"; sha256sum < "$SERIES_DIR/hooks.txt";
+    ( cd "$SERIES_DIR/files" && find . -type f -print0 | LC_ALL=C sort -z \
+        | xargs -0 sha256sum ); } | sha256sum | cut -d' ' -f1)"
 DS_GITDIR="$(git -C "$DS_DIR" rev-parse --absolute-git-dir)"
 STAMP="$DS_GITDIR/openpete-series.sha256"
 
@@ -91,14 +95,12 @@ HEAD_NOW="$(git -C "$DS_DIR" rev-parse HEAD)"
 # Staging the submodule path after setup moves the gitlink to the applied
 # head, a commit upstream does not have.
 [[ "$PIN" != "$RECORDED" ]] \
-    || die "the $DS_DIR gitlink points at the applied head $PIN, not the upstream pin; restore it (git restore --staged $DS_DIR)"
+    || die "the $PIN_PATH gitlink points at the applied head $PIN, not the upstream pin; restore it (git restore --staged $PIN_PATH)"
 
-[[ -d "$DS_GITDIR/rebase-apply" ]] \
-    && die "a git am or rebase is in progress in $DS_DIR (git -C $DS_DIR am --abort)"
 # A build from modified tracked files would stamp a head whose tree it does
 # not contain.
 if [[ -n "$(git -C "$DS_DIR" status --porcelain --untracked-files=no)" ]]; then
-    die "$DS_DIR has changes to tracked files; commit them as a patch in $PATCH_DIR/ or discard them"
+    die "$DS_DIR has changes to tracked files; carry them in $SERIES_DIR/ or discard them"
 fi
 
 if [[ -n "$RECORDED" && "$HEAD_NOW" == "$RECORDED" \
@@ -108,31 +110,22 @@ else
     if [[ -n "$RECORDED" && "$HEAD_NOW" != "$RECORDED" ]] \
        && git -C "$DS_DIR" cat-file -e "$RECORDED^{commit}" 2>/dev/null \
        && git -C "$DS_DIR" merge-base --is-ancestor "$RECORDED" "$HEAD_NOW"; then
-        die "$DS_DIR carries $(git -C "$DS_DIR" rev-list --count "$RECORDED..$HEAD_NOW") commit(s) on top of the applied series; export them into $PATCH_DIR/ (git format-patch --zero-commit --no-signature -N) or check out $RECORDED"
+        die "$DS_DIR carries $(git -C "$DS_DIR" rev-list --count "$RECORDED..$HEAD_NOW") commit(s) on top of the applied series; carry them in $SERIES_DIR/ or check out $RECORDED"
     fi
-    echo "[setup-ds] applying ${#PATCHES[@]} patches onto pin $PIN"
-    git -C "$DS_DIR" checkout -q --detach "$PIN"
-    if ! GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-         GIT_COMMITTER_NAME="$COMMITTER_NAME" GIT_COMMITTER_EMAIL="$COMMITTER_EMAIL" \
-         git -C "$DS_DIR" -c core.hooksPath=/dev/null -c core.autocrlf=false \
-             -c i18n.commitEncoding=UTF-8 \
-             am -q --committer-date-is-author-date --no-3way --no-message-id \
-                --no-keep-cr --no-scissors --utf8 --no-gpg-sign \
-                --whitespace=nowarn "${PATCHES[@]}"; then
-        git -C "$DS_DIR" am --abort || true
-        git -C "$DS_DIR" checkout -q --detach "$PIN"
-        die "git am failed; $DS_DIR left at the pin $PIN"
-    fi
-    HEAD_NOW="$(git -C "$DS_DIR" rev-parse HEAD)"
-    if [[ "$HEAD_NOW" != "$RECORDED" ]]; then
+    echo "[setup-ds] applying the series onto pin $PIN"
+    NEW_HEAD="$(python3 scripts/duckstation_hooks.py apply "$DS_DIR" --pin "$PIN" --series "$SERIES_DIR" --print-head)" \
+        || die "the series does not apply onto $PIN (reason above)"
+    if [[ "$NEW_HEAD" != "$RECORDED" ]]; then
         if [[ $RECORD -eq 1 ]]; then
-            echo "$HEAD_NOW" > "$RECORD_FILE"
-            echo "[setup-ds] recorded $HEAD_NOW in $RECORD_FILE (was ${RECORDED:-absent});" \
+            echo "$NEW_HEAD" > "$RECORD_FILE"
+            echo "[setup-ds] recorded $NEW_HEAD in $RECORD_FILE (was ${RECORDED:-absent});" \
                  "recapture every oracle golden"
         else
-            die "applied head $HEAD_NOW differs from $RECORD_FILE (${RECORDED:-absent}): the pin or the series changed without the record; rerun with --record and recapture the oracle goldens"
+            die "applied head $NEW_HEAD differs from $RECORD_FILE (${RECORDED:-absent}): the pin or the series changed without the record; rerun with --record and recapture the oracle goldens"
         fi
     fi
+    git -C "$DS_DIR" checkout -q --detach "$NEW_HEAD"
+    HEAD_NOW="$NEW_HEAD"
     echo "$INPUTS" > "$STAMP"
 fi
 echo "[setup-ds] head: $HEAD_NOW"

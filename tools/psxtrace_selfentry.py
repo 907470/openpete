@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Recorder inputs for the DuckStation `.vblpos` sidecar (psxtrace patch 0029).
+"""Recorder inputs for the DuckStation `.vblpos` sidecar (the psxtrace series).
 
 `scan GAME`: lists every generated function whose body contains
 `goto block_<self>;`, a branch back to the function's first instruction.

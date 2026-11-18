@@ -11,7 +11,7 @@ over SIO0 with interrupts off: it enters configuration mode, selects analog
 mode, maps actuator byte 0 to the small motor and byte 1 to the large one,
 then polls every byte pair twice, once with the small byte in the outer loop
 and once with the large byte in the outer loop (see probe.c). The reference
-test binary runs it with -motor-log (third_party/duckstation-patches 0048),
+test binary runs it with -motor-log (third_party/duckstation-patches),
 which writes one row per change of a motor's state: the motor, its new byte,
 the other motor's byte and the intensity's bits. The table is written only
 when every (byte, other byte) combination of each motor was logged, the

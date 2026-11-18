@@ -1,71 +1,82 @@
-# DuckStation psxtrace patch series
+# DuckStation psxtrace series
 
-The openpete project's own changes to DuckStation: the `duckstation-regtest`
-psxtrace capture module and its recorders, which write the reference trace
-the oracle gate (`tests/harness/check_psx_oracle.sh`) replays and the
-per-record GTE hash sidecar (`<trace>.gte`, patch 0028) it compares, plus a
-headless EGL build fix, an SPU final-mix WAV dump, and the card probes (PC-keyed RAM snapshots, the card window recorder, bk2 playback, card export and import), the card transfer start recorder, live-mapping bk2 playback, the per-record guest words recorder and the motor recorder. Each file is
-`git format-patch` output, one commit per file, applied in the order
-`series` lists.
+The openpete project's own additions to DuckStation: the
+`duckstation-regtest` psxtrace capture module and its recorders, which write
+the reference trace the oracle gate (`tests/harness/check_psx_oracle.sh`)
+replays and its sidecars, the pad script, movie playback, card import and
+export, the motor log, an SPU final-mix WAV dump, a headless EGL build fix,
+and NTSC scanlines of alternating length.
 
 The submodule `third_party/duckstation` pins upstream
-`https://github.com/stenzek/duckstation.git` at `e4c55ad0283f`, the commit
-the series is based on. DuckStation is licensed CC BY-NC-ND 4.0, which
-forbids distributing a modified DuckStation, so the project distributes the
-patches and applies them locally.
+`https://github.com/stenzek/duckstation.git` at `e4c55ad0283f`. DuckStation
+is licensed CC BY-NC-ND 4.0, which forbids distributing a modified
+DuckStation, so the project distributes its additions and applies them
+locally. The series holds no upstream text:
 
-`scripts/setup_duckstation.sh` applies the series onto the pin with `git am`
-under a fixed committer identity and author-date committer dates, with
-system and global git configuration, hooks and signing excluded, so every
-machine produces the same commit ids, then builds `duckstation-regtest`.
-`applied-head.txt` records the resulting head commit; DuckStation stamps it
-into the binary and every trace header as `scm_hash`, and the oracle gate
-refuses a golden whose `scm_hash` differs from it.
+- `files/<path>`: files of the series, copied to `<path>` in the DuckStation
+  tree; each path is absent upstream.
+  - `src/core/openpete_hooks.h`: the hook variables the recorders set and
+    the core calls (CPU instruction and exception, CD-ROM command, interrupt
+    and register read, GTE instruction, root-counter read, controller command
+    and motor), `SPU::GetVoiceHead`, `System::GetFrameStartTick`.
+  - `src/core/openpete_crtc.h`: NTSC scanline pairs (below).
+  - `src/core/openpete_cdrom.inl`, `src/core/openpete_spu.inl`: code that
+    reads the CD-ROM's FIFOs and the SPU's voices and final mix, compiled
+    inside `cdrom.cpp` and `spu.cpp` by one inserted `#include` each.
+  - `src/duckstation-regtest/openpete_regtest.{h,cpp}`: every option of the
+    test binary the series adds, and the pad script, movie player, motor
+    log, card import and export, behind five calls from `regtest_host.cpp`.
+  - `src/duckstation-regtest/{psxtrace,probe}_capture.{h,cpp}`: the
+    recorders.
+  - `src/duckstation-regtest/openpete.cmake`: adds the sources and `minizip`
+    to the test binary.
+- `hooks.txt`: the lines inserted into upstream files: hook calls,
+  `#include` lines and the scanline overrides. No upstream line is removed
+  or changed. Each insertion is located by an anchor: the first 16 hex
+  digits of `sha256("openpete-anchor-1\0" + path + "\0" + window)`, where the
+  window is the smallest run of upstream lines next to the insertion point
+  that holds at least 48 non-blank characters and occurs once in the file.
+  A 64-bit digest of a window of 48 or more characters cannot reproduce it;
+  only hashing candidate windows of the upstream file finds it.
+- `applied-head.txt`: the applied head.
 
-Patches that change what a capture records, by number:
+NTSC scanlines: an NTSC line is 227.5 colour-subcarrier cycles, 3412.5 GPU
+clocks, so lines alternate between 3413 and 3412 clocks and a VBL is
+566120.83 CPU ticks (59.826 Hz); a PAL line is 3405 clocks. Upstream gives
+every line 3413 (PAL 3406) clocks. The CRTC's `horizontal_total` field holds
+the current line's length; the sites that span several lines (the line
+wrap of the tick event, the ticks until the next CRTC event, the beam
+position, the ticks until a beam position, the line and field frequencies)
+are overridden after upstream computes them. Not carried: the save-state
+field (no capture loads a state), the PAL display-window clamp (3406), the
+GPU-dump replay's per-frame tick count and the debug window's text.
 
-| patch | change |
-| --- | --- |
-| 0029 | every sidecar tick is the exact instruction tick (the CPU tick of the instruction); `<trace>.vblpos` (`-psxtrace-vblpos SPANS`, `-psxtrace-vblpos-skip LIST`: each VBLANK interrupt taken outside a waited VSync, with EPC and the first game-code call target and its ordinal after the handler) and `<trace>.spuq` (`-psxtrace-spuq KIND:HEX`: SpuSetKey, SpuGetKeyStatus, SpuGetAllKeysStatus and envelope- or pitch-setting SpuSetVoiceAttr calls with their arguments); two core hooks, one before each instruction and one at an exception. Layouts: `docs/src/developer/duckstation-oracle.md` |
-| 0030 | the NTSC line alternates between 3413 and 3412 GPU ticks (3412.5 on average, 227.5 colour-subcarrier cycles) and the PAL line is 3405 ticks, so a VBL is 566120.83 CPU ticks instead of 566203.78: every sidecar tick column, the `.loads` issue VBLs, the `.vsync` `v0` HBLANK counts and the CD-timing state of a load window move |
-| 0032 | the `OPENPETE_SPU_DUMP` final-mix dump is written on the SPU's final-mix output path (before, the dump held a header and no frames) and shutdown closes it, writing the RIFF and data sizes |
-| 0033 | `-psxtrace-spuq spuwrite:HEX`: a `.spuq` row per SpuWrite call with source, size and the head of every sounding voice |
-| 0034 | `-pad-script PATH`: port 1 presses from steps that wait on guest RAM; `quit` ends the run |
-| 0035 | `-ram-dump-at PC[,t1=HEX][,a0=HEX][,hit=N][,ret]=PATH`: main RAM to PATH and the registers to `PATH.txt` at the Nth execution of PC with the register conditions true, or at that call's return; `PcHooks` shares one breakpoint per address among probes |
-| 0036 | `-card-window PATH`: OpenEvent calls, DeliverEvent entries, card commands on SIO0 (command and sector), card event handler entries (a jal/jalr to the handler's address), main-path loads of card-handler bytes between a VBLANK and the card completion, and the handler-written set's size at every 2000th VBLANK |
-| 0037 | `-bk2 PATH`: a BizHawk Octoshock movie on the port 1 analog controller, one Input Log line per frame |
-| 0038 | `-card-export SLOT:FRAME:PATH`: the card image (131072 raw bytes) after FRAME frames, `0` before the first, `end` at shutdown |
-| 0039 | `-card1 PATH`: slot 1's non-persistent card holds the image at PATH, never written back |
-| 0040 | header flag bit 5: each record's `pad1` is the anchor hit's CPU-tick offset from the VBLANK its `pad2` counts (the frame start tick, set where the frame number advances); before it `pad1` was `0xFFFFFFFF` |
-| 0041 | `-card-window` S rows (stores to card-driver kernel bytes) and T rows (bytes stored to `JOY_TX_DATA`), each with its tick offset from the VBLANK |
-| 0042 | `-psxtrace-card-active HEX`: `<trace>.card`, each card transfer's start (a nonzero store to the driver's transfer-active byte) with its tick offset from the VBLANK |
-| 0045 | `-bk2-groups-out PATH`: the inputs each consume group took; `-bk2-lead-groups PATH`: `-bk2-lead 1` predicts from those counts instead of the movie's (`scripts/capture_psx_oracle_ds.sh` reruns a consume-keyed capture until no row is mispredicted, writing `<trace>.bk2groups`) |
-| 0046 | `<trace>.vblpos` version 2: each row gains `rt rk`, the first game-code load (outside exception handlers, between the `rfe` and `t`, in `t`'s record) of a main-RAM word game code stored inside the row's handler (the VSync callback) and its ordinal among the record's game-code loads of the word, or `- -`; the trailer gains `read_resolved` |
-| 0047 | `-bk2-phys`: the `-bk2` movie's player 1 stick columns are SDL axis values, delivered through the live input path at its default settings; `-psxtrace-words HEX:N`: `<trace>.words`, the N guest words from HEX at every record (`tests/harness/check_livepad.sh`). A capture without either option is unchanged |
-| 0048 | `-motor-log PATH`: one row per change of an analog controller's motor state (the series' motor hook): the frame, the controller, the motor, the new and the other motor's state byte, and the intensity handed to the host's vibration call as single bits and decimal (`tools/rumble_response_measure.py`). A capture without it is unchanged |
+`scripts/setup_duckstation.sh` (environment `OPENPETE_DS_DIR` selects a
+checkout other than `third_party/duckstation`) runs
+`scripts/duckstation_hooks.py apply`: the pin's tree with the insertions
+made and the files added, written with git's object commands without
+filters or local configuration, committed with parent the pin, author and
+committer `openpete psxtrace series <psxtrace-series@openpete.invalid>`,
+both dates the pin's committer date and the message
+`openpete psxtrace series`. That commit id, the applied head, is a function
+of the pin and the series only. `applied-head.txt` records it; DuckStation
+stamps it into the binary and every trace header as `scm_hash`, and the
+oracle gate refuses a golden whose `scm_hash` differs from it.
+`scripts/duckstation_hooks.py check` applies twice and asserts the same head
+and that every upstream line of every target file is kept in order.
 
-Apply (from the openpete checkout root; `--no-build` skips the build):
+Changing the series: edit a checkout at the applied head (a series file, or
+an inserted line in an upstream file), run
+`scripts/duckstation_hooks.py derive <checkout> --pin <pin>` (it rewrites
+`hooks.txt` and `files/` from the checkout's difference to the pin and
+refuses a removed or changed upstream line), then
+`scripts/setup_duckstation.sh --record`, and recapture every game's oracle
+golden.
 
-```
-scripts/setup_duckstation.sh
-```
+Pin bump: `apply` lists every insertion whose anchor no longer matches,
+with its file, and refuses. `apply --partial` checks out the new pin with
+the matching insertions made; make the listed ones by hand there (their
+lines in `hooks.txt` say what goes where), run `derive`, `--record`, and
+recapture the goldens.
 
-The `git am` the script runs, from `third_party/duckstation` after
-`git checkout --detach e4c55ad0283ff26a76991a759d8db13d6969b9ec`:
-
-```
-GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-GIT_COMMITTER_NAME='openpete psxtrace series' \
-GIT_COMMITTER_EMAIL='psxtrace-series@openpete.invalid' \
-  git -c core.hooksPath=/dev/null -c core.autocrlf=false \
-      -c i18n.commitEncoding=UTF-8 \
-  am --committer-date-is-author-date --no-3way --no-message-id \
-     --no-keep-cr --no-scissors --utf8 --no-gpg-sign --whitespace=nowarn \
-  $(sed 's|^|../duckstation-patches/|' ../duckstation-patches/series)
-```
-
-A change to a patch, to `series` or to the pin changes the head:
-regenerate the series with `git format-patch --zero-commit --no-signature -N`
-from the pin, run `scripts/setup_duckstation.sh --record` to rewrite
-`applied-head.txt`, and recapture every game's oracle golden
-(`rm tests/golden/<game>/psxtrace-demo-20k.bin*`, then run the gate).
+Recorders and options: `docs/src/developer/duckstation-oracle.md`.

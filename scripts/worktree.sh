@@ -10,7 +10,7 @@
 #          is skipped unless --with-duckstation. Idempotent: a second run
 #          adds only what is missing and refuses a submodule checked out at
 #          a commit other than its pin (for third_party/duckstation, also
-#          other than the patch series head in
+#          other than the applied head in
 #          third_party/duckstation-patches/applied-head.txt). No symlink, no
 #          configure, no build.
 # remove   Removes the submodule worktrees, then the worktree, then prunes
@@ -171,7 +171,7 @@ cmd_remove() {
     [[ -f "$wt/.git" ]] || fail check "$wt is not a linked worktree (no .git file)"
 
     dirty=$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null | grep -v '^ *[?!]' || true)
-    # DuckStation checked out at the applied patch series differs from its
+    # DuckStation checked out at the applied series differs from its
     # upstream pin by design; that difference is not a change.
     if [[ -e "$wt/third_party/duckstation/.git" \
           && "$(git -C "$wt/third_party/duckstation" rev-parse HEAD 2>/dev/null)" \
@@ -229,7 +229,7 @@ cmd_remove() {
 }
 
 # ds_applied_head <worktree> <submodule path>: the head scripts/setup_duckstation.sh
-# records for the DuckStation patch series; empty for any other submodule.
+# records for the DuckStation series; empty for any other submodule.
 ds_applied_head() {
     [[ "$2" == third_party/duckstation ]] || return 0
     tr -d ' \n' < "$1/third_party/duckstation-patches/applied-head.txt" 2>/dev/null || true

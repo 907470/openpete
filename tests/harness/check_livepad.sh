@@ -92,7 +92,7 @@ OUT="${OPENPETE_LIVEPAD_OUT:-build/livepad/$GAME-$MAPPING}"
 [[ -f "$DISC" ]] || { echo "[livepad] SKIP: disc missing: $DISC" >&2; exit 64; }
 [[ -x "$DS_BIN" ]] || { echo "[livepad] SKIP: DuckStation not built: $DS_BIN (scripts/setup_duckstation.sh)" >&2; exit 64; }
 for _f in -bk2-phys -psxtrace-words; do
-    grep -aq -- "$_f" "$DS_BIN" || { echo "[livepad] SKIP: $DS_BIN lacks $_f (patch 0047; rerun scripts/setup_duckstation.sh)" >&2; exit 64; }
+    grep -aq -- "$_f" "$DS_BIN" || { echo "[livepad] SKIP: $DS_BIN lacks $_f (rerun scripts/setup_duckstation.sh)" >&2; exit 64; }
 done
 STICK_FLAG=()
 HELP="$("$BIN" --help 2>&1 || true)"

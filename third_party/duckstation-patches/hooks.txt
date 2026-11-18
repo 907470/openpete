@@ -1,0 +1,150 @@
+# Insertions into upstream files; scripts/duckstation_hooks.py applies them.
+pin e4c55ad0283ff26a76991a759d8db13d6969b9ec
+
+file src/core/analog_controller.cpp
+@ analog_controller.cpp:1 3 3 e11edcbdd339fdf9
++#include "openpete_hooks.h"
+@ analog_controller.cpp:2 1 1 a9fd3fd82b9285c7
++    if (OpenpetePad::g_motor_hook) [[unlikely]]
++      OpenpetePad::g_motor_hook(m_index, motor, value, hvalue);
+@ analog_controller.cpp:3 7 7 171b6c31bb01223e
++      if (OpenpetePad::g_command_hook) [[unlikely]]
++        OpenpetePad::g_command_hook(m_index, data_in);
+
+file src/core/analog_controller.h
+@ analog_controller.h:1 3 3 7b1f1dc95fd7193b
++  friend struct OpenpetePadAccess;
+
+file src/core/cdrom.cpp
+@ cdrom.cpp:1 2 2 226e9158489e1d5a
++#include "cpu_core.h"
++#include "openpete_hooks.h"
+@ cdrom.cpp:2 3 3 51de70eb3ee75b2c
++#include "openpete_cdrom.inl"
+@ cdrom.cpp:3 5 5 bee0cc0aa8b2e93f
++  if (u8 op_value; g_read_hook && OpenpeteTraceRead(offset, &op_value)) [[unlikely]]
++    return op_value;
+@ cdrom.cpp:4 1 1 44480c36142a750f
++      OpenpeteTraceCommand(value);
+@ cdrom.cpp:5 1 1 4ec4c49c1056ab65
++  OpenpeteTraceInterrupt(static_cast<u8>(interrupt));
+@ cdrom.cpp:6 2 2 4c43c501acfdcbd9
++    OpenpeteTraceInterrupt(s_state.interrupt_flag_register);
+
+file src/core/cpu_core.cpp
+@ cpu_core.cpp:1 3 3 5d3b56c2c19085ad
++#include "openpete_hooks.h"
+@ cpu_core.cpp:2 3 3 c933a379cf21c062
++
++  if (g_exception_hook) [[unlikely]]
++    g_exception_hook(g_state.cop0_regs.cause.bits, g_state.cop0_regs.EPC);
+@ cpu_core.cpp:3 4 4 fadeeac260030daf
++      if constexpr (debug)
++      {
++        if (g_instruction_hook) [[unlikely]]
++          g_instruction_hook(g_state.current_instruction_pc, g_state.current_instruction.bits);
++      }
++
+
+file src/core/gpu.cpp
+@ gpu.cpp:1 3 3 fb3a3157932e4433
++#include "openpete_crtc.h"
+@ gpu.cpp:2 2 2 c16bd293a12751a7
++  m_crtc_state.horizontal_total = OpenpeteCrtc::Reset(m_crtc_state.horizontal_total);
+@ gpu.cpp:3 5 5 b48a31af234f6016
++  TickCount op_fractional_ticks = 0;
++  return static_cast<float>(
++    static_cast<double>(SystemTicksToCRTCTicks(System::GetTicksPerSecond(), &op_fractional_ticks)) /
++    OpenpeteCrtc::MeanLineTicks());
+@ gpu.cpp:4 5 5 347dbaa5e132edd4
++  TickCount op_fractional_ticks = 0;
++  return static_cast<float>(
++    static_cast<double>(SystemTicksToCRTCTicks(System::GetTicksPerSecond(), &op_fractional_ticks)) /
++    (OpenpeteCrtc::MeanLineTicks() * static_cast<double>(m_crtc_state.vertical_total)));
+@ gpu.cpp:5 1 1 53c224d5f60582bb
++  cs.horizontal_total = OpenpeteCrtc::Configure(static_cast<u32>(System::ScaleTicksToOverclock(
++    static_cast<TickCount>((cs.vertical_total == NTSC_TOTAL_LINES) ? OpenpeteCrtc::NTSC_TICKS_PER_LINE_PAIR :
++                                                                      OpenpeteCrtc::PAL_TICKS_PER_LINE_PAIR))));
+@ gpu.cpp:6 1 1 f879d8763f1b76b2
++  ticks_until_event = OpenpeteCrtc::TicksForLines(static_cast<u32>(lines_until_event), OpenpeteCrtc::g_short) -
++                      m_crtc_state.current_tick_in_scanline;
+@ gpu.cpp:7 7 7 8e16e16f8b2ceb12
++  const TickCount op_tick = m_crtc_state.current_tick_in_scanline;
+@ gpu.cpp:8 1 1 5a982dc6b60d6271
++  lines_to_draw =
++    OpenpeteCrtc::Advance(op_tick, &m_crtc_state.current_tick_in_scanline, &m_crtc_state.horizontal_total);
+@ gpu.cpp:9 1 1 c2a6c2f0659231c1
++  OpenpeteCrtc::BeamPosition(GetPendingCRTCTicks() + m_crtc_state.current_tick_in_scanline,
++                             m_crtc_state.current_scanline, m_crtc_state.vertical_total, out_ticks, out_line);
+@ gpu.cpp:10 2 2 98a672dde7b27984
++  return CRTCTicksToSystemTicks(OpenpeteCrtc::TicksUntil(GetPendingCRTCTicks() + m_crtc_state.current_tick_in_scanline,
++                                                        m_crtc_state.current_scanline, m_crtc_state.vertical_total,
++                                                        ticks, line),
++                                m_crtc_state.fractional_ticks);
+
+file src/core/gte.cpp
+@ gte.cpp:1 3 3 9a4880b7e3939b80
++#include "openpete_hooks.h"
+@ gte.cpp:2 5 5 5b66d700de74d796
++  if (g_trace_hook && TraceInstruction(inst_bits, REGS.r32, &ExecuteInstruction)) [[unlikely]]
++    return;
+
+file src/core/spu.cpp
+@ spu.cpp:1 3 3 576bc1852b9ba320
++#include "openpete_hooks.h"
+@ spu.cpp:2 6 6 4aa624fe90807b66
++#include "openpete_spu.inl"
+@ spu.cpp:3 4 4 020b48ed069d7a46
++  OpenpeteOutputDumpOpen();
+@ spu.cpp:4 4 4 bb510e8072fa8a58
++  OpenpeteOutputDumpClose();
+@ spu.cpp:5 3 3 d19cc318b0cafefb
++      OpenpeteOutputDumpFrame(output_frame - 2);
+
+file src/core/system.cpp
+@ system.cpp:1 3 3 4bd48cdc93782f9c
++#include "openpete_hooks.h"
+@ system.cpp:2 3 3 885fe26d2a1a8fe8
++  g_openpete_frame_start_tick = GetGlobalTickCounter();
+
+file src/core/timers.cpp
+@ timers.cpp:1 3 3 f4ee187f7d8e985c
++#include "openpete_hooks.h"
+@ timers.cpp:2 11 11 88b2a18d24b255e0
++      if (g_count_read_hook) [[unlikely]]
++        g_count_read_hook(timer_index, cs.counter);
+
+file src/duckstation-regtest/CMakeLists.txt
+@ CMakeLists.txt:1 1 1 bb5f256f43a29db5
++include(${CMAKE_CURRENT_SOURCE_DIR}/openpete.cmake)
+
+file src/duckstation-regtest/regtest_host.cpp
+@ regtest_host.cpp:1 2 2 736900bced6b5d05
++#include "openpete_regtest.h"
+@ regtest_host.cpp:2 3 3 1349dbf3f6e0ea78
++#include <condition_variable>
++#include <mutex>
+@ regtest_host.cpp:3 3 3 70e429e6cf20c7a6
++  if (OpenpeteRegtest::OnFrame())
++    s_frames_remaining = 0;
+@ regtest_host.cpp:4 3 3 0858046c59b72325
++    OpenpeteRegtest::OnSystemShutdown();
+@ regtest_host.cpp:5 1 1 730e067627e5da20
++  OpenpeteRegtest::PrintHelp();
+@ regtest_host.cpp:6 2 2 26978443138ac016
++      if (const int op_rc = OpenpeteRegtest::ParseArgument(argc, argv, i); op_rc != 0)
++      {
++        if (op_rc < 0)
++          return false;
++        continue;
++      }
+@ regtest_host.cpp:7 3 3 c20cbd72395c7348
++  if (!OpenpeteRegtest::Start())
++    goto cleanup;
++
+@ regtest_host.cpp:8 4 4 71f48fed104ec160
++  OpenpeteRegtest::Shutdown();
+
+file src/util/opengl_context.cpp
+@ opengl_context.cpp:1 3 3 f4418b9b4d8e3b56
++#include "opengl_context_egl.h"
