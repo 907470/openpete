@@ -46,12 +46,12 @@ core/record/bk2_movie.c	bk2_parse_groups	30	0
 core/record/record.c	rec_lazy_init	32	0	
 core/renderer/debug_render.cpp	openpete_psyx_take_screenshot_ext	30	0	
 core/renderer/native_render.c	alpha_census	53	0	
-core/renderer/native_render.c	compose_variant	34	0	
+core/renderer/native_render.c	compose_variant	33	0	
 core/renderer/native_render.c	draw_osd_overlay	52	0	
 core/renderer/native_render.c	draw_tex_runs	89	0	
 core/renderer/native_render.c	hd_flush_pending	28	0	
 core/renderer/native_render.c	key_ident_check	33	0	
-core/renderer/native_render.c	native_depth_prepass	76	0	
+core/renderer/native_render.c	native_depth_prepass	75	0	
 core/renderer/native_render.c	native_postfx_run	47	0	
 core/renderer/native_render.c	native_render_screenshot_all_impl	49	0	
 core/renderer/native_render.c	native_terrain_key_pass	64	0	
