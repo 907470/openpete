@@ -13618,21 +13618,43 @@ typedef struct {
     taud_bake b;
     uint32_t s; uint8_t gen, valid;
     uint32_t bakes;                    /* bakes of this sector since it took the slot */
+    uint32_t rsec;                     /* sector address of the last position-ring entry */
+    uint32_t rmoved;                   /* a ring entry of rsec differed from the one before it */
     uint32_t lastAudit;                /* openpete_frame of the last audit */
 } taud_shadow;
 
-static int s_taud = -1;                /* audit period in ticks, 0 = off */
-static int s_taud_poison = -2;         /* sector index the poison control perturbs, -1 = none */
-static int s_taud_skip_tex, s_taud_skip_anim, s_taud_skip_ring;
-static uint64_t s_taud_rwords, s_taud_rmis;   /* ring-entry words compared, entries that differed */
-static taud_shadow* s_taud_sh;         /* TSC_SLOTS entries, allocated when on */
-static taud_bake* s_taud_sink;         /* set while the audit's fresh bake runs */
-static uint64_t s_taud_audits, s_taud_rebaked, s_taud_elems, s_taud_faces, s_taud_pwords,
-                s_taud_twords, s_taud_masked, s_taud_mis, s_taud_missec, s_taud_sub, s_taud_noshadow, s_taud_fail;
-static int s_taud_logged;
-static char s_taud_first[320];
-static int s_taud_sample = -1;      /* the first sector index audited */
-static uint8_t s_taud_secset[512];     /* distinct sector indices audited (0..4095) */
+/* The audit's state is sim's: the audit runs inside terrain_build's serial
+ * slot pass (tgpu_take_ensure, tgpu_upload_sector, the ring and colour-table
+ * writers) on the scene producer, and its report runs at exit with sim in
+ * the mask. The walk's workers touch none of it. */
+static int s_taud OP_GUARDED_BY(sim) = -1;            /* audit period in ticks, 0 = off */
+static int s_taud_poison OP_GUARDED_BY(sim) = -2;     /* sector index the poison control perturbs, -1 = none */
+static int s_taud_skip_tex OP_GUARDED_BY(sim);
+static int s_taud_skip_anim OP_GUARDED_BY(sim);
+static int s_taud_skip_ring OP_GUARDED_BY(sim);
+static uint64_t s_taud_rwords OP_GUARDED_BY(sim);     /* ring-entry words compared */
+static uint64_t s_taud_rmis OP_GUARDED_BY(sim);       /* ring entries that differed */
+static taud_shadow* s_taud_sh OP_GUARDED_BY(sim) OP_PT_GUARDED_BY(sim);  /* TSC_SLOTS entries, allocated when on */
+/* Set while the audit's fresh bake runs, on the thread running it; a
+ * preview bake on another thread reads its own NULL. */
+static _Thread_local taud_bake* s_taud_sink;
+static uint64_t s_taud_audits OP_GUARDED_BY(sim);
+static uint64_t s_taud_rebaked OP_GUARDED_BY(sim);
+static uint64_t s_taud_rerolled OP_GUARDED_BY(sim);
+static uint64_t s_taud_elems OP_GUARDED_BY(sim);
+static uint64_t s_taud_faces OP_GUARDED_BY(sim);
+static uint64_t s_taud_pwords OP_GUARDED_BY(sim);
+static uint64_t s_taud_twords OP_GUARDED_BY(sim);
+static uint64_t s_taud_masked OP_GUARDED_BY(sim);
+static uint64_t s_taud_mis OP_GUARDED_BY(sim);
+static uint64_t s_taud_missec OP_GUARDED_BY(sim);
+static uint64_t s_taud_sub OP_GUARDED_BY(sim);
+static uint64_t s_taud_noshadow OP_GUARDED_BY(sim);
+static uint64_t s_taud_fail OP_GUARDED_BY(sim);
+static int s_taud_logged OP_GUARDED_BY(sim);
+static char s_taud_first[320] OP_GUARDED_BY(sim);
+static int s_taud_sample OP_GUARDED_BY(sim) = -1;     /* the first sector index audited */
+static uint8_t s_taud_secset[512] OP_GUARDED_BY(sim); /* distinct sector indices audited (0..4095) */
 
 static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                              uint32_t hqTable, int sec_index, int with_var);
@@ -13641,13 +13663,15 @@ static void tgpu_prev_rebase(tgpu_buf* buf, uint32_t first);
 
 /** @brief Prints the audit's counters and its first mismatch, at exit. */
 static void taud_report(void) {
+    OP_ROLE_ASSERT(sim);
     int secs = 0;
     for (int i = 0; i < (int)sizeof s_taud_secset; i++) secs += __builtin_popcount(s_taud_secset[i]);
-    fprintf(stderr, "[ter-audit] summary period=%d audits=%llu sectors=%d rebaked=%llu elems=%llu "
+    fprintf(stderr, "[ter-audit] summary period=%d audits=%llu sectors=%d rebaked=%llu rerolled=%llu elems=%llu "
             "faces=%llu prev_words=%llu tab_words=%llu tab_masked=%llu mismatches=%llu mismatch_audits=%llu "
             "subtick_skips=%llu noshadow=%llu bakefail=%llu ring_words=%llu ring_mismatches=%llu "
             "sample_sec=%d first=%s\n",
             s_taud, (unsigned long long)s_taud_audits, secs, (unsigned long long)s_taud_rebaked,
+            (unsigned long long)s_taud_rerolled,
             (unsigned long long)s_taud_elems, (unsigned long long)s_taud_faces,
             (unsigned long long)s_taud_pwords, (unsigned long long)s_taud_twords,
             (unsigned long long)s_taud_masked,
@@ -13659,7 +13683,7 @@ static void taud_report(void) {
 
 /** @brief Latches OPENPETE_TERRAIN_AUDIT and its controls on first use and returns the period.
  * @return The audit period in ticks, 0 when the audit is off. */
-static int taud_on(void) {
+static int taud_on(void) OP_REQUIRES(sim) {
     if (s_taud >= 0) return s_taud;
     const char* e = getenv("OPENPETE_TERRAIN_AUDIT");
     s_taud = (e && *e) ? atoi(e) : 0;
@@ -13745,7 +13769,7 @@ static int taud_take(taud_bake* K, const tgpu_buf* buf) {
  * references rebased). Counts the bakes of the slot's sector.
  * @param T The slot.
  * @param buf The uploaded bake buffers, indexed by arena. */
-static void taud_shadow_capture(const tgpu_slot_t* T, const tgpu_buf* buf) {
+static void taud_shadow_capture(const tgpu_slot_t* T, const tgpu_buf* buf) OP_REQUIRES(sim) {
     if (!taud_on()) return;
     taud_shadow* H = &s_taud_sh[T - s_tgpu];
     H->bakes = (H->valid && H->s == T->s) ? H->bakes + 1u : 1u;
@@ -13754,13 +13778,21 @@ static void taud_shadow_capture(const tgpu_slot_t* T, const tgpu_buf* buf) {
 }
 
 /** @brief Records the position-ring entry just written for a slot as its audit shadow.
+ *
+ * Marks the slot when the entry differs from the previous entry of the
+ * same sector, so an audit can tell a ring whose positions moved from one
+ * rewritten with equal positions on every vertex roll.
  * @param T The slot.
  * @param w The entry's words.
  * @param ent The entry's units. */
-static void taud_ring_capture(const tgpu_slot_t* T, const uint32_t* w, int ent) {
+static void taud_ring_capture(const tgpu_slot_t* T, const uint32_t* w, int ent) OP_REQUIRES(sim) {
     if (!taud_on()) return;
     taud_shadow* H = &s_taud_sh[T - s_tgpu];
-    H->b.rn = ent * (int)OPTC_PREV_REC_WORDS;
+    const int n = ent * (int)OPTC_PREV_REC_WORDS;
+    if (H->rsec != T->ringSec) H->rmoved = 0;
+    else if (H->b.rn != n || memcmp(H->b.rw, w, sizeof(*w) * (size_t)n) != 0) H->rmoved = 1;
+    H->rsec = T->ringSec;
+    H->b.rn = n;
     if (taud_copy((void**)&H->b.rw, &H->b.rcap, w, H->b.rn, sizeof(uint32_t)) != 0) H->b.rn = 0;
 }
 
@@ -13768,7 +13800,7 @@ static void taud_ring_capture(const tgpu_slot_t* T, const uint32_t* w, int ent) 
  * @param T The slot.
  * @param w The entry's words.
  * @param ent The entry's units. */
-static void taud_tab_capture(const tgpu_slot_t* T, const uint32_t* w, int ent) {
+static void taud_tab_capture(const tgpu_slot_t* T, const uint32_t* w, int ent) OP_REQUIRES(sim) {
     if (!taud_on()) return;
     taud_shadow* H = &s_taud_sh[T - s_tgpu];
     H->b.tn = ent * (int)OPTC_PREV_REC_WORDS;
@@ -13804,7 +13836,7 @@ static void taud_face_mark(const tgpu_buf* buf, int pass, int f) {
 /** @brief Perturbs the first corner of a poisoned sector's bake before its upload (the audit's negative control).
  * @param sec_index The level sector index.
  * @param buf The bake buffers, indexed by arena. */
-static void taud_poison(int sec_index, tgpu_buf* buf) {
+static void taud_poison(int sec_index, tgpu_buf* buf) OP_REQUIRES(sim) {
     if (s_taud_sink || !taud_on() || s_taud_poison < 0 || sec_index != s_taud_poison) return;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         if (buf[a].n == 0) continue;
@@ -13818,7 +13850,7 @@ static void taud_poison(int sec_index, tgpu_buf* buf) {
  * @param T The slot.
  * @param SC The decoded sector.
  * @return 1 when the bake must follow the texture generation. */
-static int taud_tex_moved(const tgpu_slot_t* T, const tscache_t* SC) {
+static int taud_tex_moved(const tgpu_slot_t* T, const tscache_t* SC) OP_REQUIRES_SHARED(sim) {
     return T->texGen != SC->texGen && !s_taud_skip_tex;
 }
 
@@ -13826,7 +13858,7 @@ static int taud_tex_moved(const tgpu_slot_t* T, const tscache_t* SC) {
  * @param T The slot.
  * @param SC The decoded sector.
  * @return 1 when the bake must follow the roll. */
-static int taud_anim_rolled(const tgpu_slot_t* T, const tscache_t* SC) {
+static int taud_anim_rolled(const tgpu_slot_t* T, const tscache_t* SC) OP_REQUIRES_SHARED(sim) {
     return SC->polyanim && T->animRoll != SC->vrollPres && !s_taud_skip_anim;
 }
 
@@ -13881,7 +13913,7 @@ static int taud_tab_cell(const taud_where* W, int i) {
  * @param b The fresh bytes of the field, or NULL.
  * @param len The field's length. */
 static void taud_note(const taud_where* W, int i, const char* fname,
-                      const uint8_t* a, const uint8_t* b, int len) {
+                      const uint8_t* a, const uint8_t* b, int len) OP_REQUIRES(sim) {
     char ha[20] = "-", hb[20] = "-", face[32] = "-";
     if (a) taud_hex(ha, a, len);
     if (b) taud_hex(hb, b, len);
@@ -13911,7 +13943,7 @@ static int taud_field_unread(const taud_field* F, int tab) {
  * @param x The resident element.
  * @param y The fresh element. */
 static void taud_note_field(const taud_where* W, int i, const taud_field* F,
-                            const uint8_t* x, const uint8_t* y) {
+                            const uint8_t* x, const uint8_t* y) OP_REQUIRES(sim) {
     int d = 0;
     while (x[F->off + d] == y[F->off + d]) d++;
     d &= ~1;
@@ -13931,7 +13963,7 @@ static void taud_note_field(const taud_where* W, int i, const taud_field* F,
  * @param b The fresh elements.
  * @param nb Their count.
  * @return 1 on a mismatch, else 0. */
-static int taud_cmp(const taud_where* W, const uint8_t* a, int na, const uint8_t* b, int nb) {
+static int taud_cmp(const taud_where* W, const uint8_t* a, int na, const uint8_t* b, int nb) OP_REQUIRES(sim) {
     const int n = na < nb ? na : nb;
     s_taud_elems += (uint64_t)n;
     for (int i = 0; i < n; i++) {
@@ -13958,7 +13990,7 @@ static int taud_cmp(const taud_where* W, const uint8_t* a, int na, const uint8_t
  * @param K The fresh bake.
  * @param W Where (sector, slot, arena filled).
  * @return The mismatch count, 0 to 3. */
-static int taud_cmp_arena(const taud_shadow* H, const taud_bake* K, taud_where W) {
+static int taud_cmp_arena(const taud_shadow* H, const taud_bake* K, taud_where W) OP_REQUIRES(sim) {
     const int a = W.arena;
     const tgpu_buf* R = &H->b.buf[a];
     const tgpu_buf* B = &K->buf[a];
@@ -13994,7 +14026,7 @@ static int taud_cmp_arena(const taud_shadow* H, const taud_bake* K, taud_where W
  * @param mask Per resident word, nonzero to skip it; NULL compares every word.
  * @return 1 on a mismatch, else 0. */
 static int taud_cmp_words(taud_where W, const char* arr, const uint32_t* a, int na,
-                          const uint32_t* b, int nb, const uint8_t* mask) {
+                          const uint32_t* b, int nb, const uint8_t* mask) OP_REQUIRES(sim) {
     W.arena = -1; W.arr = arr; W.fid = NULL; W.nfid = 0;
     const int n = na < nb ? na : nb;
     for (int i = 0; i < n; i++) {
@@ -14042,8 +14074,9 @@ static void taud_rec_mask(const taud_shadow* H, uint32_t first, uint8_t* mask) {
  * shadow holds its current sector and generation.
  * @param slot The decode slot.
  * @return The slot's shadow, or NULL to skip it. */
-static taud_shadow* taud_due(int slot) {
-    static uint32_t s_last_frame = 0xFFFFFFFFu, s_ticks;
+static taud_shadow* taud_due(int slot) OP_REQUIRES(sim) {
+    static uint32_t s_last_frame OP_GUARDED_BY(sim) = 0xFFFFFFFFu;
+    static uint32_t s_ticks OP_GUARDED_BY(sim);
     if (!taud_on()) return NULL;
     if (s_vanim_sub) { s_taud_sub++; return NULL; }
     if (openpete_frame != s_last_frame) { s_last_frame = openpete_frame; s_ticks++; }
@@ -14093,9 +14126,9 @@ static int taud_fresh(CPUState* cpu, const tscache_t* SC, uint32_t hqTable, int 
  * @param T The slot.
  * @param W Where (sector and slot filled).
  * @return The mismatch count. */
-static int taud_compare(const taud_shadow* H, const taud_bake* K, const tgpu_slot_t* T, taud_where W) {
-    static uint8_t* mask;
-    static int mcap;
+static int taud_compare(const taud_shadow* H, const taud_bake* K, const tgpu_slot_t* T, taud_where W) OP_REQUIRES(sim) {
+    static uint8_t* mask OP_GUARDED_BY(sim) OP_PT_GUARDED_BY(sim);
+    static int mcap OP_GUARDED_BY(sim);
     int m = 0;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) { W.arena = a; m += taud_cmp_arena(H, K, W); }
     const int nw = H->b.pn * (int)OPTC_PREV_REC_WORDS;
@@ -14124,14 +14157,17 @@ static uint32_t tgpu_slot_ring(const tgpu_slot_t* T);
  * difference is an entry that no longer matches the banks: a roll that
  * wrote no entry. The skip-ring control (OPENPETE_TERRAIN_AUDIT_SKIP=ring)
  * drops the writes after a ring's first, so the audit must report it.
+ * A compare of a sector whose ring took an entry that differed from the
+ * one before it counts as rerolled: an audit of positions the ring path,
+ * not a bake, moved.
  * @param H The slot's shadow.
  * @param T The slot.
  * @param SC The decoded sector.
  * @param sec_index The level sector index, for the first-mismatch text.
  * @return 1 when the entries differ, else 0 (also for a slot with no entry). */
-static int taud_ring_check(taud_shadow* H, const tgpu_slot_t* T, const tscache_t* SC, int sec_index) {
-    static uint32_t* w;
-    static int wcap;
+static int taud_ring_check(taud_shadow* H, const tgpu_slot_t* T, const tscache_t* SC, int sec_index) OP_REQUIRES(sim) {
+    static uint32_t* w OP_GUARDED_BY(sim) OP_PT_GUARDED_BY(sim);
+    static int wcap OP_GUARDED_BY(sim);
     if (tgpu_slot_ring(T) == OPTC_PREV_REC_NONE) return 0;
     const int ent = tgpu_ring_ent(SC), n = ent * (int)OPTC_PREV_REC_WORDS;
     if (n > wcap) {
@@ -14141,6 +14177,7 @@ static int taud_ring_check(taud_shadow* H, const tgpu_slot_t* T, const tscache_t
     }
     tgpu_ring_fill(SC, w, ent);
     s_taud_rwords += (uint64_t)n;
+    s_taud_rerolled += H->rsec == T->ringSec && H->rmoved;
     if (H->b.rn == n && memcmp(H->b.rw, w, sizeof(*w) * (size_t)n) == 0) return 0;
     s_taud_rmis++;
     s_taud_mis++;
@@ -14158,11 +14195,11 @@ static int taud_ring_check(taud_shadow* H, const tgpu_slot_t* T, const tscache_t
  * @param SC The decoded sector.
  * @param hqTable The HQ record table's guest address, or 0.
  * @param sec_index The level sector index. */
-static void taud_sector(CPUState* cpu, const tscache_t* SC, uint32_t hqTable, int sec_index) {
+static void taud_sector(CPUState* cpu, const tscache_t* SC, uint32_t hqTable, int sec_index) OP_REQUIRES(sim) {
     const int slot = (int)(SC - s_tsc);
     taud_shadow* H = taud_due(slot);
     if (!H) return;
-    static taud_bake K;
+    static taud_bake K OP_GUARDED_BY(sim);
     if (taud_fresh(cpu, SC, hqTable, sec_index, &K) != 0) { s_taud_fail++; return; }
     s_taud_audits++;
     s_taud_rebaked += H->bakes > 1u;
@@ -14236,7 +14273,7 @@ static int tgpu_prev_upload(tgpu_slot_t* T, tgpu_buf* buf) {
  * @param T The sector's slot.
  * @param buf The sector's bake buffers, indexed by arena.
  * @return 1 when both landed, 0 when the store or an arena is full. */
-static int tgpu_upload_sector(tgpu_slot_t* T, tgpu_buf* buf) {
+static int tgpu_upload_sector(tgpu_slot_t* T, tgpu_buf* buf) OP_REQUIRES(sim) {
     if (tgpu_prev_upload(T, buf) != 0) return 0;
     if (tgpu_upload_chunks(T, buf) == 0) {
         openpete_tercache_note_bake();
@@ -14620,9 +14657,13 @@ static int tgpu_bake_deliver(int slot, int sec_index, const tscache_t* SC, tgpu_
     if (s_tpv_sink) return tpv_take(s_tpv_sink, buf) == 0;
     const int audit = taud_deliver(buf);
     if (audit) return audit > 0;
+    int r;
+    OP_TSA_SUPPRESS_BEGIN("a preview bake holds s_tpv_sink, thread-local, for its whole bake and returns above; past it the bake is the cache's, run by terrain_build on sim")
     taud_poison(sec_index, buf);
     tgpu_facedump_sector(slot, sec_index, SC);
-    return tgpu_upload_sector(&s_tgpu[slot], buf);
+    r = tgpu_upload_sector(&s_tgpu[slot], buf);
+    OP_TSA_SUPPRESS_END
+    return r;
 }
 
 /** @brief Records a bake's colour-table misses on its cache slot; a preview bake has no slot.
@@ -14869,7 +14910,7 @@ static void tgpu_coltab_fill(const canim_t* CA, uint32_t* w, int ent) {
  * @param SC The decoded sector.
  * @return 0, or -1 when the store has no room for the ring or the next
  *         entry is still read (the arena-full claim). */
-static int tgpu_coltab_refresh(tgpu_slot_t* T, const tscache_t* SC) {
+static int tgpu_coltab_refresh(tgpu_slot_t* T, const tscache_t* SC) OP_REQUIRES(sim) {
     static uint32_t* w;
     static int wcap;
     const canim_t* CA = T->bakeTab ? tsc_canim(SC) : NULL;
@@ -14986,7 +15027,7 @@ static int tgpu_ring_run(tgpu_slot_t* T, int depth) {
  * @param T The slot.
  * @param SC The decoded sector.
  * @return 0, or -1 when a run is refused; the slot then holds no ring. */
-static int tgpu_ring_refresh(tgpu_slot_t* T, const tscache_t* SC) {
+static int tgpu_ring_refresh(tgpu_slot_t* T, const tscache_t* SC) OP_REQUIRES(sim) {
     static uint32_t* w;
     static int wcap;
     const int ent = tgpu_ring_ent(SC);
@@ -15124,7 +15165,7 @@ static int tgpu_canim_stale(const tgpu_slot_t* T, const tscache_t* SC) {
  * @param SC The decoded sector.
  * @return 0 when the GPU may draw the sector, the slot's unbuildable code,
  *         or 1 when the store has no room for its colour table. */
-static int tgpu_ensure_finish(tgpu_slot_t* T, const tscache_t* SC) {
+static int tgpu_ensure_finish(tgpu_slot_t* T, const tscache_t* SC) OP_REQUIRES(sim) {
     if (T->unbuildable != 0) return T->unbuildable;
     if (tgpu_coltab_refresh(T, SC) != 0) return 1;
     T->ownFrame = openpete_frame;
@@ -15275,7 +15316,7 @@ static void tgpu_dbg_rebuild(const tgpu_slot_t* T, const tscache_t* SC, int slot
  *         tick's budget defers (tgpu_budget_gate). A full store for the
  *         colour table is the arena-full claim 1. */
 static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
-                       int sec_index, int want_near) {
+                       int sec_index, int want_near) OP_REQUIRES(sim) {
     int slot = (int)(SC - s_tsc);
     /* Backstop only: tsc_get never places a sector in OPTC_SLOT_DEAD (its
      * 9-bit face_flags id is the dead-stamp sentinel, so baked chunks for it
@@ -19344,7 +19385,7 @@ static void tn_cam_jitter_apply(double* camx, double* camy, double* camz) {
  * @param cen Nonzero to run the colour-anim census.
  * @return 1 when the sector is claimed to the CPU walk, else 0. */
 static int tgpu_take_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable, uint32_t i,
-                            int vi, int want_near, double depth, int cen) {
+                            int vi, int want_near, double depth, int cen) OP_REQUIRES(sim) {
     static int eid_ = -1;
     ter_prof_open(&eid_, "ter.ensure");
     const int r = tgpu_ensure(cpu, SC, hqTable, (int)i, want_near);
@@ -19404,7 +19445,7 @@ static int tgpu_bud_cand_cmp(const void* a, const void* b) {
  * @param hqTable The HQ record table's guest address, or 0.
  * @param cen Nonzero to run the colour-anim census.
  * @return The faces of the candidates now owned, which the CPU walk skips. */
-static long tgpu_budget_resolve(CPUState* cpu, uint32_t hqTable, int cen) {
+static long tgpu_budget_resolve(CPUState* cpu, uint32_t hqTable, int cen) OP_REQUIRES(sim) {
     if (s_bud_ncand == 0) return 0;
     qsort(s_bud_cand, (size_t)s_bud_ncand, sizeof s_bud_cand[0], tgpu_bud_cand_cmp);
     s_bud_mode = TGPU_BUD_RESOLVE;
@@ -19520,7 +19561,7 @@ static void tn_fp32emu_dump(const int M[3][3], double camx, double camy, double 
 }
 
 /** @brief Walks the visible sectors of the current view into the terrain triangle stream and feeds the native scene. */
-static void terrain_build(CPUState* cpu, int32_t occGroup) {
+static void terrain_build(CPUState* cpu, int32_t occGroup) OP_REQUIRES(sim) {
     s_snap_src = 0;                /* until this build latches its walk inputs */
     s_secrec_gen++;                /* the sectors' record runs are this build's */
     ngte_view_build(cpu, &s_view);
@@ -22466,7 +22507,7 @@ static void terrain_defer_census(void) {
  * scene for openpete_frame, and pushes the built triangles to it.
  * @param cpu      guest CPU state
  * @param occGroup the world draw's occlusion-group argument (a0), -1 = walk all */
-static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) {
+static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) OP_REQUIRES(sim) {
     OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_TERRAIN);
     render_material_level_push(cpu);             /* the bake's level keys */
     { OP_PROF_ACCUM_SCOPE("terrain.build");
@@ -22478,14 +22519,14 @@ static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) {
     tn_snap_fed(cpu);                            /* contact source of this scene */
 }
 
-void terrain_native_flush_deferred(void) {
+void terrain_native_flush_deferred(void) OP_REQUIRES(sim) {
     if (!s_env_defer.pending) return;
     s_env_defer.pending = 0;
     s_env_defer_flushed++;
     terrain_native_build_feed(s_env_defer.cpu, s_env_defer.occ);
 }
 
-void terrain_native_flush_deferred_late(void) {
+void terrain_native_flush_deferred_late(void) OP_REQUIRES(sim) {
     if (!s_env_defer.pending) return;
     s_env_defer_late++;
     terrain_native_flush_deferred();
@@ -22499,7 +22540,7 @@ void terrain_native_flush_deferred_late(void) {
  * OPENPETE_TERRAIN_DEFER_CENSUS is set.
  * @param cpu      guest CPU state
  * @param occGroup the world draw's occlusion-group argument (a0), -1 = walk all */
-static void terrain_native_build_feed_or_defer(CPUState* cpu, int32_t occGroup) {
+static void terrain_native_build_feed_or_defer(CPUState* cpu, int32_t occGroup) OP_REQUIRES(sim) {
     if (!terrain_game.env_feed_waits_for_portals ||
         !terrain_game.env_feed_waits_for_portals(cpu)) {
         terrain_native_build_feed(cpu, occGroup);
@@ -22643,7 +22684,7 @@ static int terrain_reextract_drawn(CPUState* cpu, int hold) {
     return hold && render_path_canon_drawn_prev(RP_TERRAIN) && !terrain_native_held_world_lost(cpu);
 }
 
-void terrain_reextract(CPUState* cpu, double alpha, int interp_on, int hold) {
+void terrain_reextract(CPUState* cpu, double alpha, int interp_on, int hold) OP_REQUIRES(sim) {
     render_material_level_push(cpu);   /* level keys of this re-extract's bake and resolves */
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_TERRAIN)) return;

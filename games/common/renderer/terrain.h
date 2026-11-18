@@ -6,6 +6,7 @@
 #define OPENPETE_COMMON_RENDERER_TERRAIN_H
 #include <stddef.h>
 #include <stdint.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,7 +32,7 @@ struct CPUState;
  * @param hold nonzero on a held camera cut: a tick N that stopped drawing the
  *        world still reproduces tick N-1's when terrain_game.world_outlives_draw
  *        says the world is whole */
-void terrain_reextract(struct CPUState* cpu, double alpha, int interp_on, int hold);
+void terrain_reextract(struct CPUState* cpu, double alpha, int interp_on, int hold) OP_REQUIRES(sim);
 /** @brief Whether a held camera cut cannot show tick N-1's world: that tick drew it, tick N did not and terrain_game.world_outlives_draw refuses.
  *
  * @param cpu guest state
@@ -152,7 +153,7 @@ void terrain_visibility_capture_arm(void);
  * The deferral is terrain_game.env_feed_waits_for_portals; a call with none
  * pending is a no-op. The portal draw calls it once its capture for the tick is
  * complete. */
-void terrain_native_flush_deferred(void);
+void terrain_native_flush_deferred(void) OP_REQUIRES(sim);
 /** @brief Run a deferred terrain build and feed whose portal draw never released it.
  *
  * The world draw's hook calls it before the next draw and the canonical
@@ -160,7 +161,7 @@ void terrain_native_flush_deferred(void);
  * the scene of its VBL. A pending feed at either point is never expected and
  * is counted as late in the deferral census; a call with none pending is a
  * no-op. */
-void terrain_native_flush_deferred_late(void);
+void terrain_native_flush_deferred_late(void) OP_REQUIRES(sim);
 /** @brief Returns the sector visibility table captured during the last armed world draw.
  * @param out receives the byte array (nonzero = the sector is visible); may
  *        be NULL

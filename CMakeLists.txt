@@ -2704,18 +2704,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Retained terrain cache state against a fresh bake of the current guest
-    # data (OPENPETE_TERRAIN_AUDIT), headless on llvmpipe: the Spyro 2 attract
-    # demo's first level with the cache forced on. Passes on audits and
-    # re-baked-sector audits above 0 with 0 mismatches, and on the poison
-    # control (one baked corner of the sampled sector offset before upload)
-    # naming that sector and field. Skips (exit 64) without a binary or disc.
+    # data (OPENPETE_TERRAIN_AUDIT), headless on llvmpipe: Spyro 2 Summer
+    # Forest to VBL 2000 with the cache forced on, a row whose sectors both
+    # re-bake and move through the position ring (the attract demo's first
+    # level rewrites its ring entries with unchanged positions). Passes on audits, and
+    # re-baked plus re-rolled (position ring) sector audits, above 0 with 0
+    # mismatches; on the poison control (one baked corner of the sampled
+    # sector offset before upload) naming that sector and field; and on the
+    # ring control (ring entries after a ring's first dropped) reporting ring
+    # mismatches. Skips (exit 64) without a binary or disc.
     add_test(NAME terrain_audit_spyro-2
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_terrain_audit.sh
-                     --game spyro-2 --build-dir=${CMAKE_BINARY_DIR})
+                     --game spyro-2 --level summer_forest --frames 2000
+                     --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(terrain_audit_spyro-2 PROPERTIES
         LABELS "slow;terrain;spyro-2"
         RESOURCE_LOCK openpete_game
-        # Two sequential headless boots to VBL 1500.
+        # Up to three sequential headless boots to VBL 2000.
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})

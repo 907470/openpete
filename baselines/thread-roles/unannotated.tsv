@@ -4229,31 +4229,6 @@ games/common/renderer/terrain.c	-	s_tanim_dvhq	static	-
 games/common/renderer/terrain.c	-	s_tanim_dvlq	static	-	
 games/common/renderer/terrain.c	-	s_tanim_en	static	-	
 games/common/renderer/terrain.c	-	s_tanim_have	static	-	
-games/common/renderer/terrain.c	-	s_taud	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_audits	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_elems	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_faces	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_fail	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_first	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_logged	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_masked	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_mis	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_missec	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_noshadow	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_poison	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_pwords	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_rebaked	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_rmis	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_rwords	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_sample	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_secset	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_sh	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_sink	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_skip_anim	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_skip_ring	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_skip_tex	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_sub	static	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	-	s_taud_twords	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_tbk	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_terrain_saved_occGroup	static	-	
 games/common/renderer/terrain.c	-	s_tex_faces	static	-	
@@ -4400,13 +4375,6 @@ games/common/renderer/terrain.c	portal_rim_cos	v	local	once	= -1, one filler, fi
 games/common/renderer/terrain.c	portal_rim_eps	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	portal_rim_near	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	portal_rim_reach	v	local	once	= -1, one filler, first reference tests it
-games/common/renderer/terrain.c	taud_compare	mask	local	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	taud_compare	mcap	local	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	taud_due	s_last_frame	local	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	taud_due	s_ticks	local	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	taud_ring_check	w	local	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	taud_ring_check	wcap	local	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	taud_sector	K	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tbk_emit	id	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tbk_emit	init	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tbk_emit	key_id	local	-	owed: declared with no form and no row before the new-global refusal
