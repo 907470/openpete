@@ -902,6 +902,10 @@ struct rhi_buffer {
      * record. Physical slot = frame * gens + gen. gens <= 1: one generation,
      * the write overwrites in place. */
     uint32_t       gens, gen_cur;
+    /* Per ring slot, the end of the furthest byte range the CPU wrote
+     * (rhi_update_buffer, rhi_update_buffer_range); NULL on a static buffer.
+     * Bytes past it were never written, so a growth copies only below it. */
+    VkDeviceSize  *slot_hwm;
     uint64_t       gen_serial;   /* frame serial gen_cur/gen_bound belong to */
     bool           gen_bound;    /* current generation referenced by a draw */
     bool           device_local; /* memory type carries DEVICE_LOCAL (device-mapped buffers) */
@@ -5953,7 +5957,11 @@ rhi_buffer *rhi_create_vertex_buffer_dynamic_gens(rhi_device *dev, size_t bytes,
     rhi_buffer *b = create_host_buffer(dev, bytes * RHI_FRAMES_IN_FLIGHT * gens,
                                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                                        /*prefer_cached=*/false);
-    if (b) { b->ring_stride = (VkDeviceSize)bytes; b->gens = gens; }
+    if (b) {
+        b->ring_stride = (VkDeviceSize)bytes; b->gens = gens;
+        b->slot_hwm = calloc((size_t)RHI_FRAMES_IN_FLIGHT * gens, sizeof(*b->slot_hwm));
+        if (!b->slot_hwm) { rhi_destroy_buffer(dev, b); return NULL; }
+    }
     return b;
 }
 
@@ -5966,6 +5974,28 @@ size_t rhi_vertex_buffer_slot_bytes(const rhi_buffer *buf)
 {
     if (!buf) return 0;
     return (size_t)(buf->ring_stride ? buf->ring_stride : buf->size);
+}
+
+/** @brief Return whether OPENPETE_RING_GROW_FULL_COPY asks a ring growth to copy every slot whole; read once.
+ * @return 1 when set, non-empty and not starting with '0', else 0. */
+static int ring_grow_full_copy(void)
+{
+    static OP_ONCE_INT v = -1;
+    int r = op_once_int_get(&v);
+    if (r < 0) {
+        const char *e = getenv("OPENPETE_RING_GROW_FULL_COPY");
+        r = op_once_int_fill(&v, (e && *e && *e != '0') ? 1 : 0);
+    }
+    return r;
+}
+
+/** @brief Raise a ring slot's written high-water mark to the end of a write.
+ * @param buf Ring buffer.
+ * @param slot Slot index.
+ * @param end End offset of the write within the slot. */
+static void ring_note_write(rhi_buffer *buf, uint32_t slot, VkDeviceSize end)
+{
+    if (buf->slot_hwm && buf->slot_hwm[slot] < end) buf->slot_hwm[slot] = end;
 }
 
 bool rhi_vertex_buffer_reserve(rhi_device *dev, rhi_buffer *buf, size_t bytes)
@@ -5989,15 +6019,23 @@ bool rhi_vertex_buffer_reserve(rhi_device *dev, rhi_buffer *buf, size_t bytes)
         return false;
     }
     /* Every slot and generation keeps its bytes: a range written earlier in
-     * this frame and bound after the growth reads the same data. */
-    for (uint32_t i = 0; i < slots; i++)
-        memcpy((uint8_t *)nb->mapped + stride * i,
-               (const uint8_t *)buf->mapped + buf->ring_stride * i,
-               (size_t)buf->ring_stride);
+     * this frame and bound after the growth reads the same data. The copy
+     * stops at each slot's written high-water mark: the bytes above it were
+     * never written, and reading them out of write-combined memory is the
+     * cost of a growth (about 140 MB/s). OPENPETE_RING_GROW_FULL_COPY=1
+     * copies every slot whole. */
+    VkDeviceSize copied = 0;
+    for (uint32_t i = 0; i < slots; i++) {
+        const VkDeviceSize n = ring_grow_full_copy() ? buf->ring_stride : buf->slot_hwm[i];
+        if (n) memcpy((uint8_t *)nb->mapped + stride * i,
+                      (const uint8_t *)buf->mapped + buf->ring_stride * i, (size_t)n);
+        copied += n;
+    }
     r->buffer = buf->buffer; r->memory = buf->memory; r->serial = s_frame_serial;
     r->next = dev->retired; dev->retired = r;
-    RHI_LOG("vertex ring buffer grew %llu -> %llu B per slot\n",
-            (unsigned long long)buf->ring_stride, (unsigned long long)stride);
+    RHI_LOG("vertex ring buffer grew %llu -> %llu B per slot; copied %llu of %llu B\n",
+            (unsigned long long)buf->ring_stride, (unsigned long long)stride,
+            (unsigned long long)copied, (unsigned long long)(buf->ring_stride * slots));
     buf->buffer = nb->buffer; buf->memory = nb->memory; buf->mapped = nb->mapped;
     buf->size = nb->size; buf->ring_stride = stride;
     free(nb);
@@ -6017,12 +6055,15 @@ void rhi_update_buffer_range(rhi_buffer *buf, const void *data,
         return;
     }
     if (buf->dev && buf->dev->frame_active) {
-        memcpy((uint8_t *)buf->mapped + buf->ring_stride * ring_write_slot(buf) + offset,
-               data, bytes);
+        const uint32_t slot = ring_write_slot(buf);
+        memcpy((uint8_t *)buf->mapped + buf->ring_stride * slot + offset, data, bytes);
+        ring_note_write(buf, slot, (VkDeviceSize)(offset + bytes));
     } else {
-        for (uint32_t i = 0; i < RHI_FRAMES_IN_FLIGHT * (buf->gens ? buf->gens : 1); i++)
+        for (uint32_t i = 0; i < RHI_FRAMES_IN_FLIGHT * (buf->gens ? buf->gens : 1); i++) {
             memcpy((uint8_t *)buf->mapped + buf->ring_stride * i + offset,
                    data, bytes);
+            ring_note_write(buf, i, (VkDeviceSize)(offset + bytes));
+        }
     }
 }
 
@@ -6039,13 +6080,16 @@ void rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes)
     if (buf->dev && buf->dev->frame_active) {
         /* In-frame: write only the current frame's slot (its fence was waited
          * in rhi_begin_frame, so no in-flight GPU read can see this write). */
-        memcpy((uint8_t *)buf->mapped + buf->ring_stride * ring_write_slot(buf),
-               data, bytes);
+        const uint32_t slot = ring_write_slot(buf);
+        memcpy((uint8_t *)buf->mapped + buf->ring_stride * slot, data, bytes);
+        ring_note_write(buf, slot, (VkDeviceSize)bytes);
     } else {
         /* Outside a frame (init / rare re-layout under rhi_wait_idle): fill
          * every slot so any frame parity binds the same content. */
-        for (uint32_t i = 0; i < RHI_FRAMES_IN_FLIGHT * (buf->gens ? buf->gens : 1); i++)
+        for (uint32_t i = 0; i < RHI_FRAMES_IN_FLIGHT * (buf->gens ? buf->gens : 1); i++) {
             memcpy((uint8_t *)buf->mapped + buf->ring_stride * i, data, bytes);
+            ring_note_write(buf, i, (VkDeviceSize)bytes);
+        }
     }
 }
 
@@ -6057,6 +6101,7 @@ void rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf)
         vkFreeMemory(dev->device, buf->memory, NULL);
     }
     if (buf->buffer) vkDestroyBuffer(dev->device, buf->buffer, NULL);
+    free(buf->slot_hwm);
     free(buf);
 }
 
