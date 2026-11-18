@@ -1246,6 +1246,28 @@ if(TARGET openpete_imgui)
     add_test(NAME launcher_page_lines_test COMMAND launcher_page_lines_test)
 endif()
 
+# launcher_relaunch_env_test - the environment the return to the launcher
+# hands its relaunched image: computed from the entry snapshot over lists,
+# then two sessions through the real config layer's full stage, and on POSIX
+# read back by an execve'd shell.
+if(TARGET SDL3::SDL3-static)
+    add_executable(launcher_relaunch_env_test
+        launcher_relaunch_env_test.cpp
+        ${CMAKE_SOURCE_DIR}/core/config/config.c
+        ${CMAKE_SOURCE_DIR}/core/config/config_schema.c
+        ${CMAKE_SOURCE_DIR}/core/input/keymap.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c
+        ${CMAKE_SOURCE_DIR}/core/config/paths.c
+        ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c
+        ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
+    target_include_directories(launcher_relaunch_env_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/launcher
+        ${CMAKE_SOURCE_DIR}/core/include)
+    target_link_libraries(launcher_relaunch_env_test PRIVATE SDL3::SDL3-static)
+    set_target_properties(launcher_relaunch_env_test PROPERTIES CXX_STANDARD 20 C_STANDARD 11)
+    add_test(NAME launcher_relaunch_env_test COMMAND launcher_relaunch_env_test)
+endif()
+
 # These compile sources that carry role asserts and binds, whose definitions
 # live in the role runtime.
 foreach(t boot_memfill_test line_quad_test mod_arena_test mod_material_link_test

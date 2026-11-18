@@ -14,6 +14,13 @@
 // image reads at entry; under it the launcher also ignores the inputs that
 // boot an entry without the game page and are not argv flags (the config
 // file's game key, a bare image argument; library.cpp, resolve_pick).
+//
+// The relaunched image is given the environment the process was entered
+// with (launcher_relaunch_env.h), not the session's: the config layer's
+// full stage, flags that stand for a variable and live settings write the
+// process environment, and an inherited value reads as one the user
+// exported, which outranks every config file.
+#include "launcher_relaunch_env.h"
 #include "openpete_launcher.h"
 #include "openpete_log.h"
 #include "openpete_native_render.h"
@@ -26,9 +33,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <SDL3/SDL_process.h>
+#include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_stdinc.h>
 
 #ifndef _WIN32
@@ -84,22 +93,15 @@ constexpr Dropped kDropped[] = {
     {"--player-pose", 1, false, "poses one session's player"},
 };
 
-/* The argv the process started with, for the relaunch. */
-std::vector<std::string> s_argv;
 /* 1 between a return request and the relaunch; cleared by a cancel. */
 std::atomic<int> s_pending{0};
 /* 1 once a quit (window close, quit signal, quit key) arrived: it ends the
  * process whichever of it and EXIT GAME the process saw first. */
 std::atomic<int> s_quit{0};
-/* 1 once a return was requested, so the exit can say a cancel withdrew it. */
-bool s_requested = false;
-/* The game a return request names. */
-char s_game_out[32] = {};
-
-/* The descriptors open at entry: inherited from the parent (stdio, a
- * launcher's keep-alive pipe), so the relaunched image inherits them too.
- * Every other descriptor is closed across the relaunch. */
-std::vector<int> s_inherited_fds;
+/* 1 once a return was requested, so the exit can say a cancel withdrew it:
+ * stored by the request on the host loop's thread, loaded by the atexit
+ * handler on the thread that calls exit. */
+std::atomic<int> s_requested{0};
 
 /** @brief Return the system-wide monotonic clock in ms, the clock the return's log lines share across the process images.
  *
@@ -130,6 +132,104 @@ std::vector<int> open_fds() {
     return fds;
 }
 
+/* What OPENPETE_LAUNCHER_RETURN carried into this image. */
+struct Incoming {
+    unsigned long long armed_ms = 0;   /* steady_ms at entry */
+    int count = 0;
+    std::string game;
+    int fullscreen = 0, maximized = 0, x = 0, y = 0, w = 0, h = 0;
+    bool window = false;
+};
+
+/** @brief Read OPENPETE_LAUNCHER_RETURN's value.
+ *
+ * @param v The variable's value.
+ * @param in Receives the fields; left as it is when the value names no return. */
+void parse_incoming(const char* v, Incoming& in) {
+    char game[32] = {};
+    int c = 0, fs = 0, mx = 0, x = 0, y = 0, w = 0, h = 0;
+    const int n = std::sscanf(v, "%d:%31[^:]:%d:%d:%d:%d:%d:%d", &c, game, &fs, &mx, &x, &y, &w, &h);
+    if (n < 1 || c < 1) return;
+    in.count = c;
+    if (n >= 2) in.game = game;
+    if (n == 8) {
+        in.window = true;
+        in.fullscreen = fs;
+        in.maximized = mx;
+        in.x = x;
+        in.y = y;
+        in.w = w;
+        in.h = h;
+    }
+}
+
+/* The process's state at entry, which the relaunch replays. */
+struct EntryState {
+    std::vector<std::string> argv;   /* the argv the process started with */
+    /* The descriptors open at entry: inherited from the parent (stdio, a
+     * launcher's keep-alive pipe), so the relaunched image inherits them too.
+     * Every other descriptor is closed across the relaunch. */
+    std::vector<int> inherited_fds;
+    /* The process environment at entry without OPENPETE_LAUNCHER_RETURN,
+     * "NAME=value" each: the relaunch starts from it (relaunch_environment). */
+    std::vector<std::string> env;
+    Incoming in;
+};
+
+/** @brief Capture the entry state: argv, the open descriptors, OPENPETE_LAUNCHER_RETURN (read, then removed from the environment) and the environment left.
+ *
+ * @param argc The argument count.
+ * @param argv The arguments.
+ * @return The state. */
+EntryState capture_entry(int argc, char** argv) {
+    EntryState e;
+    if (argv) e.argv.assign(argv, argv + argc);
+    e.inherited_fds = open_fds();
+    e.in.armed_ms = steady_ms();
+    if (const char* v = std::getenv(kReturnEnv); v && *v) parse_incoming(v, e.in);
+#ifdef _WIN32
+    _putenv_s(kReturnEnv, "");   /* an empty value removes the variable */
+#else
+    unsetenv(kReturnEnv);
+#endif
+    e.env = relaunch_process_environment();
+    return e;
+}
+
+/** @brief Return the entry state, captured by the first call and immutable after it.
+ *
+ * The first call is openpete_launcher_return_arm's, first in main, before
+ * any other thread exists; the arguments of every later call are ignored.
+ * The function-local static's initialization is the set-once publication:
+ * every later reader, on any thread, sees the captured state. The state is
+ * constructed before the arm registers relaunch_at_exit, so it is destroyed
+ * after that handler runs.
+ * @param argc The argument count, read by the first call only.
+ * @param argv The arguments, read by the first call only.
+ * @return The state. */
+const EntryState& entry_state(int argc = 0, char** argv = nullptr) {
+    static const EntryState e = capture_entry(argc, argv);
+    return e;
+}
+
+/** @brief Compute the relaunched image's environment from the entry snapshot and log every variable it reverts.
+ *
+ * @param carried The OPENPETE_LAUNCHER_RETURN entry, "NAME=value".
+ * @return The environment, "NAME=value" each. */
+std::vector<std::string> relaunch_env(const std::string& carried) {
+#ifdef _WIN32
+    constexpr bool kFold = true;
+#else
+    constexpr bool kFold = false;
+#endif
+    RelaunchEnv r = relaunch_environment(entry_state().env, relaunch_process_environment(), carried, kFold);
+    std::string names;
+    for (const std::string& n : r.reverted) names += (names.empty() ? "" : " ") + n;
+    std::fprintf(stderr, "openpete: return: %zu variable(s) the session set, changed or removed left at their entry state%s%s\n",
+                 r.reverted.size(), names.empty() ? "" : ": ", names.c_str());
+    return std::move(r.vars);
+}
+
 #ifndef _WIN32
 /** @brief Mark every descriptor the process opened itself close-on-exec, so the relaunched image starts with only those it inherited at entry.
  *
@@ -138,8 +238,9 @@ std::vector<int> open_fds() {
  * @return The count marked. */
 int close_own_fds_on_exec() {
     int n = 0;
+    const std::vector<int>& inherited = entry_state().inherited_fds;
     for (int fd : open_fds()) {
-        if (std::binary_search(s_inherited_fds.begin(), s_inherited_fds.end(), fd)) continue;
+        if (std::binary_search(inherited.begin(), inherited.end(), fd)) continue;
         const int fl = fcntl(fd, F_GETFD);
         if (fl == -1 || (fl & FD_CLOEXEC)) continue;
         (void)fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
@@ -148,15 +249,6 @@ int close_own_fds_on_exec() {
     return n;
 }
 #endif
-
-/* What OPENPETE_LAUNCHER_RETURN carried into this image. */
-struct Incoming {
-    unsigned long long armed_ms = 0;   /* steady_ms at entry */
-    int count = 0;
-    std::string game;
-    int fullscreen = 0, maximized = 0, x = 0, y = 0, w = 0, h = 0;
-    bool window = false;
-} s_in;
 
 /** @brief Return the kDropped row a token matches, or NULL.
  *
@@ -178,58 +270,67 @@ const Dropped* dropped_row(const char* tok) {
  *
  * @return The arguments, argv[0] first. */
 std::vector<std::string> relaunch_args() {
+    const std::vector<std::string>& argv = entry_state().argv;
     std::vector<std::string> out;
-    for (size_t i = 0; i < s_argv.size(); i++) {
-        const Dropped* d = i ? dropped_row(s_argv[i].c_str()) : nullptr;
+    for (size_t i = 0; i < argv.size(); i++) {
+        const Dropped* d = i ? dropped_row(argv[i].c_str()) : nullptr;
         if (!d) {
-            out.push_back(s_argv[i]);
+            out.push_back(argv[i]);
             continue;
         }
-        int skip = std::strchr(s_argv[i].c_str(), '=') ? 0 : d->values;
-        if (skip < 0) skip = (i + 1 < s_argv.size() && s_argv[i + 1][0] != '-') ? 1 : 0;
-        OPL_INFO_F("launcher", "return: %s left out of the relaunch (%s)", s_argv[i].c_str(), d->why);
+        int skip = std::strchr(argv[i].c_str(), '=') ? 0 : d->values;
+        if (skip < 0) skip = (i + 1 < argv.size() && argv[i + 1][0] != '-') ? 1 : 0;
+        OPL_INFO_F("launcher", "return: %s left out of the relaunch (%s)", argv[i].c_str(), d->why);
         i += (size_t)skip;
     }
     return out;
 }
 
-/** @brief Set OPENPETE_LAUNCHER_RETURN for the relaunched image: the next count, the exited game and the game window's last state.
+/** @brief Compose OPENPETE_LAUNCHER_RETURN's value for the relaunched image: the next count, the exited game and the game window's last state.
  *
- * @return The value set. */
-std::string export_return() {
+ * The game is the library entry's, which the launcher records once before
+ * the session starts.
+ * @return The value. */
+std::string return_value() {
     int fs = 0, mx = 0, x = 0, y = 0, w = 0, h = 0;
     const bool win = openpete_native_window_final_state(&fs, &mx, &x, &y, &w, &h) != 0;
+    const char* g = openpete_launcher_selected_game();
+    if (!g) g = "";
+    const int next = entry_state().in.count + 1;
     char v[160];
-    if (win) std::snprintf(v, sizeof v, "%d:%s:%d:%d:%d:%d:%d:%d", s_in.count + 1, s_game_out, fs, mx, x, y, w, h);
-    else std::snprintf(v, sizeof v, "%d:%s", s_in.count + 1, s_game_out);
-#ifdef _WIN32
-    /* The relaunch's environment is SDL's (SDL_CreateProcessWithProperties). */
-    SDL_SetEnvironmentVariable(SDL_GetEnvironment(), kReturnEnv, v, true);
-#else
-    setenv(kReturnEnv, v, 1);
-#endif
+    if (win) std::snprintf(v, sizeof v, "%d:%s:%d:%d:%d:%d:%d:%d", next, g, fs, mx, x, y, w, h);
+    else std::snprintf(v, sizeof v, "%d:%s", next, g);
     return v;
 }
 
 #ifdef _WIN32
-/** @brief Start the relaunched image as a new process with SDL's process API: the arguments with the executable's path first, SDL's environment, the working directory inherited, stdout and stderr inherited and stdin closed.
+/** @brief Start the relaunched image as a new process with SDL's process API: the arguments with the executable's path first, the given environment, the working directory inherited, stdout and stderr inherited and stdin closed.
  *
  * SDL builds the command line from the UTF-8 arguments with the quoting
  * CommandLineToArgvW reverses. The process is not waited for; this one
  * exits after it starts.
  * @param args The arguments, the program first.
+ * @param vars The whole environment, "NAME=value" each.
  * @return true when the process started. */
-bool start_relaunch_process(const std::vector<std::string>& args) {
+bool start_relaunch_process(const std::vector<std::string>& args, const std::vector<std::string>& vars) {
     std::vector<const char*> av;
     for (const std::string& a : args) av.push_back(a.c_str());
     av.push_back(nullptr);
+    SDL_Environment* env = SDL_CreateEnvironment(false);
+    for (const std::string& kv : vars) {
+        const size_t eq = kv.find('=');
+        if (env && eq != std::string::npos && eq > 0)
+            SDL_SetEnvironmentVariable(env, kv.substr(0, eq).c_str(), kv.c_str() + eq + 1, true);
+    }
     const SDL_PropertiesID p = SDL_CreateProperties();
     SDL_SetPointerProperty(p, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, av.data());
+    if (env) SDL_SetPointerProperty(p, SDL_PROP_PROCESS_CREATE_ENVIRONMENT_POINTER, env);
     SDL_SetNumberProperty(p, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
     SDL_SetNumberProperty(p, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_INHERITED);
     SDL_SetNumberProperty(p, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_INHERITED);
     SDL_Process* proc = SDL_CreateProcessWithProperties(p);
     SDL_DestroyProperties(p);
+    if (env) SDL_DestroyEnvironment(env);
     if (!proc) {
         std::fprintf(stderr, "openpete: return to the launcher failed: %s\n", SDL_GetError());
         return false;
@@ -241,15 +342,16 @@ bool start_relaunch_process(const std::vector<std::string>& args) {
 
 /** @brief atexit handler: start the launcher again when a return is pending; registered first, so it runs after every other handler.
  *
- * POSIX replaces the process image (execv of the executable): the process id,
- * the parent's wait and inherited descriptors stay; every other thread ends;
- * the signal mask is cleared first so the new image starts with none
- * blocked. Windows starts a new process (start_relaunch_process) with the same working directory and
- * environment, and this one exits. A failure is logged and the process exits
- * as it would have. */
+ * POSIX replaces the process image (execve of the executable): the process
+ * id, the parent's wait and inherited descriptors stay; every other thread
+ * ends; the signal mask is cleared first so the new image starts with none
+ * blocked. Windows starts a new process (start_relaunch_process) with the
+ * same working directory, and this one exits. Both hand the new image the
+ * environment of relaunch_env: the entry's, with OPENPETE_LAUNCHER_RETURN
+ * set. A failure is logged and the process exits as it would have. */
 void relaunch_at_exit() {
     if (!s_pending.load()) {
-        if (s_requested)
+        if (s_requested.load())
             std::fprintf(stderr, "openpete: return to the launcher withdrawn: the process ends\n");
         return;
     }
@@ -259,61 +361,36 @@ void relaunch_at_exit() {
         return;
     }
     const std::vector<std::string> args = relaunch_args();
-    const std::string v = export_return();
+    const std::string v = return_value();
+    const std::vector<std::string> vars = relaunch_env(std::string(kReturnEnv) + "=" + v);
     std::fprintf(stderr, "openpete: returning to the launcher (%s=%s) at steady %llu ms: %s\n", kReturnEnv,
                  v.c_str(), steady_ms(), exe);
     std::fflush(nullptr);
 #ifdef _WIN32
     std::vector<std::string> wargs = args;
     wargs[0] = exe;
-    (void)start_relaunch_process(wargs);
+    (void)start_relaunch_process(wargs, vars);
 #else
     std::vector<char*> av;
     for (const std::string& a : args) av.push_back(const_cast<char*>(a.c_str()));
     av.push_back(nullptr);
+    std::vector<char*> ev;
+    for (const std::string& kv : vars) ev.push_back(const_cast<char*>(kv.c_str()));
+    ev.push_back(nullptr);
     const int marked = close_own_fds_on_exec();
     std::fprintf(stderr, "openpete: %d descriptor(s) opened by this image closed across the relaunch\n", marked);
     sigset_t none;
     sigemptyset(&none);
     sigprocmask(SIG_SETMASK, &none, nullptr);
-    execv(exe, av.data());
-    std::fprintf(stderr, "openpete: return to the launcher failed: execv %s\n", exe);
+    execve(exe, av.data(), ev.data());
+    std::fprintf(stderr, "openpete: return to the launcher failed: execve %s\n", exe);
 #endif
-}
-
-/** @brief Read OPENPETE_LAUNCHER_RETURN into s_in.
- *
- * @param v The variable's value. */
-void parse_incoming(const char* v) {
-    char game[32] = {};
-    int c = 0, fs = 0, mx = 0, x = 0, y = 0, w = 0, h = 0;
-    const int n = std::sscanf(v, "%d:%31[^:]:%d:%d:%d:%d:%d:%d", &c, game, &fs, &mx, &x, &y, &w, &h);
-    if (n < 1 || c < 1) return;
-    s_in.count = c;
-    if (n >= 2) s_in.game = game;
-    if (n == 8) {
-        s_in.window = true;
-        s_in.fullscreen = fs;
-        s_in.maximized = mx;
-        s_in.x = x;
-        s_in.y = y;
-        s_in.w = w;
-        s_in.h = h;
-    }
 }
 
 }  // namespace
 
 void openpete_launcher_return_arm(int argc, char** argv) {
-    s_argv.assign(argv, argv + argc);
-    s_inherited_fds = open_fds();
-    s_in.armed_ms = steady_ms();
-    if (const char* v = std::getenv(kReturnEnv); v && *v) parse_incoming(v);
-#ifdef _WIN32
-    _putenv_s(kReturnEnv, "");   /* an empty value removes the variable */
-#else
-    unsetenv(kReturnEnv);
-#endif
+    (void)entry_state(argc, argv);
     std::atexit(relaunch_at_exit);
 }
 
@@ -327,12 +404,11 @@ int openpete_launcher_return_request(void) {
         return 0;
     }
     const char* g = openpete_launcher_selected_game();
-    std::snprintf(s_game_out, sizeof s_game_out, "%s", g ? g : "");
-    s_requested = true;
+    s_requested.store(1);
     s_pending.store(1);
     if (s_quit.load()) s_pending.store(0);   /* a quit between the check and the store */
     OPL_INFO_F("launcher", "return: requested from %s at steady %llu ms: the launcher starts again after the teardown",
-               s_game_out[0] ? s_game_out : "an unidentified entry", steady_ms());
+               g && *g ? g : "an unidentified entry", steady_ms());
     return 1;
 }
 
@@ -347,29 +423,31 @@ void openpete_launcher_return_settle(int rc) {
     OPL_WARN_F("launcher", "return: withdrawn: the session ended with status %d", rc);
 }
 
-int openpete_launcher_return_count(void) { return s_in.count; }
+int openpete_launcher_return_count(void) { return entry_state().in.count; }
 
 const char* openpete_launcher_return_game(void) {
-    return s_in.count > 0 && !s_in.game.empty() ? s_in.game.c_str() : nullptr;
+    const Incoming& in = entry_state().in;
+    return in.count > 0 && !in.game.empty() ? in.game.c_str() : nullptr;
 }
 
 void openpete_launcher_return_apply(openpete_options_t* neutral) {
-    if (s_in.count < 1) return;
-    OPL_INFO_F("launcher", "return %d: image entered at steady %llu ms; from %s, the game window %s", s_in.count,
-               s_in.armed_ms,
-               s_in.game.empty() ? "an unidentified entry" : s_in.game.c_str(),
-               !s_in.window ? "not recorded" : s_in.fullscreen ? "fullscreen" : s_in.maximized ? "maximized"
+    const Incoming& in = entry_state().in;
+    if (in.count < 1) return;
+    OPL_INFO_F("launcher", "return %d: image entered at steady %llu ms; from %s, the game window %s", in.count,
+               in.armed_ms,
+               in.game.empty() ? "an unidentified entry" : in.game.c_str(),
+               !in.window ? "not recorded" : in.fullscreen ? "fullscreen" : in.maximized ? "maximized"
                                                                                                 : "windowed");
-    if (!s_in.window) return;
-    neutral->launcher_fullscreen = s_in.fullscreen ? 1 : 0;
+    if (!in.window) return;
+    neutral->launcher_fullscreen = in.fullscreen ? 1 : 0;
     /* A fullscreen window's size is its display's: the launcher keeps its
      * own windowed size for when the player leaves fullscreen. */
-    if (!s_in.fullscreen && s_in.maximized) {
+    if (!in.fullscreen && in.maximized) {
         neutral->launcher_window_maximized = 1;
-    } else if (!s_in.fullscreen && s_in.w > 0 && s_in.h > 0) {
+    } else if (!in.fullscreen && in.w > 0 && in.h > 0) {
         neutral->launcher_window_maximized = 0;
-        neutral->launcher_window_w = s_in.w;
-        neutral->launcher_window_h = s_in.h;
+        neutral->launcher_window_w = in.w;
+        neutral->launcher_window_h = in.h;
     }
-    openpete_native_launcher_set_position(s_in.x, s_in.y);
+    openpete_native_launcher_set_position(in.x, in.y);
 }

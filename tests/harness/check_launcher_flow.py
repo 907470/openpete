@@ -85,6 +85,11 @@ Cases:
             session provisioned load in the second, every page runs with equal descriptor counts and
             thread counts within 2, and the three returns' timings are reported (teardown, exec, first
             present), exit 0.
+  exit-return-env  EXIT GAME from Spyro 1, then from Spyro 2, with a config file whose [game.spyro-1.env] sets
+            OPENPETE_NOTEX and OPENPETE_TEXPACK_DIR and whose [game.spyro-2.env] sets OPENPETE_TEXPACK_DIR
+            to another value: no page's image is given either variable (/proc/<pid>/environ), and each
+            relaunch names the variables it left at their entry state (both after Spyro 1,
+            OPENPETE_TEXPACK_DIR without OPENPETE_NOTEX after Spyro 2), exit 0.
   exit-direct  EXIT GAME in a --disc session and a directly booted --game session refuses the return and
             ends the process, exit 0.
   exit-close  A window close and SIGTERM end a session picked on the game page without a relaunch, exit 0.
@@ -1832,9 +1837,11 @@ def proc_counts(pid):
         return None
 
 
-def sampled_launch(a, d, tag, args, env, card, timeout, marker):
+def sampled_launch(a, d, tag, args, env, card, timeout, marker, sample=None):
     """cl.launch in a thread while the main thread samples the process (its XDG_DATA_HOME is the case's)
-    each time the log gains a `marker` line: returns (rc, log, [(thread count, fd count) per marker line])."""
+    each time the log gains a `marker` line with `sample(pid)` (default proc_counts): returns (rc, log,
+    [sample per marker line])."""
+    sample = sample or proc_counts
     res = {}
 
     def run():
@@ -1857,7 +1864,7 @@ def sampled_launch(a, d, tag, args, env, card, timeout, marker):
             seen = n
             time.sleep(0.4)
             pid = launcher_pid(d, timeout=2.0)
-            c = proc_counts(pid) if pid else None
+            c = sample(pid) if pid else None
             if c:
                 samples.append(c)
     t.join()
@@ -1923,6 +1930,58 @@ def case_exit_return(a):
         bad.append(f"exit {rc}, final quit {'logged' if 'command: quit' in log else 'absent'}")
     return verdict("exit-return", bad, f"{len(returns)} returns, (threads, fds) per page {samples}, cards "
                    f"provisioned {len(prov)} loaded {len(loaded)}, (teardown, exec, first present) ms {gaps}")
+
+
+# The config file of exit-return-env: game A (Spyro 1) alone sets two variables in its scope, game B (Spyro 2)
+# sets one of them to another value.
+EXIT_ENV_CONFIG = ('[game.spyro-1.env]\nOPENPETE_NOTEX = "1"\nOPENPETE_TEXPACK_DIR = "packs-a"\n'
+                   '[game.spyro-2.env]\nOPENPETE_TEXPACK_DIR = "packs-b"\n')
+EXIT_ENV_NAMES = ("OPENPETE_NOTEX", "OPENPETE_TEXPACK_DIR")
+
+
+def image_env(pid):
+    """The EXIT_ENV_NAMES entries of the environment the process's image was given (/proc/<pid>/environ holds
+    the execve environment, not later setenv calls), as a sorted tuple of "NAME=value", or None when the
+    process is gone; a present-but-empty sample is ("-",) so it still counts as a sample."""
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            kv = [e.decode(errors="replace") for e in f.read().split(b"\0") if e]
+    except OSError:
+        return None
+    return tuple(sorted(e for e in kv if e.split("=", 1)[0] in EXIT_ENV_NAMES)) or ("-",)
+
+
+def case_exit_return_env(a):
+    """EXIT GAME from game A, then game B: the relaunched image is not given the variables A's session exported
+    from A's [game.spyro-1.env] scope, so they do not outrank B's config."""
+    d = cl.case_dir(a.out, "exit-return-env")
+    seed_entry(d, "spyro-1", 2)
+    seed_entry(d, "spyro-2", 1)
+    cfg = os.path.join(d, "openpete.toml")
+    with open(cfg, "w") as f:
+        f.write(EXIT_ENV_CONFIG)
+    env = {"OPENPETE_LAUNCHER_SELECT_GAME": "spyro-1,spyro-2", "OPENPETE_LAUNCHER_PICK_DELAY_MS": "1500",
+           "OPENPETE_MOUSE_INJECT": exit_script(d, "exit"), "OPENPETE_LAUNCHER_INPUT": "20000:quit"}
+    args = ["--launcher-window", "1280x800", "--config", cfg]
+    rc, log, samples = sampled_launch(a, d, "exit-return-env", args, env, None, 900, r"stamp first_present",
+                                      sample=image_env)
+    bad = []
+    returns = re.findall(r"returning to the launcher \(OPENPETE_LAUNCHER_RETURN=(\d+):([\w-]+)", log)
+    if returns != [("1", "spyro-1"), ("2", "spyro-2")]:
+        bad.append(f"returns {returns}, want 1:spyro-1 then 2:spyro-2")
+    # Each page's image: the first is the harness's launch, the next two follow A's and B's sessions.
+    if samples != [("-",)] * 3:
+        bad.append(f"image environments per page {samples}: want none of {EXIT_ENV_NAMES} in any")
+    reverted = [set(m.split()) for m in
+                re.findall(r"return: \d+ variable\(s\) the session set, changed or removed left at their entry "
+                           r"state(?:: ([^\n]*))?", log)]
+    if len(reverted) != 2 or not set(EXIT_ENV_NAMES) <= reverted[0] or "OPENPETE_TEXPACK_DIR" not in reverted[1] \
+            or "OPENPETE_NOTEX" in reverted[1]:
+        bad.append(f"reverted names per return {reverted}: want both after A, OPENPETE_TEXPACK_DIR alone of the "
+                   f"two after B")
+    if rc != 0 or "command: quit" not in log:
+        bad.append(f"exit {rc}, final quit {'logged' if 'command: quit' in log else 'absent'}")
+    return verdict("exit-return-env", bad, f"{len(returns)} returns, image environments per page {samples}")
 
 
 def case_exit_direct(a):
@@ -2853,7 +2912,7 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "quit-copy": case_quit_copy, "quit-translate": case_quit_translate, "quit-build": case_quit_build,
          "quit-assets": case_quit_assets, "quit-east-once": case_quit_east_once,
          "quit-east-twice": case_quit_east_twice, "quit-escape": case_quit_escape, "quit-close": case_quit_close,
-         "exit-return": case_exit_return, "exit-direct": case_exit_direct, "exit-close": case_exit_close,
+         "exit-return": case_exit_return, "exit-return-env": case_exit_return_env, "exit-direct": case_exit_direct, "exit-close": case_exit_close,
          "mods-chip": case_mods_chip, "unsupported-mark": case_unsupported_mark,
          "quit-page-sigterm": case_quit_page_sigterm, "error-refuse": case_error_refuse,
          "error-staged": case_error_staged, "error-build": case_error_build, "ingest-retry": case_ingest_retry,
