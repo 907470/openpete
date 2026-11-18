@@ -39,6 +39,7 @@ static void grammar_cases(void) {
         "pos=(84992, 45582, 9948) yaw=1024 pitch=160",
         "pos=(84992,45582,9948)yaw=1024",
         "pos=(1, 2, 3)",
+        "1,2,3,4,5,6",
         "pos=(1, 2, 3) yaw=-1135 pitch=900 roll=12",
         "pos=(1, 2, 3) roll=-4 yaw=5",
         "84992,45582,9948,1024,160",
@@ -51,6 +52,7 @@ static void grammar_cases(void) {
     static const char* const bad[] = {
         "pos=(bogus",
         "pos=(1, 2",
+        "1,2,3,4,5,6,7",
         "pos=(1, 2, 3",
         "pos=(1, 2, 3, 4)",
         "pos=(1, 2, 3) pitch=5",
@@ -59,7 +61,6 @@ static void grammar_cases(void) {
         "pos=1,2,3",
         "1.5, 2, 3",
         "1, 2",
-        "1, 2, 3, 4, 5, 6",
         "1, 2, 3 roll=1 roll=2",
         "roll=1 1, 2, 3",
         "1, 2, 3)",
@@ -111,16 +112,17 @@ static int scan_fields(const char* text, const char* file, int line) {
     return n;
 }
 
-/** @brief Check the --freecam-pose values of one manifest line, quoted or one token, skipping a shell variable a harness expands.
+/** @brief Check the pose values one spelling of the knob takes on a manifest line, quoted or one token, skipping a shell variable a harness expands.
  * @param text The line, without its newline.
+ * @param key The spelling: the flag, or the environment variable's name.
  * @param file The manifest.
  * @param line The line number.
  * @return The count of poses checked. */
-static int scan_flags(const char* text, const char* file, int line) {
+static int scan_values(const char* text, const char* key, const char* file, int line) {
     int n = 0;
     char buf[2048];
-    for (const char* k = strstr(text, "--freecam-pose"); k; k = strstr(k + 1, "--freecam-pose")) {
-        const char* v = k + strlen("--freecam-pose");
+    for (const char* k = strstr(text, key); k; k = strstr(k + 1, key)) {
+        const char* v = k + strlen(key);
         v += (*v == '=') ? 1 : strspn(v, " ");
         const char close = (*v == '"' || *v == '\'') ? *v++ : 0;
         const char stop[2] = { close, '\0' };
@@ -157,7 +159,8 @@ static int scan_manifests(const char* root) {
                 const char* t = line + strspn(line, " \t");
                 if (*t == '#') continue;
                 const char* rel = g.gl_pathv[i] + strlen(root) + 1;
-                here += scan_fields(t, rel, ln) + scan_flags(t, rel, ln);
+                here += scan_fields(t, rel, ln) + scan_values(t, "--freecam-pose", rel, ln)
+                      + scan_values(t, "OPENPETE_FREECAM_POSE", rel, ln);
             }
             fclose(fp);
             if (here) files++;

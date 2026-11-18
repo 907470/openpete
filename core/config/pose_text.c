@@ -10,7 +10,7 @@
 typedef struct {
     const char* text;   /* the whole text, for offsets */
     const char* p;      /* the cursor */
-    int nums;           /* positional numbers read: x, y, z, yaw, pitch */
+    int nums;           /* positional numbers read: x, y, z, yaw, pitch, roll */
     int keyed;          /* the text opened with "pos=" */
     int paren;          /* 1 inside the bracket, 2 once it closed */
     int roll;           /* roll= read */
@@ -107,7 +107,7 @@ static int pose_part(pose_scan* sc) {
     const char* d = (*sc->p == '-' || *sc->p == '+') ? sc->p + 1 : sc->p;
     if (!pose_is_digit(*d)) return pose_refuse(sc, "unexpected text");
     if (sc->paren == 2 || sc->roll) return pose_refuse(sc, "a number without a key after the position");
-    if (sc->nums >= 5) return pose_refuse(sc, "more than five numbers");
+    if (sc->nums >= 6) return pose_refuse(sc, "more than six numbers");
     sc->nums++;
     return pose_take_int(sc);
 }
