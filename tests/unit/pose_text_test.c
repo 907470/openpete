@@ -53,6 +53,7 @@ static void grammar_cases(void) {
         "pos=(bogus",
         "pos=(1, 2",
         "1,2,3,4,5,6,7",
+        "1,2,3,4,5,6 roll=7",
         "pos=(1, 2, 3",
         "pos=(1, 2, 3, 4)",
         "pos=(1, 2, 3) pitch=5",

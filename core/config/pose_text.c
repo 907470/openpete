@@ -79,6 +79,7 @@ static int pose_keyed(pose_scan* sc, int slot) {
     if (sc->paren == 1) return pose_refuse(sc, "a key inside the bracket");
     if (slot < 0) {
         if (sc->roll || sc->nums < 3) return pose_refuse(sc, "roll= before the position or twice");
+        if (sc->nums >= 6) return pose_refuse(sc, "roll= after a sixth number, which is the roll");
         sc->roll = 1;
         return pose_take_int(sc);
     }

@@ -858,15 +858,17 @@ void freecam_view_rotation(double yaw, double pitch, double roll, double R[3][3]
  *
  * The text parses through freecam_parse_pose_text; the "roll=N" key sets
  * the roll, 0 when absent. Three or more integers set x, y, z and, when
- * present, yaw and pitch, keeping the current angles otherwise. Other text
+ * present, yaw and pitch, keeping the current angles otherwise; a sixth
+ * integer sets the roll, as it does in a path waypoint. Other text
  * resolves as a named pose, which sets all five.
  * An unresolvable string is logged and changes nothing.
  * @param cpu The guest CPU state.
  * @param s The pose text. */
 static void freecam_apply_pose(CPUState* cpu, const char* s) {
-    int32_t v[5] = {0, 0, 0, 0, 0}, roll;
+    int32_t v[6] = {0, 0, 0, 0, 0, 0}, roll;
     char name[FREECAM_NAME_MAX];
-    int n = freecam_parse_pose_text(s, v, NULL, 5, &roll, name);
+    int n = freecam_parse_pose_text(s, v, NULL, 6, &roll, name);
+    if (n >= 6) roll = v[5];
     if (n < 3) {
         if (!name[0] || !resolve_named(cpu, name, v)) {
             OPL_WARN_F("freecam",

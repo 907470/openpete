@@ -111,7 +111,8 @@ key ({{ key("key:host.frame_step") }} <!-- id: key:host.frame_step -->) does. It
 at a pose (`pos=(x, y, z) yaw=N pitch=N`, the format the free camera logs)
 once the level is live. An optional `roll=N` after the pose tilts the view
 about its forward axis, 4096 per turn; the free camera never logs a roll, and
-a pose without one is level. **Player pose** <!-- id: knob:player_pose --> places
+a pose without one is level. A bare list of numbers (`x,y,z,yaw,pitch,roll`)
+gives the roll as its sixth number. **Player pose** <!-- id: knob:player_pose --> places
 Spyro at `x,y,z[,yaw]` once gameplay is live, with the camera re-seated
 behind him; a trailing `@N` waits until count `N` of the counter
 `--frame-limit` reads. Both are empty by default, and both change the game's state.
