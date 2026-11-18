@@ -809,6 +809,17 @@ if(NOT CMAKE_HOST_WIN32)
         COMMENT "worker-line fence: per-worker arrays fill whole cache lines"
         VERBATIM)
 
+    # The oracle and the older forensic emulator are named as tools, never by
+    # their internals (an upstream source path or line, an upstream symbol).
+    # scripts/fences/provenance_census.py refuses a tracked line with a listed
+    # internal name, or with an emulator's name beside an upstream source
+    # form, outside its allow-list rows and the patch series.
+    add_custom_target(openpete_provenance_census ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking emulator citations..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/provenance_census.py tree ${CMAKE_SOURCE_DIR}
+        COMMENT "provenance fence: other emulators named as tools, never by their internals"
+        VERBATIM)
+
     add_custom_target(openpete_clock_guard ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking scene-producer clocks..."
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/clock_guard.py ${CMAKE_SOURCE_DIR}

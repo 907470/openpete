@@ -462,9 +462,8 @@ end
 -- Set breakpoints at PC+4 of every cop2 op in our range. Invoker fires AFTER
 -- the cop2 has executed; registers contain the post-state.
 --
--- Gotcha: the invoker MUST return true (not false): a BP that
--- returns false fires once and is never seen again. Returning true (or any
--- non-false) keeps it armed.
+-- Gotcha: the invoker MUST return true: a BP whose invoker returns false
+-- or nil fires once and is deleted. Returning true keeps it armed.
 --
 -- Gotcha: BPs only fire when the emulator is launched with --debugger.
 for _, pc in ipairs(cop2_pcs) do
