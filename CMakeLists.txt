@@ -929,6 +929,17 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME sandbox_guard_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_sandbox_guard.py)
     set_tests_properties(sandbox_guard_selftest PROPERTIES LABELS "fence")
+    # The knob read-path fence: no registered OPENPETE_* variable is read
+    # both by getenv (or a wrapper of it) and by openpete_config_env (or a
+    # wrapper of it), so a config file [env] value has one source of truth.
+    # The selftest feeds split and clean fixtures and runs the checkout.
+    add_test(NAME knob_read_path
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/knob_read_path.py
+                     --root ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(knob_read_path PROPERTIES LABELS "fence")
+    add_test(NAME knob_read_path_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_knob_read_path.py)
+    set_tests_properties(knob_read_path_selftest PROPERTIES LABELS "fence")
     # The recomp identity pair of the blessed manifests: the psx.map symbol
     # digest is invariant under the build path, address width and section
     # order; the generated-tree digest ignores stale files and refuses a

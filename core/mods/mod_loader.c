@@ -51,6 +51,7 @@
 #include "openpete_mod_api.h"
 #include "openpete_mod_ui.h"
 #include "openpete_log.h"
+#include "openpete_config.h"      /* openpete_config_env: OPENPETE_CC */
 #include "openpete_psxtrace.h" /* openpete_psxtrace_gate_host_enter: a host-initiated guest call */
 #include "openpete_fiber.h"      /* openpete_speculative / openpete_replaying */
 #include "openpete_host_input.h"
@@ -4220,7 +4221,7 @@ static void mods_resolve_cc(char* cc, size_t cap) {
             return;
         }
     }
-    env = getenv("OPENPETE_CC");
+    env = openpete_config_env("OPENPETE_CC");
     if (env && env[0]) {
         snprintf(cc, cap, "%s", env);
         return;

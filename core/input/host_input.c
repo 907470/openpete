@@ -4,6 +4,7 @@
 #include "openpete_input_lock.h"
 #include "openpete_input_log.h"
 #include "openpete_keymap.h"
+#include "openpete_config.h"
 #include "openpete_log.h"
 #include "openpete_paths.h"
 #include "openpete_rumble.h"
@@ -279,7 +280,7 @@ int openpete_host_input_legacy(void)
 {
     static int v = -1;
     if (v < 0) {
-        const char* e = getenv("OPENPETE_INPUT_LEGACY");
+        const char* e = openpete_config_env("OPENPETE_INPUT_LEGACY");
         v = (e && *e && *e != '0') ? 1 : 0;
         if (v) OPL_INFO_F("input", "LEGACY input path (PsyCross owns pump+decode)");
     }

@@ -50,6 +50,7 @@
 #include "openpete_profile.h"
 #include "openpete_eager_ladder.h"  /* op_eager_cost_ema */
 #include "openpete_log.h"
+#include "openpete_config.h"     /* openpete_config_env */
 
 #include <SDL3/SDL.h>
 #include <stdlib.h>
@@ -299,7 +300,7 @@ int openpete_present_thread_enabled(void)
 int openpete_present_thread_lattice_enabled(void)
 {
     static int on = -1;
-    if (on < 0) { const char *e = getenv("OPENPETE_EAGER_LATTICE"); on = (e && *e && *e != '0') ? 1 : 0; }
+    if (on < 0) { const char *e = openpete_config_env("OPENPETE_EAGER_LATTICE"); on = (e && *e && *e != '0') ? 1 : 0; }
     return on;
 }
 

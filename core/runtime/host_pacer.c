@@ -28,6 +28,7 @@
 
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
+#include "openpete_config.h"
 #include "openpete_log.h"
 #include "openpete_native_render.h"
 #include "openpete_pace_log.h"
@@ -315,7 +316,7 @@ static int pace_flip_log_on(void)
 {
     static int on = -1;
     if (on < 0) {
-        const char *e = getenv("OPENPETE_PACE_FLIP_LOG");
+        const char *e = openpete_config_env("OPENPETE_PACE_FLIP_LOG");
         on = (e && *e && *e != '0');
     }
     return on;

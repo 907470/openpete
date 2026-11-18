@@ -8,6 +8,7 @@
 #include "openpete_time.h"
 #include "openpete_host_input.h"
 #include "openpete_log.h"
+#include "openpete_config.h"           /* openpete_config_env */
 #include "openpete_native_render.h"   /* refusal counters for the present recorder */
 #include "openpete_interp.h"          /* present-detail interpolation mode */
 #include "openpete_interp_objs.h"     /* present-detail tick stamp */
@@ -1663,6 +1664,6 @@ void openpete_pace_gpu_frame(uint64_t token, int64_t frame_ns, int64_t busy_ns, 
 int openpete_pace_gpu_records_wanted(void)
 {
     static int on = -1;
-    if (on < 0) { const char* e = getenv("OPENPETE_BUGREPORT_GPU"); on = (e && *e && *e != '0'); }
+    if (on < 0) { const char* e = openpete_config_env("OPENPETE_BUGREPORT_GPU"); on = (e && *e && *e != '0'); }
     return on;
 }

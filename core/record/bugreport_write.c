@@ -507,7 +507,7 @@ static void add_module(br_members_t* m, char mod_sha[65])
     wb_printf(&w, "codegen_stamp=%s\nrom_stamp=%s\nabi=%u\n",
               d && d->codegen_stamp ? d->codegen_stamp : "",
               d && d->rom_sha256 ? d->rom_sha256 : "", d ? d->abi_version : 0u);
-    const char* march = getenv("OPENPETE_MODULE_MARCH");
+    const char* march = openpete_config_env("OPENPETE_MODULE_MARCH");
     wb_printf(&w, "module_march=%s\n", march && *march ? march : "(unset)");
     if (w.b) br_members_add(m, "module.txt", (uint8_t*)w.b, w.n, BRM_TEXT);
 }
@@ -744,7 +744,7 @@ static void json_identity(wbuf_t* w, const br_job_t* j, const char* mod_sha)
         (void)openpete_state_image_ident(id_src->state, id_src->state_len, ident, sizeof ident);
     (void)br_disc_sha(j->disc_path, dsha);
     const openpete_recomp_module* d = openpete_recomp_module_get();
-    const char* march = getenv("OPENPETE_MODULE_MARCH");
+    const char* march = openpete_config_env("OPENPETE_MODULE_MARCH");
     wb_printf(w, "{\n  \"schema\": %d,\n  \"trigger\": ", OPENPETE_BUGREPORT_SCHEMA);
     wb_json_str(w, j->fatal ? j->fatal : "press");
     if (j->exit_thread) {

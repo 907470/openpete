@@ -3266,7 +3266,7 @@ void knob_registry_init(const struct openpete_options *opts) {
             if (opts->vsync != -1) {
                 k->stored_num = opts->vsync ? 1 : 0;
             } else {
-                const char *e = getenv("OPENPETE_PRESENT_MODE");
+                const char *e = openpete_config_env("OPENPETE_PRESENT_MODE");
                 if (e && (!strcmp(e, "immediate") || !strcmp(e, "mailbox"))) {
                     k->stored_num = 0;
                 } else {

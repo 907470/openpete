@@ -8714,7 +8714,7 @@ int openpete_native_tercache_usable(void)
      * harness diffs screenshots at low frame counts). */
     static int s_force = -1;
     if (s_force < 0) {
-        const char* e = getenv("OPENPETE_TERRAIN_CACHE_FORCE");
+        const char* e = openpete_config_env("OPENPETE_TERRAIN_CACHE_FORCE");
         s_force = (e && *e && *e != '0');
     }
     return s_nr.enabled
@@ -22465,7 +22465,7 @@ static void gpu_zone_report(void)
     const int pace = openpete_pace_gpu_records_wanted();
     if (n > 0 && op_prof_on()) gpu_zone_trace(res, n);
     if (n > 0 && pace) gpu_zone_pace(res, n);
-    const char* timers = getenv("OPENPETE_GPU_TIMERS");
+    const char* timers = openpete_config_env("OPENPETE_GPU_TIMERS");
     if (!pace || (timers && *timers && *timers != '0')) gpu_zone_line(res, n);
 }
 

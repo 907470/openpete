@@ -20,6 +20,7 @@
 // every SDL_Thread handle, so SDL_WaitThread would return without joining
 // and the process would exit with the tail of stderr still in the pipe.
 
+#include "openpete_config.h"
 #include "openpete_log.h"
 #include "openpete_thread_roles.h"
 #include "openpete_crash.h"
@@ -407,7 +408,7 @@ static void restore_fd2(void) {
 int openpete_log_file_open(const char* spec) {
     if (s_pump_live) return 0;  /* already open */
 
-    if (!spec) spec = getenv("OPENPETE_LOG_FILE");
+    if (!spec) spec = openpete_config_env("OPENPETE_LOG_FILE");
     if (spec && (!*spec || strcmp(spec, "off") == 0 || strcmp(spec, "0") == 0))
         return -1;
 
