@@ -461,17 +461,23 @@ target_include_directories(vibration_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/core/host
     ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+if(NOT WIN32)
+    target_link_libraries(vibration_test PRIVATE m)   # rumble_response.c: pow
+endif()
 set_target_properties(vibration_test PROPERTIES C_STANDARD 99)
 add_test(NAME vibration_test COMMAND vibration_test)
 
 # rumble_response_test - the motor intensity per actuator byte,
-# openpete_rumble_response, against the measured table data/rumble-response/
-# (tools/rumble_response_measure.py), with two known-wrong curves the
-# comparator must reject. SDL-free.
+# openpete_rumble_response (a fitted cubic), against the measured table
+# data/rumble-response/ (tools/rumble_response_measure.py), with two
+# known-wrong curves the comparator must reject. SDL-free.
 add_executable(rumble_response_test
     rumble_response_test.c
     ${CMAKE_SOURCE_DIR}/core/input/rumble_response.c)
 target_include_directories(rumble_response_test PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
+if(NOT WIN32)
+    target_link_libraries(rumble_response_test PRIVATE m)   # rumble_response.c: pow
+endif()
 set_target_properties(rumble_response_test PROPERTIES C_STANDARD 11)
 add_test(NAME rumble_response_test COMMAND rumble_response_test
          ${CMAKE_CURRENT_SOURCE_DIR}/data/rumble-response/reference.tsv)

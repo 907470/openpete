@@ -28,6 +28,7 @@ each row to its text, and packaging fails on a row with no text.
 | glad 0.1.36 (GL loader, generated, vendored in PsyCross) | MIT                        | https://github.com/Dav1dde/glad                                                             |
 | volk (Vulkan loader)                 | MIT                                            | https://github.com/zeux/volk                                                                |
 | Vulkan-Headers 1.3.204               | Apache-2.0                                     | https://github.com/KhronosGroup/Vulkan-Headers                                              |
+| Pokopom (the large-motor rumble curve in `core/input/rumble_response.c`) | MIT | https://github.com/KrossX/Pokopom |
 | libstdc++ / libgcc (static)          | GPL-3.0 **with GCC Runtime Library Exception** | GCC - the exception explicitly permits distributing the compiled binary in proprietary form |
 | MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows) | Zlib / BSD / public domain (permissive) | https://www.mingw-w64.org                                                          |
 | OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`) | LGPL v2 | https://github.com/kcat/openal-soft; source: https://dl.openpete.com/sources/openal-soft-1.25.1.tar.bz2 |

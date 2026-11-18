@@ -4,7 +4,7 @@
  *
  * The per-byte motor intensity is rumble_response_test's: it compares every
  * byte of each motor with the measured table. This test checks the
- * properties the vibration path relies on whatever the table holds: a zero
+ * properties the vibration path relies on whatever the curve: a zero
  * byte is silent at every strength, the small motor's on bit drives it at
  * full scale, the large motor is monotonic, and the strength scale is a
  * kill switch at 0, the unscaled response at 10 and at -1 (unset), and

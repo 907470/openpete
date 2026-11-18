@@ -79,10 +79,11 @@ add_library(openpete_core STATIC
     # The host input lock: discards physical-device events at the pump and
     # blanks the polled snapshot. See openpete_input_lock.h.
     input/input_lock.c
-    # Controller vibration. rumble_response.c is the measured actuator
-    # response and rumble_motor.c its --vibration scaling to SDL's motor range,
-    # both SDL-free so the unit tests link them alone; host_rumble.c is the
-    # registration / per-tick sample / per-pump apply seam.
+    # Controller vibration. rumble_response.c is the actuator response (a
+    # cubic fitted to the measured table) and rumble_motor.c its --vibration
+    # scaling to SDL's motor range, both SDL-free so the unit tests link them
+    # alone; host_rumble.c is the registration / per-tick sample / per-pump
+    # apply seam.
     input/rumble_response.c
     input/rumble_motor.c
     input/stick_response.c
