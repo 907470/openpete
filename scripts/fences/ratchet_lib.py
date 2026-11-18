@@ -462,12 +462,13 @@ def entries_missing_inputs(root, path, fence, rels=None, jobs=8):
     return sorted(missing), len(cmds)
 
 
-def ensure_db_inputs(root, fence, path, rels=None, jobs=8, build=True):
-    """ensure_inputs over the -M -MG pass of the linux-release database's
-    entries (entries_missing_inputs; the entries of rels, every entry when
-    None), for a fence that compiles or parses the database's TUs as they
-    are. -> the note for the fence's output line: entries probed, seconds,
-    and the build when one ran."""
+def ensure_db_inputs(root, fence, path, rels=None, jobs=8, build=True,
+                     dbname="linux-release"):
+    """ensure_inputs over the -M -MG pass of the database's entries
+    (entries_missing_inputs; the entries of rels, every entry when None), for
+    a fence that compiles or parses the database's TUs as they are. dbname
+    names the database in the messages. -> the note for the fence's output
+    line: entries probed, seconds, and the build when one ran."""
     t0 = time.time()
     probed = []
 
@@ -475,7 +476,7 @@ def ensure_db_inputs(root, fence, path, rels=None, jobs=8, build=True):
         missing, n = entries_missing_inputs(root, path, fence, rels, jobs)
         probed.append(n)
         return missing, []
-    _, note = ensure_inputs(fence, "linux-release", path, probe, build)
+    _, note = ensure_inputs(fence, dbname, path, probe, build)
     return "inputs: %d entries probed, %.1f s%s" % (
         probed[-1], time.time() - t0, ", " + note if note else "")
 

@@ -42,22 +42,27 @@ cursors and the AST:
     a global's form (OP_GUARDED_BY*, OP_PT_GUARDED_BY*, OP_SEALED), without a
     `thread-roles: <reason>` marker. A global's first form needs none.
 
-Check 2 (population, thread_roles_globals.py). A mutable global declared or
-named in a touched extent without a form is refused, whether or not
-baselines/thread-roles/unannotated.tsv lists it; a row of deferred.tsv
-passes. The refusal names the census's confirmed form or the next step. The
-stateless half (`check`): a form-less global in neither TSV, a row whose
-global has a form, a global in both, and a row added since the merge-base
-with main.
+Check 2 (population, thread_roles_globals.py), two halves. New-global half,
+always refusing: a form-less global (declared in a selected TU) in neither
+baselines/thread-roles/unannotated.tsv nor deferred.tsv; a row added to
+either since the base without a reason in its note (in the hook also
+without OPENPETE_THREAD_ROLES_ACCEPT naming it); changed code no TU
+reaches. Extent half, refusing only when CHECK2_ARMED: a form-less global
+declared or named in a touched extent, listed or not (a row of deferred.tsv
+passes); a row whose global has a form; a global in both TSVs; and, for a
+whole-tree `check`, a row whose global is gone. A refusal names the
+census's confirmed form or the next step.
 
 Check 4 (engagement, LAW 8). TUs analysed per database, annotated
 functions and globals, rows, accessors and escapes evaluated and references
 classified are printed; zero TUs to analyse while in-scope sources changed,
 a missing or unparsable database, or a selected TU that does not parse
-under clang is VACUOUS and refuses. Before the analysis the hook
-configures a missing linux-release database and builds the headers a
-build rule generates (openpete_generated_headers, under nice -n 10) when
-the -M -MG pass of the selected entries finds one absent; the mode line
+under clang is VACUOUS and refuses, and the last line counts the unparsed
+entries. Before the analysis the hook and range configure a missing
+database and build the headers a build rule generates
+(openpete_generated_headers, under nice -n 10) in each database's build
+directory when the -M -MG pass of the selected entries finds one absent;
+the mode line
 prints the entries probed, the seconds, and the build when one ran. `check`
 runs inside `cmake --build` of the same directory, after that target, and
 never builds; OPENPETE_FENCE_NO_BUILD=1 makes the hook refuse
@@ -80,14 +85,17 @@ Modes:
                   every TU. --all selects every TU. --ctest: 64 without a
                   database.
   check --armed   exit 1 unless the tracked pre-commit hook calls this fence.
-  range <b>..<h>  check 2's touched-extent half over the cumulative diff, at
-                  h, which must be HEAD with a clean scope (the landing path:
-                  a rebase runs no pre-commit hook), and the TSV compare with b.
+  range <b>..<h>  the hook's checks over the cumulative diff b..h, at h,
+                  which must be HEAD with a clean scope (the landing path: a
+                  rebase or cherry-pick runs no pre-commit hook), and the TSV
+                  compare with b.
   census          classify the population over both databases, confirm local
                   forms; --write writes unannotated.tsv, --json <path> the
                   per-global facts.
   tighten         drop the unannotated.tsv rows whose global has a form or is
                   gone, then re-run the annotator over deferred.tsv.
+  owe "<note>"    tighten's drop, and a row with <note> for every form-less
+                  global in neither TSV (the census's confirmed form kept).
   replay <sha>    the touched-extent half of one past commit, over that
                   commit's text in this tree's databases; --json <path>.
   sites           every check site in the tree (kind, file, line).
@@ -131,6 +139,7 @@ SCOPE_ROOTS = ("core/", "games/", "tests/")
 FENCE = lib.Fence("thread-roles", "thread_roles.py", "", SCOPE_ROOTS,
                   "OPENPETE_THREAD_ROLES_DB")
 ROLES_H = "core/include/openpete_thread_roles.h"
+FENCE_SCRIPT = "scripts/fences/thread_roles.py"
 RUNTIME_C = "core/runtime/thread_roles.c"
 STAMP = "thread_roles.stamp"
 CLANG = {"c": "clang-19", "c++": "clang++-19"}
@@ -280,8 +289,16 @@ def strip_comments(text):
     return COMMENT_OR_STRING.sub(blank, text)
 
 
+USR_FN = re.compile(r"@F@([^#@]+)")
+
+
 def usr_name(usr):
-    return usr.rsplit("@", 1)[-1]
+    """-> the function name a USR spells: the identifier after its `@F@`,
+    without the C++ signature suffix (`c:@F@f#*I#` -> `f`; a parameter type
+    may spell `@`, so the last `@` is not the name's start); a USR with no
+    `@F@` gives its last `@` component."""
+    m = USR_FN.search(usr)
+    return m.group(1) if m else usr.rsplit("@", 1)[-1]
 
 
 def row_forms(row):
@@ -926,13 +943,22 @@ def sealed_names(sealed, rel):
 
 def rewrite_sealed(text, sealed, writers_spans, lang):
     """Line-preserving: `const ` before each OP_SEALED declarator, and the
-    sealed names inside the listed writers' bodies cast back to writable."""
+    sealed names inside the listed writers' bodies cast back to writable. In
+    C++ a const definition needs an initializer: a non-extern declarator
+    with none (`;` or `,` follows the macro) gets `{}`, the value
+    initialization its static storage already gives it."""
     lines = text.split("\n")
     pat = re.compile(r"\b([A-Za-z_]\w*)(\s*(?:\[[^\]]*\]\s*)*)OP_SEALED\((\w+)\)")
+
+    def sub(line, m):
+        init = ""
+        if lang == "c++" and re.match(r"\s*[;,]", line[m.end():]) \
+                and not re.search(r"\bextern\b", line[:m.start()]):
+            init = "{}"
+        return "const %s%sOP_SEALED(%s)%s" % (m.group(1), m.group(2), m.group(3), init)
     for n, line in enumerate(lines):
         if "OP_SEALED(" in line and not line.lstrip().startswith("#"):
-            lines[n] = pat.sub(lambda m: "const %s%sOP_SEALED(%s)"
-                               % (m.group(1), m.group(2), m.group(3)), line)
+            lines[n] = pat.sub(lambda m, line=line: sub(line, m), line)
     if writers_spans:
         names = list(sealed)
         if names:
@@ -969,8 +995,10 @@ def writer_spans(text, writer_names):
         if j >= len(text) or text[j] != "{":
             continue
         line_start = text.count("\n", 0, m.start())
-        prefix = text[text.rfind("\n", 0, m.start()) + 1:m.start()]
-        if not re.fullmatch(r"\s*(?:[A-Za-z_]\w*[\s*]+)*", prefix) \
+        # the declaration's own text: from the last line, statement or
+        # brace boundary (a definition inside `namespace {` on one line)
+        prefix = text[max(text.rfind(c, 0, m.start()) for c in "\n;{}") + 1:m.start()]
+        if not re.fullmatch(r"\s*(?:[A-Za-z_]\w*(?:::|[\s*&]+))*", prefix) \
                 or re.search(r"\b(return|if|while|else|case)\b", prefix):
             continue
         k, depth = j + 1, 1
@@ -1218,7 +1246,7 @@ def build_ctx(root, tables, tmp):
     writer_usrs = set().union(*tables.seal_writers.values()) if tables.seal_writers else set()
     writer_files = set()
     for u in writer_usrs:
-        m = re.match(r"c:([^@]+)@F@", u)
+        m = re.match(r"c:([^@]+)@", u)
         if m:
             writer_files.add(m.group(1))
     return {"root": root, "rows": tables.rows, "accessors": tables.accessors,
@@ -1329,7 +1357,8 @@ def report(root, tables, ctx, results, wall, selected_files, mode):
         say("  slowest TUs: %s" % ", ".join("%s[%s] %.2f s" % (r["rel"], r["db"], r.get("sec", 0))
                                              for r in slow))
     if parse:
-        say("thread-roles: VACUOUS: %d selected TU(s) do not parse under clang-19:" % len(parse))
+        say("thread-roles: VACUOUS: %d selected TU(s) do not parse under clang-19 (%d "
+            "diagnostic line(s)); nothing in them was checked:" % (unparsed(results), len(parse)))
         for p in parse[:20]:
             say("    " + p)
     if refusals:
@@ -1339,6 +1368,33 @@ def report(root, tables, ctx, results, wall, selected_files, mode):
         if len(refusals) > 60:
             say("    ... %d more" % (len(refusals) - 60))
     return 1 if (refusals or parse) else 0, unseen
+
+
+def unparsed(results):
+    """-> the number of analysed (file, database) entries with a parse
+    failure."""
+    return sum(1 for r in results if r["parse"])
+
+
+def refused_line(results):
+    """The fence's last line on a refusal; it names the unparsed entries,
+    since a refusal of those is a check that did not run, not a finding."""
+    n = unparsed(results)
+    return "thread-roles: REFUSED%s" % (
+        " (VACUOUS: %d TU(s) unparsed, nothing in them checked)" % n if n else "")
+
+
+def ensure_inputs_both(root, linux_path, rels):
+    """Build the generated inputs either database's selected entries (rels,
+    every entry when None) read and its build directory lacks: an entry
+    that includes an absent generated header does not parse, and an
+    unparsed entry is VACUOUS. -> the note for the mode line."""
+    note = lib.ensure_db_inputs(root, FENCE, linux_path, rels, jobs())
+    mpath = mingw_db(root)
+    if mpath:
+        note += "; windows-mingw " + lib.ensure_db_inputs(root, FENCE, mpath, rels, jobs(),
+                                                          dbname="windows-mingw")
+    return note
 
 
 def whole_selection(mode):
@@ -1381,11 +1437,12 @@ def first_form(root, base, path, code):
                      strip_comments(before)) is None
 
 
-def marker_refusals(root, base, staged):
-    """Hook: added lines that add or change a table row, or change a global's
-    form, need a `thread-roles:` reason on the line. A first form needs none."""
+def marker_refusals(root, base, staged, rev=None):
+    """Added lines (the index against base, or base..rev) that add or change a
+    table row, or change a global's form, need a `thread-roles:` reason on
+    the line. A first form needs none."""
     out = []
-    hunks = lib.diff_hunks(root, base, staged)
+    hunks = lib.diff_hunks(root, base, staged, rev=rev)
     for path, hs in lib.added_ranges(hunks).items():
         try:
             lines = read_text(os.path.join(root, path)).split("\n")
@@ -1465,13 +1522,18 @@ def dump_refused(r, path):
 
 
 def c2_verdict(root, tus, hunks, un, dfr, read):
-    """Rule on the merged TUs and print the engagement line. -> (exit code,
-    the ruling). Code lines in a file no TU reached are VACUOUS and refuse;
-    no extent touched prints as VACUOUS and rules on nothing."""
+    """Rule on the merged TUs and print the engagement line. -> (the new-global
+    half's exit code, the extent half's exit code, the ruling).
+
+    New-global half, always armed: a form-less global in neither TSV, and
+    changed code in a file no TU reached (VACUOUS: the population check did
+    not run there). Extent half, armed by CHECK2_ARMED: a form-less global a
+    touched extent names, a row whose global has a form, a global in both
+    TSVs. No extent touched prints as VACUOUS and rules on nothing."""
     r = pop.rule(tus, un, dfr)
     say(pop.engagement_line(r))
     dump_refused(r, os.environ.get("OPENPETE_THREAD_ROLES_REFUSED"))
-    refusals = r["text"] + pop.stateless(r["recs"], r["declared"], un, dfr)
+    new, other = pop.stateless(r["recs"], r["declared"], un, dfr)
     unseen = sorted(p for p, h in hunks.items()
                     if p not in r["seen"] and p not in lib.UNSCORED
                     and p not in pop.NO_TU_HEADERS
@@ -1482,18 +1544,30 @@ def c2_verdict(root, tus, hunks, un, dfr, read):
             % ", ".join(unseen))
     elif not r["extents"]:
         say("  check 2: VACUOUS: no extent or declaration touched, nothing ruled on")
-    for line in refusals[:60]:
+    if new:
+        say("  check 2: %d global(s) with no form and no row (refused):" % len(new))
+        print_lines(new, 60)
+    extent = r["text"] + other
+    if extent:
+        say("  check 2: %d touched-extent or row finding(s):" % len(extent))
+        print_lines(extent, 60)
+    return (1 if new or unseen else 0), (1 if extent else 0), r
+
+
+def print_lines(lines, cap):
+    """Print up to cap indented lines and the count of the rest."""
+    for line in lines[:cap]:
         say("    " + line)
-    if len(refusals) > 60:
-        say("    ... %d more" % (len(refusals) - 60))
-    return (1 if refusals or unseen else 0), r
+    if len(lines) > cap:
+        say("    ... %d more" % (len(lines) - cap))
 
 
 def c2_exit(code):
-    """-> check 2's exit status: code when armed, else 0 with a line saying
-    the refusals above were reports."""
+    """-> the extent half's exit status: code when armed, else 0 with a line
+    saying the refusals above were reports."""
     if code and not CHECK2_ARMED:
-        say("  check 2: REPORT ONLY: the lines above would refuse; CHECK2_ARMED is False")
+        say("  check 2: REPORT ONLY: the touched-extent and row findings above would "
+            "refuse; CHECK2_ARMED is False")
         return 0
     return code
 
@@ -1506,8 +1580,7 @@ def mode_hook(root):
     lib.refuse_temporary_index()
     changes, base = lib.staged_changes(root)
     staged = [b or a for s, a, b in changes if s != "D"]
-    scope = [f for f in staged if FENCE.in_scope(f) or f in (
-        "scripts/fences/thread_roles.py", ROLES_H)]
+    scope = [f for f in staged if FENCE.in_scope(f) or f in (FENCE_SCRIPT, ROLES_H)]
     lists_staged = {pop.UNANNOTATED, pop.DEFERRED} & set(staged)
     if not scope and not lists_staged:
         say("thread-roles: no staged in-scope path")
@@ -1518,59 +1591,68 @@ def mode_hook(root):
     un, dfr = load_lists(root, ":")
     accept = lib.accept_reason(pop.ACCEPT_ENV) or ""
     list_refusals = compare_lists(root, base, un, dfr, hook_renames(root, changes), accept)
-    for line in list_refusals:
-        say("    " + line)
+    print_lines(list_refusals, 60)
     if not scope:
-        return c2_exit(1 if list_refusals else 0)
+        if list_refusals:
+            say("thread-roles: REFUSED")
+        return 1 if list_refusals else 0
     dirty = set(git(root, "diff", "--name-only").stdout.split("\n"))
     unstaged = sorted(f for f in scope if f in dirty)
     if unstaged:
         raise Refusal("staged with unstaged hunks: %s. The fence reads the working "
                       "file and the commit carries the index blob. `git add` them, "
                       "or stash the rest." % ", ".join(unstaged))
+    hunks = hunks_scope(root, lib.diff_hunks(root, base, scope))
+    rc, results = change_verdict(root, base, scope, hunks, un, dfr, "hook", None)
+    if rc or list_refusals:
+        say(refused_line(results))
+        return 1
+    return 0
+
+
+def change_verdict(root, base, scope, hunks, un, dfr, label, rev):
+    """Checks 1 to 4 and the marker check over the TUs a change reaches: the
+    changed sources, or every TU when a header or this fence changed. The
+    hook's change is the index against HEAD (rev None); the range's is
+    base..rev at rev. -> (exit code, analysis results)."""
     linux_path = lib.linux_db(root, FENCE)
-    whole = any(is_header(f) for f in scope) or "scripts/fences/thread_roles.py" in scope
+    whole = any(is_header(f) for f in scope) or FENCE_SCRIPT in scope
     sources = {f for f in scope if not is_header(f) and FENCE.in_scope(f)}
-    inputs = lib.ensure_db_inputs(root, FENCE, linux_path,
-                                  None if whole else sources, jobs())
+    inputs = ensure_inputs_both(root, linux_path, None if whole else sources)
     linux, mingw = databases(root)
     missing = sorted(f for f in sources if f not in linux and f not in mingw
                      and f not in lib.UNSCORED)
     if missing:
-        raise Refusal("VACUOUS: staged sources with no compile-database entry: %s. "
+        raise Refusal("VACUOUS: changed sources with no compile-database entry: %s. "
                       "Re-run: %s" % (", ".join(missing), lib.CONFIGURE))
     sel = select_all(linux, mingw, None if whole else sources)
-    mode = "hook (%s; %s)" % ("whole tree: a staged header" if whole
-                              else "%d staged source(s)" % len(sources), inputs)
+    mode = "%s (%s; %s)" % (label, "whole tree: a changed header or fence" if whole
+                            else "%d changed source(s)" % len(sources), inputs)
     # A source on the UNSCORED list has no entry in either database by
-    # design (a launcher-preset-only TU): it is not analysable, so a commit
-    # staging only such sources has nothing to analyse rather than a
+    # design (a launcher-preset-only TU): it is not analysable, so a change
+    # holding only such sources has nothing to analyse rather than a
     # vacuous analysis.
     analysable = {f for f in sources if f not in lib.UNSCORED}
     if not whole and sources and not analysable:
-        say("thread-roles: staged sources are all UNSCORED (no compile-database entry by design): %s"
-            % ", ".join(sorted(sources)))
-        return 0
+        say("thread-roles: changed sources are all UNSCORED (no compile-database entry by "
+            "design): %s" % ", ".join(sorted(sources)))
+        return 0, []
     if not any(sel.values()) and analysable:
-        raise Refusal("VACUOUS: zero TUs analysed for %d staged source(s)" % len(analysable))
+        raise Refusal("VACUOUS: zero TUs analysed for %d changed source(s)" % len(analysable))
     read = lambda rel: read_text(os.path.join(root, rel))
-    hunks = hunks_scope(root, lib.diff_hunks(root, base, scope))
     plan = c2_plan(root, hunks, set(linux) | set(mingw), read)
     tables, ctx, results, wall = run_analysis(root, sel, jobs(), mode, plan)
     rc, _ = report(root, tables, ctx, results, wall, set(scope), mode)
     t0 = time.time()
-    rc2, _ = c2_verdict(root, [r["c2"] for r in results if r.get("c2")], hunks, un, dfr, read)
+    new_rc, extent_rc, _ = c2_verdict(root, [r["c2"] for r in results if r.get("c2")],
+                                      hunks, un, dfr, read)
     say("  check 2: ruled in %.2f s over %d TU entries" % (
         time.time() - t0, sum(1 for r in results if r.get("c2"))))
-    rc = rc or c2_exit(rc2 or (1 if list_refusals else 0))
-    marks = marker_refusals(root, base, scope)
-    for m in marks:
-        say("    " + m)
-    if marks:
-        rc = 1
-    if rc:
-        say("thread-roles: REFUSED")
-    return rc
+    extent_rc = c2_exit(extent_rc)
+    rc = rc or new_rc or extent_rc
+    marks = marker_refusals(root, base, scope, rev)
+    print_lines(marks, len(marks))
+    return (1 if rc or marks else 0), results
 
 
 def mode_check(root, argv):
@@ -1610,10 +1692,9 @@ def mode_check(root, argv):
     mode = "check --all" if whole else "check: %s" % why
     un, dfr = load_lists(root, None)
     list_refusals = merge_base_compare(root, un, dfr)
-    for line in list_refusals:
-        say("    " + line)
+    print_lines(list_refusals, 60)
     if sel_files is not None and not sel_files:
-        if c2_exit(1 if list_refusals else 0):
+        if list_refusals:
             say("thread-roles: REFUSED")
             return 1
         say("thread-roles: check: no analysed source changed since the last pass")
@@ -1630,23 +1711,23 @@ def mode_check(root, argv):
                    set(files) if sel_files is None else sel_files, mode)
     tus = [r["c2"] for r in results if r.get("c2")]
     extents, recs, seen, declared, defs = pop.merge_tus(tus)
-    state = pop.stateless(recs, declared, un, dfr)
+    new, state = pop.stateless(recs, declared, un, dfr)
     if sel_files is None:
         state += stale_lines(un, recs, seen, declared)
         state += stale_lines(dfr.base, recs, seen, declared)
     say("  check 2 (stateless): globals declared %d, rows %d unannotated, %d deferred, "
-        "definitions %d, refused %d" % (len(declared), len(un.rows), len(dfr), defs, len(state)))
-    for line in state[:40]:
-        say("    " + line)
-    if len(state) > 40:
-        say("    ... %d more" % (len(state) - 40))
-    rc = rc or c2_exit(1 if state or list_refusals else 0)
+        "definitions %d, no form and no row %d (refused), row findings %d"
+        % (len(declared), len(un.rows), len(dfr), defs, len(new), len(state)))
+    print_lines(new, 40)
+    print_lines(state, 40)
+    extent_rc = c2_exit(1 if state else 0)
+    rc = rc or (1 if new or list_refusals else 0) or extent_rc
     if rc == 0:
         with open(stamp_path, "w") as fh:
             json.dump({"db": db_sig, "files": now}, fh)
         say("thread-roles: PASS")
     else:
-        say("thread-roles: REFUSED")
+        say(refused_line(results))
     return rc
 
 
@@ -1697,7 +1778,9 @@ def scan_vacuity(results):
 
 
 def mode_range(root, argv):
-    """check 2's touched-extent half over base..head at head."""
+    """The hook's verdict over the cumulative change base..head, at head (a
+    rebase or cherry-pick runs no pre-commit hook), with the TSV compare
+    against base: an added row needs its reason in the note."""
     if len(argv) < 2 or ".." not in argv[1]:
         return None
     base, head = argv[1].split("..", 1)
@@ -1712,19 +1795,16 @@ def mode_range(root, argv):
     p = git(root, "diff", "--name-status", "-M", "-l", "100000", "--diff-filter=R", base, head)
     renames = {c[1]: c[2] for c in (l.split("\t") for l in p.stdout.splitlines())}
     list_refusals = compare_lists(root, base, un, dfr, renames, None)
+    print_lines(list_refusals, 60)
     hunks = rev_hunks(root, base, head)
-    read = lambda rel: read_text(os.path.join(root, rel))
-    linux, mingw = databases(root)
-    plan = c2_plan(root, hunks, set(linux) | set(mingw), read)
-    results, wall = run_scan(root, selected(linux, mingw, plan["tus"]), plan)
-    say("thread-roles: range %s..%s: %d files, %d TU entries, %.1f s wall"
-        % (base[:9], head[:9], len(hunks), len(results), wall))
-    parse = scan_vacuity(results)
-    rc, _ = c2_verdict(root, [r["tu"] for r in results if r["tu"]], hunks, un, dfr, read)
-    for line in list_refusals + parse[:20]:
-        say("    " + line)
-    if parse or c2_exit(1 if rc or list_refusals else 0):
-        say("thread-roles: REFUSED")
+    changed = git(root, "diff", "--name-only", "--no-renames", "--diff-filter=d", base,
+                  head).stdout.split("\n")
+    scope = sorted(f for f in changed if f and (FENCE.in_scope(f) or f == FENCE_SCRIPT))
+    say("thread-roles: range %s..%s: %d changed paths in scope" % (base[:9], head[:9], len(scope)))
+    rc, results = (change_verdict(root, base, scope, hunks, un, dfr, "range", head)
+                   if scope else (0, []))
+    if rc or list_refusals:
+        say(refused_line(results))
         return 1
     say("thread-roles: PASS")
     return 0
@@ -1839,6 +1919,36 @@ def mode_tighten(root):
     annotator = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                              "thread_roles_annotate.py")
     return subprocess.run([sys.executable, annotator, "--tighten"], cwd=root).returncode
+
+
+def mode_owe(root, argv):
+    """Record every form-less global in neither TSV as owed: a row in
+    unannotated.tsv whose note is argv[1], the census's confirmed form in
+    its form column; the rows whose global has a form or is gone leave, as
+    in tighten. The commit carrying it names each added global in
+    OPENPETE_THREAD_ROLES_ACCEPT."""
+    if len(argv) < 2 or not argv[1].strip():
+        raise Refusal("owe needs the note the added rows carry: owe \"<reason>\"")
+    un, dfr = load_lists(root, None)
+    m, confirmed, rows, wall, entries, parse = census_data(root)
+    if parse:
+        raise Refusal("VACUOUS: %d entries do not parse under libclang" % len(parse))
+    live = {tuple(r[:3]): r for r in rows}
+    kept = [un.rows[k] for k in un.rows if k in live]
+    added = [live[k][:5] + [argv[1].strip()] for k in sorted(live)
+             if k not in un.rows and k not in dfr.base.rows]
+    by_kind = {}
+    for r in added:
+        by_kind[r[3]] = by_kind.get(r[3], 0) + 1
+    say("thread-roles owe: %d TU entries, %.1f s; unannotated.tsv %d rows: %d kept, %d left "
+        "(form or gone), %d added (%s) in %d files"
+        % (entries, wall, len(un.rows), len(kept), len(un.rows) - len(kept), len(added),
+           ", ".join("%s %d" % kv for kv in sorted(by_kind.items())),
+           len({r[0] for r in added})))
+    with open(os.path.join(root, pop.UNANNOTATED), "w") as fh:
+        fh.write(pop.render_tsv("mutable globals with no form (thread_roles.py census)",
+                                kept + added, "owe", lib.head_sha(root)))
+    return 0
 
 
 def snapshot_at(root, sha):
@@ -1976,6 +2086,8 @@ def dispatch(root, mode, argv):
         return mode_census(root, argv)
     if mode == "tighten":
         return mode_tighten(root)
+    if mode == "owe":
+        return mode_owe(root, argv)
     if mode == "replay":
         return mode_replay(root, argv)
     if mode == "sites":

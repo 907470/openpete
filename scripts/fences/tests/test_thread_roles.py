@@ -227,6 +227,46 @@ class AnalyseTest(unittest.TestCase):
                 self.assertEqual(len(hits), 1, "%s: %s" % (name, r["refusals"]))
                 self.assertIn("core/fixture.cpp:", hits[0])
 
+    def analyse_cxx_seal(self, body):
+        """A C++ TU holding sealed globals whose seal lists C++-linkage
+        writers: their USRs carry a signature suffix (`#`, `#*I#`, `#1`)."""
+        path = os.path.join(self.tmp, "core", "include", "openpete_thread_roles.h")
+        hdr = tr.read_text(path).replace(
+            'SEAL(lay, "c:@F@lay_register")',
+            'SEAL(lay, "c:@F@lay_register#") SEAL(lay, "c:fixture.cpp@aN@F@lay_fill#*I#") '
+            'SEAL(lay, "c:@S@Lay@F@load#1")')
+        with open(path, "w") as fh:
+            fh.write(hdr)
+        rel = "core/fixture.cpp"
+        with open(os.path.join(self.tmp, rel), "w") as fh:
+            fh.write('#include "openpete_thread_roles.h"\n'
+                     "static int s_v OP_SEALED(lay);\n"
+                     "int s_arr[4] OP_SEALED(lay);\nint s_n OP_SEALED(lay) = 2;\n"
+                     "struct Lay { void load() const; };\n"
+                     "void lay_register() { s_v = 1; s_arr[0] = 1; }\n"
+                     "namespace { void lay_fill(int* p) { s_n = *p; } }\n"
+                     "void Lay::load() const { s_v = 2; }\n"
+                     "int lay_get() { return s_v + s_arr[1] + s_n; }\n" + body + "\n")
+        files = [tr.ROLES_H, rel]
+        ctx = tr.build_ctx(self.tmp, tr.Tables(self.tmp, files), self.tmp)
+        ctx["writer_files"] = {rel}
+        tr.compile_patterns(ctx)
+        flags = ["-I" + os.path.join(self.tmp, "core", "include"), "-std=gnu++17"]
+        return tr.analyse((ctx, rel, "linux", self.tmp, flags))
+
+    def test_cxx_seal_writers_are_recognised(self):
+        self.assertEqual(tr.usr_name("c:@N@ns@F@f#*$@N@ns@S@T#"), "f")
+        self.assertEqual(tr.usr_name("c:@S@Lay@F@load#1"), "load")
+        self.assertEqual(tr.usr_name("c:run.c@F@openpete_sim_thread"), "openpete_sim_thread")
+        r = self.analyse_cxx_seal("")
+        self.assertEqual(r["parse"], [])
+        self.assertEqual(r["refusals"], [])
+        self.assertTrue(r["rewritten"])
+        r = self.analyse_cxx_seal("void bad() { s_v = 3; }")
+        self.assertEqual(r["parse"], [])
+        hits = [x for x in r["refusals"] if "write site of a sealed global" in x]
+        self.assertEqual(len(hits), 1, r["refusals"])
+
     def test_slot_store_recorded(self):
         r = self.analyse("")
         self.assertIn(("c:fixture.c@F@need", "need", "sim"), r["slot_stores"])
@@ -414,26 +454,41 @@ class PopulationTest(unittest.TestCase):
         r = pop.rule(tus, pop.Baseline(""), pop.DeferredList(""))
         self.assertEqual((r["extents"], len(r["refused"])), (1, 1))
 
-    def verdict(self, hunks, tus):
+    def verdict(self, hunks, tus, rows=""):
+        """-> (new-global exit code, extent exit code, printed text)."""
         out = io.StringIO()
+        head = "file\tfunction\tname\tkind\tform\tnote\n"
         with contextlib.redirect_stderr(out):
-            rc, _ = tr.c2_verdict(self.tmp, tus, hunks, pop.Baseline(""), pop.DeferredList(""),
-                                  self.read)
-        return rc, out.getvalue()
+            new, extent, _ = tr.c2_verdict(self.tmp, tus, hunks, pop.Baseline(head + rows),
+                                           pop.DeferredList(""), self.read)
+        return new, extent, out.getvalue()
 
     def test_code_no_tu_reached_is_vacuous_and_refuses(self):
         with open(os.path.join(self.tmp, "core", "u.h"), "w") as fh:
             fh.write("int f(void);\n")
-        rc, text = self.verdict({"core/u.h": [(1, 1)]}, [])
+        rc, _, text = self.verdict({"core/u.h": [(1, 1)]}, [])
         self.assertEqual(rc, 1)
         self.assertIn("VACUOUS: check 2 reached no TU", text)
 
     def test_no_extent_touched_prints_vacuous(self):
         tu = self.scan("core/a.c", "/* x */\nint f(void) { return 0; }\n", [])
-        rc, text = self.verdict({"core/a.c": [(1, 1)]}, [tu])
+        rc, _, text = self.verdict({"core/a.c": [(1, 1)]}, [tu])
         self.assertEqual(rc, 0)
         self.assertIn("VACUOUS: no extent or declaration touched", text)
         self.assertNotIn("PASS", text)
+
+    def test_new_global_refuses_and_a_listed_one_reports(self):
+        # A global with no form and no row is refused by the new-global
+        # half, which CHECK2_ARMED does not gate; the same global with a row,
+        # named in a touched function, is an extent finding only.
+        src = "static int s_new;\nint touch(void) { return s_new; }\n"
+        hunks = {"core/a.c": [(2, 1)]}
+        new, extent, text = self.verdict(hunks, [self.scan("core/a.c", src, ["touch"])])
+        self.assertEqual((new, extent), (1, 1))
+        self.assertIn("1 global(s) with no form and no row (refused)", text)
+        row = "core/a.c\t-\ts_new\tstatic\t-\towed\n"
+        new, extent, _ = self.verdict(hunks, [self.scan("core/a.c", src, ["touch"])], row)
+        self.assertEqual((new, extent), (0, 1))
 
     def test_lock_handles_are_exempt_by_type(self):
         m, _ = self.census("core/a.c", "typedef struct SDL_Mutex SDL_Mutex;\nstatic SDL_Mutex* s_mx;\n"
@@ -449,14 +504,14 @@ class PopulationTest(unittest.TestCase):
                        'static int s_y OP_GUARDED_BY(sim);\n', [])
         recs, declared = tu["globals"], tu["declared"]
         head = "file\tfunction\tname\tkind\tform\tnote\n"
-        none = pop.stateless(recs, declared, pop.Baseline(""), pop.DeferredList(""))
-        self.assertEqual(len(none), 1)
-        self.assertIn("s_x has no form and no row", none[0])
-        both = pop.stateless(recs, declared, pop.Baseline(
+        new, rows = pop.stateless(recs, declared, pop.Baseline(""), pop.DeferredList(""))
+        self.assertEqual((len(new), rows), (1, []))
+        self.assertIn("s_x has no form and no row", new[0])
+        new, rows = pop.stateless(recs, declared, pop.Baseline(
             head + "core/a.c\t-\ts_x\tstatic\t-\t\ncore/a.c\t-\ts_y\tstatic\t-\t\n"),
             pop.DeferredList(""))
-        self.assertEqual(len(both), 1)
-        self.assertIn("s_y has a form and still has a row", both[0])
+        self.assertEqual((new, len(rows)), ([], 1))
+        self.assertIn("s_y has a form and still has a row", rows[0])
 
 
 class ReportModeTest(unittest.TestCase):
@@ -466,6 +521,15 @@ class ReportModeTest(unittest.TestCase):
             self.assertEqual(tr.c2_exit(1), 0)
             self.assertEqual(tr.c2_exit(0), 0)
         self.assertEqual(out.getvalue().count("REPORT ONLY"), 1)
+
+    def test_refused_line_names_unparsed_entries(self):
+        ok = {"rel": "core/a.c", "parse": []}
+        bad = {"rel": "core/b.c", "parse": ["x: fatal error: 'g.h' file not found",
+                                            "x: fatal error: 'g.h' file not found (libclang 14)"]}
+        self.assertEqual(tr.refused_line([ok]), "thread-roles: REFUSED")
+        self.assertEqual(tr.refused_line([ok, bad]), "thread-roles: REFUSED (VACUOUS: 1 TU(s) "
+                         "unparsed, nothing in them checked)")
+        self.assertEqual(tr.unparsed([ok, bad, bad]), 2)
 
     def test_armed_refuses(self):
         saved = tr.CHECK2_ARMED
@@ -500,6 +564,10 @@ class ListsTest(unittest.TestCase):
                                               need_note=True)[0])
         self.assertTrue(pop.additions_refused("t", before, after, {}, "other")[0])
         self.assertEqual(pop.additions_refused("t", before, after, {}, "s_x orphan")[0], [])
+        # The accept reason without a note: a later range could not see why.
+        bare = self.base(("a.c", "-", "s_x", "static", "-", ""))
+        ref = pop.additions_refused("t", before, bare, {}, "s_x orphan")[0]
+        self.assertIn("no recorded reason in its note", ref[0])
 
     def test_stateless_compare_reports_a_row_with_a_note(self):
         after = self.base(("a.c", "-", "s_x", "static", "-", "chain"))
@@ -578,6 +646,14 @@ class MarkerTest(unittest.TestCase):
         self.assertEqual(len(tr.marker_refusals(self.tmp, "HEAD", ["core/a.c"])), 1)
         self.stage("static int s_x OP_GUARDED_BY(main); /* thread-roles: moved */\n")
         self.assertEqual(tr.marker_refusals(self.tmp, "HEAD", ["core/a.c"]), [])
+
+    def test_range_reads_the_commits(self):
+        # base..rev: a form change committed without its marker, which a
+        # cherry-pick carries past the hook.
+        self.stage("static int s_x OP_GUARDED_BY(sim);\n", "base")
+        self.stage("static int s_x OP_GUARDED_BY(main);\n", "change")
+        self.assertEqual(tr.marker_refusals(self.tmp, "HEAD", ["core/a.c"]), [])
+        self.assertEqual(len(tr.marker_refusals(self.tmp, "HEAD~1", ["core/a.c"], "HEAD")), 1)
 
 
 class AnnotatorTextTest(unittest.TestCase):

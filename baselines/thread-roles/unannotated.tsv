@@ -1,7 +1,7 @@
 # mutable globals with no form (thread_roles.py census)
 # key-columns: 3
-# written-by: census
-# head: 04f95ff2d9872d7cabdfc99a079f2c98c46aaa0d
+# written-by: owe
+# head: c6c85f43da5930049d3aac12293873c05db56896
 file	function	name	kind	form	note
 core/config/config.c	-	s_contrib	static	-	
 core/config/config.c	-	s_contrib_n	static	-	
@@ -46,10 +46,13 @@ core/config/knob_registry.c	-	s_default_win_h	static	-
 core/config/knob_registry.c	-	s_default_win_w	static	-	
 core/config/knob_registry.c	-	s_env_guard	static	-	
 core/config/knob_registry.c	-	s_fog_auto_label	static	-	
+core/config/knob_registry.c	-	s_registry_inited	static	-	owed: declared with no form and no row before the new-global refusal
 core/config/options.c	-	s_parse_neutral	static	atomic	1 storing function(s), none reads it
 core/config/options.c	-	s_strict_values	static	atomic	1 storing function(s), none reads it
+core/config/options.c	player_pose_add	list	local	-	owed: declared with no form and no row before the new-global refusal
 core/config/paths.c	-	s_pref	static	-	
 core/config/paths.c	-	s_resolved	static	-	
+core/config/paths.c	-	s_sb	static	-	owed: declared with no form and no row before the new-global refusal
 core/config/paths.c	hint_legacy_state	s_hinted	local	-	
 core/config/paths.c	hint_legacy_state	s_hinted_n	local	-	
 core/config/paths.c	openpete_exe_path	wbuf	local	-	
@@ -129,6 +132,10 @@ core/diag/pace_log.c	-	s_buf	static	-
 core/diag/pace_log.c	-	s_buf_n	static	-	
 core/diag/pace_log.c	-	s_census	static	-	
 core/diag/pace_log.c	-	s_census_lock	static	-	
+core/diag/pace_log.c	-	s_coarse	static	-	owed: declared with no form and no row before the new-global refusal
+core/diag/pace_log.c	-	s_coarse_last_present_ns	static	-	owed: declared with no form and no row before the new-global refusal
+core/diag/pace_log.c	-	s_coarse_span	static	-	owed: declared with no form and no row before the new-global refusal
+core/diag/pace_log.c	-	s_coarse_used	static	-	owed: declared with no form and no row before the new-global refusal
 core/diag/pace_log.c	-	s_extract_alpha_micro	static	-	
 core/diag/pace_log.c	-	s_extract_alpha_paired	static	-	
 core/diag/pace_log.c	-	s_fp	static	-	
@@ -153,6 +160,7 @@ core/diag/pace_log.c	-	s_vbl_latch_ns	static	-
 core/diag/pace_log.c	-	s_vbl_pad_reads	static	-	
 core/diag/pace_log.c	-	s_vbl_suspend	static	-	
 core/diag/pace_log.c	-	s_written	static	-	
+core/diag/pace_log.c	openpete_pace_gpu_records_wanted	on	local	once	owed: declared with no form and no row before the new-global refusal
 core/diag/pace_log.c	openpete_pace_host_pump	s_iter	local	-	
 core/diag/pace_log.c	openpete_pace_host_pump	s_win_active_max_ns	local	-	
 core/diag/pace_log.c	openpete_pace_host_pump	s_win_active_ns	local	-	
@@ -168,6 +176,7 @@ core/diag/pace_log.c	openpete_pace_inject_canonical	s_us	local	-
 core/diag/pace_log.c	openpete_pace_inject_present	s_calls	local	-	
 core/diag/pace_log.c	openpete_pace_inject_present	s_init	local	-	
 core/diag/pace_log.c	openpete_pace_inject_present	s_us	local	-	
+core/diag/pace_log.c	openpete_pace_inject_present	s_vbl	local	-	owed: declared with no form and no row before the new-global refusal
 core/diag/pace_log.c	openpete_pace_record_present	s_prev_acq_sheds	local	-	
 core/diag/pace_log.c	openpete_pace_record_present	s_prev_fence_sheds	local	-	
 core/diag/perf_stats.c	-	s_level_cached	static	-	
@@ -186,6 +195,7 @@ core/diag/profile.c	-	s_threads	static	-
 core/diag/profile.c	-	s_us_per_tick	static	-	
 core/diag/profile.c	-	s_warned_threads_full	static	-	
 core/diag/profile.c	op_prof_open	buf	local	-	
+core/diag/psxtrace_ratchet.c	-	s_rt	static	-	owed: declared with no form and no row before the new-global refusal
 core/diag/psxtrace_schedule.c	-	s_active	static	-	
 core/diag/psxtrace_schedule.c	-	s_anchor_ticks	static	-	
 core/diag/psxtrace_schedule.c	-	s_anchor_ticks_n	static	-	
@@ -305,6 +315,7 @@ core/diag/psxtrace_schedule.c	-	s_win_next	static	-
 core/diag/psxtrace_schedule.c	-	s_windows_seen	static	-	
 core/diag/psxtrace_schedule.c	query_log	hi	local	-	
 core/diag/psxtrace_schedule.c	query_log	lo	local	-	
+core/diag/psxtrace_schedule.c	sched_boot_own	v	local	once	owed: declared with no form and no row before the new-global refusal
 core/diag/psxtrace_verify.c	-	openpete_gte_hash_on	extern	atomic	1 storing function(s), none reads it
 core/diag/psxtrace_verify.c	-	s_gh	static	-	
 core/diag/psxtrace_verify.c	gte_hash_on_record	s_open_vbl	local	-	
@@ -316,6 +327,15 @@ core/diag/psxtrace_verify.c	openpete_psxtrace_advance	s_poke_val	local	-
 core/diag/psxtrace_verify.c	openpete_psxtrace_advance	s_rd_frame	local	-	
 core/diag/psxtrace_verify.c	openpete_psxtrace_advance	s_rd_parsed	local	-	
 core/diag/psxtrace_verify.c	openpete_psxtrace_advance	s_rd_path	local	-	
+core/diag/psxtrace_verify.c	psxtrace_words_row	s_addr	local	-	owed: declared with no form and no row before the new-global refusal
+core/diag/psxtrace_verify.c	psxtrace_words_row	s_fp	local	-	owed: declared with no form and no row before the new-global refusal
+core/diag/psxtrace_verify.c	psxtrace_words_row	s_n	local	-	owed: declared with no form and no row before the new-global refusal
+core/diag/psxtrace_verify.c	psxtrace_words_row	s_parsed	local	-	owed: declared with no form and no row before the new-global refusal
+core/diag/tile_census.c	-	s_path_count	static	-	owed: declared with no form and no row before the new-global refusal
+core/diag/tile_census.c	-	s_path_names	static	-	owed: declared with no form and no row before the new-global refusal
+core/diag/tile_census.c	-	s_path_of	static	-	owed: declared with no form and no row before the new-global refusal
+core/diag/tile_census.c	-	s_sc	static	-	owed: declared with no form and no row before the new-global refusal
+core/diag/tile_census.c	tc_sidecar_write	order	local	-	owed: declared with no form and no row before the new-global refusal
 core/host/host_spawn.c	-	s_priority_logged	static	-	
 core/host/host_spawn.c	-	s_stop	static	-	
 core/host/memcard.c	-	s_adopt	static	atomic	1 storing function(s), none reads it
@@ -424,6 +444,12 @@ core/input/host_input.c	-	s_parity_last_seq	static	-
 core/input/host_input.c	-	s_parity_mismatch	static	-	
 core/input/host_input.c	-	s_parity_on	static	-	
 core/input/host_input.c	-	s_parity_stale	static	-	
+core/input/host_input.c	-	s_ps_applied	static	-	owed: declared with no form and no row before the new-global refusal
+core/input/host_input.c	-	s_ps_ev	static	-	owed: declared with no form and no row before the new-global refusal
+core/input/host_input.c	-	s_ps_mid_vbl	static	-	owed: declared with no form and no row before the new-global refusal
+core/input/host_input.c	-	s_ps_n	static	-	owed: declared with no form and no row before the new-global refusal
+core/input/host_input.c	-	s_ps_next	static	-	owed: declared with no form and no row before the new-global refusal
+core/input/host_input.c	-	s_ps_stick_samples	static	-	owed: declared with no form and no row before the new-global refusal
 core/input/host_input.c	-	s_pulse_bit	static	-	
 core/input/host_input.c	-	s_pulse_fired	static	-	
 core/input/host_input.c	-	s_pulse_gap_ns	static	-	
@@ -563,6 +589,7 @@ core/launcher/library.cpp	-	s_entry_dir	static	-
 core/launcher/library.cpp	-	s_jobs_queued	static	-	
 core/launcher/library.cpp	-	s_lock_handle	static	-	
 core/launcher/library.cpp	-	s_lock_held	static	-	
+core/launcher/library.cpp	-	s_page_pick	static	atomic	owed: declared with no form and no row before the new-global refusal
 core/launcher/library.cpp	-	s_refusal	static	-	
 core/launcher/library.cpp	-	s_selected_game	static	-	
 core/launcher/library.cpp	build_id	id	local	-	
@@ -661,6 +688,7 @@ core/mods/mod_loader.c	-	s_disc_bin	static	-
 core/mods/mod_loader.c	-	s_disc_bin_state	static	-	
 core/mods/mod_loader.c	-	s_disc_path	static	-	
 core/mods/mod_loader.c	-	s_guest_guard_compares	static	atomic	1 storing function(s), none reads it
+core/mods/mod_loader.c	-	s_hot_reload	static	-	owed: declared with no form and no row before the new-global refusal
 core/mods/mod_loader.c	-	s_mods	static	-	
 core/mods/mod_loader.c	-	s_mods_init_ran	static	-	
 core/mods/mod_loader.c	-	s_mods_root_dir	static	-	
@@ -681,7 +709,6 @@ core/mods/mod_loader.c	api_guest	s_warned	local	-
 core/mods/mod_loader.c	api_unsupported_ret	s_noted	local	-	
 core/mods/mod_loader.c	api_unsupported_ret	s_noted_n	local	-	
 core/mods/mod_loader.c	hot_reload_poll	s_cnt	local	-	
-core/mods/mod_loader.c	hot_reload_poll	s_hot	local	-	
 core/mods/mod_loader.c	mod_dlerror	buf	local	-	
 core/mods/mod_loader.c	mod_hot_reload	s_hot_n	local	-	
 core/mods/mod_loader.c	mod_hot_reload	so_path	local	-	
@@ -870,8 +897,16 @@ core/psx/cpu.c	-	s_census_seen_addr	static	-
 core/psx/cpu.c	-	s_census_seen_count	static	-	
 core/psx/cpu.c	-	s_census_seen_kind	static	-	
 core/psx/cpu.c	-	s_census_seen_n	static	-	
+core/psx/cpu.c	-	s_mc	static	-	owed: declared with no form and no row before the new-global refusal
+core/psx/cpu.c	-	s_mc_dropped	static	-	owed: declared with no form and no row before the new-global refusal
+core/psx/cpu.c	-	s_mc_host	static	-	owed: declared with no form and no row before the new-global refusal
+core/psx/cpu.c	-	s_mc_on	static	-	owed: declared with no form and no row before the new-global refusal
+core/psx/cpu.c	-	s_probe_running	static	-	owed: declared with no form and no row before the new-global refusal
 core/psx/cpu.c	-	s_root_counter2	static	atomic	1 storing function(s), none reads it
 core/psx/cpu.c	-	s_root_counter2_reader	static	-	
+core/psx/cpu.c	-	s_unmapped	static	-	owed: declared with no form and no row before the new-global refusal
+core/psx/cpu.c	-	s_unmapped_kept	static	-	owed: declared with no form and no row before the new-global refusal
+core/psx/cpu.c	-	s_unmapped_n	static	-	owed: declared with no form and no row before the new-global refusal
 core/psx/cpu.c	census_init	armed	local	-	
 core/psx/disc_cache.c	-	s_abort	static	-	
 core/psx/disc_cache.c	-	s_acct	static	-	
@@ -936,6 +971,8 @@ core/psx/dispatch.c	-	s_hang_ring	static	-
 core/psx/dispatch.c	-	s_hang_ring_prev	static	-	
 core/psx/dispatch.c	-	s_hang_threshold	static	-	
 core/psx/dispatch.c	-	s_hang_threshold_inited	static	-	
+core/psx/dispatch.c	-	s_hang_trip_addr	static	-	owed: declared with no form and no row before the new-global refusal
+core/psx/dispatch.c	-	s_hang_trip_kind	static	-	owed: declared with no form and no row before the new-global refusal
 core/psx/dispatch.c	-	s_leaf_check	static	-	
 core/psx/dispatch.c	-	s_leaf_open	static	-	
 core/psx/dispatch.c	-	s_leaf_ram	static	-	
@@ -1014,6 +1051,7 @@ core/psx/fiber.c	-	s_fiber_map	static	-
 core/psx/fiber.c	-	s_fiber_map_len	static	-	
 core/psx/fiber.c	-	s_guard_hi	static	-	
 core/psx/fiber.c	-	s_guard_lo	static	-	
+core/psx/fiber.c	-	s_guest_gen	static	-	owed: declared with no form and no row before the new-global refusal
 core/psx/gte.c	-	openpete_gte_caller_pc	extern	-	
 core/psx/gte_instruments.cpp	-	g_box	static	-	
 core/psx/gte_instruments.cpp	-	g_census	static	-	
@@ -1071,9 +1109,14 @@ core/record/bugrec_subtick.c	-	s_obj	static	-
 core/record/bugrec_subtick.c	-	s_obj_n	static	-	
 core/record/bugrec_subtick.c	-	s_open	static	-	
 core/record/bugrec_subtick.c	-	s_outside	static	-	
+core/record/bugrec_subtick.c	-	s_portal	static	-	owed: declared with no form and no row before the new-global refusal
+core/record/bugrec_subtick.c	-	s_portal_n	static	-	owed: declared with no form and no row before the new-global refusal
 core/record/bugrec_subtick.c	-	s_pres	static	-	
 core/record/bugrec_subtick.c	-	s_pres_n	static	-	
 core/record/bugreport_replay.c	-	R	static	-	
+core/record/bugreport_replay.c	-	s_allow	static	-	owed: declared with no form and no row before the new-global refusal
+core/record/bugreport_replay.c	-	s_allow_n	static	-	owed: declared with no form and no row before the new-global refusal
+core/record/bugreport_replay_knobs.c	-	K	static	-	owed: declared with no form and no row before the new-global refusal
 core/record/bugreport_thumbs.c	-	s_count	static	-	
 core/record/bugreport_thumbs.c	-	s_cycle_max_ns	static	-	
 core/record/bugreport_thumbs.c	-	s_cycle_ns	static	-	
@@ -1160,20 +1203,26 @@ core/renderer/native_fb_snapshot.c	-	s_slot	static	-
 core/renderer/native_fb_snapshot.c	-	s_taken	static	-	
 core/renderer/native_fb_snapshot.c	fbsnap_census	s	local	once	= -1, one filler, first reference tests it
 core/renderer/native_fb_snapshot.c	openpete_fb_snapshot_enabled	s_en	local	once	= -1, one filler, first reference tests it
+core/renderer/native_moby_gstage.c	-	s_gs	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_ahead	static	-	
 core/renderer/native_render.c	-	s_anchor_ledger	static	-	
 core/renderer/native_render.c	-	s_area_fade	static	-	
 core/renderer/native_render.c	-	s_area_fade_presents	static	-	
 core/renderer/native_render.c	-	s_background_requested	static	-	
+core/renderer/native_render.c	-	s_bdt	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_box	static	-	
 core/renderer/native_render.c	-	s_bw	static	-	
 core/renderer/native_render.c	-	s_canon_repeat	static	-	
 core/renderer/native_render.c	-	s_capture_drawn	static	-	
 core/renderer/native_render.c	-	s_capture_seq	static	-	
+core/renderer/native_render.c	-	s_carry	static	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	-	s_carry_drop_tick	static	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	-	s_carry_drop_total	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_cdata	static	-	
 core/renderer/native_render.c	-	s_cdata_cap	static	-	
 core/renderer/native_render.c	-	s_cdata_epoch	static	-	
 core/renderer/native_render.c	-	s_cdata_n	static	-	
+core/renderer/native_render.c	-	s_cen	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_chain_ubo	static	-	
 core/renderer/native_render.c	-	s_commit_cb	static	-	
 core/renderer/native_render.c	-	s_cover_live	static	-	
@@ -1199,6 +1248,7 @@ core/renderer/native_render.c	-	s_cvp_n	static	-
 core/renderer/native_render.c	-	s_cz_bwdef	static	-	
 core/renderer/native_render.c	-	s_cz_bwsort	static	-	
 core/renderer/native_render.c	-	s_cz_cand	static	-	
+core/renderer/native_render.c	-	s_cz_codev	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_cz_hud	static	-	
 core/renderer/native_render.c	-	s_cz_ident	static	-	
 core/renderer/native_render.c	-	s_cz_key	static	-	
@@ -1206,6 +1256,7 @@ core/renderer/native_render.c	-	s_cz_ktex	static	-
 core/renderer/native_render.c	-	s_cz_lift	static	-	
 core/renderer/native_render.c	-	s_cz_prepass	static	-	
 core/renderer/native_render.c	-	s_cz_shell	static	-	
+core/renderer/native_render.c	-	s_cz_slotv	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_cz_tris	static	-	
 core/renderer/native_render.c	-	s_cz_txof	static	-	
 core/renderer/native_render.c	-	s_cz_txout	static	-	
@@ -1242,11 +1293,11 @@ core/renderer/native_render.c	-	s_fade_unput_other	static	-
 core/renderer/native_render.c	-	s_fbsnap_game_sel	static	-	
 core/renderer/native_render.c	-	s_fbsnap_want_frame	static	-	
 core/renderer/native_render.c	-	s_feed_census	static	-	
+core/renderer/native_render.c	-	s_final_window	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_fov_deg	static	-	
 core/renderer/native_render.c	-	s_fov_lbl_H	static	-	
 core/renderer/native_render.c	-	s_fov_lbl_yrow	static	-	
 core/renderer/native_render.c	-	s_fov_tan	static	atomic	1 storing function(s), none reads it
-core/renderer/native_render.c	-	s_fov_tan_pending	static	-	
 core/renderer/native_render.c	-	s_fps_frames	static	-	
 core/renderer/native_render.c	-	s_fps_in_record	static	-	
 core/renderer/native_render.c	-	s_fps_in_record_pref	static	-	
@@ -1262,6 +1313,7 @@ core/renderer/native_render.c	-	s_game_freeze	static	-
 core/renderer/native_render.c	-	s_game_freeze_seen	static	-	
 core/renderer/native_render.c	-	s_game_scene_pending	static	-	
 core/renderer/native_render.c	-	s_geom_in	static	-	
+core/renderer/native_render.c	-	s_glow_order	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_glyph_mx	static	-	
 core/renderer/native_render.c	-	s_gpuz	static	-	
 core/renderer/native_render.c	-	s_gpuz_last	static	-	
@@ -1316,6 +1368,7 @@ core/renderer/native_render.c	-	s_late_head	static	-
 core/renderer/native_render.c	-	s_launch	static	-	
 core/renderer/native_render.c	-	s_launch_error	static	-	
 core/renderer/native_render.c	-	s_launch_last	static	-	
+core/renderer/native_render.c	-	s_launch_pos	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_lb_accum	static	-	
 core/renderer/native_render.c	-	s_lb_curr	static	-	
 core/renderer/native_render.c	-	s_lb_prev	static	-	
@@ -1365,9 +1418,13 @@ core/renderer/native_render.c	-	s_otag_area	static	-
 core/renderer/native_render.c	-	s_otag_area_next	static	-	
 core/renderer/native_render.c	-	s_otag_scene	static	-	
 core/renderer/native_render.c	-	s_overlay_accum_dropped	static	-	
+core/renderer/native_render.c	-	s_overlay_accum_epoch_v	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_overlay_accum_n	static	-	
+core/renderer/native_render.c	-	s_overlay_accum_v	static	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	-	s_overlay_carry_epoch_v	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_overlay_carry_freeze	static	-	
 core/renderer/native_render.c	-	s_overlay_carry_n	static	-	
+core/renderer/native_render.c	-	s_overlay_carry_v	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_overlay_curr_ns	static	-	
 core/renderer/native_render.c	-	s_overlay_glyph_n	static	-	
 core/renderer/native_render.c	-	s_overlay_glyph_stage	static	-	
@@ -1378,6 +1435,7 @@ core/renderer/native_render.c	-	s_overlay_precapture	static	-
 core/renderer/native_render.c	-	s_overlay_prev_freeze	static	-	
 core/renderer/native_render.c	-	s_overlay_prev_n	static	-	
 core/renderer/native_render.c	-	s_overlay_prev_ns	static	-	
+core/renderer/native_render.c	-	s_overlay_prev_v	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_ovl_extent	static	atomic	1 storing function(s), none reads it
 core/renderer/native_render.c	-	s_pc	static	-	
 core/renderer/native_render.c	-	s_pc_clear	static	-	
@@ -1436,12 +1494,15 @@ core/renderer/native_render.c	-	s_ring_head	static	-
 core/renderer/native_render.c	-	s_ring_mx	static	-	
 core/renderer/native_render.c	-	s_rq_params	static	-	
 core/renderer/native_render.c	-	s_rq_pipe	static	-	
+core/renderer/native_render.c	-	s_rr	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_scene_actor_front	static	-	
 core/renderer/native_render.c	-	s_scene_bg	static	-	
 core/renderer/native_render.c	-	s_scene_clear_held	static	-	
 core/renderer/native_render.c	-	s_scene_close_cb_in	static	-	
 core/renderer/native_render.c	-	s_scene_delay	static	-	
 core/renderer/native_render.c	-	s_scene_dropped	static	-	
+core/renderer/native_render.c	-	s_scene_early_supersedes	static	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	-	s_scene_early_unopened	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_scene_epoch	static	-	
 core/renderer/native_render.c	-	s_scene_fade	static	-	
 core/renderer/native_render.c	-	s_scene_fade_prim	static	-	
@@ -1498,6 +1559,7 @@ core/renderer/native_render.c	-	s_scene_shot_compose	static	-
 core/renderer/native_render.c	-	s_scene_shot_lag	static	-	
 core/renderer/native_render.c	-	s_scene_shot_nodelay	static	atomic	1 storing function(s), none reads it
 core/renderer/native_render.c	-	s_scene_superseded_cb	static	-	
+core/renderer/native_render.c	-	s_scene_superseded_frame	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_scene_v	static	-	
 core/renderer/native_render.c	-	s_shadow_decal	static	-	
 core/renderer/native_render.c	-	s_shadow_foot	static	-	
@@ -1516,13 +1578,18 @@ core/renderer/native_render.c	-	s_tag_split_ext	static	atomic	1 storing function
 core/renderer/native_render.c	-	s_tag_tint	static	-	
 core/renderer/native_render.c	-	s_terrain_vis	static	-	
 core/renderer/native_render.c	-	s_texmap_affine	static	-	
+core/renderer/native_render.c	-	s_texmap_affine_prod	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_texmap_pending	static	-	
 core/renderer/native_render.c	-	s_tk_last	static	-	
+core/renderer/native_render.c	-	s_torder_done	static	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	-	s_torder_mid	static	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	-	s_torder_n	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_tp_census_on	static	-	
 core/renderer/native_render.c	-	s_tp_dump_on	static	-	
 core/renderer/native_render.c	-	s_tp_resolve_log	static	-	
 core/renderer/native_render.c	-	s_txmat_b	static	-	
 core/renderer/native_render.c	-	s_txsort_scene	static	-	
+core/renderer/native_render.c	-	s_under_player_slot	static	atomic	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_utmat	static	-	
 core/renderer/native_render.c	-	s_utmat_n	static	-	
 core/renderer/native_render.c	-	s_utmemo_hit	static	-	
@@ -1543,6 +1610,7 @@ core/renderer/native_render.c	-	s_ver_ox	static	-
 core/renderer/native_render.c	-	s_ver_oy	static	-	
 core/renderer/native_render.c	-	s_version_osd	static	atomic	1 storing function(s), none reads it
 core/renderer/native_render.c	-	s_vertex_snap	static	-	
+core/renderer/native_render.c	-	s_vertex_snap_present	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_vj	static	-	
 core/renderer/native_render.c	-	s_vj_head	static	-	
 core/renderer/native_render.c	-	s_vj_n	static	-	
@@ -1556,8 +1624,10 @@ core/renderer/native_render.c	-	s_vram_restore	static	-
 core/renderer/native_render.c	-	s_vram_under	static	-	
 core/renderer/native_render.c	-	s_vramfb_key	static	-	
 core/renderer/native_render.c	-	s_vramfb_vb	static	-	
+core/renderer/native_render.c	-	s_vsync	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_wireframe	static	-	
 core/renderer/native_render.c	-	s_wireframe_pending	static	-	
+core/renderer/native_render.c	-	s_ws_factor_prod	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	actor_own_key_on	s_on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	alpha_census	bx0	local	-	
 core/renderer/native_render.c	alpha_census	bx1	local	-	
@@ -1589,25 +1659,26 @@ core/renderer/native_render.c	bw_fam_census	lo	local	-
 core/renderer/native_render.c	bw_fam_census	on	local	-	
 core/renderer/native_render.c	bw_snapb_census	s_on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	capture_freeze_from_offscreen	s_pt	local	-	
+core/renderer/native_render.c	carry_apply_probe	pf	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	carry_canon_compose	s_c2ddbg	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	carry_census_flush	s_frame	local	-	
 core/renderer/native_render.c	carry_census_flush	s_ix	local	-	
 core/renderer/native_render.c	carry_census_on	v	local	once	= -1, one filler, first reference tests it
+core/renderer/native_render.c	carry_epoch_probe	pz	local	once	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	compose_variant	s_fdbg	local	-	
+core/renderer/native_render.c	cz_emit_hud	s_h6sort	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	cz_hud6_dbg	s_h6	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	cz_hud6_vb_dbg	s_h6b	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	cz_player_vb_dbg	s_pc	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	cz_player_vb_dbg	s_pd	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	defer_census	on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	depth_prepass_debug	on	local	once	= -1, one filler, first reference tests it
+core/renderer/native_render.c	draw_before_player_2d	cen	local	once	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	draw_glyph_list_3d	buf	local	-	
 core/renderer/native_render.c	draw_hud_flat_layer	s_zp	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	draw_menu_glyphs_3d	gbuf	local	-	
 core/renderer/native_render.c	draw_menu_overlay	buf	local	-	
 core/renderer/native_render.c	draw_mod_overlay	buf	local	-	
-core/renderer/native_render.c	draw_native_scene	ispans	local	-	
-core/renderer/native_render.c	draw_native_scene	s_census	local	-	
-core/renderer/native_render.c	draw_native_scene	s_h6	local	-	
-core/renderer/native_render.c	draw_native_scene	s_h6b	local	-	
-core/renderer/native_render.c	draw_native_scene	s_h6sort	local	-	
-core/renderer/native_render.c	draw_native_scene	s_ident	local	-	
-core/renderer/native_render.c	draw_native_scene	s_pc	local	-	
-core/renderer/native_render.c	draw_native_scene	s_pd	local	-	
 core/renderer/native_render.c	draw_osd_overlay	panels	local	-	
 core/renderer/native_render.c	draw_osd_overlay	quads	local	-	
 core/renderer/native_render.c	draw_tex_runs	s_stats	local	-	
@@ -1620,12 +1691,16 @@ core/renderer/native_render.c	ensure_terrain_key_depth	warned	local	-
 core/renderer/native_render.c	fbsnap_band_census	on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	fbsnap_present_census	on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	fbsnap_resolve_census	on	local	once	= -1, one filler, first reference tests it
+core/renderer/native_render.c	fbsnap_resolve_fault	s_attempt	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	fbsnap_resolve_fault	s_fail_at	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	fbwin_census	on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	fill_material_ubo	peak	local	-	
 core/renderer/native_render.c	fill_material_ubo	stats	local	-	
 core/renderer/native_render.c	freeze_leg_probe	v	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	freeze_src_verify	v	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	front_draw_owed	on	local	once	= -1, one filler, first reference tests it
+core/renderer/native_render.c	glow_order_census_on	hi	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	glow_order_census_on	lo	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	hd_flush_pending	cap	local	-	
 core/renderer/native_render.c	hd_flush_pending	drops	local	-	
 core/renderer/native_render.c	held_capture	on	local	-	
@@ -1634,10 +1709,13 @@ core/renderer/native_render.c	hold_on	on	local	once	= -1, one filler, first refe
 core/renderer/native_render.c	hud3d_over_fade	fc	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	hud3d_tex_census	s_on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	hud_order_census_on	on	local	once	= -1, one filler, first reference tests it
+core/renderer/native_render.c	key_ident_check	ispans	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	key_ident_check	s_ident	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	key_order_mode	s_m	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	late_queue_entered	ids	local	-	
 core/renderer/native_render.c	letterbox_append	lc	local	-	
 core/renderer/native_render.c	load_census_on	on	local	once	= -1, one filler, first reference tests it
+core/renderer/native_render.c	load_census_scene	s_census	local	once	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	moby_shadow_decal_enabled	v	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	moby_shell_census	C	local	-	
 core/renderer/native_render.c	moby_shell_census_on	s_on	local	once	= -1, one filler, first reference tests it
@@ -1677,18 +1755,16 @@ core/renderer/native_render.c	openpete_native_occl_census_present	raw	local	-
 core/renderer/native_render.c	openpete_native_occl_service_headless	raw	local	-	
 core/renderer/native_render.c	openpete_native_render_screenshot_all	pz	local	-	
 core/renderer/native_render.c	openpete_native_render_snapshot_fb_window	s_census	local	once	= -1, one filler, first reference tests it
-core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	s_tw	local	-	
-core/renderer/native_render.c	openpete_native_scene_apply_overlay	pf	local	-	
-core/renderer/native_render.c	openpete_native_scene_apply_overlay	s_oadbg	local	-	
+core/renderer/native_render.c	openpete_native_render_snapshot_fb_window	s_failures	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	openpete_native_scene_capture_overlay	pz	local	-	
-core/renderer/native_render.c	openpete_native_scene_capture_overlay	s_c2ddbg	local	-	
-core/renderer/native_render.c	openpete_native_scene_capture_overlay	s_ov_warned	local	-	
 core/renderer/native_render.c	openpete_native_scene_commit_fade	s_after_repeat	local	-	
 core/renderer/native_render.c	openpete_native_scene_front_end	tail	local	-	
+core/renderer/native_render.c	openpete_native_scene_note_game_capture	s_cen	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	openpete_native_set_clear_color	s_census	local	-	
 core/renderer/native_render.c	openpete_native_set_draw_clip	s_clip_checked	local	-	
 core/renderer/native_render.c	openpete_native_tercache_usable	s_force	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	openpete_phase_now_us	us_per_tick	local	-	
+core/renderer/native_render.c	overlay_alpha_trace	s_oadbg	local	once	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	pc_trace_on	on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	phase_present_done	cname	local	-	
 core/renderer/native_render.c	phase_present_done	pname	local	-	
@@ -1710,6 +1786,9 @@ core/renderer/native_render.c	render_scene_impl	maxn	local	-
 core/renderer/native_render.c	render_scene_impl	sync	local	-	
 core/renderer/native_render.c	rim_draw_census	armed	local	-	
 core/renderer/native_render.c	rim_draw_census	at	local	-	
+core/renderer/native_render.c	rr_shift	read	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	rr_shift	v	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_render.c	rr_snap_census	on	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	scene_box_cfg	parsed	local	-	
 core/renderer/native_render.c	scene_close_completed	s_capdbg	local	-	
 core/renderer/native_render.c	scene_close_completed	s_scene_peak	local	-	
@@ -1722,8 +1801,9 @@ core/renderer/native_render.c	scene_probes	sd	local	-
 core/renderer/native_render.c	scene_probes	sdf	local	-	
 core/renderer/native_render.c	scene_probes	tc	local	-	
 core/renderer/native_render.c	scene_probes	trgb	local	-	
+core/renderer/native_render.c	scene_pvz_missing_note	s_named	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	scene_sig_on	on	local	once	= -1, one filler, first reference tests it
-core/renderer/native_render.c	scene_vert_require_pvz	s_named	local	-	
+core/renderer/native_render.c	scene_true_w_mask	s_tw	local	once	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	seq_sort_census	on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	seq_sort_on	v	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	seq_sort_runs	ix	local	-	
@@ -1770,6 +1850,7 @@ core/renderer/native_render.c	thumb_cycle	s_due	local	-
 core/renderer/native_render.c	thumb_cycle	s_px	local	-	
 core/renderer/native_render.c	thumb_cycle	s_seq	local	-	
 core/renderer/native_render.c	thumb_cycle	s_stamp	local	-	
+core/renderer/native_render.c	torder_census_on	s_on	local	once	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	tp_pack_fit	s_fit_en	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	tp_pack_fog	s_cont_en	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	tp_tri_match	s_logged	local	-	
@@ -1778,6 +1859,9 @@ core/renderer/native_render.c	truescope_wanted	want	local	-
 core/renderer/native_render.c	upload_synced_textures	s_held_log	local	-	
 core/renderer/native_terrain_cache.c	-	s_refuse_cnt	static	-	
 core/renderer/native_terrain_cache.c	-	s_refuse_skip	static	-	
+core/renderer/native_terrain_cache.c	-	s_ring_cnt	static	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_terrain_cache.c	-	s_ring_store_cap	static	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_terrain_cache.c	-	s_ring_store_high	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_terrain_cache.c	-	s_tc	static	-	
 core/renderer/native_terrain_cache.c	-	s_tc_final	static	-	
 core/renderer/native_terrain_cache.c	-	s_tc_final_valid	static	-	
@@ -1785,6 +1869,9 @@ core/renderer/native_terrain_cache.c	-	s_tc_mat_mask	static	-
 core/renderer/native_terrain_cache.c	-	s_tc_mat_pass	static	-	
 core/renderer/native_terrain_cache.c	-	s_tc_mat_passes	static	-	
 core/renderer/native_terrain_cache.c	-	s_tc_mat_stock	static	-	
+core/renderer/native_terrain_cache.c	-	s_tc_nc	static	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_terrain_cache.c	-	s_tc_rb	static	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_terrain_cache.c	-	s_tc_rb_drawing	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_terrain_cache.c	-	s_tc_snap	static	-	
 core/renderer/native_terrain_cache.c	openpete_tercache_faceid	s_on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_terrain_cache.c	openpete_tercache_preview_prepare	gu	local	-	
@@ -1795,12 +1882,13 @@ core/renderer/native_terrain_cache.c	tc_dead_stamp	s_dead_sz	local	-
 core/renderer/native_terrain_cache.c	tc_dup_draw	n	local	once	= -1, one filler, first reference tests it
 core/renderer/native_terrain_cache.c	tc_initial_cap_env	ov	local	once	= -1, one filler, first reference tests it
 core/renderer/native_terrain_cache.c	tc_pair_make	s_serial	local	-	
-core/renderer/native_terrain_cache.c	tc_precision_row	s_row	local	once	= -1, one filler, first reference tests it
-core/renderer/native_terrain_cache.c	tc_prev_cap_init	v	local	-	
+core/renderer/native_terrain_cache.c	tc_prev_cap_env	read	local	-	owed: declared with no form and no row before the new-global refusal
+core/renderer/native_terrain_cache.c	tc_prev_cap_env	v	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_terrain_cache.c	tc_preview_batch_make	sec	local	-	
 core/renderer/native_terrain_cache.c	tc_range_draw_on	on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_terrain_cache.c	tc_refuse	parsed	local	-	
 core/renderer/native_terrain_cache.c	tc_refuse	seen	local	-	
+core/renderer/native_terrain_cache.c	tc_stage_row	s_row	local	once	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_terrain_cache.c	tc_store_make	s_serial	local	-	
 core/renderer/native_terrain_cache.c	tc_zone_name	k_zone	local	-	
 core/renderer/native_vram.c	-	s_composed	static	-	
@@ -1813,7 +1901,6 @@ core/renderer/no_lod.c	-	openpete_fog_scale	extern	-
 core/renderer/no_lod.c	-	openpete_no_lod	extern	-	
 core/renderer/no_lod.c	-	s_cli_fog_scale	static	-	
 core/renderer/no_lod.c	-	s_fog_pin	static	-	
-core/renderer/no_lod.c	-	s_fog_touched	static	-	
 core/renderer/openpete_interp.c	-	s_cap_scratch	static	-	
 core/renderer/openpete_interp.c	-	s_det_mode	static	-	
 core/renderer/openpete_interp.c	-	s_det_period	static	-	
@@ -1838,6 +1925,7 @@ core/renderer/openpete_interp_objs.c	-	SLOTS	static	-
 core/renderer/openpete_interp_objs.c	-	g_openpete_tick_period_ns	extern	-	
 core/renderer/openpete_interp_objs.c	-	g_openpete_tick_stamp	extern	-	
 core/renderer/openpete_interp_objs.c	-	s_capture_cb	static	-	
+core/renderer/openpete_interp_objs.c	-	s_collisions	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/openpete_interp_objs.c	-	s_count	static	-	
 core/renderer/openpete_interp_objs.c	-	s_ev	static	-	
 core/renderer/openpete_interp_objs.c	-	s_ev_blob	static	-	
@@ -1857,9 +1945,11 @@ core/renderer/openpete_interp_objs.c	-	s_tab_blob	static	-
 core/renderer/openpete_interp_objs.c	-	s_tick_ns	static	-	
 core/renderer/openpete_interp_objs.c	-	s_tick_prev_ns	static	-	
 core/renderer/openpete_interp_objs.c	-	s_unshown_replaced	static	-	
+core/renderer/openpete_interp_objs.c	collision_note	on	local	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/openpete_interp_objs.c	openpete_interp_objs_keylog	s_keylog	local	once	= -1, one filler, first reference tests it
 core/renderer/openpete_ui_moby.c	-	s_static_hi	static	-	
 core/renderer/openpete_ui_moby.c	-	s_static_lo	static	-	
+core/renderer/screenshot.c	-	s_aw	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/subtick_view.c	-	s_active	static	-	
 core/renderer/subtick_view.c	-	s_arena	static	-	
 core/renderer/subtick_view.c	-	s_arena_used	static	-	
@@ -1890,7 +1980,6 @@ core/renderer/subtick_view.c	-	s_prev_segv	static	-
 core/renderer/subtick_view.c	-	s_span	static	-	
 core/renderer/subtick_view.c	-	s_span_count	static	-	
 core/renderer/subtick_view.c	-	s_stat_poke_dropped	static	-	
-core/renderer/subtick_view.c	-	s_stat_served	static	-	
 core/renderer/subtick_view.c	-	s_stat_spans	static	-	
 core/renderer/subtick_view.c	-	s_stat_stage_fail	static	-	
 core/renderer/subtick_view.c	-	s_stat_unaligned_reads	static	-	
@@ -1974,6 +2063,8 @@ core/rhi/rhi_vulkan.c	seam_check	fatal	local	-
 core/rhi/rhi_vulkan.c	tc_fail_mask	mask	local	-	
 core/rhi/rhi_vulkan.c	tc_fail_mask	parsed	local	-	
 core/rhi/rhi_vulkan.c	texture_store_set	once	local	-	
+core/rhi/smoketest.c	cc_frame	got	local	seal	owed: declared with no form and no row before the new-global refusal
+core/rhi/smoketest.c	run_compute	got	local	seal	owed: declared with no form and no row before the new-global refusal
 core/rhi/smoketest.c	sc_check	px	local	seal	1 writer(s), all before openpete_run
 core/runtime/eager.c	-	s_eager	static	-	
 core/runtime/eager.c	-	s_eager_ftl	static	-	
@@ -1982,12 +2073,17 @@ core/runtime/eager.c	eager_hold_done	until	local	-
 core/runtime/eager.c	eager_init	inited	local	-	
 core/runtime/eager.c	eager_plan_dbg	dbg	local	-	
 core/runtime/eager.c	eager_produce	dbg	local	-	
+core/runtime/eager.c	eager_prof_plan	ids	local	-	owed: declared with no form and no row before the new-global refusal
+core/runtime/eager.c	eager_prof_plan	interned	local	-	owed: declared with no form and no row before the new-global refusal
 core/runtime/feature_registry.c	-	s_fr_filter	static	-	
 core/runtime/feature_registry.c	-	s_fr_filter_ready	static	-	
 core/runtime/feature_registry.c	-	s_hook_id	static	-	
 core/runtime/feature_registry.c	-	s_hook_id_init	static	-	
+core/runtime/feature_registry.c	-	s_hook_slot	static	-	owed: declared with no form and no row before the new-global refusal
+core/runtime/feature_registry.c	-	s_hook_slot_init	static	-	owed: declared with no form and no row before the new-global refusal
 core/runtime/feature_registry.c	-	s_overlay_probe	static	-	
 core/runtime/game_runtime.c	-	s_rt	static	-	
+core/runtime/host_bugknobs.c	-	s_bk	static	-	owed: declared with no form and no row before the new-global refusal
 core/runtime/host_bugreport.c	-	s_bp	static	-	
 core/runtime/host_hotkeys.c	-	s_hotkey_latch	static	-	
 core/runtime/host_hotkeys.c	-	s_pause_at	static	-	
@@ -2014,6 +2110,7 @@ core/runtime/host_loop.c	-	s_latch_order_warned	static	-
 core/runtime/host_loop.c	-	s_modset_epoch	static	-	
 core/runtime/host_loop.c	-	s_vbl_stamp	static	-	
 core/runtime/host_loop.c	frame_limit_due	told	local	-	
+core/runtime/host_loop.c	sim_tick_prof_id	s_id	local	once	owed: declared with no form and no row before the new-global refusal
 core/runtime/host_pacer.c	host_pacer_force_pacing	s_init	local	-	
 core/runtime/host_pacer.c	host_pacer_force_pacing	s_on	local	-	
 core/runtime/host_pacer.c	host_pacer_unlock_verdict	s_logged	local	-	
@@ -2046,6 +2143,7 @@ core/runtime/host_state_ops.c	-	s_stress_ops	static	-
 core/runtime/host_state_ops.c	rewind_card_commit_clear	clears	local	-	
 core/runtime/host_state_ops.c	rewind_card_commit_clear	last_f	local	-	
 core/runtime/host_state_ops.c	rewind_card_commit_clear	seen	local	-	
+core/runtime/host_state_ops.c	rewind_fault_short	s_at	local	once	owed: declared with no form and no row before the new-global refusal
 core/runtime/host_state_ops.c	rewind_key_held	armed	local	-	
 core/runtime/host_state_ops.c	rewind_key_held	held	local	-	
 core/runtime/host_state_ops.c	rewind_mods_allow	hinted	local	-	
@@ -2243,6 +2341,24 @@ games/common/features/levelwarp_ui.c	-	s_warps	static	-
 games/common/features/moby_update_all.c	-	mua_dispatch	static	-	
 games/common/features/moby_update_all.c	-	s_d1	static	-	
 games/common/features/moby_update_all.c	-	s_nosparx	static	-	
+games/common/features/polybuf_guard.c	-	s_dispatch	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_episodes	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_first_frame	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_min_bufend	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_min_cam	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_min_cursor	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_min_end	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_min_frame	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_min_level	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_min_line	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_overflowing	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_report_at	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_samples	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_stale	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	-	s_worst_over	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	guard_mode	mode	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	guard_mode	seen	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/features/polybuf_guard.c	note_layout	seen	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/features/state_watch.c	-	s_count	static	-	
 games/common/features/state_watch.c	-	s_watch	static	-	
 games/common/features/state_watch.c	state_watch_on_tick	s_have_prev	local	-	
@@ -2251,9 +2367,11 @@ games/common/features/zoe_near.c	-	s_zoe_near	static	-
 games/common/features/zoe_near.c	-	zn_dispatch	static	-	
 games/common/freecam_game.c	-	s_path	static	-	
 games/common/freecam_game.c	-	s_pending_pose	static	-	
-games/common/freecam_game.c	-	s_player_pose_at_key	static	-	
-games/common/freecam_game.c	-	s_player_pose_pending	static	-	
 games/common/freecam_game.c	-	s_pose	static	-	
+games/common/freecam_game.c	-	s_pose_at_key	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/freecam_game.c	-	s_pose_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/freecam_game.c	-	s_pose_next	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/freecam_game.c	-	s_pose_text	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/freecam_game.c	-	s_stamped	static	-	
 games/common/freecam_game.c	freecam_drive	gen_seen	local	-	
 games/common/freecam_game.c	freecam_drive	l_pitch	local	-	
@@ -2504,6 +2622,9 @@ games/common/renderer/glint.c	-	s_code_hist	static	-
 games/common/renderer/glint.c	-	s_crosses	static	-	
 games/common/renderer/glint.c	-	s_fed_cross_tris	static	-	
 games/common/renderer/glint.c	-	s_fed_star_tris	static	-	
+games/common/renderer/glint.c	-	s_glint_depth1	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/glint.c	-	s_glint_nearest	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/glint.c	-	s_glint_order	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/glint.c	-	s_hb	static	-	
 games/common/renderer/glint.c	-	s_hq_far	static	-	
 games/common/renderer/glint.c	-	s_item	static	-	
@@ -2551,6 +2672,8 @@ games/common/renderer/glint.c	glint_vtx_on	armed	local	-
 games/common/renderer/glint.c	glint_vtx_present	cur	local	-	
 games/common/renderer/glow.c	-	glow_dispatch	static	-	
 games/common/renderer/glow.c	-	s_accepted	static	-	
+games/common/renderer/glow.c	-	s_cmp	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/glow.c	-	s_cmp_last	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/glow.c	-	s_code_hist	static	-	
 games/common/renderer/glow.c	-	s_epoch	static	-	
 games/common/renderer/glow.c	-	s_fed_tris	static	-	
@@ -2563,9 +2686,15 @@ games/common/renderer/glow.c	-	s_item_buf	static	-
 games/common/renderer/glow.c	-	s_item_n	static	-	
 games/common/renderer/glow.c	-	s_item_old	static	-	
 games/common/renderer/glow.c	-	s_item_old_n	static	-	
+games/common/renderer/glow.c	-	s_own_linked	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/glow.c	-	s_own_nearest	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/glow.c	-	s_range_admit	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/glow.c	-	s_reb_stat	static	-	
 games/common/renderer/glow.c	-	s_reb_worldmax	static	-	
 games/common/renderer/glow.c	-	s_sets	static	-	
+games/common/renderer/glow.c	-	s_simple	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/glow.c	-	s_simple_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/glow.c	-	s_synth_admit	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/glow.c	-	s_tag_hist	static	-	
 games/common/renderer/glow.c	-	s_vkey	static	-	
 games/common/renderer/glow.c	-	s_vtx_cal	static	-	
@@ -2581,11 +2710,15 @@ games/common/renderer/glow.c	-	s_wide_admit	static	-
 games/common/renderer/glow.c	-	s_wide_cull	static	-	
 games/common/renderer/glow.c	glow_capture_set	c	local	-	
 games/common/renderer/glow.c	glow_census_on	s_range	local	-	
+games/common/renderer/glow.c	glow_cmp_level	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/glow.c	glow_cmp_set	armed	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/glow.c	glow_cull_log_on	s_range	local	-	
 games/common/renderer/glow.c	glow_feed_enabled	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/glow.c	glow_prev_cam_yaw	region	local	-	
+games/common/renderer/glow.c	glow_range_enabled	v	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/glow.c	glow_rebase_dbg_arm	dbg	local	once	= -1, one filler, first reference tests it
 games/common/renderer/glow.c	glow_rebuild_all	f	local	-	
+games/common/renderer/glow.c	glow_synth_enabled	v	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/glow.c	glow_vtx_level	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/glow.c	glow_vtx_on	armed	local	-	
 games/common/renderer/glow.c	glow_vtx_present	f	local	-	
@@ -2619,7 +2752,6 @@ games/common/renderer/moby.c	-	s_animsw_scale_hold	static	-
 games/common/renderer/moby.c	-	s_animsw_scale_lerp	static	-	
 games/common/renderer/moby.c	-	s_animsw_snap	static	-	
 games/common/renderer/moby.c	-	s_bug_rec	static	-	
-games/common/renderer/moby.c	-	s_camHead	static	-	
 games/common/renderer/moby.c	-	s_canon_drawn	static	-	
 games/common/renderer/moby.c	-	s_canon_drawn_frame	static	-	
 games/common/renderer/moby.c	-	s_canon_drawn_n	static	-	
@@ -2654,16 +2786,22 @@ games/common/renderer/moby.c	-	s_cen_tint_mat	static	-
 games/common/renderer/moby.c	-	s_cen_tint_moby	static	-	
 games/common/renderer/moby.c	-	s_cen_tint_n	static	-	
 games/common/renderer/moby.c	-	s_cen_tint_vbl	static	-	
+games/common/renderer/moby.c	-	s_clerp_capped	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_clerp_late	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_clerp_recs	static	-	
+games/common/renderer/moby.c	-	s_clerp_total	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_code_hist	static	-	
 games/common/renderer/moby.c	-	s_ctr_census	static	-	
 games/common/renderer/moby.c	-	s_cur_mat	static	-	
 games/common/renderer/moby.c	-	s_cur_screen	static	-	
 games/common/renderer/moby.c	-	s_cur_screen_ofx	static	-	
 games/common/renderer/moby.c	-	s_cur_screen_ofy	static	-	
+games/common/renderer/moby.c	-	s_envHead	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_envM	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_env_bpp	static	-	
 games/common/renderer/moby.c	-	s_env_clx	static	-	
 games/common/renderer/moby.c	-	s_env_cly	static	-	
+games/common/renderer/moby.c	-	s_env_ref	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_env_tpx	static	-	
 games/common/renderer/moby.c	-	s_env_tpy	static	-	
 games/common/renderer/moby.c	-	s_ep_absent	static	-	
@@ -2676,6 +2814,7 @@ games/common/renderer/moby.c	-	s_ep_fresh	static	-
 games/common/renderer/moby.c	-	s_ep_hit	static	-	
 games/common/renderer/moby.c	-	s_ep_hit_rdiff	static	-	
 games/common/renderer/moby.c	-	s_ep_hit_tier	static	-	
+games/common/renderer/moby.c	-	s_ep_kept	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_ep_miss_nolat	static	-	
 games/common/renderer/moby.c	-	s_ep_miss_ranked	static	-	
 games/common/renderer/moby.c	-	s_ep_mix_pairs	static	-	
@@ -2685,6 +2824,8 @@ games/common/renderer/moby.c	-	s_ep_mix_vs_now	static	-
 games/common/renderer/moby.c	-	s_ep_notab	static	-	
 games/common/renderer/moby.c	-	s_ep_queue	static	-	
 games/common/renderer/moby.c	-	s_ep_tier	static	-	
+games/common/renderer/moby.c	-	s_esim	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_ework	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_fade_prev	static	-	
 games/common/renderer/moby.c	-	s_fade_prev_n	static	-	
 games/common/renderer/moby.c	-	s_fade_snap	static	-	
@@ -2716,6 +2857,7 @@ games/common/renderer/moby.c	-	s_fsc_skip	static	-
 games/common/renderer/moby.c	-	s_fsc_tmp	static	-	
 games/common/renderer/moby.c	-	s_gem_idle	static	-	
 games/common/renderer/moby.c	-	s_gout	static	-	
+games/common/renderer/moby.c	-	s_gsab_armed	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_gte	static	-	
 games/common/renderer/moby.c	-	s_gte_n	static	-	
 games/common/renderer/moby.c	-	s_held_scratch	static	atomic	1 storing function(s), none reads it
@@ -2735,6 +2877,7 @@ games/common/renderer/moby.c	-	s_in_reextract	static	atomic	1 storing function(s
 games/common/renderer/moby.c	-	s_ip_a	static	-	
 games/common/renderer/moby.c	-	s_ip_b	static	-	
 games/common/renderer/moby.c	-	s_ip_n	static	-	
+games/common/renderer/moby.c	-	s_ip_off	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_isect_rk	static	-	
 games/common/renderer/moby.c	-	s_isg_grp	static	-	
 games/common/renderer/moby.c	-	s_isg_own	static	-	
@@ -2750,23 +2893,40 @@ games/common/renderer/moby.c	-	s_late_refused	static	-
 games/common/renderer/moby.c	-	s_late_stage	static	-	
 games/common/renderer/moby.c	-	s_late_stage_n	static	-	
 games/common/renderer/moby.c	-	s_max_blend	static	-	
-games/common/renderer/moby.c	-	s_metalM	static	-	
+games/common/renderer/moby.c	-	s_mef_flags	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_mef_rank	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_metal_back	static	-	
 games/common/renderer/moby.c	-	s_metal_back_n	static	-	
 games/common/renderer/moby.c	-	s_metal_cnt	static	-	
 games/common/renderer/moby.c	-	s_metal_front	static	-	
 games/common/renderer/moby.c	-	s_metal_front_n	static	-	
+games/common/renderer/moby.c	-	s_mew	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_mext	static	-	
 games/common/renderer/moby.c	-	s_mext_hit	static	-	
 games/common/renderer/moby.c	-	s_mext_miss	static	-	
+games/common/renderer/moby.c	-	s_mf_bins	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_mf_dh	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_mfc_hp	static	-	
 games/common/renderer/moby.c	-	s_mfc_lp	static	-	
 games/common/renderer/moby.c	-	s_mfc_lpfx	static	-	
 games/common/renderer/moby.c	-	s_mfc_n	static	-	
 games/common/renderer/moby.c	-	s_mfc_on	static	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	-	s_mfc_skip	static	-	
+games/common/renderer/moby.c	-	s_mitems	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_mnear	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_mnear_at	static	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_mnear_ext	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_mnear_key	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_mnear_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_mrex_records_pid	static	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_mruns	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_msc	static	-	
 games/common/renderer/moby.c	-	s_msc_kid	static	-	
+games/common/renderer/moby.c	-	s_msp_cyc	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_msp_on	static	atomic	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_msp_rleft	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_msp_run	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_msp_sid	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_mst_calls	static	-	
 games/common/renderer/moby.c	-	s_mst_cid	static	-	
 games/common/renderer/moby.c	-	s_mst_ns	static	-	
@@ -2774,12 +2934,21 @@ games/common/renderer/moby.c	-	s_mst_sid	static	-
 games/common/renderer/moby.c	-	s_nrank	static	-	
 games/common/renderer/moby.c	-	s_nrecs	static	-	
 games/common/renderer/moby.c	-	s_nshrecs	static	-	
+games/common/renderer/moby.c	-	s_nsimrecs	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_occl_cache	static	-	
+games/common/renderer/moby.c	-	s_occl_confirmed	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_occl_culled	static	-	
 games/common/renderer/moby.c	-	s_occl_f	static	-	
+games/common/renderer/moby.c	-	s_occl_fallback	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_occl_held_drop	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_occl_held_drop_tot	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_occl_held_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_occl_held_n_tot	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_occl_leg_culled	static	-	
 games/common/renderer/moby.c	-	s_occl_leg_seen	static	-	
 games/common/renderer/moby.c	-	s_occl_pan_px	static	atomic	1 storing function(s), none reads it
+games/common/renderer/moby.c	-	s_occl_prov_held	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_occl_prov_moby	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_occl_seen	static	-	
 games/common/renderer/moby.c	-	s_oic	static	-	
 games/common/renderer/moby.c	-	s_oic_canon_epoch	static	-	
@@ -2800,6 +2969,20 @@ games/common/renderer/moby.c	-	s_ovl_rex	static	-
 games/common/renderer/moby.c	-	s_pass_overlay	static	-	
 games/common/renderer/moby.c	-	s_pb_mats	static	-	
 games/common/renderer/moby.c	-	s_pb_nmat	static	-	
+games/common/renderer/moby.c	-	s_pc	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_bad	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_dec	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_filed	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_full	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_gen	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_hit	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_pass	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_prefix	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_unfilled	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_used	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_v	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pc_vhit	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_pfc	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_ph	static	-	
 games/common/renderer/moby.c	-	s_ph_open	static	-	
 games/common/renderer/moby.c	-	s_ph_used	static	-	
@@ -2816,6 +2999,7 @@ games/common/renderer/moby.c	-	s_prevhdr_sig	static	-
 games/common/renderer/moby.c	-	s_prevhdr_unk	static	-	
 games/common/renderer/moby.c	-	s_proj	static	-	
 games/common/renderer/moby.c	-	s_proj_n	static	-	
+games/common/renderer/moby.c	-	s_proj_sim_n	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_prop_scene	static	atomic	1 storing function(s), none reads it
 games/common/renderer/moby.c	-	s_ptri	static	-	
 games/common/renderer/moby.c	-	s_ptri_n	static	-	
@@ -2861,22 +3045,58 @@ games/common/renderer/moby.c	-	s_rev_prev_n	static	-
 games/common/renderer/moby.c	-	s_rev_pub_gen	static	-	
 games/common/renderer/moby.c	-	s_reveal_verdict	static	-	
 games/common/renderer/moby.c	-	s_rf_flag	static	-	
+games/common/renderer/moby.c	-	s_rfc	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rfo_decodes	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rfo_deferred	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rfo_passes	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rfo_refused	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rjob	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rkc	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rkc_cont	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rkc_rank	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rkc_under	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rkf_runs	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rkf_sets	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rks	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rkw	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_rord_epoch	static	-	
 games/common/renderer/moby.c	-	s_rord_used	static	-	
 games/common/renderer/moby.c	-	s_rot_now	static	-	
+games/common/renderer/moby.c	-	s_rr	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rr_cur	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rr_new	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rr_old	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_rr_rank_at	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_rt_cnt	static	-	
 games/common/renderer/moby.c	-	s_rt_cpu_us	static	-	
 games/common/renderer/moby.c	-	s_rt_cyc	static	-	
 games/common/renderer/moby.c	-	s_rt_drop	static	-	
+games/common/renderer/moby.c	-	s_sgc	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_shL	static	-	
 games/common/renderer/moby.c	-	s_sh_nohl	static	-	
 games/common/renderer/moby.c	-	s_shaded_hb	static	-	
 games/common/renderer/moby.c	-	s_shband_cull	static	-	
 games/common/renderer/moby.c	-	s_shmode	static	-	
 games/common/renderer/moby.c	-	s_shrecs	static	-	
+games/common/renderer/moby.c	-	s_sim_cur	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_sim_ovf	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_sim_ovf_cap	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_sim_ovf_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_sim_runs	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_sim_scratch	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_simchk_bad	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_simchk_decodes	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_simchk_recs	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_simple_box	static	-	
 games/common/renderer/moby.c	-	s_simple_hb	static	-	
 games/common/renderer/moby.c	-	s_simple_ntri	static	-	
+games/common/renderer/moby.c	-	s_simrecs	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_spd_bad	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_spd_deferred	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_spd_now	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_spd_recs	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_spd_verts	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_spd_ws	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_specL	static	-	
 games/common/renderer/moby.c	-	s_specLlen	static	-	
 games/common/renderer/moby.c	-	s_specq_moby	static	-	
@@ -2884,7 +3104,11 @@ games/common/renderer/moby.c	-	s_specq_n	static	-
 games/common/renderer/moby.c	-	s_tickcam_M	static	-	
 games/common/renderer/moby.c	-	s_tickcam_have	static	-	
 games/common/renderer/moby.c	-	s_tickcam_pos	static	-	
+games/common/renderer/moby.c	-	s_tie_bk	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_tie_cnt	static	-	
+games/common/renderer/moby.c	-	s_tie_face	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_tie_face_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	-	s_tie_face_stamp	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_tier_far	static	-	
 games/common/renderer/moby.c	-	s_tier_farfade	static	-	
 games/common/renderer/moby.c	-	s_tier_fog	static	-	
@@ -2935,6 +3159,7 @@ games/common/renderer/moby.c	-	s_wb_nmat	static	-
 games/common/renderer/moby.c	-	s_wdiag	static	-	
 games/common/renderer/moby.c	-	s_wout	static	-	
 games/common/renderer/moby.c	-	s_wtri	static	-	
+games/common/renderer/moby.c	-	s_wtri_cbits	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	-	s_wtri_cls	static	-	
 games/common/renderer/moby.c	-	s_wtri_contest	static	-	
 games/common/renderer/moby.c	-	s_wtri_dofs	static	-	
@@ -2952,21 +3177,17 @@ games/common/renderer/moby.c	-	s_wtri_under	static	-
 games/common/renderer/moby.c	-	s_wtri_wbk	static	-	
 games/common/renderer/moby.c	append_revealed_regular_inner	occl_rev	local	-	
 games/common/renderer/moby.c	append_revealed_regular_inner	revlist	local	-	
-games/common/renderer/moby.c	append_revealed_regular_inner	revnv	local	-	
-games/common/renderer/moby.c	append_revealed_regular_inner	revsx	local	-	
-games/common/renderer/moby.c	append_revealed_regular_inner	revsy	local	-	
 games/common/renderer/moby.c	append_revealed_regular_inner	s_logged	local	-	
 games/common/renderer/moby.c	append_revealed_regular_inner	s_rdbg	local	-	
+games/common/renderer/moby.c	assign_walk_to_prims	pool	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	assign_walk_to_prims	poolcap	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	build_shaded_walk_tris	pcol	local	-	
 games/common/renderer/moby.c	build_shaded_walk_tris	s_hd0	local	-	
-games/common/renderer/moby.c	build_shaded_walk_tris	sv	local	-	
 games/common/renderer/moby.c	capture_gte	s_uncoded_warned	local	-	
 games/common/renderer/moby.c	class_colour_tally_begin	s_cls	local	-	
 games/common/renderer/moby.c	compare_walk_vs_prims	cap	local	-	
 games/common/renderer/moby.c	compare_walk_vs_prims	ncd	local	-	
 games/common/renderer/moby.c	compare_walk_vs_prims	nd	local	-	
-games/common/renderer/moby.c	compare_walk_vs_prims	pool	local	-	
-games/common/renderer/moby.c	compare_walk_vs_prims	poolcap	local	-	
 games/common/renderer/moby.c	compare_walk_vs_prims	px0	local	-	
 games/common/renderer/moby.c	compare_walk_vs_prims	px1	local	-	
 games/common/renderer/moby.c	compare_walk_vs_prims	py0	local	-	
@@ -2981,13 +3202,10 @@ games/common/renderer/moby.c	compare_walk_vs_prims	wy0	local	-
 games/common/renderer/moby.c	compare_walk_vs_prims	wy1	local	-	
 games/common/renderer/moby.c	env_azsign	c	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	env_c2	c	local	once	= -1, one filler, first reference tests it
+games/common/renderer/moby.c	env_ring_pair	s_cam	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	env_ring_pair	s_metal	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	fpcache_get	sv	local	-	
-games/common/renderer/moby.c	isect_boxes_sorted	X	local	-	
-games/common/renderer/moby.c	isect_census	T	local	-	
-games/common/renderer/moby.c	isect_census	idx	local	-	
 games/common/renderer/moby.c	isect_log_on	s	local	once	= -1, one filler, first reference tests it
-games/common/renderer/moby.c	isect_moby	K	local	-	
-games/common/renderer/moby.c	isect_moby	hit	local	-	
 games/common/renderer/moby.c	isect_select_census	ord	local	-	
 games/common/renderer/moby.c	isect_stacked_on	s	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	metal_front_emit	pc	local	-	
@@ -3014,14 +3232,22 @@ games/common/renderer/moby.c	moby_class_is_prop	s_legacy	local	once	= -1, one fi
 games/common/renderer/moby.c	moby_classdbg_line	clsdbg	local	-	
 games/common/renderer/moby.c	moby_classdbg_line	last_f	local	-	
 games/common/renderer/moby.c	moby_classdbg_line	printed	local	-	
-games/common/renderer/moby.c	moby_decode_project_body	df0	local	-	
-games/common/renderer/moby.c	moby_decode_project_body	df1	local	-	
-games/common/renderer/moby.c	moby_decode_project_body	s_dd	local	-	
-games/common/renderer/moby.c	moby_decode_project_body	s_negctl	local	-	
+games/common/renderer/moby.c	moby_clerp_census	s	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_depthdbg	df0	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_depthdbg	df1	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_depthdbg	s_dd	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_emit_check	pre	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_emit_check	s_atexit	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_emit_check	ser	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_emit_check	ser_faces	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_emit_check	tris	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_emit_check	tris_cap	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_emit_fanout_workers	first	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	moby_face_key_on	s_on	local	-	
 games/common/renderer/moby.c	moby_fadedbg_record	s_fd0	local	-	
 games/common/renderer/moby.c	moby_fog_sat_on	on	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	moby_gpf_subtick	s_gd	local	once	= -1, one filler, first reference tests it
+games/common/renderer/moby.c	moby_idle_census_print	next_idle	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	moby_idle_on	s	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	moby_interp_stale_snap_enabled	s	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	moby_jump_hold_enabled	s	local	once	= -1, one filler, first reference tests it
@@ -3030,6 +3256,14 @@ games/common/renderer/moby.c	moby_late_census_on	s	local	once	= -1, one filler, 
 games/common/renderer/moby.c	moby_late_trace_on	hi	local	-	
 games/common/renderer/moby.c	moby_late_trace_on	lo	local	-	
 games/common/renderer/moby.c	moby_late_trace_on	parsed	local	-	
+games/common/renderer/moby.c	moby_mf_bound_check	s_n	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_mf_bound_check	s_next	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_mf_bound_check	s_on	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_mf_bound_check	s_over	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_mf_bound_check	s_overp	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_mf_bound_check	s_worst	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_mf_census	s_next	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_mf_census	s_on	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	moby_mirror_hold	s_at	local	-	
 games/common/renderer/moby.c	moby_mirror_hold	s_hold	local	-	
 games/common/renderer/moby.c	moby_mirror_hold	s_moby	local	-	
@@ -3063,16 +3297,24 @@ games/common/renderer/moby.c	moby_reextract_body	saved_reg	local	-
 games/common/renderer/moby.c	moby_reextract_body	wc	local	-	
 games/common/renderer/moby.c	moby_reextract_body	win0	local	-	
 games/common/renderer/moby.c	moby_reextract_body	ws	local	-	
+games/common/renderer/moby.c	moby_reveal_confirm	buf	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	moby_reveal_dbg	s_done	local	-	
 games/common/renderer/moby.c	moby_reveal_dbg	s_on	local	-	
 games/common/renderer/moby.c	moby_rot_census	s	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	moby_shell_census_level	s_cen	local	once	= -1, one filler, first reference tests it
+games/common/renderer/moby.c	moby_simple_fanout	first	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_simple_fanout	s_atexit	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	moby_simple_occl_on	on	local	once	= -1, one filler, first reference tests it
-games/common/renderer/moby.c	moby_snap_collect	s_buf	local	-	
-games/common/renderer/moby.c	moby_snap_collect	s_cap	local	-	
-games/common/renderer/moby.c	moby_td_census	on	local	-	
+games/common/renderer/moby.c	moby_simple_project_defer	s_atexit	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_snap_gather_to	s_atexit	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_snap_gather_to	s_buf	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_snap_gather_to	s_cap	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_snap_probe_tags	s_fcap	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_snap_probe_tags	s_fk	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	moby_td_census	rn	local	-	
 games/common/renderer/moby.c	moby_td_census	row	local	-	
+games/common/renderer/moby.c	moby_td_census_on	on	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	moby_terrain_order_on	s_on	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	moby_tie_pull_on	s_on	local	-	
 games/common/renderer/moby.c	moby_trace_target	t	local	-	
 games/common/renderer/moby.c	moby_tri_debug	s_td	local	-	
@@ -3083,16 +3325,19 @@ games/common/renderer/moby.c	moby_tri_debug	tx1	local	-
 games/common/renderer/moby.c	moby_tri_debug	ty0	local	-	
 games/common/renderer/moby.c	moby_tri_debug	ty1	local	-	
 games/common/renderer/moby.c	moby_verify_enabled	s	local	-	
+games/common/renderer/moby.c	moby_verify_negctl	s_negctl	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	moby_walk_tri_host_added	last_gen	local	-	
 games/common/renderer/moby.c	moby_walk_tri_host_added	last_hit	local	-	
 games/common/renderer/moby.c	moby_walk_tri_host_added	last_moby	local	-	
 games/common/renderer/moby.c	moby_wbase_trace	s_cls	local	-	
 games/common/renderer/moby.c	moby_world_key_on	s_on	local	once	= -1, one filler, first reference tests it
+games/common/renderer/moby.c	msp_enabled	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	msp_flush	init	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	mst_intern	init	local	-	
-games/common/renderer/moby.c	native_rank_moby	E	local	-	
-games/common/renderer/moby.c	native_rank_moby	order	local	-	
-games/common/renderer/moby.c	native_rank_moby	under	local	-	
 games/common/renderer/moby.c	native_rank_negctl	s_neg	local	once	= -1, one filler, first reference tests it
+games/common/renderer/moby.c	occl_confirm_on	on	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	occl_held_confirm_mode	m	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	occl_held_report	armed	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	occl_leg_census_report	on	local	-	
 games/common/renderer/moby.c	occl_pass_census	on	local	-	
 games/common/renderer/moby.c	occl_pass_census	pc	local	-	
@@ -3108,62 +3353,87 @@ games/common/renderer/moby.c	on_draw_simple	s_reports	local	-
 games/common/renderer/moby.c	on_draw_specular	s_in	local	-	
 games/common/renderer/moby.c	ovl_ab_on	on	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	ovl_ab_store	reg	local	-	
+games/common/renderer/moby.c	pc_lookup	s_init	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	pc_mode	v	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	pose_hold_on	s	local	once	= -1, one filler, first reference tests it
-games/common/renderer/moby.c	project_all_shaded	next_idle	local	-	
-games/common/renderer/moby.c	project_all_shaded	nn2	local	-	
-games/common/renderer/moby.c	project_all_shaded	s_bt0	local	-	
-games/common/renderer/moby.c	project_all_shaded	s_otbias_on	local	-	
-games/common/renderer/moby.c	project_all_shaded	s_ptr0	local	-	
-games/common/renderer/moby.c	project_all_shaded	s_smiss	local	-	
-games/common/renderer/moby.c	project_all_shaded	t0	local	-	
+games/common/renderer/moby.c	push_fanout_check_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	push_fanout_min	s_min	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	push_fanout_on	v	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	push_scene_moby_tris	s_logged	local	-	
 games/common/renderer/moby.c	qmiss_census_on	on	local	once	= -1, one filler, first reference tests it
+games/common/renderer/moby.c	rank_absent_skip_mode	v	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	rank_carry_on	s	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	rank_ep_mode	s	local	once	= -1, one filler, first reference tests it
-games/common/renderer/moby.c	rank_fresh_moby	T	local	-	
-games/common/renderer/moby.c	rank_fresh_moby	fresh_rank	local	-	
-games/common/renderer/moby.c	rank_fresh_moby	idx	local	-	
-games/common/renderer/moby.c	rank_fresh_moby	keep_cont	local	-	
-games/common/renderer/moby.c	rank_fresh_moby	keep_rank	local	-	
-games/common/renderer/moby.c	rank_mix_place	E	local	-	
+games/common/renderer/moby.c	rank_fresh_pass	armed	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	rank_time_on	s	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	reextract_record_pass	culled_moby	local	-	
 games/common/renderer/moby.c	reextract_record_pass	mobys	local	-	
-games/common/renderer/moby.c	reextract_record_pass	n	local	-	
 games/common/renderer/moby.c	reextract_record_pass	recs	local	-	
-games/common/renderer/moby.c	reextract_record_pass	s_atcls	local	-	
-games/common/renderer/moby.c	reextract_record_pass	s_imiss	local	-	
-games/common/renderer/moby.c	reextract_record_pass	s_sccls	local	-	
-games/common/renderer/moby.c	reextract_record_pass	t0	local	-	
+games/common/renderer/moby.c	reveal_census_print	on	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_fanout_allowed	first	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_fanout_allowed	s_traces	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_fanout_check	D	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_fanout_check	buf	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_fanout_check_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_fanout_min	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_fanout_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_fanout_pass	dup	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_fanout_pass	idx	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_interp_miss_note	n	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_interp_miss_note	s_imiss	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_interp_miss_note	t0	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_postrace_cls	s_cls	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_slot_repeats	s_gen	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rex_slot_repeats	s_stamp	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rfc_arm	s_armed	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rkf_allowed	first	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rkf_check	s_armed	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rkf_check_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rkf_min	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rkf_on	v	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	rowscale_census	s_init	local	-	
 games/common/renderer/moby.c	rowscale_census	s_path	local	-	
+games/common/renderer/moby.c	rr_mode	s	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rr_negctl_on	s	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rr_verify	cont	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rr_verify	rank	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rr_verify	under	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	rr_verify_on	s	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	rt_report	c0	local	-	
 games/common/renderer/moby.c	rt_report	u0	local	-	
+games/common/renderer/moby.c	shaded_actor_tr	nn	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	shaded_actor_tr	s_ptr0	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	shaded_actor_tr	s_smiss	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	shaded_actor_tr	t0	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	shaded_band_cull	s_dbg	local	-	
+games/common/renderer/moby.c	shaded_billboard_pos	s_bt0	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	shaded_face_dbg	s_fd_cls	local	-	
 games/common/renderer/moby.c	shaded_face_dbg	s_fd_f0	local	-	
+games/common/renderer/moby.c	shaded_tie_pull_on	s_on	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	shaded_verify	sv	local	-	
+games/common/renderer/moby.c	sim_proj_defer_on	chk	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	sim_proj_defer_on	on	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	simple_fanout_check_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby.c	simple_fanout_min	s_min	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	special_census_on	s	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	tier_dbg_on	s	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	trail_enabled	on	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby.c	walk_dbg_env	v	local	once	= -1, one filler, first reference tests it
+games/common/renderer/moby.c	walk_fanout_min	s_min	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby.c	walk_prologue	first	local	-	
-games/common/renderer/moby.c	walk_prologue	s_min	local	-	
-games/common/renderer/moby.c	walk_prologue	s_ser	local	-	
 games/common/renderer/moby.c	walk_records	s_cd	local	-	
 games/common/renderer/moby.c	walk_records	s_fd	local	-	
 games/common/renderer/moby.c	walk_records	s_ff0	local	-	
+games/common/renderer/moby.c	walk_serial_forced	s_ser	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_game.h	-	moby_game	extern	-	
-games/common/renderer/moby_game_spyro23.c	-	s_abr_face	static	-	
-games/common/renderer/moby_game_spyro23.c	-	s_abr_face_n	static	-	
-games/common/renderer/moby_game_spyro23.c	-	s_abr_semi_n	static	-	
 games/common/renderer/moby_game_spyro23.c	-	s_flat_back_dropped	static	-	
 games/common/renderer/moby_game_spyro23.c	-	s_flat_back_emitted	static	-	
 games/common/renderer/moby_game_spyro23.c	-	s_flat_front_blended	static	-	
 games/common/renderer/moby_game_spyro23.c	-	s_flat_zero_colour	static	-	
-games/common/renderer/moby_game_spyro23.c	-	s_held	static	-	
-games/common/renderer/moby_game_spyro23.c	-	s_held_n	static	-	
+games/common/renderer/moby_game_spyro23.c	-	s_s23_job	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_game_spyro23.c	-	s_s23_pool	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_game_spyro23.c	-	s_s23_radius	static	-	
+games/common/renderer/moby_game_spyro23.c	-	s_s23_scope	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_game_spyro23.c	-	s_simple_culled	static	-	
 games/common/renderer/moby_game_spyro23.c	-	s_simple_faces	static	-	
 games/common/renderer/moby_game_spyro23.c	-	s_simple_fade	static	-	
@@ -3181,23 +3451,17 @@ games/common/renderer/moby_game_spyro23.c	-	s_sq_ghost_only	static	-
 games/common/renderer/moby_game_spyro23.c	-	s_sq_prev	static	-	
 games/common/renderer/moby_game_spyro23.c	-	s_sq_prev_cam	static	-	
 games/common/renderer/moby_game_spyro23.c	-	s_sq_replaying_prev	static	-	
+games/common/renderer/moby_game_spyro23.c	-	s_ws	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_game_spyro23.c	cutpath_census	s_moby	local	-	
 games/common/renderer/moby_game_spyro23.c	cutpath_census	s_on	local	-	
 games/common/renderer/moby_game_spyro23.c	cutpath_census	s_pos	local	-	
-games/common/renderer/moby_game_spyro23.c	s23_abr_flush	abr	local	-	
-games/common/renderer/moby_game_spyro23.c	s23_abr_flush	bucket	local	-	
-games/common/renderer/moby_game_spyro23.c	s23_abr_flush	entry	local	-	
-games/common/renderer/moby_game_spyro23.c	s23_abr_flush	kv	local	-	
 games/common/renderer/moby_game_spyro23.c	s23_decode_faces_stride	s_fb	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby_game_spyro23.c	s23_material_tint	s_off	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby_game_spyro23.c	s23_mirror_disabled	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby_game_spyro23.c	s23_mode0_ir0_sum	s	local	-	
-games/common/renderer/moby_game_spyro23.c	s23_simple_decode	ctab	local	-	
-games/common/renderer/moby_game_spyro23.c	s23_simple_decode	iv	local	-	
-games/common/renderer/moby_game_spyro23.c	s23_simple_decode	vmod	local	-	
-games/common/renderer/moby_game_spyro23.c	s23_simple_decode	vpos	local	-	
-games/common/renderer/moby_game_spyro23.c	s23_simple_decode	vscr	local	-	
+games/common/renderer/moby_game_spyro23.c	s23_postrace_on	on	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_game_spyro23.c	s23_simple_postrace	s_cls	local	-	
+games/common/renderer/moby_game_spyro23.c	s23_simple_prefix_record	vscr	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_game_spyro23.c	s23_water_plane	s_cen	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby_game_spyro23.c	s23_water_plane_disabled	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby_game_spyro23.h	-	moby_game_s23	extern	-	
@@ -3214,52 +3478,75 @@ games/common/renderer/moby_serial.c	-	s_alloc_in	static	-
 games/common/renderer/moby_serial.c	-	s_alloc_serial	static	-	
 games/common/renderer/moby_serial.c	-	s_slot_base	static	-	
 games/common/renderer/moby_serial.c	-	s_slot_serial	static	-	
-games/common/renderer/moby_snap.c	-	s_cj	static	-	
-games/common/renderer/moby_snap.c	-	s_cj_cap	static	-	
-games/common/renderer/moby_snap.c	-	s_ix	static	-	
-games/common/renderer/moby_snap.c	-	s_ix_cap	static	-	
-games/common/renderer/moby_snap.c	-	s_made	static	-	
-games/common/renderer/moby_snap.c	-	s_made_cap	static	-	
+games/common/renderer/moby_snap.c	-	s_cb	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_cb_cap	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_cb_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_cb_ok	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_cb_okcap	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_cec	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_ck_rec	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_ck_res	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_cr	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_cr_cap	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_cr_late	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_cr_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_cr_pos	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_dump_keys	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_dump_nk	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_fo_res	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_fo_wb	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_foc	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_fv_cur	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_fv_gen	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_fv_key	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_fv_v	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_kc	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_kc_cap	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_lbc	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_lc_cen	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_lc_serial	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_lc_snapped	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_lcc	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_mc	static	-	
 games/common/renderer/moby_snap.c	-	s_mc_cur	static	-	
 games/common/renderer/moby_snap.c	-	s_mc_gen	static	-	
 games/common/renderer/moby_snap.c	-	s_mc_rebuilds	static	-	
-games/common/renderer/moby_snap.c	-	s_ml	static	-	
-games/common/renderer/moby_snap.c	-	s_ml_cap	static	-	
-games/common/renderer/moby_snap.c	-	s_mquery	static	-	
+games/common/renderer/moby_snap.c	-	s_ms_scenes	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_mserial	static	-	
-games/common/renderer/moby_snap.c	-	s_mstamp	static	-	
-games/common/renderer/moby_snap.c	-	s_mstamp_cap	static	-	
-games/common/renderer/moby_snap.c	-	s_mt	static	-	
-games/common/renderer/moby_snap.c	-	s_mt_cap	static	-	
-games/common/renderer/moby_snap.c	-	s_ng_cap	static	-	
-games/common/renderer/moby_snap.c	-	s_ng_ent	static	-	
-games/common/renderer/moby_snap.c	-	s_ng_first	static	-	
-games/common/renderer/moby_snap.c	-	s_ng_ix	static	-	
-games/common/renderer/moby_snap.c	-	s_ng_iy	static	-	
-games/common/renderer/moby_snap.c	-	s_ng_x0	static	-	
-games/common/renderer/moby_snap.c	-	s_ng_y0	static	-	
-games/common/renderer/moby_snap.c	-	s_pc_carried	static	-	
-games/common/renderer/moby_snap.c	-	s_pc_fresh	static	-	
+games/common/renderer/moby_snap.c	-	s_pc	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_pc_mark	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_pq_cap	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_pq_new	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_pq_ok	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_q_bnd	static	-	
 games/common/renderer/moby_snap.c	-	s_q_capb	static	-	
+games/common/renderer/moby_snap.c	-	s_q_capf	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_q_capm	static	-	
 games/common/renderer/moby_snap.c	-	s_q_capt	static	-	
 games/common/renderer/moby_snap.c	-	s_q_epoch	static	-	
+games/common/renderer/moby_snap.c	-	s_q_fk	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_q_mob	static	-	
 games/common/renderer/moby_snap.c	-	s_q_nm	static	-	
 games/common/renderer/moby_snap.c	-	s_q_nt	static	-	
+games/common/renderer/moby_snap.c	-	s_q_seg	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_q_tri	static	-	
+games/common/renderer/moby_snap.c	-	s_rc	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_rex	static	-	
 games/common/renderer/moby_snap.c	-	s_rex_alpha	static	-	
 games/common/renderer/moby_snap.c	-	s_rk	static	-	
 games/common/renderer/moby_snap.c	-	s_rk_n	static	-	
+games/common/renderer/moby_snap.c	-	s_rmc	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_rs_L	static	-	
 games/common/renderer/moby_snap.c	-	s_rs_Li	static	-	
 games/common/renderer/moby_snap.c	-	s_rs_P	static	-	
 games/common/renderer/moby_snap.c	-	s_rs_ep	static	-	
 games/common/renderer/moby_snap.c	-	s_rs_view	static	-	
 games/common/renderer/moby_snap.c	-	s_rs_wb	static	-	
+games/common/renderer/moby_snap.c	-	s_rsp_ns	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_small	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_small_ep	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_small_last	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_smc	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_sn	static	-	
 games/common/renderer/moby_snap.c	-	s_sn_n	static	-	
 games/common/renderer/moby_snap.c	-	s_store	static	-	
@@ -3273,13 +3560,24 @@ games/common/renderer/moby_snap.c	-	s_up	static	-
 games/common/renderer/moby_snap.c	-	s_up_p	static	-	
 games/common/renderer/moby_snap.c	-	s_vc_cap	static	-	
 games/common/renderer/moby_snap.c	-	s_vc_cap0	static	-	
+games/common/renderer/moby_snap.c	-	s_vc_id	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vc_idcap	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vc_inj	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vc_injcap	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_vc_n	static	-	
 games/common/renderer/moby_snap.c	-	s_vc_np	static	-	
 games/common/renderer/moby_snap.c	-	s_vc_p0	static	-	
 games/common/renderer/moby_snap.c	-	s_vc_pl	static	-	
 games/common/renderer/moby_snap.c	-	s_vc_plcap	static	-	
+games/common/renderer/moby_snap.c	-	s_vc_ref	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vc_refcap	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_vf_cap	static	-	
 games/common/renderer/moby_snap.c	-	s_vf_cap0	static	-	
+games/common/renderer/moby_snap.c	-	s_vf_cpu	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vf_dl	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vf_dp	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vf_id	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vf_idcap	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	-	s_vf_n	static	-	
 games/common/renderer/moby_snap.c	-	s_vf_np	static	-	
 games/common/renderer/moby_snap.c	-	s_vf_on	static	-	
@@ -3292,21 +3590,75 @@ games/common/renderer/moby_snap.c	-	s_vq_n	static	-
 games/common/renderer/moby_snap.c	-	s_vq_wb	static	-	
 games/common/renderer/moby_snap.c	-	s_vq_wbcap	static	-	
 games/common/renderer/moby_snap.c	-	s_vs	static	-	
+games/common/renderer/moby_snap.c	-	s_vt	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vt_cap	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vt_cap0	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vt_cap1	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vt_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vt_np	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_vt_p0	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	-	s_ws	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	mc_carry_on	s	local	once	= -1, one filler, first reference tests it
+games/common/renderer/moby_snap.c	mc_ce_mode	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	mc_corner_delta	s_pw	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	mc_corner_delta	s_pwcap	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	mc_corners_moved	s_atexit	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	mc_inject	s_n	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	mc_inject_mode	s	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	mc_refresh_on	s	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	mc_verify_mode	s	local	once	= -1, one filler, first reference tests it
+games/common/renderer/moby_snap.c	mc_vf_cmov_line	s_n	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	mc_vf_compare	s_atexit	local	-	
-games/common/renderer/moby_snap.c	mc_vf_detail	s_n	local	-	
+games/common/renderer/moby_snap.c	mc_vf_detail	s_nh	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	mc_vf_detail	s_np	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	mc_vf_fk_pair	s_ucap	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	mc_vf_fk_pair	s_used	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	moby_snap_probe_on	s_on	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	moby_snap_queue	s_atexit	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	moby_snap_queue_lean	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_bounds_ensure	tb	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_bounds_ensure	tcap	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/moby_snap.c	ms_cands	s_c	local	-	
 games/common/renderer/moby_snap.c	ms_cands	s_cap	local	-	
-games/common/renderer/moby_snap.c	ms_carry_end	id_c	local	-	
-games/common/renderer/moby_snap.c	ms_carry_end	id_f	local	-	
 games/common/renderer/moby_snap.c	ms_census_on	s	local	once	= -1, one filler, first reference tests it
 games/common/renderer/moby_snap.c	ms_census_print	s_n	local	-	
 games/common/renderer/moby_snap.c	ms_census_print	s_sum_us	local	-	
-games/common/renderer/moby_snap.c	ms_dump	s_init	local	-	
-games/common/renderer/moby_snap.c	ms_dump	s_keys	local	-	
-games/common/renderer/moby_snap.c	ms_dump	s_nk	local	-	
 games/common/renderer/moby_snap.c	ms_falsify_on	s	local	once	= -1, one filler, first reference tests it
+games/common/renderer/moby_snap.c	ms_fo_check	s_atexit	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_fo_check	sp_par	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_fo_check	sp_ser	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_fo_check	tm	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_fo_check_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_fo_min	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_fo_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_fo_workers	first_chunk	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_hit_index	s_ix	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_hit_index	s_ixcap	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_lc_capture	fk	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_lc_capture	fkcap	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_lc_check	ref	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_lc_check	s_atexit	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_lc_check	sp_full	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_lc_check	sp_list	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_lc_check	tm	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_lc_check_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_lc_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_pc_emit	id	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_rc_add	s_atexit	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_rc_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_resolve	s_small_atexit	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_rm_check	q	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_rm_check	qcap	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_rm_check	s_atexit	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_rm_check	wa	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_rm_check	wb	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_rm_check_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_rm_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_small_filter	s_pid	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	ms_small_lines	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	rsp_flush	id	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	rsp_flush	init	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/moby_snap.c	rsp_now	en	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/native_gte.c	-	s_unr_tab	static	-	
 games/common/renderer/native_gte.c	ngte_census_arm	armed	local	-	
 games/common/renderer/native_gte.c	ngte_census_print	site	local	-	
@@ -3343,6 +3695,9 @@ games/common/renderer/particles.c	-	s_late_hi	static	-
 games/common/renderer/particles.c	-	s_late_lo	static	-	
 games/common/renderer/particles.c	-	s_late_presents	static	-	
 games/common/renderer/particles.c	-	s_late_reused	static	-	
+games/common/renderer/particles.c	-	s_part_depth1	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/particles.c	-	s_part_nearest	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/particles.c	-	s_part_order	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/particles.c	-	s_reb	static	-	
 games/common/renderer/particles.c	-	s_reb_dbg	static	-	
 games/common/renderer/particles.c	-	s_reb_stat	static	-	
@@ -3498,8 +3853,10 @@ games/common/renderer/portal_spyro23.c	-	s_off_feed	static	-
 games/common/renderer/portal_spyro23.c	-	s_off_plane	static	-	
 games/common/renderer/portal_spyro23.c	-	s_off_rows	static	-	
 games/common/renderer/portal_spyro23.c	-	s_pass_start	static	-	
+games/common/renderer/portal_spyro23.c	-	s_pick	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/portal_spyro23.c	-	s_prev	static	-	
 games/common/renderer/portal_spyro23.c	-	s_rec_next	static	-	
+games/common/renderer/portal_spyro23.c	-	s_sets	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/portal_spyro23.c	-	s_sky_fed_frame	static	-	
 games/common/renderer/portal_spyro23.c	on_portal_leaf	s_dumps	local	-	
 games/common/renderer/portal_spyro23.c	on_portal_leaf	s_in	local	-	
@@ -3599,6 +3956,14 @@ games/common/renderer/shadow_player.c	-	s_tri_n	static	-
 games/common/renderer/shadow_player.c	-	shadow_player_dispatch	static	-	
 games/common/renderer/shadow_player.c	on_player_shadow	s_dumped	local	-	
 games/common/renderer/shadow_player.c	on_player_shadow	s_reports	local	-	
+games/common/renderer/subtick_anchor_chk.c	-	s_bracketed	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/subtick_anchor_chk.c	-	s_cam	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/subtick_anchor_chk.c	-	s_dep	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/subtick_anchor_chk.c	-	s_st	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/subtick_anchor_chk.c	-	s_unb	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/subtick_anchor_chk.c	sac_level	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/subtick_anchor_chk.c	sac_present_begin	region	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/subtick_anchor_chk.c	sac_tick_depth	v	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_H	static	-	
 games/common/renderer/terrain.c	-	s_acen	static	-	
 games/common/renderer/terrain.c	-	s_acen_ceq	static	-	
@@ -3608,6 +3973,28 @@ games/common/renderer/terrain.c	-	s_acen_n	static	-
 games/common/renderer/terrain.c	-	s_acen_sectors	static	-	
 games/common/renderer/terrain.c	-	s_acen_ticks	static	-	
 games/common/renderer/terrain.c	-	s_acen_win	static	-	
+games/common/renderer/terrain.c	-	s_bc_frame	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bc_list	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bc_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bc_refuse	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_age	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_age_walk	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_bake_ns_walk	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_bakes_walk	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_cand	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_cands_walk	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_claims_walk	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_edge	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_epoch	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_frame	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_fresh_walk	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_mode	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_ncand	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_ns	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_since_edge	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_t0	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_bud_tick	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_cal_nqsum_min	static	-	
 games/common/renderer/terrain.c	-	s_cal_qmin_max	static	-	
 games/common/renderer/terrain.c	-	s_cal_qn	static	-	
@@ -3689,6 +4076,7 @@ games/common/renderer/terrain.c	-	s_fardbg_done	static	-
 games/common/renderer/terrain.c	-	s_fardbg_lean	static	-	
 games/common/renderer/terrain.c	-	s_fardbg_occl0	static	-	
 games/common/renderer/terrain.c	-	s_fardbg_walk	static	-	
+games/common/renderer/terrain.c	-	s_fbox	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_flat	static	-	
 games/common/renderer/terrain.c	-	s_fog_mode	static	-	
 games/common/renderer/terrain.c	-	s_fog_ref_last	static	-	
@@ -3783,6 +4171,11 @@ games/common/renderer/terrain.c	-	s_prim_total	static	-
 games/common/renderer/terrain.c	-	s_reccheck	static	-	
 games/common/renderer/terrain.c	-	s_reccheck_faces	static	-	
 games/common/renderer/terrain.c	-	s_reccheck_out	static	-	
+games/common/renderer/terrain.c	-	s_retag_cen	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_retag_digest	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_retag_n	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_retag_reads	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_retag_verify	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_rim_H	static	-	
 games/common/renderer/terrain.c	-	s_rim_cross_live	static	-	
 games/common/renderer/terrain.c	-	s_rim_cross_n	static	-	
@@ -3792,6 +4185,12 @@ games/common/renderer/terrain.c	-	s_rim_ofy	static	-
 games/common/renderer/terrain.c	-	s_rim_rowmax	static	-	
 games/common/renderer/terrain.c	-	s_rimbroad	static	-	
 games/common/renderer/terrain.c	-	s_rimfr	static	-	
+games/common/renderer/terrain.c	-	s_ring_bake	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_ring_face	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_ring_units_live	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_rt_negctl	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_rt_negctl_left	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_rtc	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_scene_hp	static	-	
 games/common/renderer/terrain.c	-	s_sd	static	-	
 games/common/renderer/terrain.c	-	s_sd_active	static	-	
@@ -3803,13 +4202,26 @@ games/common/renderer/terrain.c	-	s_sectordump	static	-
 games/common/renderer/terrain.c	-	s_secv	static	-	
 games/common/renderer/terrain.c	-	s_secv_anim	static	-	
 games/common/renderer/terrain.c	-	s_secv_stamp	static	-	
+games/common/renderer/terrain.c	-	s_secvi	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_secvi_built	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_secvi_gen	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_snap_G	static	-	
 games/common/renderer/terrain.c	-	s_snap_W	static	-	
+games/common/renderer/terrain.c	-	s_snap_bg	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_snap_epoch	static	atomic	1 storing function(s), none reads it
+games/common/renderer/terrain.c	-	s_snap_facev	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_snap_grid	static	-	
+games/common/renderer/terrain.c	-	s_snap_lcen	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_snap_lfk	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_snap_lfkcap	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_snap_listing	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_snap_lwalk	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_snap_nlfk	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_snap_nw	static	-	
 games/common/renderer/terrain.c	-	s_snap_out	static	-	
+games/common/renderer/terrain.c	-	s_snap_secv	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_snap_src	static	-	
+games/common/renderer/terrain.c	-	s_snap_wb	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_snap_wv	static	-	
 games/common/renderer/terrain.c	-	s_tanim_act	static	-	
 games/common/renderer/terrain.c	-	s_tanim_dvcell	static	-	
@@ -3817,6 +4229,32 @@ games/common/renderer/terrain.c	-	s_tanim_dvhq	static	-
 games/common/renderer/terrain.c	-	s_tanim_dvlq	static	-	
 games/common/renderer/terrain.c	-	s_tanim_en	static	-	
 games/common/renderer/terrain.c	-	s_tanim_have	static	-	
+games/common/renderer/terrain.c	-	s_taud	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_audits	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_elems	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_faces	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_fail	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_first	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_logged	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_masked	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_mis	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_missec	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_noshadow	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_poison	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_pwords	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_rebaked	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_rmis	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_rwords	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_sample	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_secset	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_sh	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_sink	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_skip_anim	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_skip_ring	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_skip_tex	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_sub	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_taud_twords	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_tbk	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_terrain_saved_occGroup	static	-	
 games/common/renderer/terrain.c	-	s_tex_faces	static	-	
 games/common/renderer/terrain.c	-	s_tex_tris	static	-	
@@ -3858,6 +4296,8 @@ games/common/renderer/terrain.c	-	s_tgpu_pplane_n	static	-
 games/common/renderer/terrain.c	-	s_tgpu_rebake	static	-	
 games/common/renderer/terrain.c	-	s_tgpu_rebuilds	static	-	
 games/common/renderer/terrain.c	-	s_tgpu_rim_ok	static	-	
+games/common/renderer/terrain.c	-	s_tgpu_ring_mv	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_tgpu_ring_secs	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_tgpu_secs	static	-	
 games/common/renderer/terrain.c	-	s_tgpu_secs_walk	static	-	
 games/common/renderer/terrain.c	-	s_tgpu_tabwait	static	-	
@@ -3889,6 +4329,7 @@ games/common/renderer/terrain.c	-	s_tocc_latch_stamp	static	-
 games/common/renderer/terrain.c	-	s_tocc_latoff	static	-	
 games/common/renderer/terrain.c	-	s_tocc_offadm	static	-	
 games/common/renderer/terrain.c	-	s_tocc_tick	static	-	
+games/common/renderer/terrain.c	-	s_tri_lq	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_tri_n	static	-	
 games/common/renderer/terrain.c	-	s_tri_v	static	-	
 games/common/renderer/terrain.c	-	s_trisplit_faces	static	-	
@@ -3899,6 +4340,8 @@ games/common/renderer/terrain.c	-	s_tsc	static	-
 games/common/renderer/terrain.c	-	s_tsc_hit	static	-	
 games/common/renderer/terrain.c	-	s_tsc_miss	static	-	
 games/common/renderer/terrain.c	-	s_tsc_stamp	static	-	
+games/common/renderer/terrain.c	-	s_tsca	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_tsca_on	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_tscroll_have	static	-	
 games/common/renderer/terrain.c	-	s_tscroll_tile	static	-	
 games/common/renderer/terrain.c	-	s_tsrc_terr	static	-	
@@ -3922,6 +4365,9 @@ games/common/renderer/terrain.c	-	s_vh_list	static	-
 games/common/renderer/terrain.c	-	s_vh_listn	static	-	
 games/common/renderer/terrain.c	-	s_vh_moved	static	-	
 games/common/renderer/terrain.c	-	s_vh_on	static	-	
+games/common/renderer/terrain.c	-	s_vhm_bad	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_vhm_checked	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	-	s_vhm_skip	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	-	s_view	static	-	
 games/common/renderer/terrain.c	-	s_vis_arm	static	-	
 games/common/renderer/terrain.c	-	s_vis_cap	static	-	
@@ -3954,6 +4400,16 @@ games/common/renderer/terrain.c	portal_rim_cos	v	local	once	= -1, one filler, fi
 games/common/renderer/terrain.c	portal_rim_eps	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	portal_rim_near	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	portal_rim_reach	v	local	once	= -1, one filler, first reference tests it
+games/common/renderer/terrain.c	taud_compare	mask	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	taud_compare	mcap	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	taud_due	s_last_frame	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	taud_due	s_ticks	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	taud_ring_check	w	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	taud_ring_check	wcap	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	taud_sector	K	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tbk_emit	id	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tbk_emit	init	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tbk_emit	key_id	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	terrain_animdbg	have	local	-	
 games/common/renderer/terrain.c	terrain_animdbg	hq	local	-	
 games/common/renderer/terrain.c	terrain_animdbg	lq	local	-	
@@ -3967,6 +4423,7 @@ games/common/renderer/terrain.c	terrain_build	cap_cov	local	-
 games/common/renderer/terrain.c	terrain_build	fc_c	local	-	
 games/common/renderer/terrain.c	terrain_build	fog_c	local	-	
 games/common/renderer/terrain.c	terrain_build	gc	local	-	
+games/common/renderer/terrain.c	terrain_build	gid_	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	terrain_build	hc	local	-	
 games/common/renderer/terrain.c	terrain_build	hole_c	local	-	
 games/common/renderer/terrain.c	terrain_build	hpd_c	local	-	
@@ -3977,6 +4434,7 @@ games/common/renderer/terrain.c	terrain_build	idf_	local	-
 games/common/renderer/terrain.c	terrain_build	idp_	local	-	
 games/common/renderer/terrain.c	terrain_build	n	local	-	
 games/common/renderer/terrain.c	terrain_build	nat_cov	local	-	
+games/common/renderer/terrain.c	terrain_build	oid_	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	terrain_build	on	local	-	
 games/common/renderer/terrain.c	terrain_build	prev_tris	local	-	
 games/common/renderer/terrain.c	terrain_build	s_camdbg	local	-	
@@ -4004,6 +4462,7 @@ games/common/renderer/terrain.c	terrain_build	tt_report_t	local	-
 games/common/renderer/terrain.c	terrain_build	tt_tris	local	-	
 games/common/renderer/terrain.c	terrain_build	tt_us	local	-	
 games/common/renderer/terrain.c	terrain_build	tt_win_us	local	-	
+games/common/renderer/terrain.c	terrain_build	vid_	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	terrain_build	visidx	local	-	
 games/common/renderer/terrain.c	terrain_compare	cx	local	-	
 games/common/renderer/terrain.c	terrain_compare	cy	local	-	
@@ -4039,6 +4498,7 @@ games/common/renderer/terrain.c	terrain_native_build_feed_or_defer	s_census	loca
 games/common/renderer/terrain.c	terrain_reextract	canim_c	local	-	
 games/common/renderer/terrain.c	terrain_reextract	tanim_c	local	-	
 games/common/renderer/terrain.c	terrain_reextract	vanim_c	local	-	
+games/common/renderer/terrain.c	terrain_snap_capture_listed	s_print	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	terrain_texrecords	off	local	-	
 games/common/renderer/terrain.c	terrain_texrecords	px	local	-	
 games/common/renderer/terrain.c	terrain_texrecords	sig	local	-	
@@ -4053,33 +4513,54 @@ games/common/renderer/terrain.c	terrain_vislist	s_binchk	local	-
 games/common/renderer/terrain.c	terrain_vislist	s_viscal	local	-	
 games/common/renderer/terrain.c	tgpu_animnear_on	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	tgpu_arena_census_at_exit	armed	local	-	
+games/common/renderer/terrain.c	tgpu_budget_end	s_log	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tgpu_budget_ns	v	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tgpu_canimnear_on	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	tgpu_census	n	local	-	
 games/common/renderer/terrain.c	tgpu_census	on	local	-	
 games/common/renderer/terrain.c	tgpu_coltab_refresh	w	local	-	
 games/common/renderer/terrain.c	tgpu_coltab_refresh	wcap	local	-	
 games/common/renderer/terrain.c	tgpu_content	member	local	-	
-games/common/renderer/terrain.c	tgpu_ensure	s_tcdbg	local	-	
+games/common/renderer/terrain.c	tgpu_content_classes	F	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tgpu_dbg_rebuild	s_tcdbg	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tgpu_ensure	bid_	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tgpu_env_block	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	tgpu_facedump	bake	local	-	
 games/common/renderer/terrain.c	tgpu_facedump	fp	local	-	
 games/common/renderer/terrain.c	tgpu_facedump	on	local	-	
 games/common/renderer/terrain.c	tgpu_level_edge	dbg	local	-	
 games/common/renderer/terrain.c	tgpu_nearvar_on	v	local	once	= -1, one filler, first reference tests it
+games/common/renderer/terrain.c	tgpu_ring_initial	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tgpu_ring_on	v	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tgpu_ring_refresh	w	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tgpu_ring_refresh	wcap	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tgpu_table_watch	addr	local	-	
 games/common/renderer/terrain.c	tgpu_table_watch	s_sig	local	-	
+games/common/renderer/terrain.c	tgpu_take_ensure	eid_	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	thq_verdicts_dump	s_dbg	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	tic_on	on	local	-	
 games/common/renderer/terrain.c	tj_level_build	s_census	local	-	
-games/common/renderer/terrain.c	tn_bincheck	hp_frame	local	-	
-games/common/renderer/terrain.c	tn_bincheck	hp_list	local	-	
-games/common/renderer/terrain.c	tn_bincheck	hp_n	local	-	
-games/common/renderer/terrain.c	tn_bincheck	s_binchk	local	-	
+games/common/renderer/terrain.c	tn_bincheck_window	s_binchk	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tn_cam_jitter_apply	s_have	local	-	
 games/common/renderer/terrain.c	tn_cam_jitter_apply	s_j	local	-	
 games/common/renderer/terrain.c	tn_envm_faces_print	s_edbg	local	-	
+games/common/renderer/terrain.c	tn_face_verdict_at	P	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_face_verdict_at	s_pgen	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_face_verdict_at	s_pok	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_face_verdict_at	s_pp	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_face_verdict_at	s_pv	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_face_verdict_at	sv	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_fill_face_drop	s_fogslack	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_fill_face_drop	s_thin	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_fp32emu_dump	s_fp	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_fp32emu_dump	s_gen	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_fp32emu_dump	s_on	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_gpu_tint_flags	s_bits	local	once	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_lp_handoff_far_drop	s_lpkeep	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tn_lp_handoff_far_drop	s_lpkeepdbg	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tn_rim_verdict	logged	local	-	
 games/common/renderer/terrain.c	tn_rim_verdict	s_cull	local	-	
+games/common/renderer/terrain.c	tn_snap_hp_only	v	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tn_tri_koff	s_nbc	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	tn_tridump	s_td	local	-	
 games/common/renderer/terrain.c	tn_tridump	s_td_f	local	-	
@@ -4090,17 +4571,25 @@ games/common/renderer/terrain.c	tocc_latch_census_on	on	local	-
 games/common/renderer/terrain.c	tocc_leg_census_on	on	local	-	
 games/common/renderer/terrain.c	tocc_leg_census_roll	q0	local	-	
 games/common/renderer/terrain.c	transp_cover_on	v	local	once	= -1, one filler, first reference tests it
+games/common/renderer/terrain.c	tsc_audit_hit	s_lines	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tsc_audit_on	s_reg	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tsc_census	n	local	-	
 games/common/renderer/terrain.c	tsc_census	on	local	-	
 games/common/renderer/terrain.c	tsc_col_anim_refresh	s_cdbg	local	-	
 games/common/renderer/terrain.c	tsc_col_anim_refresh	s_roll_frame	local	-	
+games/common/renderer/terrain.c	tsc_cov_tol	tol	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tsc_envm_refresh	s_dbg	local	-	
 games/common/renderer/terrain.c	tsc_field_census	last_key	local	-	
 games/common/renderer/terrain.c	tsc_get	s_decode_ctr	local	-	
 games/common/renderer/terrain.c	tsc_kf_on	s_on	local	once	= -1, one filler, first reference tests it
+games/common/renderer/terrain.c	tsc_retag_census_flush	ids	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tsc_retag_census_flush	rids	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tsc_scroll_desc	s_tscroll_acc	local	-	
 games/common/renderer/terrain.c	tsc_scroll_refresh	s_tdbg	local	-	
+games/common/renderer/terrain.c	tsc_tags_current	rid_	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tsc_vert_anim_refresh	s_vdbg	local	-	
+games/common/renderer/terrain.c	tsc_vhash_memo	chk	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/terrain.c	tsc_vhash_memo	on	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tsimp_source	s_imp_off	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	tsv_refresh	s_off	local	-	
 games/common/renderer/terrain.c	tvis_calibrate	cand	local	-	
@@ -4111,9 +4600,6 @@ games/common/renderer/terrain.c	walk_sector	s_bin_lines	local	-
 games/common/renderer/terrain.c	walk_sector	s_bindbg	local	-	
 games/common/renderer/terrain.c	walk_sector	s_cd	local	-	
 games/common/renderer/terrain.c	walk_sector	s_cdbg	local	-	
-games/common/renderer/terrain.c	walk_sector	s_fogslack	local	-	
-games/common/renderer/terrain.c	walk_sector	s_lpkeep	local	-	
-games/common/renderer/terrain.c	walk_sector	s_lpkeepdbg	local	-	
 games/common/renderer/terrain.c	walk_sector	s_nd_excl	local	-	
 games/common/renderer/terrain.c	walk_sector	s_nd_lq	local	-	
 games/common/renderer/terrain.c	walk_sector	s_nd_n	local	-	
@@ -4121,7 +4607,6 @@ games/common/renderer/terrain.c	walk_sector	s_nd_near	local	-
 games/common/renderer/terrain.c	walk_sector	s_nd_q	local	-	
 games/common/renderer/terrain.c	walk_sector	s_nd_qtot	local	-	
 games/common/renderer/terrain.c	walk_sector	s_ndbg	local	-	
-games/common/renderer/terrain.c	walk_sector	s_thin	local	-	
 games/common/renderer/terrain_game.h	-	terrain_game	extern	-	
 games/common/renderer/text_moby.c	-	s_menu_buf	static	-	
 games/common/renderer/text_moby.c	-	s_osd_buf	static	-	
@@ -4161,16 +4646,25 @@ games/common/renderer/tracers.c	-	s_item	static	-
 games/common/renderer/tracers.c	-	s_item_n	static	-	
 games/common/renderer/tracers.c	-	s_last_predicted	static	-	
 games/common/renderer/tracers.c	-	s_list_addr	static	-	
+games/common/renderer/tracers.c	-	s_list_epoch	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/tracers.c	-	s_list_frame	static	-	
 games/common/renderer/tracers.c	-	s_list_n	static	-	
 games/common/renderer/tracers.c	-	s_lists	static	-	
 games/common/renderer/tracers.c	-	s_live	static	-	
+games/common/renderer/tracers.c	-	s_msh_depth1	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/tracers.c	-	s_msh_desc	static	atomic	1 storing function(s), none reads it
+games/common/renderer/tracers.c	-	s_msh_meaned	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/tracers.c	-	s_msh_order	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/tracers.c	-	s_near_presents	static	-	
 games/common/renderer/tracers.c	-	s_near_tot	static	-	
 games/common/renderer/tracers.c	-	s_reb_active	static	-	
 games/common/renderer/tracers.c	-	s_reb_stat	static	-	
 games/common/renderer/tracers.c	-	s_reb_worldmax	static	-	
+games/common/renderer/tracers.c	-	s_rib_depth1	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/tracers.c	-	s_rib_matched	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/tracers.c	-	s_rib_meaned	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/tracers.c	-	s_rib_order	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/tracers.c	-	s_sac_live	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/tracers.c	-	s_sets	static	-	
 games/common/renderer/tracers.c	-	s_tag_hist	static	-	
 games/common/renderer/tracers.c	-	s_tick	static	-	
@@ -4182,7 +4676,7 @@ games/common/renderer/tracers.c	-	s_vkey	static	-
 games/common/renderer/tracers.c	-	s_vtx	static	-	
 games/common/renderer/tracers.c	-	tracers_dispatch	static	-	
 games/common/renderer/tracers.c	rib_pair_depths	pred	local	-	
-games/common/renderer/tracers.c	rib_predict	pt	local	-	
+games/common/renderer/tracers.c	rib_predict_record	pt	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/tracers.c	tr_census	s_range	local	-	
 games/common/renderer/tracers.c	tr_feed_enabled	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/tracers.c	tr_interp_enabled	v	local	once	= -1, one filler, first reference tests it
@@ -4200,6 +4694,7 @@ games/common/renderer/ui_sprite.c	-	s_claim_late	static	-
 games/common/renderer/ui_sprite.c	-	s_claim_lost	static	-	
 games/common/renderer/ui_sprite.c	-	s_claim_n	static	-	
 games/common/renderer/ui_sprite.c	-	s_claim_spec_refused	static	-	
+games/common/renderer/ui_sprite.c	-	s_claim_v	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/ui_sprite.c	-	s_cls_n	static	-	
 games/common/renderer/ui_sprite.c	-	s_cpu	static	-	
 games/common/renderer/ui_sprite.c	-	s_fade_ran_frame	static	-	
@@ -4219,6 +4714,8 @@ games/common/renderer/ui_sprite.c	-	s_link_n	static	-
 games/common/renderer/ui_sprite.c	-	s_link_period	static	-	
 games/common/renderer/ui_sprite.c	-	s_mutated	static	-	
 games/common/renderer/ui_sprite.c	-	s_ot_ranked	static	-	
+games/common/renderer/ui_sprite.c	-	s_player_period	static	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/ui_sprite.c	-	s_player_slot	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/ui_sprite.c	-	s_post_claim	static	-	
 games/common/renderer/ui_sprite.c	-	s_post_fade	static	-	
 games/common/renderer/ui_sprite.c	-	s_post_sprt	static	-	
@@ -4237,11 +4734,13 @@ games/common/renderer/ui_sprite.c	-	s_uvedge_tris	static	-
 games/common/renderer/ui_sprite.c	-	s_verify_n	static	-	
 games/common/renderer/ui_sprite.c	-	s_verify_pending	static	-	
 games/common/renderer/ui_sprite.c	-	s_verify_stale	static	-	
+games/common/renderer/ui_sprite.c	-	s_verify_v	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/ui_sprite.c	-	s_walk_addr	static	-	
 games/common/renderer/ui_sprite.c	-	s_walk_hits	static	-	
 games/common/renderer/ui_sprite.c	-	s_walk_n	static	-	
 games/common/renderer/ui_sprite.c	-	s_walk_period	static	-	
 games/common/renderer/ui_sprite.c	-	s_walk_rank	static	-	
+games/common/renderer/ui_sprite.c	-	s_walk_slot	static	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/ui_sprite.c	-	ui_sprite_dispatch	static	-	
 games/common/renderer/ui_sprite.c	bbox_report	done	local	once	= -1, one filler, first reference tests it
 games/common/renderer/ui_sprite.c	bbox_vbl	v	local	-	
@@ -4249,6 +4748,8 @@ games/common/renderer/ui_sprite.c	build_link_rank_map	got	local	-
 games/common/renderer/ui_sprite.c	build_link_rank_map	sorted	local	-	
 games/common/renderer/ui_sprite.c	build_ot_rank_map	pz	local	-	
 games/common/renderer/ui_sprite.c	defer_open_period_2d	cen	local	-	
+games/common/renderer/ui_sprite.c	defer_open_period_2d	kp_v	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/ui_sprite.c	mark_unranked_under_player	known_v	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/ui_sprite.c	on_fade_emitter	fc	local	-	
 games/common/renderer/ui_sprite.c	on_fade_emitter	s_in	local	-	
 games/common/renderer/ui_sprite.c	on_ot_insert	cen	local	-	
@@ -4259,6 +4760,9 @@ games/common/renderer/ui_sprite.c	period_defer_on	off	local	once	= -1, one fille
 games/common/renderer/ui_sprite.c	post_capture_report	tr	local	-	
 games/common/renderer/ui_sprite.c	rank_by_link_on	walk	local	-	
 games/common/renderer/ui_sprite.c	rank_scene_2d	fc	local	-	
+games/common/renderer/ui_sprite.c	rank_scene_2d	kn2_v	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/ui_sprite.c	rank_scene_2d	known_v	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/ui_sprite.c	rank_scene_2d	kp_v	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/ui_sprite.c	rank_scene_2d	pz2	local	-	
 games/common/renderer/ui_sprite.c	rank_scene_2d	tr2	local	-	
 games/common/renderer/ui_sprite.c	release_batch	s_tr	local	-	
@@ -4267,6 +4771,8 @@ games/common/renderer/ui_sprite.c	semi_flush_tick	cen	local	-
 games/common/renderer/ui_sprite.c	ui_sprite_ot_verify	pf	local	-	
 games/common/renderer/ui_sprite.c	ui_sprite_ot_verify	s_tr	local	-	
 games/common/renderer/ui_sprite.c	unclaimed_flush_tick	cen	local	-	
+games/common/renderer/ui_sprite.c	under_player_census	cen	local	-	owed: declared with no form and no row before the new-global refusal
+games/common/renderer/ui_sprite.c	under_player_on	off	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/ui_sprite.c	uvedge_note	cen	local	-	
 games/common/renderer/zap.c	-	s_accepted	static	-	
 games/common/renderer/zap.c	-	s_code_hist	static	-	
@@ -4338,14 +4844,6 @@ games/spyro-1/features/credits_skip.c	-	s_induced	static	-
 games/spyro-1/features/credits_skip.c	-	s_row	static	-	
 games/spyro-1/features/credits_skip.c	-	s_watching	static	-	
 games/spyro-1/features/levelwarp.c	-	s_warp	static	-	
-games/spyro-1/features/polybuf_guard.c	-	s_episodes	static	-	
-games/spyro-1/features/polybuf_guard.c	-	s_first_frame	static	-	
-games/spyro-1/features/polybuf_guard.c	-	s_min_headroom	static	-	
-games/spyro-1/features/polybuf_guard.c	-	s_overflowing	static	-	
-games/spyro-1/features/polybuf_guard.c	-	s_report_at	static	-	
-games/spyro-1/features/polybuf_guard.c	-	s_worst_over	static	-	
-games/spyro-1/features/polybuf_guard.c	guard_mode	mode	local	-	
-games/spyro-1/features/polybuf_guard.c	guard_mode	seen	local	-	
 games/spyro-1/features/vibration.c	-	s_requested	static	-	
 games/spyro-1/features/vibration.c	-	s_stamped	static	-	
 games/spyro-1/game_extras_impl.c	-	s_demo_slot	static	-	
@@ -4493,6 +4991,14 @@ games/spyro-1/renderer/portal.c	-	s_pcap_old_n	static	-
 games/spyro-1/renderer/portal.c	-	s_pcap_pick	static	-	
 games/spyro-1/renderer/portal.c	-	s_pcap_store	static	-	
 games/spyro-1/renderer/portal.c	-	s_pcap_valid	static	-	
+games/spyro-1/renderer/portal.c	-	s_pcen_k0	static	-	owed: declared with no form and no row before the new-global refusal
+games/spyro-1/renderer/portal.c	-	s_pcen_k1	static	-	owed: declared with no form and no row before the new-global refusal
+games/spyro-1/renderer/portal.c	-	s_pcen_lost	static	-	owed: declared with no form and no row before the new-global refusal
+games/spyro-1/renderer/portal.c	-	s_pcen_np	static	-	owed: declared with no form and no row before the new-global refusal
+games/spyro-1/renderer/portal.c	-	s_pcen_nt	static	-	owed: declared with no form and no row before the new-global refusal
+games/spyro-1/renderer/portal.c	-	s_pcen_open	static	-	owed: declared with no form and no row before the new-global refusal
+games/spyro-1/renderer/portal.c	-	s_pcen_port	static	-	owed: declared with no form and no row before the new-global refusal
+games/spyro-1/renderer/portal.c	-	s_pcen_pres	static	-	owed: declared with no form and no row before the new-global refusal
 games/spyro-1/renderer/portal.c	-	s_portal_group	static	-	
 games/spyro-1/renderer/portal.c	-	s_portal_kind	static	-	
 games/spyro-1/renderer/portal.c	-	s_rect_match	static	-	
@@ -4510,6 +5016,8 @@ games/spyro-1/renderer/portal.c	-	s_spin_curr	static	-
 games/spyro-1/renderer/portal.c	-	s_spin_curr_valid	static	-	
 games/spyro-1/renderer/portal.c	-	s_spin_prev	static	-	
 games/spyro-1/renderer/portal.c	-	s_spin_prev_valid	static	-	
+games/spyro-1/renderer/portal.c	-	s_tri_col	static	-	owed: declared with no form and no row before the new-global refusal
+games/spyro-1/renderer/portal.c	-	s_tri_mask	static	-	owed: declared with no form and no row before the new-global refusal
 games/spyro-1/renderer/portal.c	-	s_view	static	-	
 games/spyro-1/renderer/portal.c	feed_portal_dome	col	local	-	
 games/spyro-1/renderer/portal.c	feed_portal_dome	dd	local	-	
@@ -4540,6 +5048,7 @@ games/spyro-1/renderer/portal.c	portal_dump_frame	f	local	-
 games/spyro-1/renderer/portal.c	portal_dump_frame	init	local	-	
 games/spyro-1/renderer/portal.c	portal_nudge_env	E	local	-	
 games/spyro-1/renderer/portal.c	portal_nudge_env	seen	local	-	
+games/spyro-1/renderer/portal.c	portal_present_dbg	on	local	once	owed: declared with no form and no row before the new-global refusal
 games/spyro-1/renderer/portal.c	portal_rect_rule_for	chk	local	-	
 games/spyro-1/renderer/portal.c	portal_reextract	cen	local	-	
 games/spyro-1/renderer/portal.c	portal_reextract	last	local	-	

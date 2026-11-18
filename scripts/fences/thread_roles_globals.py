@@ -813,13 +813,15 @@ def added_rows(before, after, renames):
 
 def additions_refused(path, before, after, renames, accept, moved_from=None,
                       confirmed=None, need_note=False):
-    """The compare of one TSV with its base: an added row needs the accept
-    reason naming it. accept None: the stateless half, which cannot read a
-    commit's environment; a row with a note is reported, one without is
-    refused. moved_from: a TSV whose rows may move here freely (tighten's
-    move out of deferred.tsv). confirmed: a TSV whose row with a confirmed
-    local form bars the addition. need_note: the row records the annotator's
-    chain. -> (refusals, reports)."""
+    """The compare of one TSV with its base: an added row records its reason
+    in the note column, and in the hook the accept reason names it. accept
+    None: the stateless half (`check`, `range`), which cannot read a
+    commit's environment and reports a row with a note. A row with no note
+    is refused in every mode, so a row the hook passed passes a later range.
+    moved_from: a TSV whose rows may move here freely (tighten's move out of
+    deferred.tsv). confirmed: a TSV whose row with a confirmed local form
+    bars the addition. need_note: the note records the annotator's chain.
+    -> (refusals, reports)."""
     refused, reports = [], []
     for k in added_rows(before, after, renames):
         row = after.rows[k]
@@ -831,14 +833,12 @@ def additions_refused(path, before, after, renames, accept, moved_from=None,
                            "global with a confirmed form is not deferred"
                            % (label, confirmed.rows[k][4]))
             continue
-        if need_note and not row[5]:
-            refused.append("%s added with no annotator chain in its note" % label)
+        if not row[5]:
+            refused.append("%s added with no %s in its note" % (
+                label, "annotator chain" if need_note else "recorded reason"))
             continue
         if accept is None:
-            if row[5]:
-                reports.append("%s added since the base: %s" % (label, row[5]))
-            else:
-                refused.append("%s added with no recorded reason" % label)
+            reports.append("%s added since the base: %s" % (label, row[5]))
         elif k[2] not in accept and not (need_note and terminal_of(row[5]) in accept):
             refused.append("%s added: %s must name it or its chain's terminal"
                            % (label, ACCEPT_ENV))
@@ -927,22 +927,22 @@ def rule(tus, unannotated, deferred):
 
 
 def stateless(recs, declared, unannotated, deferred):
-    """The stateless half over the declared members: a form-less global in
-    neither TSV, a row whose global has a form, a global in both. -> refusal
-    text."""
-    out = []
+    """The stateless half over the declared members. -> (new, rows): new, a
+    line per form-less global in neither TSV; rows, a line per row whose
+    global has a form and per global in both TSVs."""
+    new, rows = [], []
     for g in sorted(declared):
         rec = recs[g]
         un, de = unannotated.keys_of(rec), deferred.base.keys_of(rec)
         at = "%s:%d: %s" % (rec["path"], rec["line"], rec["name"])
         if rec["form"] and (un or de):
-            out.append("%s has a form and still has a row; delete the row" % at)
+            rows.append("%s has a form and still has a row; delete the row" % at)
         elif not rec["form"] and not un and not de:
-            out.append("%s has no form and no row in %s or %s; give it a form. %s" % (
+            new.append("%s has no form and no row in %s or %s; give it a form. %s" % (
                 at, UNANNOTATED, DEFERRED, deferred.next_step()))
         if un and de:
-            out.append("%s is in both TSVs; %s wins, delete the other row" % (at, DEFERRED))
-    return out
+            rows.append("%s is in both TSVs; %s wins, delete the other row" % (at, DEFERRED))
+    return new, rows
 
 
 def stale_rows(base, recs_by_key, paths):
