@@ -2978,16 +2978,6 @@ static void tn_keycells_add(tn_keycells* K, int i, int on, float key, int slot) 
  * drawn sub-cell. */
 #define TN_DRAIN_SKIP 0x3FFFu
 
-/** @brief Reads OPENPETE_TERRAIN_DRAIN_SKIP for the walk about to run.
- *
- * "0" selects the legacy packing, a skipped sub-cell keyed at the face's
- * least key and drawn; any other value or none selects the sentinel.
- * @return 1 for the legacy packing, else 0. */
-static int tn_drain_skip_legacy(void) {
-    const char* e = getenv("OPENPETE_TERRAIN_DRAIN_SKIP");
-    return e && e[0] == '0';
-}
-
 /** @brief Packs a face's sub-cell keys into the 16-halfword key table.
  *
  * Layout per psx_key_contest.glsl: halfword slot[i] of drain sub-cell i holds
@@ -19455,13 +19445,20 @@ static void tgpu_budget_end(void) {
  * colour, UV, t0k; mode 7 the per-pixel face attribution word, ter_attr);
  * value & 8 sets bit 25, under which mode 7 carries the face's
  * verdict-class bits in place of its identity (terrain.vert). Diagnostic;
- * unregistered.
+ * unregistered; the variable is read once and the bits latched.
  * @return The gflags bits. */
 static uint32_t tn_gpu_tint_flags(void) {
-    const char* e = getenv("OPENPETE_TERRAIN_GPU_TINT");
-    if (!e || !*e || *e == '0') return 0u;
-    const int v = atoi(e);
-    return (1u << 29) | ((uint32_t)(v & 7) << 26) | ((v & 8) ? (1u << 25) : 0u);
+    static int64_t s_bits = -1;
+    if (s_bits < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_GPU_TINT");
+        if (!e || !*e || *e == '0') {
+            s_bits = 0;
+        } else {
+            const int v = atoi(e);
+            s_bits = (int64_t)((1u << 29) | ((uint32_t)(v & 7) << 26) | ((v & 8) ? (1u << 25) : 0u));
+        }
+    }
+    return (uint32_t)s_bits;
 }
 
 /** @brief Appends this build's camera, and the vertices of every sector decoded since the last call, to the OPENPETE_TERRAIN_FP32_EMU file.
@@ -19549,7 +19546,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     memset(s_hqfog_cen, 0, sizeof(s_hqfog_cen));
     memset(s_fogcen, 0, sizeof(s_fogcen));
     memset(s_drain_skip, 0, sizeof(s_drain_skip));
-    s_drain_skip_legacy = tn_drain_skip_legacy();
+    s_drain_skip_legacy = openpete_native_terrain_drain_legacy();
     s_near_q_agree = s_near_c_only = 0;
     ENV_FLAG_LATCH(s_sectordump, "OPENPETE_TERRAIN_SECTORDUMP");
     s_sd_n = 0;

@@ -2133,6 +2133,10 @@ static _Atomic(int) s_wireframe_want = 0;
 static _Atomic(int) s_vertex_snap_want = 0;
 static _Atomic(int) s_hide_player_want = 0;
 static _Atomic(int) s_terrain_vis_want = OPENPETE_TERRAIN_VIS_FRUSTUM;
+/* The terrain walk's skipped-sub-cell packing: 1 keys a skipped sub-cell at
+ * the face's least key and draws it, 0 stores the sentinel the key and colour
+ * passes discard, -1 until resolved from OPENPETE_TERRAIN_DRAIN_SKIP. */
+static _Atomic(int) s_drain_legacy_want = -1;
 /* s_vertex_snap as the present reads it (the retained terrain's push
  * constant), latched by present_knobs_latch from s_vertex_snap_want. */
 static int s_vertex_snap_present = 0;
@@ -8483,6 +8487,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_terrain_vis = (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_GAME)
                     ? OPENPETE_TERRAIN_VIS_GAME : OPENPETE_TERRAIN_VIS_FRUSTUM;
     op_live_set(&s_terrain_vis_want, s_terrain_vis);
+    (void)openpete_native_terrain_drain_legacy();   /* resolve before the first walk */
 
     /* Key-contest granularity (SLOT_CONTEST, fragment spec-constant 4): a
      * game whose draw submits mobys and terrain through ONE ordering table
@@ -19213,6 +19218,23 @@ void openpete_native_set_terrain_visibility(int mode) {
 }
 
 int openpete_native_get_terrain_visibility(void) { return op_live_get(&s_terrain_vis_want); }
+
+/* Stored from any thread; the walk reads it once at its start. */
+void openpete_native_set_terrain_drain_legacy(int legacy) {
+    op_live_set(&s_drain_legacy_want, legacy ? 1 : 0);
+}
+
+/* Resolved from the variable on the first call (native init makes it, on the
+ * host thread); a setter call before it wins over the variable. */
+int openpete_native_terrain_drain_legacy(void) {
+    int v = op_live_get(&s_drain_legacy_want);
+    if (v >= 0) return v;
+    const char *e = openpete_config_env("OPENPETE_TERRAIN_DRAIN_SKIP");
+    int unresolved = -1;
+    (void)atomic_compare_exchange_strong(&s_drain_legacy_want, &unresolved,
+                                         (e && e[0] == '0') ? 1 : 0);
+    return op_live_get(&s_drain_legacy_want);
+}
 
 int openpete_native_terrain_visibility_active(void) { return s_terrain_vis; }
 

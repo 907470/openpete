@@ -876,6 +876,19 @@ int  openpete_native_get_terrain_visibility(void);
  *
  * @return An openpete_terrain_visibility_t value. */
 int  openpete_native_terrain_visibility_active(void);
+/** @brief Set how the terrain walk packs a skipped drain sub-cell: 1 keys it at the face's least key and draws it, 0 stores the sentinel the key and colour passes discard.
+ *
+ * The live channel of the TERRAIN_DRAIN_SKIP row; callable from any
+ * thread. The next walk reads it at its start. Renderer state only.
+ * @param legacy 1 for the keyed packing, 0 for the sentinel. */
+void openpete_native_set_terrain_drain_legacy(int legacy);
+/** @brief Return the terrain walk's skipped-sub-cell packing: 1 keyed and drawn, 0 the sentinel.
+ *
+ * Until a setter call, the value OPENPETE_TERRAIN_DRAIN_SKIP selects,
+ * read once through openpete_config_env: a value starting with '0' is 1,
+ * any other value or none is 0.
+ * @return 1 or 0. */
+int  openpete_native_terrain_drain_legacy(void);
 
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,

@@ -599,6 +599,17 @@ static void pos_init_from(uint32_t vbl) {
     if (!s_pos_set) { s_pos = vbl; s_pos_set = 1; }
 }
 
+/** @brief Return whether OPENPETE_SCHED_BOOT_OWN is present, read once.
+ *
+ * Set, the rows of record 0 are skipped and the boot's waits and reads take
+ * openpete's own count (any value, the empty one included, counts).
+ * @return 1 when the variable is present. */
+static int sched_boot_own(void) {
+    static int v = -1;
+    if (v < 0) v = getenv("OPENPETE_SCHED_BOOT_OWN") != NULL;
+    return v;
+}
+
 /* After a schedule failure this returns 0 and the wait runs under openpete's own count. */
 int openpete_sched_next_vsync(int mode, uint32_t* target_out) {
     if (!s_active || !s_vs || s_failed) return 0;
@@ -620,7 +631,7 @@ int openpete_sched_next_vsync(int mode, uint32_t* target_out) {
         if (s_log) fprintf(s_log, "load-wait op_hit=%u mode=%d pos=%u\n", openpete_psxtrace_anchor_hits, mode, s_pos);
         return 1;
     }
-    if (cur_rec == 0 && getenv("OPENPETE_SCHED_BOOT_OWN")) {
+    if (cur_rec == 0 && sched_boot_own()) {
         /* Before the first anchor hit the boot's call sequence is not the
          * reference's on every game (a card probe, a splash the game
          * times by rand); the rows of record 0 are skipped and a wait
@@ -817,7 +828,7 @@ int32_t openpete_sched_query(uint32_t ra, uint32_t* target_out) {
     *target_out = s_pos;
     s_query_ra = ra;
     s_query_tick = 0;
-    const int replay = s_vs && !(cur_rec == 0 && getenv("OPENPETE_SCHED_BOOT_OWN")) && !s_in_load && !s_failed && !(s_stamps && cur_rec >= s_stamps_n);
+    const int replay = s_vs && !(cur_rec == 0 && sched_boot_own()) && !s_in_load && !s_failed && !(s_stamps && cur_rec >= s_stamps_n);
     if (replay) {
         /* The next query row of this record from the same call site answers
          * the read. Query rows before it are reads openpete never made: an

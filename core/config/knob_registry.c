@@ -442,6 +442,17 @@ static int tervis_set(knob_desc_t *k, double v) {
                                                     : OPENPETE_TERRAIN_VIS_GAME);
     return 0;
 }
+/** @brief 1 when the terrain walk stores the sentinel for a skipped drain sub-cell, 0 when it keys and draws it. */
+static double drainskip_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_native_terrain_drain_legacy() ? 0.0 : 1.0;
+}
+/** @brief Select the skipped-sub-cell packing: nonzero `v` is the sentinel, zero keys and draws the sub-cell. */
+static int drainskip_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_native_set_terrain_drain_legacy(v == 0.0);
+    return 0;
+}
 /** @brief 1 when the extended level-of-detail mode is chosen (openpete_no_lod_wanted), else 0. */
 static double lod_get(const knob_desc_t *k) { (void)k; return openpete_no_lod_wanted() ? 1.0 : 0.0; }
 /** @brief Switch level-of-detail mode: nonzero is extended, zero original.
@@ -2976,8 +2987,11 @@ static const knob_desc_t g_builtin_debug[] = {
         "Terrain cache arenas draw only their used ranges (default 1; 0 = whole-range arena draws)."),
     ENVROW_LATCHED("TERRAIN_CACHE_FORCE", "Debug", "0",
         "1 lets the terrain GPU cache run on a software Vulkan device (default 0)."),
-    ENVROW_LIVE("TERRAIN_DRAIN_SKIP", "Debug", "1",
-        "Terrain sub-cell key packing, taken at each walk: 1 = a skipped sub-cell carries the sentinel key; 0 = it is keyed at the face's least key and drawn (default 1)."),
+    { .id = "TERRAIN_DRAIN_SKIP", .label = "TERRAIN_DRAIN_SKIP", .section = "Debug",
+      .env = "OPENPETE_TERRAIN_DRAIN_SKIP",
+      .help = "Terrain sub-cell key packing, taken at each walk: 1 = a skipped sub-cell carries the sentinel key; 0 = it is keyed at the face's least key and drawn (default 1).",
+      .type = KNOB_BOOL, .mut = KNOB_LIVE, .get_num = drainskip_get, .set_num = drainskip_set,
+      .boot_src = KNOB_SRC_DEFAULT, .def_str = "1" },
     ENVROW_LATCHED("TERRAIN_ENVMODEL", "Debug", "1",
         "The walker model drives a sector's HP banks on a tick the game's walkers skipped it (default 1; 0 = the older pose in memory draws)."),
     ENVROW_LATCHED("TERRAIN_FANOUT_MIN", "Debug", "400",

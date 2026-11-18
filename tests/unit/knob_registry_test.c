@@ -136,6 +136,9 @@ void   openpete_native_set_hide_hud(int on)        { s_native_hide_hud = on ? 1 
 static int s_native_tervis;
 void   openpete_native_set_terrain_visibility(int mode) { s_native_tervis = mode; }
 int    openpete_native_get_terrain_visibility(void)     { return s_native_tervis; }
+static int s_native_drain_legacy;
+void   openpete_native_set_terrain_drain_legacy(int legacy) { s_native_drain_legacy = legacy ? 1 : 0; }
+int    openpete_native_terrain_drain_legacy(void)           { return s_native_drain_legacy; }
 static float s_native_fov;
 void   openpete_native_set_fov(float deg)      { s_native_fov = deg; }
 float  openpete_native_fov_deg(void)           { return s_native_fov; }
@@ -324,6 +327,26 @@ static int check_no_setter_never_saved(void) {
     return 0;
 }
 
+/** @brief Check that the TERRAIN_DRAIN_SKIP row edits the renderer's packing through its setter and leaves the environment alone.
+ *
+ * A live row whose setter wrote the variable would race the walk thread's
+ * read of it; the row's value is renderer state.
+ * @return 0 on pass, nonzero on failure. */
+static int check_drain_skip_row_setter(void) {
+    const knob_desc_t *k = find_row("TERRAIN_DRAIN_SKIP", NULL);
+    if (!k) return fail("TERRAIN_DRAIN_SKIP row missing from the registry");
+    if (k->mut != KNOB_LIVE || !k->set_num || !k->get_num || k->set_str)
+        return fail("TERRAIN_DRAIN_SKIP is not a live row with a numeric setter");
+    knob_desc_t *w = (knob_desc_t *)k;
+    if (w->set_num(w, 0.0) != 0 || s_native_drain_legacy != 1 || w->get_num(w) != 0.0)
+        return fail("TERRAIN_DRAIN_SKIP 0 did not select the keyed packing");
+    if (w->set_num(w, 1.0) != 0 || s_native_drain_legacy != 0 || w->get_num(w) != 1.0)
+        return fail("TERRAIN_DRAIN_SKIP 1 did not select the sentinel");
+    if (getenv("OPENPETE_TERRAIN_DRAIN_SKIP"))
+        return fail("the TERRAIN_DRAIN_SKIP row wrote the environment");
+    return 0;
+}
+
 int main(void) {
     int rc = 0;
 
@@ -509,6 +532,8 @@ int main(void) {
     }
     if (added >= 64) rc |= fail("capacity never refused an add");
     if (!find_row("test_action", NULL)) rc |= fail("overflow clobbered a row");
+
+    rc |= check_drain_skip_row_setter();
 
     /* The registry and the config schema are two tables describing the same
      * knobs, and they have to agree or a flag silently loses its
