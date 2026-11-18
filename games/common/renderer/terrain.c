@@ -10161,7 +10161,9 @@ static uint32_t tgpu_pin_key(void) {
  * SZ3 (hqscale * m3) sum below near_band (face_is_near_canonical), so a
  * sector whose every vertex sits at or beyond near_band / (4 * hqscale)
  * view-Z has none; under the always-HQ pin every face is near. The sphere
- * bound is tested first, then the vertex AABB (tgpu_near_box_clear).
+ * bound is tested first, then the vertex AABB (tgpu_near_box_clear), which
+ * a poly-anim sector skips: the AABB is of the vertices it decoded, and its
+ * rolls move them past it.
  * @param SC The decoded sector.
  * @param M The camera rotation matrix.
  * @param camx Camera X.
@@ -10174,7 +10176,8 @@ static int tgpu_canim_band(const tscache_t* SC, const int M[3][3], double camx,
     if (hq_pin_active()) return 1;
     const double zb = (double)game_layout.terrain.near_band / (4.0 * tface_hqscale());
     const double nearBound = s_tgpu_l3 * ((double)SC->radius + 16.0);
-    return oc3 - nearBound < zb && !tgpu_near_box_clear(SC, M, camx, camy, camz, zb);
+    return oc3 - nearBound < zb
+        && (SC->polyanim || !tgpu_near_box_clear(SC, M, camx, camy, camz, zb));
 }
 
 /** @brief Tests whether a sector takes the near path this present.
@@ -12730,12 +12733,12 @@ static int tgpu_bake_near(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, in
  * @param F The face.
  * @param hq_elig The face's tgpu_hq_elig verdict.
  * @param pin4 1 for a face routed to the cells at every distance.
- * @param canim_only 1 for an env-anim colour sector that is not poly-anim
- *        and bakes no near-variant chunks.
+ * @param canim_plain 1 for an env-anim colour sector that bakes no
+ *        near-variant chunks.
  * @return 1 when the face keys per sub-cell, else 0. */
-static int tgpu_key_cells(const tsface_t* F, int hq_elig, int pin4, int canim_only) {
+static int tgpu_key_cells(const tsface_t* F, int hq_elig, int pin4, int canim_plain) {
     /* An env-anim colour sector without near-variant chunks bakes no near content. */
-    if (canim_only || F->abe || tface_near_excl(F->w3)) return 0;
+    if (canim_plain || F->abe || tface_near_excl(F->w3)) return 0;
     if (!game_layout.terrain.hq_tri4_nodes || !game_layout.terrain.hq_tri2_nodes) return 0;
     if (F->quad) {
         const int cells = game_layout.terrain.hq_cells4 && tface_cells_ok(F->hq_idx);
@@ -12899,7 +12902,7 @@ typedef struct {
     int with_var;            /* bake near-variant chunks */
     int prev;                /* bake previous-tick corners from the set's prev bank */
     int hdfold;              /* fold each face onto its HD replacement */
-    int canim_only;          /* an env-anim colour sector that is not poly-anim:
+    int canim;               /* an env-anim colour sector, poly-anim or not:
                               * HQ variants only in its near-variant chunks */
     uint32_t base_ff;        /* face_flags slot and generation bits */
     uint32_t hqTable;
@@ -14400,7 +14403,7 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
     if (F->i0 >= S->nV || F->i1 >= S->nV || F->i2 >= S->nV || F->i3 >= S->nV) return 0;
     int hq_elig = tgpu_hq_elig(F, X->hqTable);
     const int pin4 = hq_elig && tface_cells_pin(F->hq_idx);
-    const int key_cells = tgpu_key_cells(F, hq_elig, pin4, X->canim_only && !X->with_var);
+    const int key_cells = tgpu_key_cells(F, hq_elig, pin4, X->canim && !X->with_var);
     s_tgpu_keycell_faces += key_cells;
     tgpu_face_t T;
     memset(&T, 0, sizeof(T));
@@ -14453,11 +14456,11 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
     tgpu_ring_face(&T, k, vi);
     T.prec = tgpu_prev_rec(&T);
     if (tgpu_bake_hp_flat(X, &T, k, F, tgpu_arena_of(&F->mat), fail) != 0) return -1;
-    if (!hq_elig || (X->canim_only && !X->with_var)) return 0;
+    if (!hq_elig || (X->canim && !X->with_var)) return 0;
     /* An env-anim colour sector draws its plain chunks only while none of
      * its faces can be near (tgpu_canim_band), so its HQ variants go to the
      * near-variant chunks alone. */
-    s_tgpu_near_only = X->canim_only;
+    s_tgpu_near_only = X->canim;
     const int r = tgpu_bake_near(X->cpu, X->buf, X->ab, X->with_var, pin4, &T, k, T.nearC,
                                  F, X->hqTable, hp_bucket, X->hdfold, fail);
     s_tgpu_near_only = 0;
@@ -14710,7 +14713,6 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
      * in the same record (tsc_canim; positions carry prev == cur). */
     const canim_t* CA = tsc_canim(SC);
     const int anim = tgpu_sector_anim(SC);
-    const int canim_only = CA != NULL && !SC->polyanim;
     const int ab = anim ? (int)OPTC_ARENA_ANIM_BASE : 0;
     with_var = tgpu_bake_with_var(with_var, SC);
     if (with_var)
@@ -14761,7 +14763,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     /* ---- HP tier: flat variant + the HQ 2x2 subdivide variant; the
      * sector's own faces, then the faces it borrows from the HP source
      * level (host colours, no previous-tick state: FF_BORROWED) ---- */
-    tgpu_hpctx X = { cpu, buf, ab, with_var, anim && !vsnap, hdfold, canim_only, base_ff, hqTable,
+    tgpu_hpctx X = { cpu, buf, ab, with_var, anim && !vsnap, hdfold, CA != NULL, base_ff, hqTable,
                      (int)own_sec };
     tgpu_hpset own = { SC->hpV, SC->hpVprev, SC->nHpV, NULL, NULL, SC->nearBase, SC->farBase, CA, 0u, SC,
                        SC->hpF, tgpu_tj_marks(SC, 1, SC->nHpF) };

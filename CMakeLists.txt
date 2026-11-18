@@ -2748,6 +2748,31 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # The same audit on levels whose env-anim colour sectors are also
+    # poly-anim (vertices on the position ring, colours on the colour table),
+    # each from --skip-to-level to VBL 2000. Such a sector re-bakes on no
+    # roll, so every vertex its plain chunks hold must read its colour from
+    # the table; a baked colour there stays at the bake's value and the clean
+    # leg counts it. Spyro 1 Peace Keepers re-bakes only (no Spyro 1 sector
+    # moves its ring); the Spyro 3 rows both re-bake and re-roll.
+    foreach(_row spyro-1:peace_keepers spyro-2:aquaria_towers spyro-2:robotica_farms
+                 spyro-3:seashell_shore spyro-3:evening_lake spyro-3:starfish_reef)
+        string(REPLACE ":" ";" _rl "${_row}")
+        list(GET _rl 0 _g)
+        list(GET _rl 1 _lvl)
+        add_test(NAME terrain_audit_${_g}_${_lvl}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_terrain_audit.sh
+                         --game ${_g} --level ${_lvl} --frames 2000
+                         --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(terrain_audit_${_g}_${_lvl} PROPERTIES
+            LABELS "slow;terrain;${_g}"
+            RESOURCE_LOCK openpete_game
+            # Up to three sequential headless boots to VBL 2000.
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Terrain colour-anim `mix` block bounds: one headless row on Spyro 2 and 3 with
     # the block flush against an inaccessible page and the past-bank face
     # counter. Exit 2 is VACUOUS (the counter at 0) and fails the test. Skips
