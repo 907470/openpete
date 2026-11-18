@@ -28,12 +28,14 @@ DuckStation is a submodule at `third_party/duckstation` that pins upstream
 DuckStation's licence, CC BY-NC-ND 4.0, forbids distributing a modified
 DuckStation, and a published fork is such a distribution, so the project's
 additions are a series in `third_party/duckstation-patches/` that holds no
-upstream text: files of its own (`files/`, copied into the DuckStation
-tree at paths upstream does not have) and the lines it inserts into
+upstream text: files of its own (`files/`, MIT like the rest of
+openpete, copied into the DuckStation tree at paths upstream does not
+have) and the lines it inserts into
 upstream files (`hooks.txt`: hook calls, `#include` lines and the NTSC
 scanline overrides), each insertion located by a 64-bit hash of the
-upstream lines next to it. No upstream line is removed or changed. The
-series:
+upstream lines next to it. No upstream line is removed or changed; an
+inserted line, once applied, is part of an upstream file under
+DuckStation's licence. The series:
 
 1. Makes the EGL context available on every Linux build, which a
    surfaceless headless build needs.

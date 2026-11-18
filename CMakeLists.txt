@@ -914,6 +914,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME provenance_census_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_provenance_census.py)
     set_tests_properties(provenance_census_selftest PROPERTIES LABELS "fence")
+    # The upstream-text fence's own tests: a line planted from a scratch
+    # upstream file fails tree and hook mode; the clean series passes.
+    add_test(NAME upstream_text_census_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_upstream_text_census.py)
+    set_tests_properties(upstream_text_census_selftest PROPERTIES LABELS "fence")
     # The thread-role fence's own tests: the text scans and rewrites.
     add_test(NAME thread_roles_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_thread_roles.py)

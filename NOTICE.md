@@ -5,7 +5,8 @@ MIT terms cover the files openpete's authors wrote. They do not cover the
 trees under `third_party/`, the decomp submodules under
 `games/<game>/<game>/`, or the upstream DuckStation source the series in
 `third_party/duckstation-patches/` applies to; the series holds files of its
-own and inserted lines, and no upstream text.
+own, which are openpete's and under these MIT terms, and inserted lines,
+and no upstream text.
 OpenPete bundles or depends on the third-party projects below; each retains
 its upstream license. This file is the authoritative record of what
 travels in a distributed build and under which terms. Every release archive
@@ -185,9 +186,10 @@ archive carries them, so they have no table row and no text under
   https://github.com/stenzek/duckstation. The reference emulator the
   gameplay oracle captures its golden trace from; never linked, never
   packaged. openpete's own additions to it are the series
-  `third_party/duckstation-patches/` (files of its own and the lines it
-  inserts, located by hashes of upstream text; it carries no upstream
-  text), which `scripts/setup_duckstation.sh` applies to the pinned
+  `third_party/duckstation-patches/` (files of its own, MIT like the rest
+  of openpete, and the lines it inserts, located by hashes of upstream
+  text; it carries no upstream text, and an inserted line is part of an
+  upstream DuckStation file once applied), which `scripts/setup_duckstation.sh` applies to the pinned
   upstream on the developer's machine; no modified DuckStation is
   distributed.
 - FFmpeg 6.1.1 and x264 (`third_party/ffmpeg-mingw/`, gitignored) - GPL:

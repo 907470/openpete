@@ -820,6 +820,15 @@ if(NOT CMAKE_HOST_WIN32)
         COMMENT "provenance fence: other emulators named as tools, never by their internals"
         VERBATIM)
 
+    # The DuckStation series carries no upstream text: a line of its own
+    # files or an inserted line of hooks.txt that occurs in the pinned
+    # upstream tree is refused (scripts/fences/upstream_text_census.py).
+    add_custom_target(openpete_upstream_text_census ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking the DuckStation series for upstream text..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/upstream_text_census.py tree ${CMAKE_SOURCE_DIR}
+        COMMENT "upstream-text fence: the DuckStation series holds no upstream line"
+        VERBATIM)
+
     add_custom_target(openpete_clock_guard ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking scene-producer clocks..."
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/clock_guard.py ${CMAKE_SOURCE_DIR}

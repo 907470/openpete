@@ -14,7 +14,8 @@ DuckStation, so the project distributes its additions and applies them
 locally. The series holds no upstream text:
 
 - `files/<path>`: files of the series, copied to `<path>` in the DuckStation
-  tree; each path is absent upstream.
+  tree; each path is absent upstream. They are openpete's own work under the
+  MIT License (root `LICENSE`), as each file's SPDX header states.
   - `src/core/openpete_hooks.h`: the hook variables the recorders set and
     the core calls (CPU instruction and exception, CD-ROM command, interrupt
     and register read, GTE instruction, root-counter read, controller command
@@ -37,8 +38,15 @@ locally. The series holds no upstream text:
   window is the smallest run of upstream lines next to the insertion point
   that holds at least 48 non-blank characters and occurs once in the file.
   A 64-bit digest of a window of 48 or more characters cannot reproduce it;
-  only hashing candidate windows of the upstream file finds it.
+  only hashing candidate windows of the upstream file finds it. Once
+  applied, an inserted line is part of an upstream file, which stays under
+  DuckStation's licence; `hooks.txt` itself is openpete's.
 - `applied-head.txt`: the applied head.
+
+`scripts/fences/upstream_text_census.py` (pre-commit and the build target
+`openpete_upstream_text_census`) refuses a line of `files/` or an inserted
+line of `hooks.txt` that holds 30 or more characters and occurs as a line of
+the pinned upstream tree, outside `#include` lines and its allow rows.
 
 NTSC scanlines: an NTSC line is 227.5 colour-subcarrier cycles, 3412.5 GPU
 clocks, so lines alternate between 3413 and 3412 clocks and a VBL is

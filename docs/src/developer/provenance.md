@@ -42,10 +42,13 @@ retail SCPH-1001 BIOS ([DuckStation oracle](duckstation-oracle.md)).
   `scripts/setup_duckstation.sh` initialises the submodule from upstream
   at that commit on a developer's machine.
 - `third_party/duckstation-patches/` is openpete's series: whole files of
-  its own (`files/`), copied into the reference tree at paths upstream
-  lacks, and `hooks.txt`, a list of inserted lines, each located by a
+  its own (`files/`, MIT like the rest of openpete, each with an SPDX
+  header), copied into the reference tree at paths upstream lacks, and
+  `hooks.txt`, a list of inserted lines, each located by a
   salted hash of a window of upstream text. The series carries no upstream
-  context, removed or modified line. `scripts/duckstation_hooks.py`, run by
+  context, removed or modified line; an inserted line, once applied, is
+  part of an upstream file under DuckStation's licence.
+  `scripts/duckstation_hooks.py`, run by
   the setup script, applies it to the pinned commit and builds the test
   binary locally; the applied head is a function of the pin and the applied
   tree.

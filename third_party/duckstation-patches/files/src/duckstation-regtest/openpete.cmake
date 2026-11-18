@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Tyson Cleary
+# SPDX-License-Identifier: MIT
+
 # Sources and libraries the openpete recorders add to the regtest binary.
 target_sources(duckstation-regtest PRIVATE
   openpete_regtest.cpp

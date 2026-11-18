@@ -93,4 +93,4 @@ third_party/SDL/src/hidapi	none	third_party/SDL/src/hidapi/LICENSE-orig.txt	the 
 third_party/SDL/test	none	third_party/SDL/test/COPYING	SDL_TEST is off; the test programs are not compiled	third_party/SDL/test
 third_party/SDL/test	none	third_party/SDL/test/LICENSE.txt	SDL_TEST is off; the test programs are not compiled	third_party/SDL/test
 third_party/imgui/examples	none	third_party/imgui/examples/libs/glfw/COPYING.txt	the examples and their GLFW copy are not compiled	third_party/imgui/examples
-third_party/duckstation-patches	none	-	openpete's patch series; its own lines are under the root LICENSE, its context lines are upstream DuckStation's	third_party/duckstation-patches
+third_party/duckstation-patches	none	-	openpete's series: its own files (MIT, the root LICENSE) and lines it inserts into upstream DuckStation files; it carries no upstream text	third_party/duckstation-patches
