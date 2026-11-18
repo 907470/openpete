@@ -732,6 +732,11 @@ typedef struct openpete_options {
      * while the window does not have focus. -1 = unset (off). Host-side
      * only: it changes which SDL events arrive, never guest RAM. */
     int pad_unfocused;
+    /* --stick-response linear|console: how a gamepad stick axis becomes
+     * the PSX stick byte the game reads (openpete_stick_response_t). -1 =
+     * unset (console). It changes the pad bytes the guest reads, as a
+     * different controller would. */
+    int stick_response;
 
     /* Content for the "<bk2_record_path>.args" sidecar written next to a
      * --bk2-record capture. Holds the launch flags passed *directly* on

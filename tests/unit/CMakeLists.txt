@@ -345,6 +345,9 @@ add_executable(knob_registry_test
     # binding store, paths.c because it decides where the [saved] zone is
     # written. No log.c: this test stubs the log entry points itself.
     ${CMAKE_SOURCE_DIR}/core/input/keymap.c
+    # stick_response.c is SDL-free: the stick_response row's getter and
+    # setter call it directly.
+    ${CMAKE_SOURCE_DIR}/core/input/stick_response.c
     ${CMAKE_SOURCE_DIR}/core/config/paths.c
     ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
@@ -424,6 +427,17 @@ if(NOT WIN32)
     target_link_libraries(vibration_test PRIVATE m)
 endif()
 add_test(NAME vibration_test COMMAND vibration_test)
+
+# stick_response_test - --stick-response's mappings over the whole SDL axis
+# range, console against the measured table data/stick-response/
+# (tools/stick_response_measure.py). SDL-free: stick_response.c alone.
+add_executable(stick_response_test
+    stick_response_test.c
+    ${CMAKE_SOURCE_DIR}/core/input/stick_response.c)
+target_include_directories(stick_response_test PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
+set_target_properties(stick_response_test PROPERTIES C_STANDARD 11)
+add_test(NAME stick_response_test COMMAND stick_response_test
+         ${CMAKE_CURRENT_SOURCE_DIR}/data/stick-response/console.runs)
 
 # memcard_test - the host memory card against killed and failed writes and
 # against card files it did not create (atomic replacement, the libmcrd and

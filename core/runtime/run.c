@@ -63,6 +63,7 @@
 #include "openpete_keymap.h"  /* [keys] - every host hotkey below */
 #include "openpete_osd.h"     /* toast the changes the player makes */
 #include "openpete_rebind.h"  /* the binding page: drain, pad restamp */
+#include "openpete_stick_response.h" /* --stick-response seed */
 #include "feature_registry.h"
 #include "openpete_mods.h"
 #include "openpete_vstream.h"
@@ -1885,6 +1886,8 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_input_lock_set(opts->input_lock > 0);
     /* --pad-unfocused: seeded here for the same reason; -1 (unset) is off. */
     openpete_host_input_set_pad_unfocused(opts->pad_unfocused > 0);
+    /* --stick-response: seeded here for the same reason; -1 (unset) is console. */
+    openpete_stick_response_set(opts->stick_response);
     if (opts->input_lock > 0)
         OPL_INFO_F("input", "input lock on: keyboard, mouse and gamepad "
                    "devices are ignored");

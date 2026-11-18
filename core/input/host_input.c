@@ -8,6 +8,7 @@
 #include "openpete_log.h"
 #include "openpete_paths.h"
 #include "openpete_rumble.h"
+#include "openpete_stick_response.h"
 
 #include "PsyX/PsyX_public.h"
 
@@ -1427,8 +1428,9 @@ static int keymap_slot_bound(int slot)
  * The controller-merge result is the base and only bound rows override it,
  * so re-mapping one button changes that button and leaves every unmentioned
  * row at its merged value. A bound button clears or sets its active-low bit;
- * a bound stick axis replaces the axis byte through the merge's conversion
- * (v / 256 + 128); a held digital-stick action forces its axis to 0 or 255.
+ * a bound stick axis replaces the axis byte through the merge's stick
+ * response (openpete_stick_byte_current); a held digital-stick action
+ * forces its axis to 0 or 255.
  * Runs on the producer side against the sample being published, so the
  * bytes reach the input log and replay reproduces them.
  * @param slot pad slot index.
@@ -1450,8 +1452,8 @@ static void keymap_decode_slot(int slot, unsigned short* io_bits,
     }
     *io_bits = bits;
 
-    /* Axes use the same fixed-point conversion the controller merge applies,
-     * so a re-mapped stick and a default one share a centre and a scale. */
+    /* Axes use the stick response the controller merge applies, so a
+     * re-mapped stick and a default one share a centre and a scale. */
     static const struct { int off; int idx; } kAxes[] = {
         { OPK_PAD_RIGHT_X - OPK_PAD_CROSS, 0 },
         { OPK_PAD_RIGHT_Y - OPK_PAD_CROSS, 1 },
@@ -1462,7 +1464,7 @@ static void keymap_decode_slot(int slot, unsigned short* io_bits,
         openpete_action_t a = (openpete_action_t)(base + kAxes[i].off);
         if (!openpete_keymap_action_bound(a)) continue;
         int v = openpete_keymap_action_axis_raw_via(a, slot, &kSlotReader);
-        io_axes[kAxes[i].idx] = (unsigned char)((v / 256) + 128);
+        io_axes[kAxes[i].idx] = openpete_stick_byte_current(v);
     }
 
     /* Digital left stick, overriding the analog read only while held - the
@@ -1495,6 +1497,9 @@ void openpete_host_input_sample(bool alt_held)
      * one would replay the last pre-Alt press for as long as Alt is down. */
     vgamepad_maybe_attach();
     vgamepad_drive(openpete_frame);
+    /* Every gamepad stick axis PsyCross decodes below goes through the
+     * selected stick response (--stick-response). */
+    g_PsyX_Pad_StickMap = openpete_stick_byte_current;
 
     if (synth_on())
         synth_pad(openpete_frame, &bits, axes);

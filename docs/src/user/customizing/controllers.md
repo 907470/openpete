@@ -65,6 +65,22 @@ are also accepted. The motors are silent while the window is not focused,
 unless `--pad-unfocused` is on (below). Turning vibration off in the game's
 own options menu takes effect as usual.
 
+## Stick response
+
+`--stick-response MODE`<!-- id: flag:--stick-response --> sets how far the
+game thinks the analog stick is pushed for a given position of your stick.
+`console`<!-- id: knob:stick_response --> reaches the full value at about
+three quarters of the stick's travel, so a light push moves Spyro further
+and the last quarter of the travel changes nothing. The game is verified
+against this response. `linear`<!-- id: knob:stick_response --> spreads the
+stick's travel evenly over the PlayStation's range, so the game sees exactly
+as much of a push as you make. The default is
+`{{ default("knob:stick_response") }}`<!-- id: knob:stick_response home -->.
+The config key is `stick_response`; the
+[dev overlay](../help/glossary.md#dev-overlay)'s Input section switches it
+while the game runs. A keyboard key bound to the stick gives the full value
+under either response, and movie playback is not affected.
+
 ## Controller in the background
 
 `--pad-unfocused`<!-- id: flag:--pad-unfocused --> keeps reading every

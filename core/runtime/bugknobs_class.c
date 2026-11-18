@@ -21,7 +21,8 @@ static const struct { const char* id; const char* cls; } k_bk_class[] = {
     {"fullscreen", "host"}, {"vsync", "host"}, {"render_fps", "host"}, {"tick_scale", "host"},
     {"runahead", "host"}, {"rewind", "host"}, {"mute", "host"}, {"sfx", "host"},
     {"music", "host"}, {"vibration", "host"}, {"mouse", "host"}, {"pad_unfocused", "host"},
-    {"mouse_sensitivity", "host"}, {"log_level", "host"}, {"log_format", "host"},
+    {"stick_response", "host"}, {"mouse_sensitivity", "host"}, {"log_level", "host"},
+    {"log_format", "host"},
     {"save_mismatch_toast", "host"}, {"record_fps_overlay", "host"}, {"state_slot", "host"},
     {"warp_level", "follow"}, {"freecam", "sim"}, {"camlock", "sim"}, {"pause", "sim"},
 };

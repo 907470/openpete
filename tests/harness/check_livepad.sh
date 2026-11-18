@@ -42,8 +42,10 @@
 # and the records compared; zero in any is VACUOUS (exit 3).
 #
 # Usage: tests/harness/check_livepad.sh [--game G] [--mapping console|linear]
-#   --mapping (default console): openpete's --stick-response for the
-#   live run. console (the reference's measured live response,
+#   --mapping: openpete's --stick-response for the live run, passed as the
+#   flag. Without it the run passes no flag and takes openpete's default
+#   response, which is console; the stream is converted as console. console
+#   (the reference's measured live response,
 #   tests/unit/data/stick-response/console.runs) needs a build with
 #   --stick-response (else exit 64); linear on such a build passes the flag,
 #   on an older build relies on the built-in mapping. A linear run is the
@@ -62,7 +64,7 @@ cd "$(dirname "$0")/../.."
 source scripts/lib/scratch_cards.sh
 
 GAME=spyro-1
-MAPPING=console
+MAPPING=
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --game) GAME="$2"; shift 2 ;;
@@ -71,6 +73,8 @@ while [[ $# -gt 0 ]]; do
         *) echo "[livepad] unknown argument: $1" >&2; exit 64 ;;
     esac
 done
+MAPPING_SRC="--stick-response $MAPPING"
+[[ -n "$MAPPING" ]] || { MAPPING=console; MAPPING_SRC="openpete's default"; }
 [[ "$MAPPING" == console || "$MAPPING" == linear ]] || { echo "[livepad] --mapping console|linear" >&2; exit 64; }
 
 RECIPE="games/$GAME/livepad.conf"
@@ -93,7 +97,7 @@ done
 STICK_FLAG=()
 HELP="$("$BIN" --help 2>&1 || true)"
 if [[ "$HELP" == *--stick-response* ]]; then
-    STICK_FLAG=(--stick-response "$MAPPING")
+    [[ "$MAPPING_SRC" == "openpete's default" ]] || STICK_FLAG=(--stick-response "$MAPPING")
 elif [[ "$MAPPING" == console ]]; then
     echo "[livepad] SKIP: $BIN has no --stick-response; the console response cannot be selected" >&2
     exit 64
@@ -109,7 +113,7 @@ rm -f "${OUT:?}/live.bk2" "${OUT:?}/live.bk2.args" "${OUT:?}/live.pos" "${OUT:?}
 rm -f "${TRACE:?}" "${TRACE:?}".*
 
 # ---- 1. openpete live run -----------------------------------------------------
-echo "[livepad] $GAME mapping=$MAPPING stream=$LIVEPAD_STREAM (last event at VBL $STREAM_END)"
+echo "[livepad] $GAME mapping=$MAPPING ($MAPPING_SRC) stream=$LIVEPAD_STREAM (last event at VBL $STREAM_END)"
 set +e
 OPENPETE_INPUT_VGAMEPAD=1 OPENPETE_PAD_STREAM="$LIVEPAD_STREAM" \
     "$BIN" --game "$GAME" --headless --no-config --mods "" --disc "$DISC" --no-card --mute 1 \
@@ -210,4 +214,4 @@ if [[ "${GTE_MISM:-1}" != 0 ]]; then
     echo "[livepad] verdict: FAIL (GTE hash: ${GTE_MISM:-no summary} mismatching record(s))"
     exit 2
 fi
-echo "[livepad] verdict: PASS ($GAME, mapping $MAPPING)"
+echo "[livepad] verdict: PASS ($GAME, mapping $MAPPING, $MAPPING_SRC)"

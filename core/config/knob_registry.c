@@ -30,6 +30,7 @@
 #include "openpete_record.h"
 #include "openpete_rewind.h"
 #include "openpete_state.h"
+#include "openpete_stick_response.h"
 #include "no_lod.h"
 
 #include <math.h>
@@ -276,6 +277,23 @@ static int perfstats_set(knob_desc_t *k, double v) {
 
 static const char *const k_vprec_names[] = { "subpixel", "integer" };
 static const char *const k_texmap_names[] = { "perspective", "affine" };
+static const char *const k_stick_names[] = { "linear", "console" };
+/** @brief The stick response the live pad decode applies: 0 linear, 1 console.
+ * @param k The row.
+ * @return The response. */
+static double stick_get(const knob_desc_t *k) { (void)k; return (double)openpete_stick_response_get(); }
+/** @brief Select the stick response from `v`: 0 is linear, any other value console.
+ *
+ * The decode applies it from the next pad sample.
+ * @param k The row.
+ * @param v The response.
+ * @return 0. */
+static int stick_set(knob_desc_t *k, double v) {
+    openpete_stick_response_set((int)v == 0 ? OPENPETE_STICK_RESPONSE_LINEAR
+                                            : OPENPETE_STICK_RESPONSE_CONSOLE);
+    k->stored_num = (int)v != 0;
+    return 0;
+}
 /** @brief 1 when integer-grid vertex precision is chosen, 0 for subpixel positions.
  *
  * Returns the stored value until the native renderer is up. */
@@ -1664,6 +1682,22 @@ static const knob_desc_t g_builtin[] = {
           "window does not have focus: a pad plays the game behind a timer,\n"
           "a split tool or a stream window (default {def} = off; on|off also\n"
           "accepted). Keyboard and mouse still need focus" },
+
+    { "stick_response", "Stick response", "Input", "--stick-response", NULL,
+      "How a controller's analog stick position becomes the stick value the "
+      "game reads. console (default) = the stick reaches the end of the "
+      "range at about three quarters of its travel, the response the game "
+      "is verified against. linear = the stick's travel spread evenly over "
+      "the PSX range. Applies from the next pad sample; a keyboard key "
+      "bound to the stick gives the full value under either, and movie "
+      "replay is unaffected.",
+      KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_stick_names), 0, 0,
+      stick_get, stick_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "console",
+      .help_arg = "MODE", .help_order = 526,
+      .help_text = "analog stick response: {def} (default: full value at about\n"
+          "three quarters of the travel) | linear (stick travel spread\n"
+          "evenly)" },
 
     { "mouse_sensitivity", "Mouse sensitivity", "Input", "--mouse-sensitivity", NULL,
       "Mouse look scale for the free camera and the camlock: angle units per "

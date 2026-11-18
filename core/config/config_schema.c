@@ -16,6 +16,7 @@ static const char *const v_cadence[]  = { "even", "fill", NULL };
 static const char *const v_fog[]      = { "original", "per-pixel", "off", NULL };
 static const char *const v_renderer[] = { "psycross", "vk", NULL };
 static const char *const v_logfmt[]   = { "plain", "json", NULL };
+static const char *const v_stick[]    = { "linear", "console", NULL };
 
 /* Ordered to mirror knob_registry.c's sections so the two read side by
  * side. `aspect`, `window`, `skip_to_level`, `skip_to_cutscene` and
@@ -73,6 +74,7 @@ static const cfg_knob_t g_schema[] = {
     { "mouse",            "--mouse",            "OPENPETE_MOUSE",        CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "input_lock",       "--input-lock",       "OPENPETE_INPUT_LOCK",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "pad_unfocused",    "--pad-unfocused",    "OPENPETE_PAD_UNFOCUSED", CFG_BOOL,  NULL,       NULL,       NULL,       0 },
+    { "stick_response",   "--stick-response",   NULL,                    CFG_ENUM,   v_stick,    NULL,       NULL,       0 },
 
     /* -------- Paths -------- */
     { "disc",             "--disc",             NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },

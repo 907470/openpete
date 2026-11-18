@@ -16,6 +16,7 @@
 
 #include "openpete_paths.h" /* where --bk2-record output is allowed to live */
 #include "openpete_docs_url.h" /* OPENPETE_DOCS_URL - the --help footer */
+#include "openpete_stick_response.h" /* --stick-response values */
 
 #include <SDL3/SDL.h>     /* SDL_CreateDirectory - --bk2-record output dir */
 
@@ -935,6 +936,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->mouse               = -1;    /* -1 = unset; the mouse channel is on */
     opts->input_lock          = -1;    /* -1 = unset; host input is taken */
     opts->pad_unfocused       = -1;    /* -1 = unset; unfocused pads are ignored */
+    opts->stick_response      = -1;    /* -1 = unset; console */
     opts->background          = -1;    /* -1 = unset; the window activates normally */
     opts->screenshot_overlays = -1;    /* -1 = unset; recomposed screenshots draw no chrome */
     opts->mouse_sensitivity   = -1.0f; /* -1 = unset (1.0) */
@@ -1937,6 +1939,17 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
             if      (strcmp(n, "1") == 0 || strcmp(n, "on")  == 0) { opts->pad_unfocused = 1; i++; }
             else if (strcmp(n, "0") == 0 || strcmp(n, "off") == 0) { opts->pad_unfocused = 0; i++; }
         }
+    } else if (strcmp(a, "--stick-response") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (strcmp(v, "linear") == 0) {
+            opts->stick_response = OPENPETE_STICK_RESPONSE_LINEAR;
+        } else if (strcmp(v, "console") == 0) {
+            opts->stick_response = OPENPETE_STICK_RESPONSE_CONSOLE;
+        } else {
+            fprintf(stderr, "openpete: --stick-response expects linear|console, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
     } else if (strcmp(a, "--screenshot-overlays") == 0) {
         /* Optional value, as --input-lock. */
         opts->screenshot_overlays = 1;
@@ -2286,6 +2299,7 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->launcher_fullscreen < 0)   out->launcher_fullscreen = 0;
     if (out->screenshot_overlays < 0)   out->screenshot_overlays = 0;
     if (out->pad_unfocused < 0)         out->pad_unfocused = 0;
+    if (out->stick_response < 0)        out->stick_response = OPENPETE_STICK_RESPONSE_CONSOLE;
     if (out->mouse_sensitivity < 0.0f)  out->mouse_sensitivity = 1.0f;
     if (out->load_delay < 0)            out->load_delay = (int)game_get_load_delay_default();
     if (out->notex < 0)                 out->notex = 0;

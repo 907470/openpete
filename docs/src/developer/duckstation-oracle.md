@@ -674,8 +674,9 @@ or zero records compared is VACUOUS (exit 3). The DuckStation side reads
 the rows openpete's guest consumed, so the harness tests what each
 emulator makes of the same stick and button state, not the VBL at which a
 live sample is latched. `--mapping` selects openpete's `--stick-response`:
-`console` (the default) is the response measured from DuckStation's
-live input path, `linear` the negative control, which diverges. The
+`console` (openpete's default, and the harness's) is the response
+measured from DuckStation's live input path, `linear` the negative
+control, which diverges. The
 rows are `ctest -L livepad` (labelled `slow`); each skips (64) on a build
 without `--stick-response` or a fork without patch 0047.
 `OPENPETE_DS_DIR` points the harness and `scripts/capture_psx_oracle_ds.sh`
@@ -693,7 +694,9 @@ Four sweeps (ascending, the axes paired with the mirrored value,
 descending, each value followed by the centre) must each cover all 65536
 values on all four axes with one table, and the table must be monotonic.
 The header records the applied head and the centre byte an axis reads from
-power-on.
+power-on. The name `console` states the intended feel; the response is
+DuckStation's at its default settings with a modern controller, and no
+DualShock has been measured against it.
 
 Re-blessing a golden (deleting it so the gate recaptures it under a new
 DuckStation head, manifest or recipe) is only legal for an intentional

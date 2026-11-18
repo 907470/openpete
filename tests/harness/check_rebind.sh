@@ -157,7 +157,10 @@ for i in range(first, min(last + 1, len(rows))):
 print(("ok %d" % n) if not bad and n else ("bad %d first=%d of %d" % (bad, firstbad, n)))
 EOF
 }
-NEUTRAL='not any(b) and ax == [128, 128, 128, 128]'
+# A neutral record: no button, every stick at rest. A capture's neutral hold
+# writes 128; the virtual pad at rest (axis value 0) reads 127 under the
+# default --stick-response console and 128 under linear.
+NEUTRAL='not any(b) and ax in ([128, 128, 128, 128], [127, 127, 127, 127])'
 
 # port0 BK2: the port-0 field of every record.
 port0() { python3 - "$1" <<'EOF'

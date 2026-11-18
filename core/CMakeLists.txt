@@ -83,6 +83,7 @@ add_library(openpete_core STATIC
     # curve, kept SDL-free so the unit test can link it alone; host_rumble.c is
     # the registration / per-tick sample / per-pump apply seam.
     input/rumble_curve.c
+    input/stick_response.c
     input/host_rumble.c
     # Per-VBL input log - single source of truth for "what was pressed at
     # VBL i"; shared by bk2_record and the rewind/runahead drivers. See
