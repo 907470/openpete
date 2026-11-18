@@ -3,7 +3,7 @@
 #
 # Columns (tab-separated):
 #   component  the first cell of a NOTICE.md table row, verbatim; or, with
-#              scope "none", a third_party/ directory that nothing ships
+#              scope "none", a third_party/ path that nothing ships
 #   scope      which archive carries the component:
 #                all       every archive
 #                windows   the Windows zip
@@ -19,43 +19,78 @@
 #              an AppImage library whose text APPIMAGE_LIB_LICENCE in
 #              package-dist.sh stages; "-" when no text is required
 #   shipped    file name under licences/; for text "-", the reason no text
-#              is required
-spyro-1	all	games/spyro-1/spyro-1/LICENSE	spyro-1.txt
-PsyCross	all	third_party/PsyCross/LICENSE	PsyCross.txt
-PsyCross GTE core (`src/gte/PsyX_GTE.cpp`: MAME `gte.cpp` by smf via TOMB5 `LIBGTE.C`)	all	packaging/licences/psycross-gte-notice.txt	PsyCross-GTE.txt
-SDL (SDL **3**)	all	third_party/SDL/LICENSE.txt	SDL.txt
-miniz	all	third_party/miniz/LICENSE	miniz.txt
-tomlc99	all	third_party/tomlc99/LICENSE	tomlc99.txt
-stb_image / stb_image_write	all	packaging/licences/stb.txt	stb.txt
-libco	all	packaging/licences/libco.txt	libco.txt
-xxHash	all	packaging/licences/xxhash.txt	xxHash.txt
-Dear ImGui 1.92.8 (exe; SDK headers `sdk/imconfig.h`)	all	third_party/imgui/LICENSE.txt	imgui.txt
-Fredoka Medium (the launcher's body font, embedded; a static instance of `Fredoka[wdth,wght].ttf`)	all	packaging/licences/fredoka-ofl.txt	Fredoka-OFL.txt
-dear_bindings (generated C API; SDK header `sdk/dcimgui.h`)	all	third_party/dear_bindings/LICENSE.txt	dear_bindings.txt
-glslang 15.4.0	all	third_party/glslang/LICENSE.txt	glslang.txt
-glad 0.1.36 (GL loader, generated, vendored in PsyCross)	all	packaging/licences/glad.txt	glad.txt
-volk (Vulkan loader)	all	packaging/licences/volk.txt	volk.txt
-Vulkan-Headers 1.3.204	all	packaging/licences/vulkan-headers.txt	Vulkan-Headers.txt
-Pokopom (the large-motor rumble curve in `core/input/rumble_response.c`)	all	packaging/licences/pokopom.txt	Pokopom.txt
-libstdc++ / libgcc (static)	all	-	the GCC Runtime Library Exception permits distributing the compiled binary under any terms without the text
-MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows)	windows	packaging/licences/mingw-w64-runtime.txt	mingw-w64-runtime.txt
-MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows)	windows	packaging/licences/winpthreads.txt	winpthreads.txt
-OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`)	windows	third_party/OpenAL-mingw/COPYING	OpenAL-Soft.txt
-SDL_GameControllerDB (`gamecontrollerdb.txt`)	all	packaging/licences/gamecontrollerdb.txt	SDL_GameControllerDB.txt
-llvm-mingw (LLVM/Clang, lld, llvm-ar, ...)	toolchain-windows	LICENSE.TXT	llvm-mingw.txt
-LLVM/Clang 18.1.8 + lld (llvm.org build)	toolchain-linux	LICENSE.TXT	LLVM.txt
-glibc 2.31 headers (Debian 11 libc6-dev)	toolchain-linux	sysroot/licences/glibc.copyright	glibc-headers.txt
-Linux 5.10 uapi headers (Debian 11 linux-libc-dev)	toolchain-linux	sysroot/licences/linux.copyright	linux-uapi-headers.txt
-PSXRecomp (psxrecomp)	all	third_party/psxrecomp/LICENSE	PSXRecomp.txt
-fmt 9.1.1 (in PSXRecomp)	all	third_party/psxrecomp/recompiler/lib/fmt/LICENSE.rst	fmt.txt
-rabbitizer 1.7.10 (in PSXRecomp)	all	third_party/psxrecomp/recompiler/lib/rabbitizer/LICENSE	rabbitizer.txt
-crt-beans (`sdk/examples/crt-beans`)	sdk	mods/crt-beans/LICENSE	crt-beans.txt
-OpenAL Soft 1.19.1, Debian 11 package (`usr/lib/libopenal.so.1`)	appimage	lib:libopenal	-
-sndio (`usr/lib/libsndio.so.7`)	appimage	lib:libsndio	-
-libbsd (`usr/lib/libbsd.so.0`)	appimage	lib:libbsd	-
-libmd (`usr/lib/libmd.so.0`)	appimage	lib:libmd	-
-AppImage type-2 runtime	appimage	packaging/licences/appimage-runtime.txt	appimage-runtime.txt
-third_party/cubeb	none	third_party/cubeb/LICENSE	-
-third_party/duckstation	none	third_party/duckstation/LICENSE	-
-third_party/psxrecomp/recompiler/lib/toml11	none	third_party/psxrecomp/recompiler/lib/toml11/LICENSE	-
-third_party/psxrecomp/recompiler/lib/ELFIO	none	third_party/psxrecomp/recompiler/lib/ELFIO/LICENSE.txt	-
+#              is required; with scope "none", "-" or the reason the text
+#              is not shipped
+#   source     comma-separated repo paths the component is built or copied
+#              from; "-" when it comes from outside the repository (a
+#              toolchain, a host library, a pip package)
+#
+# A component may take several rows, one per text. dist_compliance.py
+# refuses a third_party/ directory no row's source covers, a licence file
+# (LICENSE*, LICENCE*, COPYING*) under third_party/ that is no row's text,
+# a packaging/licences/ text no row names, and a source path that does not
+# exist.
+spyro-1	all	games/spyro-1/spyro-1/LICENSE	spyro-1.txt	games/spyro-1/spyro-1
+spyro-2	all	games/spyro-2/spyro-2/LICENSE	spyro-2.txt	games/spyro-2/spyro-2
+spyro-3	all	games/spyro-3/spyro-3/LICENSE	spyro-3.txt	games/spyro-3/spyro-3
+PsyCross	all	third_party/PsyCross/LICENSE	PsyCross.txt	third_party/PsyCross
+PsyCross GTE core (`src/gte/PsyX_GTE.cpp`: MAME `gte.cpp` by smf via TOMB5 `LIBGTE.C`)	all	packaging/licences/psycross-gte-notice.txt	PsyCross-GTE.txt	third_party/PsyCross
+SDL (SDL **3**)	all	third_party/SDL/LICENSE.txt	SDL.txt	third_party/SDL
+SDL (SDL **3**)	all	third_party/SDL/src/hidapi/LICENSE-bsd.txt	SDL-hidapi.txt	third_party/SDL/src/hidapi
+SDL (SDL **3**)	all	third_party/SDL/src/video/yuv2rgb/LICENSE	SDL-yuv2rgb.txt	third_party/SDL/src/video/yuv2rgb
+SDL (SDL **3**)	all	packaging/licences/sdl-embedded-notices.txt	SDL-notices.txt	third_party/SDL/src
+miniz	all	third_party/miniz/LICENSE	miniz.txt	third_party/miniz
+tomlc99	all	third_party/tomlc99/LICENSE	tomlc99.txt	third_party/tomlc99
+stb_image / stb_image_write	all	packaging/licences/stb.txt	stb.txt	third_party/stb
+libco	all	packaging/licences/libco.txt	libco.txt	third_party/libco
+xxHash	all	packaging/licences/xxhash.txt	xxHash.txt	third_party/xxhash
+Dear ImGui 1.92.8 (exe; SDK headers `sdk/imconfig.h`)	all	third_party/imgui/LICENSE.txt	imgui.txt	third_party/imgui
+Dear ImGui 1.92.8 (exe; SDK headers `sdk/imconfig.h`)	all	packaging/licences/imgui-fonts.txt	imgui-fonts.txt	third_party/imgui/imgui_draw.cpp
+Fredoka Medium (the launcher's body font, embedded; a static instance of `Fredoka[wdth,wght].ttf`)	all	packaging/licences/fredoka-ofl.txt	Fredoka-OFL.txt	core/launcher/fonts/fredoka_medium.inc
+dear_bindings (generated C API; SDK header `sdk/dcimgui.h`)	all	third_party/dear_bindings/LICENSE.txt	dear_bindings.txt	third_party/dear_bindings
+glslang 15.4.0	all	third_party/glslang/LICENSE.txt	glslang.txt	third_party/glslang
+glad 0.1.36 (GL loader, generated, vendored in PsyCross)	all	packaging/licences/glad.txt	glad.txt	third_party/glad,third_party/PsyCross/src/render/glad.c
+volk (Vulkan loader)	all	packaging/licences/volk.txt	volk.txt	third_party/volk
+Vulkan-Headers 1.3.204	all	packaging/licences/vulkan-headers.txt	Vulkan-Headers.txt	third_party/vulkan-headers
+Pokopom (the large-motor rumble curve in `core/input/rumble_response.c`)	all	packaging/licences/pokopom.txt	Pokopom.txt	core/input/rumble_response.c
+libstdc++ / libgcc (static)	all	-	the GCC Runtime Library Exception permits distributing the compiled binary under any terms without the text	-
+MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows)	windows	packaging/licences/mingw-w64-runtime.txt	mingw-w64-runtime.txt	-
+MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows)	windows	packaging/licences/winpthreads.txt	winpthreads.txt	-
+OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`)	windows	third_party/OpenAL-mingw/COPYING	OpenAL-Soft.txt	third_party/OpenAL-mingw
+Material for MkDocs 9.7.6 (theme, `assets/stylesheets/`, `bundle.*.min.js`, `workers/search.*.min.js`, `images/favicon.png`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+Material Design Icons (SVG icons inlined in the pages)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+lunr.js 2.3.9 (in `workers/search.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+RxJS (in `bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+clipboard.js (in `bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+escape-html (in `bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+tslib (in `bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+focus-visible (in `bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+TinySegmenter (`lunr/tinyseg.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+lunr-languages (`lunr/min/*.js`, with Snowball JavaScript Library v0.3)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+wordcut (`lunr/wordcut.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+iframe-worker 1.0.4 shim (`assets/javascripts/iframe-worker-shim.js`; text also as `iframe-worker-LICENSE` beside it)	all	docs/src/assets/javascripts/iframe-worker-LICENSE	iframe-worker.txt	docs/src/assets/javascripts/iframe-worker-shim.js
+SDL_GameControllerDB (`gamecontrollerdb.txt`)	all	packaging/licences/gamecontrollerdb.txt	SDL_GameControllerDB.txt	gamecontrollerdb.txt
+llvm-mingw (LLVM/Clang, lld, llvm-ar, ...)	toolchain-windows	LICENSE.TXT	llvm-mingw.txt	-
+LLVM/Clang 18.1.8 + lld (llvm.org build)	toolchain-linux	LICENSE.TXT	LLVM.txt	-
+glibc 2.31 headers (Debian 11 libc6-dev)	toolchain-linux	sysroot/licences/glibc.copyright	glibc-headers.txt	-
+Linux 5.10 uapi headers (Debian 11 linux-libc-dev)	toolchain-linux	sysroot/licences/linux.copyright	linux-uapi-headers.txt	-
+PSXRecomp (psxrecomp)	all	third_party/psxrecomp/LICENSE	PSXRecomp.txt	third_party/psxrecomp
+fmt 9.1.1 (in PSXRecomp)	all	third_party/psxrecomp/recompiler/lib/fmt/LICENSE.rst	fmt.txt	third_party/psxrecomp/recompiler/lib/fmt
+rabbitizer 1.7.10 (in PSXRecomp)	all	third_party/psxrecomp/recompiler/lib/rabbitizer/LICENSE	rabbitizer.txt	third_party/psxrecomp/recompiler/lib/rabbitizer
+crt-beans (`sdk/examples/crt-beans`)	sdk	mods/crt-beans/LICENSE	crt-beans.txt	mods/crt-beans
+OpenAL Soft 1.19.1, Debian 11 package (`usr/lib/libopenal.so.1`)	appimage	lib:libopenal	-	-
+sndio (`usr/lib/libsndio.so.7`)	appimage	lib:libsndio	-	-
+libbsd (`usr/lib/libbsd.so.0`)	appimage	lib:libbsd	-	-
+libmd (`usr/lib/libmd.so.0`)	appimage	lib:libmd	-	-
+AppImage type-2 runtime	appimage	packaging/licences/appimage-runtime.txt	appimage-runtime.txt	-
+third_party/cubeb	none	third_party/cubeb/LICENSE	-	third_party/cubeb
+third_party/duckstation	none	third_party/duckstation/LICENSE	-	third_party/duckstation
+third_party/psxrecomp/recompiler/lib/toml11	none	third_party/psxrecomp/recompiler/lib/toml11/LICENSE	-	third_party/psxrecomp/recompiler/lib/toml11
+third_party/psxrecomp/recompiler/lib/ELFIO	none	third_party/psxrecomp/recompiler/lib/ELFIO/LICENSE.txt	-	third_party/psxrecomp/recompiler/lib/ELFIO
+third_party/SDL/src/hidapi	none	third_party/SDL/src/hidapi/LICENSE.txt	hidapi's statement of its three licence options; the BSD option ships as SDL-hidapi.txt	third_party/SDL/src/hidapi
+third_party/SDL/src/hidapi	none	third_party/SDL/src/hidapi/LICENSE-gpl3.txt	the GPL-3.0 option of hidapi, not the one taken	third_party/SDL/src/hidapi
+third_party/SDL/src/hidapi	none	third_party/SDL/src/hidapi/LICENSE-orig.txt	the original-licence option of hidapi, not the one taken	third_party/SDL/src/hidapi
+third_party/SDL/test	none	third_party/SDL/test/COPYING	SDL_TEST is off; the test programs are not compiled	third_party/SDL/test
+third_party/SDL/test	none	third_party/SDL/test/LICENSE.txt	SDL_TEST is off; the test programs are not compiled	third_party/SDL/test
+third_party/imgui/examples	none	third_party/imgui/examples/libs/glfw/COPYING.txt	the examples and their GLFW copy are not compiled	third_party/imgui/examples
+third_party/duckstation-patches	none	-	openpete's patch series; its own lines are under the root LICENSE, its context lines are upstream DuckStation's	third_party/duckstation-patches

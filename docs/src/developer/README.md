@@ -18,6 +18,9 @@ entry point.
   keyboard: headless flags, the gate scripts, and their exit codes.
 - [`recording-video.md`](recording-video.md) - `--record` video capture in
   builds with libav: VFR and CFR modes, encoders, audio.
+- [`provenance.md`](provenance.md) - the licences of openpete and its
+  third-party code, what the repository holds of the oracle reference, and
+  the code rebuilt from measurements of it.
 
 ## Level data
 

@@ -762,6 +762,19 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME bugreport_reader_selftest
              COMMAND python3 -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/test_bugreport.py)
 
+    # Licence check of the packages (scripts/dist_compliance.py licences):
+    # its refusals on synthetic trees, then the repository's own NOTICE.md
+    # and manifest staged into a scratch directory.
+    add_test(NAME dist_compliance_selftest
+             COMMAND python3 -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/test_dist_compliance.py)
+    set_tests_properties(dist_compliance_selftest PROPERTIES LABELS "dist")
+    add_test(NAME dist_compliance_licences
+             COMMAND python3 -I ${CMAKE_CURRENT_SOURCE_DIR}/scripts/dist_compliance.py
+                     licences --stage ${CMAKE_CURRENT_BINARY_DIR}/dist-compliance-stage
+                     --scope all --scope windows --scope sdk --scope appimage
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(dist_compliance_licences PROPERTIES LABELS "dist")
+
     # Profile summary's sim-tick split on synthetic .opp traces: the region
     # records (guest, host by subsystem, pool waits, the leaves summing to
     # sim_tick) and a trace written before them (the inclusive hook table).

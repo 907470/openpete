@@ -36,5 +36,6 @@ POSSIBILITY OF SUCH DAMAGE.
 
 ### TOMB5 `EMULATOR/LIBGTE.C`
 
-MIT License, TOMB5 project (Gh0stBlade, zdimension). The MIT text is the
-one in `LICENSE`.
+MIT License, TOMB5 project: "Copyright (c) 2017 Gh0stBlade & zdimension"
+(https://github.com/TOMB5/TOMB5, `LICENSE`). The MIT terms are those of
+PsyCross's `LICENSE`, shipped beside this file as `PsyCross.txt`.

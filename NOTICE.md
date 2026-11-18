@@ -1,8 +1,13 @@
 # NOTICE - third-party attributions
 
-OpenPete's own code is licensed under the MIT License (see `LICENSE`). It
-bundles or depends on the third-party projects below; each retains its
-upstream license. This file is the authoritative record of what
+OpenPete's own code is licensed under the MIT License (see `LICENSE`). The
+MIT terms cover the files openpete's authors wrote. They do not cover the
+trees under `third_party/`, the decomp submodules under
+`games/<game>/<game>/`, or the upstream DuckStation source the patch series
+in `third_party/duckstation-patches/` applies to; the patch files carry lines
+of the upstream files as context, and those lines keep DuckStation's licence.
+OpenPete bundles or depends on the third-party projects below; each retains
+its upstream license. This file is the authoritative record of what
 travels in a distributed build and under which terms. Every release archive
 ships this file and, under `licences/`, the upstream license text of each
 component below that the archive carries; `packaging/licences/manifest.tsv` maps
@@ -13,18 +18,20 @@ each row to its text, and packaging fails on a row with no text.
 | Component                            | License                                        | Upstream                                                                                    |
 | ------------------------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | spyro-1                              | CC0 1.0 Universal                              | https://github.com/TheMobyCollective/spyro-1                                                |
+| spyro-2                              | CC0 1.0 Universal                              | https://github.com/TheMobyCollective/spyro-2                                                |
+| spyro-3                              | CC0 1.0 Universal                              | https://github.com/TheMobyCollective/spyro-3                                                |
 | PsyCross                             | MIT                                            | https://github.com/OpenDriver2/PsyCross                                                     |
 | PsyCross GTE core (`src/gte/PsyX_GTE.cpp`: MAME `gte.cpp` by smf via TOMB5 `LIBGTE.C`) | BSD-3-Clause (smf); MIT (TOMB5)              | https://github.com/mamedev/mame ; https://github.com/TOMB5/TOMB5                           |
-| SDL (SDL **3**)                      | Zlib                                           | https://github.com/libsdl-org/SDL                                                           |
+| SDL (SDL **3**)                      | Zlib; code inside it: hidapi (BSD-3-Clause, chosen from its three options; `SDL-hidapi.txt`), yuv2rgb (BSD-3-Clause; `SDL-yuv2rgb.txt`), keysym table, xdg-user-dirs lookup, EDID parser and XSETTINGS client (MIT-style), Sun libm (notice-preserving), qsort (Zlib) (`SDL-notices.txt`) | https://github.com/libsdl-org/SDL; https://github.com/libusb/hidapi; https://github.com/descampsa/yuv2rgb |
 | miniz                                | MIT                                            | https://github.com/richgel999/miniz                                                         |
 | tomlc99                              | MIT                                            | https://github.com/cktan/tomlc99                                                            |
 | stb_image / stb_image_write          | public domain / MIT (dual)                     | https://github.com/nothings/stb                                                             |
 | libco                                | ISC                                            | https://github.com/higan-emu/libco                                                          |
 | xxHash                               | BSD-2-Clause                                   | https://github.com/Cyan4973/xxHash                                                          |
-| Dear ImGui 1.92.8 (exe; SDK headers `sdk/imconfig.h`) | MIT                               | https://github.com/ocornut/imgui                                                            |
+| Dear ImGui 1.92.8 (exe; SDK headers `sdk/imconfig.h`) | MIT; embedded fonts ProggyClean and ProggyForever MIT (`imgui-fonts.txt`); embedded `imstb_*` copies of stb public domain / MIT (`stb.txt`) | https://github.com/ocornut/imgui; https://github.com/bluescan/proggyfonts; https://github.com/ocornut/proggyforever |
 | dear_bindings (generated C API; SDK header `sdk/dcimgui.h`) | MIT                         | https://github.com/dearimgui/dear_bindings                                                  |
 | Fredoka Medium (the launcher's body font, embedded; a static instance of `Fredoka[wdth,wght].ttf`) | SIL Open Font License 1.1 | https://github.com/google/fonts/tree/main/ofl/fredoka |
-| glslang 15.4.0                       | BSD-3-Clause / BSD-2-Clause / MIT / Apache-2.0 / GPL-3.0 with Bison exception (per file; `LICENSE.txt`) | https://github.com/KhronosGroup/glslang |
+| glslang 15.4.0                       | BSD-3-Clause / BSD-2-Clause / MIT / Apache-2.0 / NVIDIA 2002 preprocessor licence / GPL-3.0-or-later with the Bison exception (`glslang_tab.cpp`, generated by Bison 3.8.2) (per file; `LICENSE.txt`) | https://github.com/KhronosGroup/glslang |
 | glad 0.1.36 (GL loader, generated, vendored in PsyCross) | MIT                        | https://github.com/Dav1dde/glad                                                             |
 | volk (Vulkan loader)                 | MIT                                            | https://github.com/zeux/volk                                                                |
 | Vulkan-Headers 1.3.204               | Apache-2.0                                     | https://github.com/KhronosGroup/Vulkan-Headers                                              |
@@ -32,6 +39,32 @@ each row to its text, and packaging fails on a row with no text.
 | libstdc++ / libgcc (static)          | GPL-3.0 **with GCC Runtime Library Exception** | GCC - the exception explicitly permits distributing the compiled binary in proprietary form |
 | MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows) | Zlib / BSD / public domain (permissive) | https://www.mingw-w64.org                                                          |
 | OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`) | LGPL v2 | https://github.com/kcat/openal-soft; source: https://dl.openpete.com/sources/openal-soft-1.25.1.tar.bz2 |
+
+## Documentation site - bundled under `docs/`
+
+The site Material for MkDocs builds from `docs/src/` (User and Modding).
+Material copies the files below into it unmodified; none is linked into
+`openpete`. The text of every row but the shim's is `licences/docs-site.txt`. The site's search
+runs in English, which loads none of the `lunr/` language files.
+
+| Component                                | License | Upstream                                          |
+| ---------------------------------------- | ------- | ------------------------------------------------- |
+| Material for MkDocs 9.7.6 (theme, `assets/stylesheets/`, `bundle.*.min.js`, `workers/search.*.min.js`, `images/favicon.png`) | MIT | https://github.com/squidfunk/mkdocs-material |
+| Material Design Icons (SVG icons inlined in the pages) | Pictogrammers Free License (icons Apache-2.0) | https://github.com/Templarian/MaterialDesign |
+| lunr.js 2.3.9 (in `workers/search.*.min.js`) | MIT | https://github.com/olivernn/lunr.js |
+| RxJS (in `bundle.*.min.js`)              | Apache-2.0 | https://github.com/ReactiveX/rxjs |
+| clipboard.js (in `bundle.*.min.js`)      | MIT | https://github.com/zenorocha/clipboard.js |
+| escape-html (in `bundle.*.min.js`)       | MIT | https://github.com/component/escape-html |
+| tslib (in `bundle.*.min.js`)             | 0BSD | https://github.com/microsoft/tslib |
+| focus-visible (in `bundle.*.min.js`)     | W3C Software and Document License (2015) | https://github.com/WICG/focus-visible |
+| TinySegmenter (`lunr/tinyseg.js`)        | BSD (per the file's notice) | http://chasen.org/~taku/software/TinySegmenter/ |
+| lunr-languages (`lunr/min/*.js`, with Snowball JavaScript Library v0.3) | MPL-1.1 | https://github.com/MihaiValentin/lunr-languages |
+| wordcut (`lunr/wordcut.js`)              | LGPL-3.0 | https://github.com/veer66/wordcut |
+| iframe-worker 1.0.4 shim (`assets/javascripts/iframe-worker-shim.js`; text also as `iframe-worker-LICENSE` beside it) | MIT | https://github.com/squidfunk/iframe-worker |
+
+lunr-languages and wordcut ship as upstream published them; their
+source is the upstream repository named in the row. The MPL-1.1 and LGPL-3.0
+terms that apply to those files are in `licences/docs-site.txt`.
 
 ## Bundled data - shipped alongside the binary
 
@@ -104,9 +137,13 @@ itself stays unbundled, so `libasound.so.2` remains a host requirement.
 OpenAL Soft is licensed under the GNU Library General Public License
 version 2. Both packages carry it unmodified, as a separate shared library
 the executable loads at run time; a user may replace it with a compatible
-build of their own. Its complete corresponding source is offered from
-https://dl.openpete.com/, the same place as the packages, at the URLs
-below. SHA-256 follows each file.
+build of their own. On Windows `OpenAL32.dll` sits beside `openpete.exe`
+and is replaced in place. In the AppImage it is `usr/lib/libopenal.so.1`
+inside the image: `--appimage-extract` unpacks the image to
+`squashfs-root/`, where the file is replaced and `squashfs-root/AppRun`
+starts the game with `usr/lib` first on the loader path. Its complete
+corresponding source is offered from the download host `dl.openpete.com`,
+the same place as the packages, at the URLs below. SHA-256 follows each file.
 
 Windows zip, `OpenAL32.dll`: `bin/Win64/soft_oal.dll` from upstream's
 binary release `openal-soft-1.25.1-bin.zip`
@@ -158,7 +195,21 @@ archive carries them, so they have no table row and no text under
   when the prefix exists, which makes that executable GPL; a dist preset
   refuses the combination at configure (`core/CMakeLists.txt`), and
   `scripts/dist_compliance.py scan` refuses an archive whose binaries carry
-  an FFmpeg or x264 marker.
+  an FFmpeg or x264 marker. A native Linux build outside the dist presets
+  links the host's FFmpeg libraries (`libavformat`, `libavcodec`,
+  `libavutil`, `libswscale`, `libswresample`) dynamically for `--record`;
+  both dist presets set `OPENPETE_ENABLE_RECORD` off.
+- PSXRecomp's runner FMV decoder
+  (`third_party/psxrecomp/runner/src/fmv_player.cpp`): its header states its
+  MDEC decode and IDCT are ported from FFmpeg's `libavcodec/mdec.c` and
+  `libavcodec/simple_idct_template.c` and its VLC tables are copied from
+  `libavcodec/mpeg12data.c`; FFmpeg licenses those files LGPL-2.1-or-later.
+  No openpete CMake file compiles the runner, so no build contains it.
+- `third_party/SDL/test/`, `third_party/imgui/examples/` (with its GLFW
+  copy) and `third_party/glslang/External/`: not compiled; their licence
+  files are listed with scope `none` in `packaging/licences/manifest.tsv`.
+- `third_party/duckstation-patches/`: openpete's patch series against the
+  pinned DuckStation (see DuckStation above).
 
 - toml11 3.7.1 and ELFIO 3.11 (`third_party/psxrecomp/recompiler/lib/toml11`,
   `.../ELFIO`) - MIT (`LICENSE`, `LICENSE.txt`).

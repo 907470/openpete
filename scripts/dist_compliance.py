@@ -12,17 +12,21 @@
       Checks NOTICE.md against packaging/licences/manifest.tsv and copies the
       text of every component the archive carries into DIR/licences/.
       Exit 1 when a NOTICE.md row has no manifest row, a manifest row has no
-      NOTICE.md row, a third_party/*/LICENSE* file is in no manifest row, or
-      an active row's text is missing or empty.
+      NOTICE.md row, a licence file (LICENSE*, LICENCE*, COPYING*) at any
+      depth under third_party/ is no row's text, a third_party/ directory is
+      covered by no row's source, a row's source path does not exist, a
+      packaging/licences/ text is named by no row, or an active row's text
+      is missing or empty.
 
 Runs from the repository root.
 """
 
 import argparse
-import glob
 import mmap
 import os
+import re
 import shutil
+import subprocess
 import sys
 
 # Byte strings a clean openpete binary never contains. The bare words
@@ -38,6 +42,11 @@ COPYLEFT_MARKERS = (
 
 MANIFEST = "packaging/licences/manifest.tsv"
 NOTICE = "NOTICE.md"
+THIRD_PARTY = "third_party"
+PACKAGING_TEXTS = "packaging/licences"
+# A licence file's base name: LICENSE, LICENCE or COPYING, with an optional
+# suffix after "." or "-" (LICENSE.txt, LICENSE-bsd.txt, COPYING.txt).
+LICENCE_NAME = re.compile(r"^(LICEN[CS]E|COPYING)([.-][^/]*)?$")
 
 
 def fail(msg):
@@ -99,7 +108,7 @@ def cmd_scan(args):
 
 
 def read_manifest():
-    """Return manifest rows as (component, scope, text, shipped) tuples."""
+    """Return manifest rows as (component, scope, text, shipped, source) tuples."""
     rows = []
     with open(MANIFEST, encoding="utf-8") as f:
         for n, line in enumerate(f, 1):
@@ -107,10 +116,88 @@ def read_manifest():
             if not line or line.startswith("#"):
                 continue
             cols = line.split("\t")
-            if len(cols) != 4 or not all(cols):
-                fail(f"{MANIFEST}:{n}: expected 4 non-empty tab-separated columns")
+            if len(cols) != 5 or not all(cols):
+                fail(f"{MANIFEST}:{n}: expected 5 non-empty tab-separated columns")
             rows.append(tuple(cols))
     return rows
+
+
+def gitignored_dirs():
+    """Return the third_party/ directories .gitignore names, without the slash."""
+    out = set()
+    try:
+        with open(".gitignore", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip().rstrip("/")
+                if line.startswith(THIRD_PARTY + "/") and "*" not in line:
+                    out.add(line)
+    except OSError:
+        pass
+    return out
+
+
+def third_party_files():
+    """Return every file path under third_party/, submodules included.
+
+    git lists tracked files, through checked-out submodules; where git
+    cannot answer (a tree mounted without its git directory) the walk skips
+    the directories .gitignore names.
+    """
+    try:
+        r = subprocess.run(["git", "ls-files", "--recurse-submodules", "-z",
+                            THIRD_PARTY], capture_output=True, check=True)
+        files = [p for p in r.stdout.decode("utf-8").split("\0") if p]
+        if files:
+            return files
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    skip = gitignored_dirs()
+    files = []
+    for root, dirs, names in os.walk(THIRD_PARTY):
+        dirs[:] = [d for d in dirs if os.path.join(root, d) not in skip
+                   and d != ".git"]
+        files += [os.path.join(root, n) for n in names]
+    return files
+
+
+def third_party_dirs(files):
+    """Return the top-level third_party/ entries holding a file, plus submodule directories."""
+    out = {"/".join(p.split("/")[:2]) for p in files if p.count("/") >= 2}
+    for name in os.listdir(THIRD_PARTY) if os.path.isdir(THIRD_PARTY) else []:
+        path = f"{THIRD_PARTY}/{name}"
+        if os.path.exists(os.path.join(path, ".git")):
+            out.add(path)
+    return out - gitignored_dirs()
+
+
+def check_coverage(rows):
+    """Refuse a licence file, third_party/ directory or packaging text no row accounts for."""
+    texts = {r[2] for r in rows}
+    sources = set()
+    for comp, _scope, _text, _shipped, source in rows:
+        if source == "-":
+            continue
+        for s in source.split(","):
+            if not os.path.exists(s):
+                fail(f"'{comp}' names source {s}, which does not exist")
+            sources.add(s.rstrip("/"))
+    files = third_party_files()
+    orphan = sorted(p for p in files
+                    if LICENCE_NAME.match(os.path.basename(p)) and p not in texts)
+    if orphan:
+        fail("third_party licence files in no " + MANIFEST + " row: "
+             + ", ".join(orphan))
+    uncovered = sorted(d for d in third_party_dirs(files)
+                       if not any(s == d or s.startswith(d + "/") for s in sources))
+    if uncovered:
+        fail("third_party directories no " + MANIFEST + " row's source covers: "
+             + ", ".join(uncovered))
+    stale = sorted(os.path.join(PACKAGING_TEXTS, n)
+                   for n in os.listdir(PACKAGING_TEXTS)
+                   if n.endswith(".txt") and os.path.join(PACKAGING_TEXTS, n) not in texts)
+    if stale:
+        fail(PACKAGING_TEXTS + " texts no " + MANIFEST + " row names: "
+             + ", ".join(stale))
 
 
 def notice_components():
@@ -140,18 +227,13 @@ def cmd_licences(args):
     stale = sorted(manifest_names - set(notice))
     if stale:
         fail(MANIFEST + " rows with no NOTICE.md row: " + "; ".join(stale))
-    texts = {r[2] for r in rows}
-    orphan = [p for p in sorted(glob.glob("third_party/*/LICENSE*"))
-              if p not in texts]
-    if orphan:
-        fail("third_party licence files in no " + MANIFEST + " row: "
-             + ", ".join(orphan))
+    check_coverage(rows)
 
     dest = os.path.join(args.stage, "licences")
     os.makedirs(dest, exist_ok=True)
     scopes = set(args.scope)
     copied = 0
-    for comp, scope, text, shipped in shipped_rows:
+    for comp, scope, text, shipped, _source in shipped_rows:
         if scope not in scopes or text == "-" or text.startswith("lib:"):
             continue
         if scope.startswith("toolchain-"):
