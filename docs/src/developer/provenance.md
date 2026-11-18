@@ -52,7 +52,7 @@ retail SCPH-1001 BIOS ([DuckStation oracle](duckstation-oracle.md)).
   the setup script, applies it to the pinned commit and builds the test
   binary locally; the applied head is a function of the pin and the applied
   tree.
-- No package contains DuckStation or any part of it.
+- No package built from this revision contains DuckStation or any part of it.
 
 Data the reference produced (the trace goldens under `tests/golden/`, which
 are generated and not committed, and the measured tables below) records the
@@ -69,7 +69,7 @@ earlier code that followed it:
 | controller motor response (the input offset, output scale and small-motor rule; the cubic is Pokopom's, below), `core/input/rumble_response.c` | `tests/unit/data/rumble-response/reference.tsv` | `tools/rumble_response_measure.py`, `tools/rumble_probe/` |
 | line rasterizer of the unit tests, `tests/unit/psx_gpu_line.c` | `tests/unit/data/gpu-line/line.pixels` | `tools/gpu_blackbox/measure_lines.py` |
 | UI sprite texel stepping, `games/common/renderer/psx_uv.c` | `tests/unit/data/gpu-uv/uv.texels` | `tools/gpu_blackbox/measure_uv.py` |
-| SPU voice envelope, `third_party/PsyCross/src/audio/PsyX_SPUAL.cpp` | `tests/unit/data/spu-envelope/reference.env` | `tools/spu_envelope_measure.py`, `tools/spu_envelope_probe/` |
+| SPU voice envelope, `third_party/PsyCross/src/audio/PsyX_SPUEnvelope.cpp` | `tests/unit/data/spu-envelope/reference.env` | `tools/spu_envelope_measure.py`, `tools/spu_envelope_probe/` |
 | analog stick response, `core/input/stick_response.c` | `tests/unit/data/stick-response/console.runs` | `tools/stick_response_measure.py` |
 
 Each table's header states the method, the reference's applied head and the

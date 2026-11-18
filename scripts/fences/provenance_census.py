@@ -100,6 +100,8 @@ TOKENS = (
     ("SPUAL_Voice_KeyOff", "PsyCross fork, retired envelope"),
     ("SPUALEnvelope", "PsyCross fork, retired envelope"),
     ("adsr_target", "PsyCross fork, retired envelope"),
+    ("adsr_envelope", "PsyCross fork, retired envelope (the voice field)"),
+    ("gpu_texel", "openpete, retired UV stepper"),
     ("SPUALADSRPhase", "PsyCross fork, retired envelope"),
     ("SPUAL_Envelope_Reset", "PsyCross fork, retired envelope"),
     ("SPUAL_Envelope_Begin", "PsyCross fork, retired envelope"),
