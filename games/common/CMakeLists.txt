@@ -65,6 +65,9 @@ set(OPENPETE_GAME_COMMON_SOURCES
     renderer/water_plane.c
     renderer/player_ranges.c
     renderer/ui_sprite.c
+    # The texel plane the PSX GPU reads across a textured triangle, fed by
+    # ui_sprite.c.
+    renderer/psx_uv.c
     # The SPRT text feeder: registered only by a game whose ui_game names a
     # self-linking chain emitter, inert in the others.
     renderer/text_sprt.c

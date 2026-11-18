@@ -27,6 +27,7 @@
 #include "renderer/render_paths.h"
 #include "renderer/native_gte.h"      /* the shared texture-page decode */
 #include "renderer/ui_game.h"
+#include "renderer/psx_uv.h"       /* the texel plane the GPU reads */
 #include "renderer/orchestrator.h"  /* spyro_native_canon_capture_open */
 #include "openpete_recomp_module.h"   /* the game's own routine, through the module dispatch */
 #include "texture_pack.h"
@@ -183,126 +184,6 @@ static ui_blend_t ui_blend(int semi, unsigned abr) {
     return kAbr[abr & 3u];
 }
 
-/* games/common/renderer/psx_uv.h - the texel the PSX GPU reads at each pixel
- * of a textured triangle, as a plane over screen position. */
-
-/* The fields are the implementation's to choose; callers use
- * psx_uv_plane_setup and psx_uv_plane_at only. */
-typedef struct psx_uv_plane {
-    double u_org, v_org;   /* u and v at screen position (0, 0) */
-    double dudx, dudy;     /* u per pixel in x and in y */
-    double dvdx, dvdy;     /* v per pixel in x and in y */
-} psx_uv_plane;
-
-/** @brief Builds the plane of texel coordinates the PSX GPU reads across a textured triangle.
- *
- * The plane is affine in screen position. At every pixel (x, y) the GPU
- * draws for the triangle, floor(psx_uv_plane_at(p, x, y, 0)) mod 256 and
- * floor(psx_uv_plane_at(p, x, y, 1)) mod 256 are the u and v the GPU reads
- * (before the texture window). For a sprite (x, y, w, h, u, v) the same
- * holds at every pixel of the sprite on each of the two triangles it is fed
- * as: (x, y, u, v), (x + w, y, u + w, v), (x, y + h, u, v + h) and
- * (x + w, y, u + w, v), (x + w, y + h, u + w, v + h), (x, y + h, u, v + h).
- * The expected output is the measured table tests/unit/data/gpu-uv/uv.texels
- * (gpu_uv_table_test).
- * @param iv The triangle's integer vertices in the GP0 command's order, each {x, y, u, v}.
- * @param p Receives the plane.
- * @return 1 on success; 0 when the triangle's screen area is zero and the
- *         GPU draws nothing. */
-static int psx_uv_plane_setup(const int iv[3][4], psx_uv_plane* p);
-
-/** @brief Evaluates the plane at a screen position, in texels, unwrapped.
- *
- * @param p The plane from psx_uv_plane_setup.
- * @param x The screen x: pixel (x, y) is the integer position, fractions interpolate.
- * @param y The screen y.
- * @param which_v Nonzero for v, zero for u.
- * @return The plane's value. */
-static double psx_uv_plane_at(const psx_uv_plane* p, double x, double y, int which_v);
-
-/* games/common/renderer/psx_uv.c - the texel the PSX GPU reads at each pixel
- * of a textured triangle.
- *
- * Measured rule (tests/unit/data/gpu-uv/uv.texels: census triangles of the
- * three games, sprites, plain, mirrored, scaled and skewed quads, random
- * triangles and their reorderings):
- *
- * - Each of u and v has two gradients, per pixel in x and in y, in fixed
- *   point with 12 fraction bits: the exact gradient of the plane through
- *   the three vertices, scaled by 4096 and truncated toward zero.
- * - The plane starts at one vertex, the base: the vertex with the smallest
- *   x. When two vertices share the smallest x, the base is the one that
- *   follows the other in the command's cyclic vertex order (v0 -> v1 ->
- *   v2 -> v0). This tie is the only way vertex order changes the texels.
- * - At pixel (x, y) the value is base.u * 4096 + 2048 + Gx * (x - base.x) +
- *   Gy * (y - base.y), and the texel is that value shifted right by 12
- *   (floor), mod 256. The 2048 rounds the base texel to the nearest.
- *
- * The hardware documentation states only that the GPU interpolates texture
- * coordinates linearly in screen space; the precision, the base vertex and
- * the rounding are taken from the table.
- *
- * The plane is stored as doubles holding integers divided by 4096. For
- * integer x and y, and for every value an on-screen triangle produces, each
- * product and sum in psx_uv_plane_at is exact in double precision, so the
- * floor of the result equals the integer computation regardless of the
- * floating-point rounding mode. */
-
-#define PSX_UV_FRAC_BITS 12
-#define PSX_UV_ONE (1LL << PSX_UV_FRAC_BITS)
-
-/** @brief Returns the index of the vertex the texel plane starts from.
- *
- * The vertex with the smallest x; of two sharing it, the one that follows
- * the other in cyclic vertex order.
- * @param iv The triangle's vertices, each {x, y, u, v}.
- * @return 0, 1 or 2. */
-static int psx_uv_base_vertex(const int iv[3][4])
-{
-    int b = 0;
-    for (int i = 1; i < 3; i++)
-        if (iv[i][0] < iv[b][0]) b = i;
-    for (int i = 0; i < 3; i++)
-        if (i != b && iv[i][0] == iv[b][0] && i == (b + 1) % 3) return i;
-    return b;
-}
-
-static int psx_uv_plane_setup(const int iv[3][4], psx_uv_plane* p)
-{
-    const long long ex1 = iv[1][0] - iv[0][0], ey1 = iv[1][1] - iv[0][1];
-    const long long ex2 = iv[2][0] - iv[0][0], ey2 = iv[2][1] - iv[0][1];
-    const long long area = ex1 * ey2 - ex2 * ey1;   /* twice the signed area */
-    p->u_org = p->v_org = p->dudx = p->dudy = p->dvdx = p->dvdy = 0.0;
-    if (area == 0) return 0;
-    const int b = psx_uv_base_vertex(iv);
-    long long g[2][2];   /* [u or v][x or y], 12 fraction bits */
-    for (int w = 0; w < 2; w++) {
-        const long long d1 = iv[1][2 + w] - iv[0][2 + w], d2 = iv[2][2 + w] - iv[0][2 + w];
-        /* C division truncates toward zero, as the measured gradients do. */
-        g[w][0] = (d1 * ey2 - d2 * ey1) * PSX_UV_ONE / area;
-        g[w][1] = (ex1 * d2 - ex2 * d1) * PSX_UV_ONE / area;
-    }
-    const long long bx = iv[b][0], by = iv[b][1];
-    const long long u0 = iv[b][2] * PSX_UV_ONE + PSX_UV_ONE / 2 - g[0][0] * bx - g[0][1] * by;
-    const long long v0 = iv[b][3] * PSX_UV_ONE + PSX_UV_ONE / 2 - g[1][0] * bx - g[1][1] * by;
-    const double one = (double)PSX_UV_ONE;
-    p->u_org = (double)u0 / one;
-    p->v_org = (double)v0 / one;
-    p->dudx = (double)g[0][0] / one;
-    p->dudy = (double)g[0][1] / one;
-    p->dvdx = (double)g[1][0] / one;
-    p->dvdy = (double)g[1][1] / one;
-    return 1;
-}
-
-static double psx_uv_plane_at(const psx_uv_plane* p, double x, double y, int which_v)
-{
-    return which_v ? p->v_org + p->dvdx * x + p->dvdy * y
-                   : p->u_org + p->dudx * x + p->dudy * y;
-}
-
-
-
 /** @brief Rounds a fed 2D triangle's screen positions and texel coordinates back to the primitive's integer words.
  *
  * @param t The fed triangle.
@@ -319,26 +200,42 @@ static void tri_int_verts(const openpete_scene_tri* t, int iv[3][4]) {
  * the GPU's texel under the float error of the interpolation. */
 #define UI_TEXEL_GUARD (1.0 / 8192.0)
 
+/** @brief Returns the texel coordinate the GPU reads at an integer pixel of a triangle's texel plane.
+ *
+ * @param p The plane from psx_uv_plane_setup.
+ * @param x The pixel column.
+ * @param y The pixel row.
+ * @param which_v Nonzero for v, zero for u.
+ * @return floor of the plane's value, wrapped to 0..255. */
+static int psx_texel(const psx_uv_plane* p, int x, int y, int which_v) {
+    return (int)floor(psx_uv_plane_at(p, (double)x, (double)y, which_v)) & 0xFF;
+}
+
 /** @brief Rewrites a textured triangle's vertex u and v so the fragment stage reads the GPU's texel per pixel.
  *
- * Builds the GPU stepper from the triangle's rounded integer words and
- * sets each vertex to the plane value at (sx - 0.5, sy - 0.5) plus
- * UI_TEXEL_GUARD. A triangle of zero screen area is left unchanged.
+ * The fragment stage truncates the u and v it interpolates at the pixel
+ * centre, (x + 0.5, y + 0.5) in PSX pixel units, so each vertex is fed the
+ * GPU's texel plane (psx_uv_plane_setup over the triangle's rounded integer
+ * words) at (sx - 0.5, sy - 0.5) plus UI_TEXEL_GUARD: the fragment over
+ * pixel (x, y) then reads the plane at (x, y). On an unscaled, unmirrored
+ * primitive the fed value is the vertex u; on a mirrored one it is u + 1;
+ * on a scaled or skewed one it differs by a fraction. A triangle of zero
+ * screen area is left unchanged.
  * @param t The triangle, rewritten in place. */
 static void tex_tri_psx_texel_centre(openpete_scene_tri* t) {
-    int iv[3][4]; psx_uv_plane s;
+    int iv[3][4]; psx_uv_plane p;
     tri_int_verts(t, iv);
-    if (!psx_uv_plane_setup((const int (*)[4])iv, &s)) return;
+    if (!psx_uv_plane_setup((const int (*)[4])iv, &p)) return;
     for (int j = 0; j < 3; j++) {
         const double x = (double)t->v[j].sx - 0.5, y = (double)t->v[j].sy - 0.5;
-        t->v[j].u = (float)(psx_uv_plane_at(&s, x, y, 0) + UI_TEXEL_GUARD);
-        t->v[j].v = (float)(psx_uv_plane_at(&s, x, y, 1) + UI_TEXEL_GUARD);
+        t->v[j].u = (float)(psx_uv_plane_at(&p, x, y, 0) + UI_TEXEL_GUARD);
+        t->v[j].v = (float)(psx_uv_plane_at(&p, x, y, 1) + UI_TEXEL_GUARD);
     }
 }
 
 /* uvedge census (OPENPETE_UISPRITE_CENSUS): textured 2D triangles fed whose
  * native texel on the first or last covered pixel of any row differs from the
- * GPU's, the GPU's read off psx_uv_plane_setup's stepper, the native's by
+ * GPU's, the GPU's read off the triangle's psx_uv plane, the native's by
  * truncating the fed triangle's interpolated u, v at the pixel centre as the
  * fragment stage does. Printed once per tick, at the first textured feed of a
  * later tick. */
@@ -362,17 +259,6 @@ static int tri_uv_grad(const openpete_scene_tri* t, tri_uv_grad_t* g) {
     g->dudx = (du1 * ey2 - du2 * ey1) / det;  g->dudy = (ex1 * du2 - ex2 * du1) / det;
     g->dvdx = (dv1 * ey2 - dv2 * ey1) / det;  g->dvdy = (ex1 * dv2 - ex2 * dv1) / det;
     return 1;
-}
-
-/** @brief Returns the texel coordinate the GPU reads at an integer pixel of a triangle's texel plane.
- *
- * @param p The plane from psx_uv_plane_setup.
- * @param x The pixel column.
- * @param y The pixel row.
- * @param which_v Nonzero for v, zero for u.
- * @return floor of the plane's value, wrapped to 0..255. */
-static int psx_texel(const psx_uv_plane* p, int x, int y, int which_v) {
-    return (int)floor(psx_uv_plane_at(p, (double)x, (double)y, which_v)) & 0xFF;
 }
 
 /** @brief Returns the texel coordinate the fragment stage reads at a pixel of a fed triangle.
@@ -414,20 +300,20 @@ static int tri_covers(const openpete_scene_tri* t, int x, int y) {
  *
  * @param fed The fed triangle.
  * @param g The fed triangle's gradients.
- * @param s The GPU stepper of the original triangle.
+ * @param p The GPU texel plane of the original triangle.
  * @param x The pixel column.
  * @param y The pixel row.
  * @return Nonzero when u or v differs. */
 static int uvedge_pixel_differs(const openpete_scene_tri* fed, const tri_uv_grad_t* g,
-                                const psx_uv_plane* s, int x, int y) {
-    return native_texel(fed, g, x, y, 0) != psx_texel(s, x, y, 0)
-        || native_texel(fed, g, x, y, 1) != psx_texel(s, x, y, 1);
+                                const psx_uv_plane* p, int x, int y) {
+    return native_texel(fed, g, x, y, 0) != psx_texel(p, x, y, 0)
+        || native_texel(fed, g, x, y, 1) != psx_texel(p, x, y, 1);
 }
 
 /** @brief Tests whether a fed triangle reads another texel than the GPU on the first or last covered pixel of any row.
  *
- * The GPU's texel comes from psx_uv_plane_setup's stepper over the original
- * triangle's integer words; the native texel truncates the fed triangle's
+ * The GPU's texel comes from the psx_uv plane of the original triangle's
+ * integer words; the native texel truncates the fed triangle's
  * interpolated u and v at the pixel centre, as the fragment stage does.
  * Rows run over the original's integer bounding box.
  * @param orig The triangle as decoded from the primitive.
@@ -435,9 +321,9 @@ static int uvedge_pixel_differs(const openpete_scene_tri* fed, const tri_uv_grad
  * @return 1 when any row edge differs, else 0 (also for a degenerate
  *         triangle). */
 static int uvedge_tri_differs(const openpete_scene_tri* orig, const openpete_scene_tri* fed) {
-    int iv[3][4]; psx_uv_plane s; tri_uv_grad_t g;
+    int iv[3][4]; psx_uv_plane p; tri_uv_grad_t g;
     tri_int_verts(orig, iv);
-    if (!psx_uv_plane_setup((const int (*)[4])iv, &s) || !tri_uv_grad(fed, &g)) return 0;
+    if (!psx_uv_plane_setup((const int (*)[4])iv, &p) || !tri_uv_grad(fed, &g)) return 0;
     const int x0 = (int)fminf(fminf(orig->v[0].sx, orig->v[1].sx), orig->v[2].sx);
     const int x1 = (int)fmaxf(fmaxf(orig->v[0].sx, orig->v[1].sx), orig->v[2].sx);
     const int y0 = (int)fminf(fminf(orig->v[0].sy, orig->v[1].sy), orig->v[2].sy);
@@ -446,7 +332,7 @@ static int uvedge_tri_differs(const openpete_scene_tri* orig, const openpete_sce
         int lo = x1, hi = x0 - 1;
         for (int x = x0; x < x1; x++)
             if (tri_covers(orig, x, y)) { if (x < lo) lo = x; hi = x; }
-        if (hi >= lo && (uvedge_pixel_differs(fed, &g, &s, lo, y) || uvedge_pixel_differs(fed, &g, &s, hi, y)))
+        if (hi >= lo && (uvedge_pixel_differs(fed, &g, &p, lo, y) || uvedge_pixel_differs(fed, &g, &p, hi, y)))
             return 1;
     }
     return 0;

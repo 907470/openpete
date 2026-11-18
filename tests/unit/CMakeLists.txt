@@ -90,13 +90,14 @@ set_target_properties(view_rect_test PROPERTIES C_STANDARD 99)
 add_test(NAME view_rect_test COMMAND view_rect_test)
 
 # line_quad_test - ngte_line_quad's quad, rasterized at 1x by pixel centres,
-# draws the pixels the PSX GPU draws for the line, ties excepted, over
-# every line within 64 px of a start pixel; the perpendicular 1 px quad is the
-# negative control. Compiles native_gte.c with link stubs for the renderer
+# draws the pixels psx_gpu_line_pixels draws, ties excepted, over every line
+# within 64 px of a start pixel; the perpendicular 1 px quad is the negative
+# control. Compiles native_gte.c with link stubs for the renderer
 # entry points it references.
 add_executable(line_quad_test
     ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c
     line_quad_test.c
+    psx_gpu_line.c
     ${CMAKE_SOURCE_DIR}/games/common/renderer/native_gte.c)
 target_include_directories(line_quad_test PRIVATE
     $<TARGET_PROPERTY:openpete_game_common,INCLUDE_DIRECTORIES>)
@@ -107,6 +108,27 @@ if(NOT WIN32)
 endif()
 set_target_properties(line_quad_test PROPERTIES C_STANDARD 99)
 add_test(NAME line_quad_test COMMAND line_quad_test)
+
+# gpu_line_table_test - psx_gpu_line_pixels against the measured table of the
+# pixels the PSX GPU draws for every line within 64 px of a start pixel,
+# data/gpu-line/line.pixels (tools/gpu_blackbox/measure_lines.py).
+add_executable(gpu_line_table_test gpu_line_table_test.c psx_gpu_line.c)
+set_target_properties(gpu_line_table_test PROPERTIES C_STANDARD 99)
+add_test(NAME gpu_line_table_test COMMAND gpu_line_table_test
+         ${CMAKE_CURRENT_SOURCE_DIR}/data/gpu-line/line.pixels)
+
+# gpu_uv_table_test - psx_uv_plane_setup against the measured table of the
+# texel the PSX GPU reads at each pixel of a textured triangle or sprite,
+# data/gpu-uv/uv.texels (tools/gpu_blackbox/measure_uv.py).
+add_executable(gpu_uv_table_test gpu_uv_table_test.c
+    ${CMAKE_SOURCE_DIR}/games/common/renderer/psx_uv.c)
+target_include_directories(gpu_uv_table_test PRIVATE ${CMAKE_SOURCE_DIR}/games/common)
+if(NOT WIN32)
+    target_link_libraries(gpu_uv_table_test PRIVATE m)
+endif()
+set_target_properties(gpu_uv_table_test PROPERTIES C_STANDARD 99)
+add_test(NAME gpu_uv_table_test COMMAND gpu_uv_table_test
+         ${CMAKE_CURRENT_SOURCE_DIR}/data/gpu-uv/uv.texels)
 
 # live_latch_test - header-only. A setting latched once per present reads one
 # value through the present while another thread keeps setting it; the

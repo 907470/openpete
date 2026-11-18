@@ -1,9 +1,10 @@
 /* tests/unit/line_quad_test.c - ngte_line_quad covers the pixels the PSX GPU
  * draws for a line.
  *
- * The reference is psx_gpu_line_pixels, the line pixels measured on the
- * oracle's reference GPU. Over every line from a
- * fixed start pixel to each end offset in [-RANGE, RANGE]^2 (zero length,
+ * The reference is psx_gpu_line_pixels (psx_gpu_line.c), which
+ * gpu_line_table_test holds to the line pixels measured on the oracle's
+ * reference GPU (data/gpu-line/line.pixels). Over every line from a fixed
+ * start pixel to each end offset in [-RANGE, RANGE]^2 (zero length,
  * the axis-aligned and diagonal cases included), the quad ngte_line_quad
  * builds on the integer endpoints (centre offset 0.5) is rasterized at 1x by
  * pixel centres. A pixel whose centre lies inside the quad must be drawn by
@@ -19,6 +20,7 @@
 #include "openpete_native_render.h"
 #include "renderer/orchestrator.h"
 #include "game_layout.h"
+#include "psx_gpu_line.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -61,70 +63,6 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) { (void)key; (vo
 #define X0 100              /* start pixel */
 #define Y0 100
 #define GRID 256            /* pixel grid, covers X0 +- RANGE + 2 */
-
-/* tests/unit/psx_gpu_line.h - the pixels the PSX GPU draws for a line. */
-
-/** @brief Receives one drawn pixel.
- * @param ctx The caller's context.
- * @param x The pixel column.
- * @param y The pixel row. */
-typedef void (*psx_gpu_plot_fn)(void* ctx, int x, int y);
-
-/** @brief Calls plot once for every pixel the PSX GPU draws for a monochrome line between two integer vertices.
- *
- * The vertices are in drawing coordinates after the drawing offset, with no
- * drawing-area clip and no interlace skip. The vertex order is the order
- * of the GP0 command. The expected output is the measured table
- * tests/unit/data/gpu-line/line.pixels (gpu_line_table_test).
- * @param x0 First vertex x.
- * @param y0 First vertex y.
- * @param x1 Second vertex x.
- * @param y1 Second vertex y.
- * @param plot Called once per drawn pixel.
- * @param ctx Passed to plot.
- * @return The number of pixels drawn. */
-static int psx_gpu_line_pixels(int x0, int y0, int x1, int y1, psx_gpu_plot_fn plot, void* ctx);
-
-/* tests/unit/psx_gpu_line.c - the pixels the PSX GPU draws for a line.
- *
- * Measured rule (tests/unit/data/gpu-line/line.pixels, every end offset in
- * [-64, 64]^2): the line draws one pixel per major-axis coordinate from the
- * first vertex to the second, both endpoints included; the major axis is x
- * when |dx| >= |dy|, else y. At major-axis step i of k, the minor-axis offset
- * is i * dminor / k rounded to the nearest integer. When that value lies
- * exactly halfway between two pixels, the pixel taken depends on the line's
- * screen geometry only, never on vertex order: on an x-major line the row
- * nearer the endpoint with the larger x; on a y-major line the column nearer
- * the endpoint with the smaller x. */
-
-#include <stdlib.h>
-
-static int psx_gpu_line_pixels(int x0, int y0, int x1, int y1, psx_gpu_plot_fn plot, void* ctx)
-{
-    const int dx = x1 - x0, dy = y1 - y0;
-    const int adx = abs(dx), ady = abs(dy);
-    const int x_major = adx >= ady;
-    const int k = x_major ? adx : ady;   /* major-axis steps */
-    const int n = x_major ? ady : adx;   /* minor-axis distance */
-    const int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
-    if (k == 0) {
-        plot(ctx, x0, y0);
-        return 1;
-    }
-    /* A halfway minor offset rounds away from the first vertex (bias 0) or
-     * toward it (bias 1). Away means toward the larger-x end on an x-major
-     * line and toward the smaller-x end on a y-major line. */
-    const long bias = x_major ? (dx < 0) : (dx > 0);
-    for (int i = 0; i <= k; i++) {
-        const int m = (int)((2L * i * n + k - bias) / (2L * k));
-        if (x_major)
-            plot(ctx, x0 + sx * i, y0 + sy * m);
-        else
-            plot(ctx, x0 + sx * m, y0 + sy * i);
-    }
-    return k + 1;
-}
-
 
 /** @brief Marks one reference pixel in a GRID x GRID grid.
  * @param ctx The grid, indexed [y][x].
