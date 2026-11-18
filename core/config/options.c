@@ -17,6 +17,7 @@
 #include "openpete_paths.h" /* where --bk2-record output is allowed to live */
 #include "openpete_docs_url.h" /* OPENPETE_DOCS_URL - the --help footer */
 #include "openpete_stick_response.h" /* --stick-response values */
+#include "openpete_render_res.h"  /* --resolution grammar */
 
 #include <SDL3/SDL.h>     /* SDL_CreateDirectory - --bk2-record output dir */
 
@@ -1148,6 +1149,18 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
                     v, OPENPETE_SSAA_MAX, OPENPETE_SSAA_MAX);
             opts->ssaa = OPENPETE_SSAA_MAX;
         }
+    } else if (strcmp(a, "--resolution") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        i++;
+        openpete_render_res_t rv;
+        char msg[160];
+        const int rc = openpete_render_res_parse(v, &rv, msg, sizeof msg);
+        if (msg[0]) fprintf(stderr, "openpete: %s\n", msg);
+        if (rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->resolution = openpete_render_res_pack(&rv);
+        /* window is the default path in every mode, so only N or WxH marks
+         * the value as given for the headless captures. */
+        opts->resolution_set = rv.kind != OPENPETE_RR_WINDOW;
     } else if (strcmp(a, "--osd") == 0) {
         const char *v = (i + 1 < argc) ? argv[++i] : "";
         if      (!strcmp(v, "on")  || !strcmp(v, "1")) opts->osd = 1;

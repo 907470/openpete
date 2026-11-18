@@ -665,6 +665,18 @@ void openpete_native_set_ssaa(int factor);
  * @return The factor, 1 when unset. */
 int openpete_native_get_ssaa(void);
 
+/** @brief Set the internal render resolution (--resolution) as a packed value.
+ *
+ * Stores the wanted value only; the present latches it between frames and
+ * the present-setup ensures reallocate the base targets on the display's
+ * owner. A value set through this call counts as explicit for headless
+ * captures.
+ * @param packed A value packed by openpete_render_res_pack. */
+void openpete_native_set_resolution(int packed);
+/** @brief Return the wanted internal render resolution, packed.
+ * @return The value packed by openpete_render_res_pack; 0 is window. */
+int openpete_native_get_resolution(void);
+
 /** @brief Set the vsync preference: FIFO when on, immediate or mailbox when off.
  *
  * Forwards to the RHI, which stores the preference and, on a windowed

@@ -98,6 +98,9 @@ void   openpete_native_set_aspect(float a)     { s_native_aspect = (a > 0.0f) ? 
 float  openpete_native_get_aspect(void)        { return s_native_aspect; }
 void   openpete_native_set_ssaa(int n)         { s_native_ssaa = n; }
 int    openpete_native_get_ssaa(void)          { return s_native_ssaa; }
+static int s_native_resolution;
+void   openpete_native_set_resolution(int packed) { s_native_resolution = packed; }
+int    openpete_native_get_resolution(void)    { return s_native_resolution; }
 void   openpete_native_set_vsync(int on)       { s_native_vsync = on ? 1 : 0; }
 int    openpete_native_get_vsync(void)         { return s_native_vsync; }
 void   openpete_native_set_perf_stats(int level) { s_native_showfps = level; }

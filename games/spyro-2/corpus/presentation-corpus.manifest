@@ -277,6 +277,12 @@ idol-springs-puzzle-1|2573|200||2195,2800
 # Cutscene letterbox bars growing 2 PSX rows per tick (VBL 1413-1435): the
 # intermediate leg must show them between the two ticks. Blessed pre-fix.
 riptos_arena-letterbox|1413|2||1415,1425|--skip-to-level riptos_arena
+# @res1, @res2vp: the letterbox bars drawn into a --resolution 1 and 2 base
+# (512x216 and 1024x432 at 4:3, widened at 16:9), resampled to the capture;
+# @res2vp with integer vertex precision, whose implicit pixelation is inert
+# under N.
+riptos_arena-letterbox@res1|1413|2||1415,1425|--skip-to-level riptos_arena --resolution 1
+riptos_arena-letterbox@res2vp|1413|2||1415,1425|--skip-to-level riptos_arena --resolution 2 --vertex-precision integer
 # settings-menu: the settings menu (OPENPETE_MENU_DEMO opens it at boot)
 # drawn into the capture by --screenshot-overlays, over summer_forest. Its text is
 # the credits font's glyph models, read from WAD.WAD on the disc

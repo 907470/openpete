@@ -181,6 +181,7 @@
 "knob:render_fps" = "graphics/smoothness.md#frame-rate"
 "knob:render_paths" = "playing/dev-overlay.md#sections"
 "knob:renderer" = "graphics/display.md#renderer"
+"knob:resolution" = "graphics/quality.md#resolution"
 "knob:rewind" = "playing/saves.md#rewind"
 "knob:runahead" = "graphics/smoothness.md#runahead"
 "knob:save_mismatch_toast" = "playing/saves.md#mods-and-memory-cards"

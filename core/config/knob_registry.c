@@ -31,6 +31,7 @@
 #include "openpete_rewind.h"
 #include "openpete_state.h"
 #include "openpete_stick_response.h"
+#include "openpete_render_res.h"
 #include "no_lod.h"
 
 #include <math.h>
@@ -881,6 +882,31 @@ static int loglevel_set_str(knob_desc_t *k, const char *v) {
     return 0;
 }
 
+/** @brief Write the wanted --resolution value in the flag's spelling: window, N or WxH.
+ * @param k The row; unused.
+ * @param buf Receives the text.
+ * @param cap The capacity of buf. */
+static void resolution_get_str(const knob_desc_t *k, char *buf, size_t cap) {
+    (void)k;
+    const openpete_render_res_t v = openpete_render_res_unpack(openpete_native_get_resolution());
+    openpete_render_res_format(&v, buf, cap);
+}
+
+/** @brief Parse a --resolution value with the flag's parser and hand it to the renderer, which applies it at the next present.
+ * @param k The row; unused.
+ * @param v The text: window, N or WxH.
+ * @return 0 when accepted (N above the maximum is clamped), -1 when refused. */
+static int resolution_set_str(knob_desc_t *k, const char *v) {
+    (void)k;
+    openpete_render_res_t rv;
+    char msg[160];
+    const int rc = openpete_render_res_parse(v, &rv, msg, sizeof msg);
+    if (msg[0]) fprintf(stderr, "openpete: %s\n", msg);
+    if (rc < 0) return -1;
+    openpete_native_set_resolution(openpete_render_res_pack(&rv));
+    return 0;
+}
+
 static const char *const k_logfmt_names[] = { "plain", "json" };
 /** @brief The active log format as its k_logfmt_names index. */
 static double logfmt_get(const knob_desc_t *k) {
@@ -1132,6 +1158,21 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "vertical FOV of the visible band, native renderer (default 55°,\n"
           "range 30-120; the horizontal FOV follows the Hor+ aspect: 74° at\n"
           "4:3, 90° at 16:9 for the default). Inert under --renderer psycross." },
+
+    { "resolution", "Resolution", "Display", "--resolution", NULL,
+      "Pixel count the 3D scene renders at: the window's own size, N times "
+      "the game's original raster, or exact WxH pixels. The picture keeps "
+      "the window's shape; supersampling stacks on top. Applying reallocates "
+      "the render targets next present.",
+      KNOB_STRING, KNOB_LIVE, NULL, 0, 0, 0,
+      NULL, NULL, resolution_get_str, resolution_set_str, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "window", .control_str = "2",
+      .help_arg = "window|N|WxH", .help_order = 88,
+      .help_text = "pixel count of the native 3D scene (default {def}): window = the\n"
+          "window's size; N = N times the game's original raster (1..8; Spyro 1\n"
+          "512x224, Spyro 2 and 3 512x216, widened for Hor+); WxH = exact\n"
+          "pixels (64..16384 a side). The scene is stretched to the window's\n"
+          "picture area; --ssaa supersamples on top of it." },
 
     { "ssaa", "Supersampling", "Display", "--ssaa", NULL,
       "Native supersampling factor. Applying reallocates the render target "

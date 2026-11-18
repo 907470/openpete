@@ -49,6 +49,7 @@
 #include "openpete_bugthumbs.h" /* bug-report thumbnail ring */
 #include "openpete_view_rect.h" /* the view layout and its pixel rect */
 #include "openpete_live_latch.h" /* live settings latched once per present */
+#include "openpete_render_res.h" /* --resolution: value grammar and base sizes */
 #include "no_lod.h" /* openpete_no_lod_latch */
 #include "rhi.h"
 #include "launcher_title_pass.h" /* the launcher's 3D title */
@@ -2090,6 +2091,9 @@ static int s_dither = 0;       /* --dither: PS1 15-bit colour + 4x4 hardware dit
 static _Atomic(int) s_raster_mult_want = 0;
 static _Atomic(int) s_dither_want      = 0;
 static _Atomic(int) s_ssaa_want        = 0;
+static _Atomic(int) s_rr_want          = 0;   /* --resolution, openpete_render_res_pack bits */
+static _Atomic(int) s_rr_explicit      = 0;   /* 1: a flag, the config key or a live set gave --resolution */
+static _Atomic(int) s_raster_explicit  = 0;   /* 1: --raster-quantize given, by flag, key or a live set */
 static _Atomic(int) s_aspect_want      = 0;   /* float bits */
 static _Atomic(int) s_perf_stats_want  = OPENPETE_PERF_FPS;
 static _Atomic(int) s_vsync_want       = 0;
@@ -5984,6 +5988,7 @@ static struct {
      * FT4 that samples PsyCross's VRAM scratch - so the green overlay shows OUR
      * render and survives the end-state where PsyCross's VRAM is gone. */
     freeze_target_t frozen_tex;       /* .valid once a world frame is captured; .wf 0 */
+    freeze_target_t frozen_prev;      /* the valid backdrop frozen_tex held before a size change */
     rhi_pipeline *freeze_overlay_pipe;/* samples frozen_tex, luma + tint (set 0) */
     rhi_pipeline *freeze_plain_pipe;  /* samples frozen_tex unaltered (set 0) */
     rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
@@ -6115,6 +6120,27 @@ static int s_render_full_extent = 0;
  * fills out to ±1 - used to capture the freeze backdrop at the widescreen extent
  * so the pause/exit backdrop fills a widescreen window (not pillarboxed). */
 static float s_render_freeze_wf = 1.0f;
+
+/* --resolution state. bits is the value latched for this present (packed,
+ * openpete_render_res_pack); explicit is set when a flag, the config key or a
+ * live set gave a value, and headless captures honour the value only then.
+ * plan sizes the live present's base; dplan the headless capture's, held so
+ * every ensure_native_rtt between captures keeps the capture's size. The
+ * counters feed the [render-res] engagement line. */
+static struct {
+    int bits;
+    int in_dump;                      /* a headless base capture is composing */
+    openpete_render_res_plan_t plan;
+    openpete_render_res_plan_t plan_req;   /* the plan as last computed, before allocation steps */
+    openpete_render_res_plan_t dplan;
+    rhi_pipeline *pipe;               /* psx_sample.vert + render_res.frag, built at first use */
+    int pipe_failed;
+    unsigned long long composes;      /* composes through the path the value selects */
+    unsigned long long base_composes; /* of those, through a base (live or capture) */
+    unsigned long long rq_passes;     /* raster-quantize passes raster_quantize_prepend returned */
+    unsigned long long snap_verts, snap_int, snap_outside, snap_off;   /* OPENPETE_RENDER_RES_SNAP_CENSUS */
+    char last_line[512];
+} s_rr;
 
 /* Path-isolation mode (--render-paths, set by the game). When on, an empty
  * native scene presents the background instead of re-displaying the PSX VRAM
@@ -8464,6 +8490,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * pass are set up lazily (ensure_ss_rtt) once the window size is known. */
     s_nr.ssaa = (opts->ssaa > 0) ? opts->ssaa : 1;
     op_live_set(&s_ssaa_want, s_nr.ssaa);
+    s_rr.bits = opts->resolution;
+    op_live_set(&s_rr_explicit, opts->resolution_set != 0);
+    op_live_set(&s_raster_explicit, opts->raster_quantize >= 0);
+    op_live_set(&s_rr_want, s_rr.bits);
     /* Vertex-precision snap (--vertex-precision integer): re-introduce the PSX
      * integer-grid vertex snap in add_tri_grouped. Default smooth (subpixel). */
     s_vertex_snap = s_vertex_snap_present =
@@ -9348,30 +9378,133 @@ static bool sync_reference_texture(void)
     return true;
 }
 
-/** @brief Create or resize native_rtt and frozen_tex at the reference resolution.
+/** @brief Return the base plan native_rtt is held at, or NULL when it is held at the reference size.
  *
- * native_rtt holds the canonical native image of each present: the diff
- * pass compares it and the live vk and ab panels blit from it. frozen_tex
- * holds the last world image for the pause, inventory and flight freeze
- * backdrop; a resize clears frozen_valid. No-op until the reference size is
- * known or while both already match it. Creates GPU resources and waits
- * idle, so it runs outside a frame.
- * @param want Allocation gate; every caller passes true, since the
- *        canonical-image model needs both targets in every mode. */
+ * A live present holds the live plan while a base is active. Headless has no
+ * live present: it holds the last capture's plan while --resolution was given
+ * explicitly, so an ensure between captures (freeze_render_into) keeps the
+ * capture's size.
+ * @return The plan, or NULL. */
+static openpete_render_res_plan_t *rr_held_plan(void)
+{
+    if (s_nr.headless)
+        return (op_live_get(&s_rr_explicit) && s_rr.dplan.active) ? &s_rr.dplan : NULL;
+    return s_rr.plan.active ? &s_rr.plan : NULL;
+}
+
+/** @brief Create or resize frozen_tex, the live freeze backdrop, at the base size under a live base, else the reference size.
+ *
+ * A size change while the backdrop is valid moves it to frozen_prev, which
+ * active_frozen falls back to, so the pause screen keeps its image through
+ * any number of size changes; the new frozen_tex starts invalid. Once
+ * frozen_tex is valid again the next call releases frozen_prev. Creates and
+ * destroys GPU resources and waits idle, so it runs outside a frame. */
+static void ensure_frozen_tex(void)
+{
+    int w = s_nr.ref_w, h = s_nr.ref_h;
+    if (!s_nr.headless && s_rr.plan.active) { w = s_rr.plan.bw; h = s_rr.plan.bh; }
+    freeze_target_t *f = &s_nr.frozen_tex, *pv = &s_nr.frozen_prev;
+    if (f->tex && f->w == w && f->h == h) {
+        if (pv->tex && f->valid) {
+            rhi_wait_idle(s_nr.dev);
+            rhi_destroy_texture(s_nr.dev, pv->tex);
+            *pv = (freeze_target_t){0};
+        }
+        return;
+    }
+    rhi_wait_idle(s_nr.dev);
+    if (f->tex && f->valid) {
+        if (pv->tex) rhi_destroy_texture(s_nr.dev, pv->tex);
+        *pv = *f;
+    } else if (f->tex) {
+        rhi_destroy_texture(s_nr.dev, f->tex);
+    }
+    *f = (freeze_target_t){0};
+    f->tex = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    f->w = w; f->h = h;
+}
+
+/** @brief Create or resize native_rtt at the size rr_held_plan names, stepping the plan down on an allocation failure.
+ *
+ * Without a held plan the size is the reference size. Waits idle on a
+ * change, so it runs outside a frame. */
+static void ensure_native_rtt_size(void)
+{
+    openpete_render_res_plan_t *p = rr_held_plan();
+    int w = p ? p->bw : s_nr.ref_w, h = p ? p->bh : s_nr.ref_h;
+    if (s_nr.native_rtt && s_nr.rtt_w == w && s_nr.rtt_h == h) return;
+    rhi_wait_idle(s_nr.dev);
+    if (s_nr.native_rtt) { rhi_destroy_texture(s_nr.dev, s_nr.native_rtt); s_nr.native_rtt = NULL; }
+    s_nr.native_rtt = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    while (!s_nr.native_rtt && p && openpete_render_res_step_down(p, s_nr.disp_w, s_nr.clip_h)) {
+        if (p->bw == w && p->bh == h) continue;   /* an s step leaves B as it is */
+        OPL_INFO_F("native", "resolution: base %dx%d did not allocate; stepping to %dx%d", w, h, p->bw, p->bh);
+        w = p->bw; h = p->bh;
+        s_nr.native_rtt = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    }
+    s_nr.rtt_w = w; s_nr.rtt_h = h;
+    if (s_nr.native_rtt)
+        OPL_INFO_F("native", "native render target %dx%d (%s)", w, h, p ? "resolution base" : "reference size");
+}
+
+/** @brief Derive the reference size from game state when no reference has set it.
+ *
+ * The bars-free display is 4:3 corrected for the vertical overscan crop at
+ * two rows per drawn line, as the screenshot compose fallback derives it.
+ * No-op while the reference size is known. */
+static void ref_size_from_state(void)
+{
+    if (s_nr.ref_w > 0 && s_nr.ref_h > 0) return;
+    int dh = s_nr.disp_h > 0 ? s_nr.disp_h : 240;
+    int ch = s_nr.clip_h > 0 ? s_nr.clip_h : 224;
+    int rh = ch * 2;
+    int rw = (int)((double)rh * (4.0 / 3.0) * (double)dh / (double)ch + 0.5);
+    if (rw > 0 && rh > 0) { s_nr.ref_w = rw; s_nr.ref_h = rh; }
+}
+
+/** @brief Plan a headless capture's base: the capture extent C is the reference height by the reference width times @p cap_wf, V is all of C.
+ *
+ * Only a headless run with an explicit --resolution of kind N or WxH has a
+ * capture base; the capture never supersamples. The plan is held in
+ * s_rr.dplan so native_rtt keeps its size between captures.
+ * @param cap_wf The capture widen, at least 1.
+ * @param out Receives the plan.
+ * @return 1 when the capture composes through a base. */
+static int rr_capture_plan(float cap_wf, openpete_render_res_plan_t *out)
+{
+    memset(out, 0, sizeof *out);
+    if (!s_nr.headless || !op_live_get(&s_rr_explicit)) return 0;
+    const openpete_render_res_t v = openpete_render_res_unpack(s_rr.bits);
+    if (v.kind == OPENPETE_RR_WINDOW) return 0;
+    ref_size_from_state();
+    if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return 0;
+    if (cap_wf < 1.0f) cap_wf = 1.0f;
+    const int cw = (int)((double)s_nr.ref_w * (double)cap_wf + 0.5), ch = s_nr.ref_h;
+    const int dst[4] = { 0, 0, cw, ch };
+    const int disp_w = s_nr.disp_w > 0 ? s_nr.disp_w : 512;
+    const int clip_h = s_nr.clip_h > 0 ? s_nr.clip_h : 224;
+    if (!openpete_render_res_plan(&v, 1, cw, ch, dst, cap_wf, disp_w, clip_h,
+                                  rhi_max_image_dimension(s_nr.dev), out))
+        return 0;
+    s_rr.dplan = *out;
+    return 1;
+}
+
+/** @brief Create or resize native_rtt and frozen_tex, each at its own size.
+ *
+ * native_rtt is the full-extent target: at the reference size it is the
+ * screenshot dump's compose target and a member of the key-contest union;
+ * under an active --resolution base (rr_held_plan) it holds the base image
+ * the scene is composed or resolved into before the resample to the window.
+ * frozen_tex holds the last world image for the pause, inventory and flight
+ * freeze backdrop (ensure_frozen_tex). No-op until the reference size is
+ * known. Creates GPU resources and waits idle, so it runs outside a frame.
+ * @param want Allocation gate; every caller passes true. */
 static void ensure_native_rtt(bool want)
 {
     if (!want || s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return;
-    if (s_nr.native_rtt && s_nr.rtt_w == s_nr.ref_w && s_nr.rtt_h == s_nr.ref_h) return;
-    rhi_wait_idle(s_nr.dev);
-    if (s_nr.native_rtt) { rhi_destroy_texture(s_nr.dev, s_nr.native_rtt); s_nr.native_rtt = NULL; }
-    if (s_nr.frozen_tex.tex) { rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex.tex); s_nr.frozen_tex.tex = NULL; }
-    s_nr.frozen_tex.valid = false;
-    s_nr.native_rtt = rhi_create_render_target(s_nr.dev, (uint32_t)s_nr.ref_w, (uint32_t)s_nr.ref_h);
-    s_nr.frozen_tex.tex = rhi_create_render_target(s_nr.dev, (uint32_t)s_nr.ref_w, (uint32_t)s_nr.ref_h);
-    s_nr.rtt_w = s_nr.ref_w; s_nr.rtt_h = s_nr.ref_h;
-    s_nr.frozen_tex.w = s_nr.ref_w; s_nr.frozen_tex.h = s_nr.ref_h;
-    if (s_nr.native_rtt)
-        OPL_INFO_F("native", "native render target %dx%d (+ freeze snapshot)", s_nr.ref_w, s_nr.ref_h);
+    ensure_native_rtt_size();
+    ensure_frozen_tex();
 }
 
 /** @brief Create or resize the widescreen screenshot target.
@@ -9406,6 +9539,10 @@ static rhi_texture *ensure_shot_rtt(int w, int h)
  * window size an existing target is released. No-op when the target already
  * matches. Creates GPU resources and waits idle, so it runs outside a frame.
  *
+ * Under an active --resolution base the target is the base times the
+ * plan's factor (already bounded by the plan), and the factor the
+ * allocation reached is written back to the plan.
+ *
  * The scene target is one fifth of what the factor costs: the four
  * key-contest targets are allocated at this same extent
  * (ensure_terrain_key_targets). */
@@ -9414,6 +9551,9 @@ static void ensure_ss_rtt(void)
     int req = (s_nr.ssaa > 1) ? s_nr.ssaa : 1;
     if (req > OPENPETE_SSAA_MAX) req = OPENPETE_SSAA_MAX;   /* VRAM ceiling (openpete.h) */
     int win_w = s_nr.win_w, win_h = s_nr.win_h;
+    /* Under a live base the scene target is the base times the plan's factor. */
+    openpete_render_res_plan_t *rp = (!s_nr.headless && s_rr.plan.active) ? &s_rr.plan : NULL;
+    if (rp) { req = rp->s; win_w = rp->bw; win_h = rp->bh; }
     if (req <= 1 || win_w <= 0 || win_h <= 0) {              /* SSAA off -> drop any RT */
         if (s_nr.ss_rtt) {
             rhi_wait_idle(s_nr.dev);
@@ -9442,6 +9582,7 @@ static void ensure_ss_rtt(void)
     } else {
         s_nr.ss_w = s_nr.ss_h = 0; s_nr.ss_factor = 1;   /* couldn't allocate -> SSAA off */
     }
+    if (rp) { rp->s = s_nr.ss_factor; rp->tw = rp->bw * rp->s; rp->th = rp->bh * rp->s; }
 }
 
 /** @brief Return the window pixels the native view's render rect covers.
@@ -15847,26 +15988,30 @@ static void portal_mask_bias(float* c, float* s, float* cl)
  * and its far-sentinel fallback let level mobys reappear once the camera
  * crossed the plane. See the portal draw site in draw_native_scene.) */
 
-/** @brief Return the freeze backdrop record: the screenshot-time capture when valid, else the live one.
+/** @brief Return the freeze backdrop record: the screenshot-time capture when valid, else the live one, else the live one before a size change.
  *
  * shot_frozen is written by openpete_native_render_snapshot_frozen during a
  * screenshot run and is preferred whenever it exists and is valid; frozen_tex
- * is written by the live present (capture_freeze_from_offscreen), so a
- * headless dump would otherwise have no backdrop.
- * @return shot_frozen or frozen_tex, never NULL; frozen_tex.tex may be NULL. */
+ * is written by the live present (capture_freeze_from_offscreen, or the base
+ * snapshot under --resolution), so a headless dump would otherwise have no
+ * backdrop. frozen_prev holds the valid backdrop a size change of frozen_tex
+ * displaced (ensure_frozen_tex) until frozen_tex is valid again.
+ * @return shot_frozen, frozen_tex or frozen_prev, never NULL; frozen_tex.tex may be NULL. */
 static const freeze_target_t *active_frozen(void)
 {
     if (s_nr.shot_frozen.tex && s_nr.shot_frozen.valid) return &s_nr.shot_frozen;
+    if (!s_nr.frozen_tex.valid && s_nr.frozen_prev.tex && s_nr.frozen_prev.valid) return &s_nr.frozen_prev;
     return &s_nr.frozen_tex;
 }
 
 /** @brief Give the u range of a freeze backdrop that a compose at the current widen samples.
  *
  * A backdrop rendered at widen wf holds its 4:3 picture in the centre 1/wf
- * of its width. A compose at a smaller widen (s_render_freeze_wf: the
- * reference-size compose beside a PsyCross reference is 1) covers only the
- * centre band of it, so u spans 0.5 +- 0.5 x (compose widen / backdrop
- * widen) and the picture keeps its true width. Equal widens, and a
+ * of its width. A compose at a smaller widen (s_render_freeze_wf under the
+ * full-extent mapping, where the reference-size compose beside a PsyCross
+ * reference is 1; ws_factor under the panel mapping) covers only the centre
+ * band of it, so u spans 0.5 +- 0.5 x (compose widen / backdrop widen) and
+ * the picture keeps its true width. Equal widens, and a
  * snapshot at the present's own aspect (wf 0), sample u 0..1. A compose
  * wider than the backdrop also samples 0..1: shot_frozen is rendered at the
  * widest widen a capture composes at, so no compose takes that case.
@@ -15877,7 +16022,8 @@ static void frozen_u_span(const freeze_target_t *t, float *u0, float *u1)
 {
     *u0 = 0.0f; *u1 = 1.0f;
     if (t->wf <= 0.0f) return;
-    const float cwf = s_render_freeze_wf > 0.0f ? s_render_freeze_wf : 1.0f;
+    const float wfc = s_render_full_extent ? s_render_freeze_wf : s_nr.ws_factor;
+    const float cwf = wfc > 0.0f ? wfc : 1.0f;
     const float k = cwf / t->wf;
     if (k >= 1.0f - 1e-4f) return;
     *u0 = 0.5f - 0.5f * k;
@@ -19134,6 +19280,17 @@ int openpete_native_get_ssaa(void) {
     return (f > 0) ? f : 1;
 }
 
+void openpete_native_set_resolution(int packed) {
+    const openpete_render_res_t v = openpete_render_res_unpack(packed);
+    op_live_set(&s_rr_want, openpete_render_res_pack(&v));   /* the present-setup ensures reallocate */
+    op_live_set(&s_rr_explicit, 1);
+    char b[32];
+    openpete_render_res_format(&v, b, sizeof b);
+    OPL_INFO_F("native", "resolution -> %s (applied at the next present)", b);
+}
+
+int openpete_native_get_resolution(void) { return op_live_get(&s_rr_want); }
+
 void openpete_native_set_vsync(int on) {
     if (s_nr.dev) op_live_set(&s_vsync_want, on ? 1 : 0);   /* the swapchain rebuilds after the next latch */
     OPL_INFO_F("native", "vsync -> %s", on ? "ON (FIFO)" : "OFF (immediate/mailbox)");
@@ -19163,7 +19320,8 @@ void openpete_native_set_vertex_precision(int integer_snap) {
 
 void openpete_native_set_raster_quantize(int mult) {
     const int m = mult > 0 ? mult : 0;
-    op_live_set(&s_raster_mult_want, m);     /* consumed at the next SCENE split after the latch */
+    op_live_set(&s_raster_mult_want, m);
+    op_live_set(&s_raster_explicit, 1);     /* consumed at the next SCENE split after the latch */
     if (m)
         OPL_INFO_F("native", "raster-quantize -> %dx (%dx%d grid, %d visible lines)",
                    m, 512 * m, 240 * m, 224 * m);
@@ -19370,6 +19528,7 @@ static void present_knobs_latch(void) {
     (void)op_live_latch(&s_raster_mult_want, &s_raster_mult);
     (void)op_live_latch(&s_dither_want, &s_dither);
     (void)op_live_latch(&s_ssaa_want, &s_nr.ssaa);
+    (void)op_live_latch(&s_rr_want, &s_rr.bits);
     (void)op_live_latch(&s_perf_stats_want, &s_perf_stats);
     (void)op_live_latch(&s_texmap_want, &s_texmap_pending);
     (void)op_live_latch(&s_notex_want, &s_notex_pending);
@@ -20749,6 +20908,7 @@ static void capture_freeze_from_offscreen(bool world_frame)
         rhi_snapshot_offscreen_to_rt(s_nr.dev, s_nr.frozen_tex.tex, sx, sy, sw, sh);
         if (s_pt) { fprintf(stderr, "t"); fflush(stderr); }   /* freeze snapshot done */
         s_nr.frozen_tex.valid = true;
+        s_nr.frozen_tex.wf = 0.0f;   /* the present's own aspect */
     }
 }
 
@@ -21064,6 +21224,26 @@ static bool draw_scene_or_vram(bool vram)
     return drew;
 }
 
+/** @brief Draw the live present's chrome into the open offscreen pass: stats, version line, toasts, settings menu, then the dev overlay.
+ *
+ * The chrome draws only on the live present (s_overlay_live); the dev
+ * overlay draws here unless a COMPOSITE postfx chain is live, which would
+ * filter the panel, in which case the present draws it on top of the
+ * chain's output instead. */
+static void draw_live_chrome(void)
+{
+    if (s_overlay_live) {
+        draw_perf_overlay();
+        draw_version_overlay();
+        draw_osd_overlay();
+        draw_menu_overlay();
+    }
+    if (s_overlay_live && !native_postfx_point_active(0))
+        openpete_devui_render(s_nr.dev);
+}
+
+static void compose_base(bool world_frame);
+
 /** @brief Compose one present's display image into the window-sized offscreen pass.
  *
  * With no live native scene (PsyCross display mode) the reference texture is
@@ -21075,7 +21255,8 @@ static bool draw_scene_or_vram(bool vram)
  * set, the stats, version, toast and menu overlays, with the dev overlay
  * unless a COMPOSITE chain is live. The freeze backdrop is captured from the
  * finished offscreen unless the chrome split already took it, and s_pc_cur
- * records what the image shows for the present census. */
+ * records what the image shows for the present census. Under an active
+ * --resolution base the present composes through compose_base instead. */
 static void compose_variant(void)
 {
     /* PsyCross display mode: there is no native scene to walk. The picture is
@@ -21100,14 +21281,7 @@ static void compose_variant(void)
         NR_PROF_BEGIN("cmp.chrome");
         scene_postfx_split();                     /* SCENE point */
         draw_mod_overlay();                       /* mod HUD (content) */
-        if (s_overlay_live) {
-            draw_perf_overlay();
-            draw_version_overlay();
-            draw_osd_overlay();
-            draw_menu_overlay();
-        }
-        if (s_overlay_live && !native_postfx_point_active(0))
-            openpete_devui_render(s_nr.dev);
+        draw_live_chrome();
         rhi_end_offscreen(s_nr.dev);
         NR_PROF_END();   /* cmp.chrome */
         s_pc_cur = s_nr.ref_tex && s_nr.layout_ref_w > 0 ? PC_REF : PC_CLEAR;
@@ -21149,6 +21323,13 @@ static void compose_variant(void)
                 s_scene_key, scene_present_stamp(), (int)world_frame, sn, cw, ca, sfreeze,
                 openpete_tercache_frame_source(), openpete_tercache_frame_content(), td, gb);
     }
+    /* --resolution N | WxH: the scene composes into the base image and is
+     * resampled into the window's picture area (compose_base). */
+    if (!s_nr.headless && s_rr.plan.active && s_nr.native_rtt && s_nr.layout_ref_w > 0) {
+        compose_base(world_frame);
+        return;
+    }
+    s_rr.composes++;
     /* The freeze backdrop is snapshotted from the clean, correctly-projected
      * windowed offscreen (rhi_snapshot_offscreen_to_rt after the offscreen pass
      * below), never from a full-extent render into native_rtt: that skews
@@ -21194,16 +21375,7 @@ static void compose_variant(void)
         draw_mod_overlay();                       /* mod HUD (content - records too) */
         /* Freeze snapshot first, chrome after - see chrome_split_capture. */
         const bool froze = chrome_split_capture(world_frame);
-        if (s_overlay_live) {
-            draw_perf_overlay();                  /* on the resolved 1× offscreen, crisp */
-            draw_version_overlay();               /* build-version line           */
-            draw_osd_overlay();                   /* toasts above the readout    */
-            draw_menu_overlay();                  /* settings menu on top        */
-        }
-        /* Dev overlay: under a live COMPOSITE chain, drawn post-chain
-         * instead so screen filters never render over the panel. */
-        if (s_overlay_live && !native_postfx_point_active(0))
-            openpete_devui_render(s_nr.dev);      /* dev overlay topmost */
+        draw_live_chrome();                       /* on the resolved 1x offscreen, crisp */
         rhi_end_offscreen(s_nr.dev);
         /* The freeze snapshot lives in the fall-through path below, which this SSAA
          * branch skips - so capture it here too, from the box-resolved 1× offscreen
@@ -21239,19 +21411,9 @@ static void compose_variant(void)
     draw_mod_overlay();
     bool froze = chrome_split_capture(world_frame);   /* backdrop before chrome */
     /* Chrome - the live present only, never screenshots or dumps, where
-     * s_overlay_live is 0. */
-    if (s_overlay_live) {
-        draw_perf_overlay();
-        draw_version_overlay();
-        draw_osd_overlay();
-        draw_menu_overlay();
-    }
-    /* Dev overlay: when a COMPOSITE postfx chain is live it would filter
-     * the panel into illegibility (CRT masks) - skip here and re-draw on
-     * TOP of the chain's output instead (present_native, post-chain load
-     * pass). One imgui frame either way. */
-    if (s_overlay_live && !native_postfx_point_active(0))
-        openpete_devui_render(s_nr.dev);
+     * s_overlay_live is 0. The dev overlay under a live COMPOSITE chain is
+     * re-drawn on top of the chain's output (present_native). */
+    draw_live_chrome();
 
     rhi_end_offscreen(s_nr.dev);
 
@@ -21465,6 +21627,291 @@ static void write_engine_block(rhi_ubo* u, int blk, int w, int h)
     pfx_engine_ubo_t eng;
     fill_engine_block(&eng, w, h);
     rhi_ubo_write(u, blk, &eng, sizeof eng);
+}
+
+/* ---- --resolution: base compose, resample, engagement -------------------
+ * Under N or WxH the scene composes full extent into native_rtt held at the
+ * base size B (through ss_rtt at B x s and the SSAA resolve when s > 1), and
+ * render_res.frag resamples B's source rect into the picture area of the
+ * window offscreen, where the SCENE postfx point, the mod HUD and the chrome
+ * run as at window. */
+
+/* render_res.frag's push block (std430 push-constant layout). */
+typedef struct { float src[4]; int dst[4]; int mode[4]; } rr_push_t;
+
+/** @brief Build the resample pipeline on first use; outside a frame.
+ * @return 1 when the pipeline exists. */
+static int rr_pipe_ready(void)
+{
+    if (s_rr.pipe) return 1;
+    if (s_rr.pipe_failed || !s_nr.dev) return 0;
+    const rhi_pipeline_desc d = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "render_res.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = (uint32_t)sizeof(rr_push_t),
+    };
+    rhi_pipe_site_visit(RHI_PIPE_SITE_BUILTIN_LAZY, 1);
+    s_rr.pipe = rhi_create_pipeline(s_nr.dev, &d);
+    if (!s_rr.pipe) {
+        s_rr.pipe_failed = 1;
+        OPL_WARN_F("native", "resolution: the resample pipeline did not build; rendering at window");
+    }
+    return s_rr.pipe != NULL;
+}
+
+/** @brief Return the source x offset OPENPETE_RENDER_RES_SHIFT adds, the resample model's positive control.
+ * @return The offset in texels, 0 unless set. */
+static float rr_shift(void)
+{
+    static int read = 0;
+    static float v = 0.0f;
+    if (!read) {
+        const char *e = getenv("OPENPETE_RENDER_RES_SHIFT");
+        v = (e && *e) ? (float)atof(e) : 0.0f;
+        read = 1;
+    }
+    return v;
+}
+
+/** @brief Draw B's source rect into the open pass through render_res.frag.
+ * @param p The plan: source rect, destination rect and per-axis filters.
+ * @param src The base image. */
+static void rr_resample(const openpete_render_res_plan_t *p, rhi_texture *src)
+{
+    const float sh = rr_shift();
+    rr_push_t pc = {
+        { p->src[0] + sh, p->src[1], p->src[2] + sh, p->src[3] },
+        { p->dst[0], p->dst[1], p->dst[2], p->dst[3] },
+        { p->filter[0], p->filter[1], p->ratio[0], p->ratio[1] },
+    };
+    rhi_gpu_zone_begin(s_nr.dev, "sc.resample");
+    bind_scene_pipe(s_rr.pipe);
+    rhi_bind_vram(s_nr.dev, src);
+    rhi_push_constants(s_nr.dev, &pc, (uint32_t)sizeof pc);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
+    rhi_draw(s_nr.dev, 6, 0);
+    rhi_gpu_zone_end(s_nr.dev);
+}
+
+/** @brief Count the base compose's vertices whose PSX x is whole and those the compose maps off a whole base pixel (OPENPETE_RENDER_RES_SNAP_CENSUS=1).
+ *
+ * Runs with the base compose's mapping installed (full extent at wf' or
+ * wf). Each vertex x is mapped through scene_to_clip to base pixels; a
+ * vertex inside the base's width counts as off when it lands more than
+ * 1e-3 pixel from a whole pixel, and the first offenders are printed.
+ * Vertices outside the base (off-screen geometry) are counted apart: they
+ * place no pixel edge in the image.
+ * @param bw The base width in pixels. */
+static void rr_snap_census(int bw)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OPENPETE_RENDER_RES_SNAP_CENSUS"); on = (e && *e && *e != '0'); }
+    if (!on) return;
+    int n = 0;
+    uint32_t sbg, sfade;
+    const scene_tri_t *sc = scene_present_buf(&n, &sbg, &sfade, NULL, NULL, NULL);
+    const int fe = s_render_full_extent;
+    s_render_full_extent = 1;
+    for (int t = 0; sc && t < n; t++) {
+        for (int k = 0; k < 3; k++) {
+            const float x = sc[t].v[k].sx;
+            s_rr.snap_verts++;
+            if (x != floorf(x)) continue;
+            float cx, cy;
+            scene_to_clip(x, 0.0f, &cx, &cy);
+            const double px = ((double)cx + 1.0) * 0.5 * (double)bw;
+            if (px < 0.0 || px > (double)bw) { s_rr.snap_outside++; continue; }
+            s_rr.snap_int++;
+            if (fabs(px - floor(px + 0.5)) > 1e-3) {
+                if (s_rr.snap_off < 8)
+                    fprintf(stderr, "[render-res-snap] off: cat=%d sx=%.3f px=%.6f\n",
+                            sc[t].category, (double)x, px);
+                s_rr.snap_off++;
+            }
+        }
+    }
+    s_render_full_extent = fe;
+    fprintf(stderr, "[render-res-snap] verts=%llu int_x=%llu outside=%llu off_pixel=%llu B_w=%d wf'=%.6f\n",
+            s_rr.snap_verts, s_rr.snap_int, s_rr.snap_outside, s_rr.snap_off, bw, (double)s_render_freeze_wf);
+}
+
+/** @brief Compose the present's scene into the base image native_rtt, through ss_rtt and the SSAA resolve when the plan supersamples.
+ *
+ * The compose maps the full extent at the plan's render widen; the key pass
+ * runs at the composed target's extent. Called inside a frame, outside any
+ * pass.
+ * @param p The plan.
+ * @return true when the scene drew; false leaves the base cleared. */
+static bool rr_compose_into_base(const openpete_render_res_plan_t *p)
+{
+    const float prev_wf = s_render_freeze_wf;
+    s_render_freeze_wf = p->wf_render;
+    rr_snap_census(p->bw);
+    bool drew;
+    rhi_gpu_zone_begin(s_nr.dev, "sc.scene");
+    if (p->s > 1 && s_nr.ss_rtt) {
+        int kw, kh;
+        rhi_texture_extent(s_nr.ss_rtt, &kw, &kh);
+        native_terrain_key_pass(1, kw, kh);
+        rhi_begin_render_target(s_nr.dev, s_nr.ss_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
+        drew = draw_scene_with_matview(true);
+        rhi_end_render_target(s_nr.dev, s_nr.ss_rtt);
+        if (drew) {
+            const int n = s_nr.ss_factor;
+            rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
+            bind_scene_pipe(s_nr.resolve_pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.ss_rtt);
+            rhi_push_constants(s_nr.dev, &n, sizeof(n));
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
+            rhi_draw(s_nr.dev, 6, 0);
+            rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
+        }
+    } else {
+        native_terrain_key_pass(1, p->bw, p->bh);
+        rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
+        drew = draw_scene_with_matview(true);
+        rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
+    }
+    rhi_gpu_zone_end(s_nr.dev);
+    s_render_freeze_wf = prev_wf;
+    s_rr.base_composes++;
+    return drew;
+}
+
+/** @brief Compose one live present through the --resolution base into the window offscreen.
+ *
+ * The scene composes into the base (rr_compose_into_base); a world present
+ * copies the base 1:1 into frozen_tex as the freeze backdrop, before the
+ * mod HUD and the chrome exist; the window offscreen then takes the
+ * resample into the picture area, or the VRAM framebuffer when the scene is
+ * empty, then the SCENE postfx point, the mod HUD and the chrome, as the
+ * window path does.
+ * @param world_frame True when this present composes a world scene. */
+static void compose_base(bool world_frame)
+{
+    const openpete_render_res_plan_t *p = &s_rr.plan;
+    s_rr.composes++;
+    const bool drew = rr_compose_into_base(p);
+    if (drew && world_frame && s_nr.frozen_tex.tex &&
+        s_nr.frozen_tex.w == p->bw && s_nr.frozen_tex.h == p->bh) {
+        rhi_blit_rt_to_rt(s_nr.dev, s_nr.frozen_tex.tex, s_nr.native_rtt);
+        s_nr.frozen_tex.valid = true;
+        s_nr.frozen_tex.wf = p->wf_render;
+    }
+    rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
+    if (drew) rr_resample(p, s_nr.native_rtt);
+    else draw_vram_fallback(s_nr.panels_vb);
+    s_pc_cur = drew ? PC_SCENE : PC_VRAM;
+    NR_PROF_BEGIN("cmp.chrome");
+    scene_postfx_split();
+    draw_mod_overlay();
+    draw_live_chrome();
+    rhi_end_offscreen(s_nr.dev);
+    NR_PROF_END();   /* cmp.chrome */
+}
+
+/** @brief Return the raster-quantize multiplier in force for the compose that runs the SCENE chain.
+ *
+ * Under an N base pixelation is inert, explicit or not: the base is already
+ * the lattice it would sample. Under a WxH base the implicit default (the
+ * pairing with integer vertex precision) resolves to 0 and an explicit value
+ * runs. At window the latched value runs, as before.
+ * @return The multiplier, 0 for none. */
+static int rr_raster_mult(void)
+{
+    const openpete_render_res_plan_t *p = s_nr.headless ? (s_rr.in_dump ? &s_rr.dplan : NULL) : &s_rr.plan;
+    if (p && p->active) {
+        if (p->kind == OPENPETE_RR_MULT) return 0;
+        if (p->kind == OPENPETE_RR_EXACT && !op_live_get(&s_raster_explicit)) return 0;
+    }
+    return s_raster_mult;
+}
+
+/** @brief Print the [render-res] engagement line when its sizes changed, or always when @p force is set.
+ *
+ * Without an active plan the line describes the window path: B is the
+ * window, T the window times the SSAA factor in force. scene_rect and
+ * scene_grid are the engine block the SCENE chain reads, taken under
+ * @p full_extent at @p cap_wf.
+ * @param why live, capture or exit.
+ * @param p The plan, or NULL.
+ * @param cw Capture or window width.
+ * @param ch Capture or window height.
+ * @param full_extent 1 when the chain runs under the full-extent mapping.
+ * @param cap_wf The chain's widen under the full-extent mapping.
+ * @param force 1 to print even when nothing changed. */
+static void rr_report(const char *why, const openpete_render_res_plan_t *p, int cw, int ch,
+                      int full_extent, float cap_wf, int force)
+{
+    char val[32];
+    const openpete_render_res_t v = openpete_render_res_unpack(s_rr.bits);
+    openpete_render_res_format(&v, val, sizeof val);
+    const int on = p && p->active;
+    const openpete_px_rect_t vp = view_px_rect();
+    const int ss = s_nr.ss_factor > 1 ? s_nr.ss_factor : 1;
+    const int fe = s_render_full_extent;
+    const float fw = s_render_freeze_wf;
+    s_render_full_extent = full_extent;
+    s_render_freeze_wf = cap_wf;
+    pfx_engine_ubo_t eng;
+    fill_engine_block(&eng, cw, ch);
+    s_render_full_extent = fe;
+    s_render_freeze_wf = fw;
+    char line[512];
+    snprintf(line, sizeof line,
+             "value=%s B=%dx%d T=%dx%d V=%d,%d,%dx%d C=%dx%d wf=%.4f wf'=%.4f crop=%.3f filter=x:%s,y:%s "
+             "scene_rect=%.4f,%.4f,%.4f,%.4f scene_grid=%g,%g,%g,%.4f",
+             val, on ? p->bw : cw, on ? p->bh : ch, on ? p->tw : cw * ss, on ? p->th : ch * ss,
+             on ? p->dst[0] : vp.x, on ? p->dst[1] : vp.y, on ? p->dst[2] : vp.w, on ? p->dst[3] : vp.h,
+             cw, ch, (double)(on ? p->wf : s_nr.ws_factor), (double)(on ? p->wf_render : s_nr.ws_factor),
+             (double)(on ? p->src[0] : 0.0f),
+             openpete_render_res_filter_name(on ? p->filter[0] : OPENPETE_RR_F_COPY),
+             openpete_render_res_filter_name(on ? p->filter[1] : OPENPETE_RR_F_COPY),
+             (double)eng.scene_rect[0], (double)eng.scene_rect[1], (double)eng.scene_rect[2],
+             (double)eng.scene_rect[3], (double)eng.scene_grid[0], (double)eng.scene_grid[1],
+             (double)eng.scene_grid[2], (double)eng.scene_grid[3]);
+    if (!force && !strcmp(line, s_rr.last_line)) return;
+    snprintf(s_rr.last_line, sizeof s_rr.last_line, "%s", line);
+    fprintf(stderr, "[render-res] why=%s %s composes=%llu base_composes=%llu rq_passes=%llu\n",
+            why, line, s_rr.composes, s_rr.base_composes, s_rr.rq_passes);
+}
+
+/** @brief Print the run's last [render-res] line with its counters at exit.
+ *
+ * A headless run reports its last capture plan under the full-extent
+ * mapping, a windowed run its live plan; no-op without a device. */
+static void rr_report_exit(void)
+{
+    if (!s_nr.dev || !s_nr.enabled) return;
+    const openpete_render_res_plan_t *rp = s_nr.headless ? &s_rr.dplan : &s_rr.plan;
+    if (s_nr.headless && rp->active) rr_report("exit", rp, rp->dst[2], rp->dst[3], 1, rp->wf, 1);
+    else rr_report("exit", rp, s_nr.win_w, s_nr.win_h, 0, 1.0f, 1);
+}
+
+/** @brief Plan the live present's base from the latched value, the SSAA factor, the window and the picture area.
+ *
+ * Runs in the present setup on the display's owner, before the target
+ * ensures. A plan is replaced only when its inputs change, so a factor or
+ * size the allocation stepped down stays stepped. Without the resample
+ * pipeline the base stays inactive and the window path runs. */
+static void rr_plan_live(void)
+{
+    const openpete_render_res_t v = openpete_render_res_unpack(s_rr.bits);
+    openpete_render_res_plan_t np;
+    memset(&np, 0, sizeof np);
+    if (v.kind != OPENPETE_RR_WINDOW && s_nr.scene_live && s_nr.layout_ref_w > 0) {
+        const openpete_px_rect_t vp = view_px_rect();
+        const int dst[4] = { vp.x, vp.y, vp.w, vp.h };
+        openpete_render_res_plan(&v, s_nr.ssaa, s_nr.win_w, s_nr.win_h, dst, s_nr.ws_factor,
+                                 s_nr.disp_w, s_nr.clip_h, rhi_max_image_dimension(s_nr.dev), &np);
+    }
+    if (memcmp(&np, &s_rr.plan_req, sizeof np) != 0) {
+        s_rr.plan_req = np;
+        s_rr.plan = np;
+    }
+    if (s_rr.plan.active && !rr_pipe_ready()) s_rr.plan.active = 0;
+    rr_report("live", &s_rr.plan, s_nr.win_w, s_nr.win_h, 0, 1.0f, 0);
 }
 
 #define MAT_UBO_BLOCKS 129   /* 1 engine + 128 slots (MOD_MATERIAL_SLOTS) */
@@ -21889,8 +22336,9 @@ static struct {                                /* std140 mirror of rq_params */
 
 /** @brief Write the engine's raster-quantize pass into a postfx chain.
  *
- * Emits nothing unless @p point is the SCENE point and --raster-quantize is
- * above 0. The pipeline is built on first use; a failed build is logged
+ * Emits nothing unless @p point is the SCENE point and the multiplier in
+ * force (rr_raster_mult) is above 0; each pass written counts in the
+ * engagement line's rq_passes. The pipeline is built on first use; a failed build is logged
  * and stored as the failure marker, which makes the executor skip the
  * pass. The uniforms carry the multiplier and the affine that maps the
  * PSX screen into the opaque depth pre-pass allocation, with the valid
@@ -21900,10 +22348,12 @@ static struct {                                /* std140 mirror of rq_params */
  * @return Number of passes written, 0 or 1. */
 static int raster_quantize_prepend(int point, openpete_postfx_pass_t* pass)
 {
-    if (point != 1 /* OP_POSTFX_SCENE */ || s_raster_mult <= 0) return 0;
+    const int mult = rr_raster_mult();
+    if (point != 1 /* OP_POSTFX_SCENE */ || mult <= 0) return 0;
+    s_rr.rq_passes++;
     rhi_pipe_site_visit(RHI_PIPE_SITE_BUILTIN_LAZY, 1);
     nr_postfx_pipe(&s_rq_pipe, "raster_quantize.frag.spv", NULL, 0, &k_rq_ref);
-    s_rq_params.scale = (float)s_raster_mult;
+    s_rq_params.scale = (float)mult;
     /* Depth-majority vote input: the WORLD-opaque pre-pass depth, addressed
      * through its PSX-screen->uv affine scaled from the raster extent to the
      * grow-only allocation (the shadow-decal consumers' mapping - plain
@@ -23255,7 +23705,8 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
         if (rw > 0 && rh > 0) { s_nr.ref_w = rw; s_nr.ref_h = rh; }
     }
     update_layout();
-    ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
+    rr_plan_live();            /* --resolution base, from the latched value and the layout */
+    ensure_native_rtt(true);   /* reference size, or the --resolution base */
     ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */
     overlay_layout_update();   /* anchor ledger: where each chrome block sits this present */
     ensure_ovl_ss();           /* stats-overlay supersample target + composite quad */
@@ -23721,32 +24172,30 @@ static bool freeze_src_verdict(void) {
     return src;
 }
 
-/** @brief Size a freeze-backdrop target to the capture extent, (re)creating its texture.
+/** @brief Size a freeze-backdrop target to the capture extent, or to an explicit size, (re)creating its texture.
  *
- * The extent is the reference width times @p cap_wf by the reference
- * height, the reference shape derived from game state when no reference
- * exists (headless has no live frame to source it from, the screenshot
- * compose fallback's rule). The texture is replaced, and the record marked
- * invalid, when its extent differs.
+ * The extent is @p w by @p h when both are positive (a --resolution base),
+ * else the reference width times @p cap_wf by the reference height, the
+ * reference shape derived from game state when no reference exists
+ * (headless has no live frame to source it from, the screenshot compose
+ * fallback's rule). The texture is replaced, and the record marked invalid,
+ * when its extent differs.
  * @param t The target record.
  * @param cap_wf The capture widen, at least 1.
+ * @param w Explicit width, or 0.
+ * @param h Explicit height, or 0.
  * @return 1 when the target holds a texture of the extent, else 0. */
-static int freeze_target_fit(freeze_target_t *t, float cap_wf)
+static int freeze_target_fit(freeze_target_t *t, float cap_wf, int w, int h)
 {
-    if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) {
-        int dh = s_nr.disp_h > 0 ? s_nr.disp_h : 240;
-        int ch = s_nr.clip_h > 0 ? s_nr.clip_h : 224;
-        int rh = ch * 2;
-        int rw = (int)((double)rh * (4.0 / 3.0) * (double)dh / (double)ch + 0.5);
-        if (rw > 0 && rh > 0) { s_nr.ref_w = rw; s_nr.ref_h = rh; }
-    }
+    ref_size_from_state();
     if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return 0;
-    const int Wc = (int)((double)s_nr.ref_w * (double)cap_wf + 0.5);
-    if (!(t->tex && t->w == Wc && t->h == s_nr.ref_h)) {
+    const int Wc = w > 0 && h > 0 ? w : (int)((double)s_nr.ref_w * (double)cap_wf + 0.5);
+    const int Hc = w > 0 && h > 0 ? h : s_nr.ref_h;
+    if (!(t->tex && t->w == Wc && t->h == Hc)) {
         rhi_wait_idle(s_nr.dev);
         if (t->tex) rhi_destroy_texture(s_nr.dev, t->tex);
-        t->tex = rhi_create_render_target(s_nr.dev, (uint32_t)Wc, (uint32_t)s_nr.ref_h);
-        t->w = Wc; t->h = s_nr.ref_h; t->valid = false;
+        t->tex = rhi_create_render_target(s_nr.dev, (uint32_t)Wc, (uint32_t)Hc);
+        t->w = Wc; t->h = Hc; t->valid = false;
     }
     return t->tex != NULL;
 }
@@ -23756,7 +24205,9 @@ static int freeze_target_fit(freeze_target_t *t, float cap_wf)
  * The target is sized first (freeze_target_fit). The scene is the one
  * scene_present_buf returns, so the caller points s_ps_slot at a kept slot
  * to render that slot. Once rendered the record is valid and holds
- * @p cap_wf as its widen.
+ * @p cap_wf as its widen. A headless run with an explicit --resolution base
+ * renders the backdrop at the capture's base size and widen instead
+ * (rr_capture_plan), so the capture draws it 1:1 over its base.
  * @param t The target record.
  * @param cap_wf The capture widen, at least 1.
  * @param sync Nonzero to drain guest VRAM writes into the device texture first.
@@ -23767,7 +24218,10 @@ static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync, int *
 {
     int scene_n; uint32_t sbg, sfade;
     (void)scene_present_buf(&scene_n, &sbg, &sfade, NULL, NULL, NULL);
-    if (!freeze_target_fit(t, cap_wf)) return;
+    openpete_render_res_plan_t bp;
+    const int base = rr_capture_plan(cap_wf, &bp);
+    if (base) cap_wf = bp.wf_render;
+    if (!freeze_target_fit(t, cap_wf, base ? bp.bw : 0, base ? bp.bh : 0)) return;
 
     if (sync) sync_vram_texture();
     ensure_native_rtt(true);
@@ -24682,6 +25136,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
      * pre-pass affine and the scene draw agree. */
     float prev_wf = s_render_freeze_wf;
     s_render_freeze_wf = cap_wf;
+    s_rr.composes++;   /* the engagement line's count of composes through this path */
     shot_chrome_setup(Wc, H);
     int menu_verts = 0;
     vramfb_prepare(cap_wf);   /* an empty compose shows the VRAM framebuffer */
@@ -25148,6 +25603,345 @@ static void hide_hud_report(void)
         fprintf(stderr, "hide-hud: layers_skipped=%u tris_skipped=%u\n", s_hide_hud_layers, s_hide_hud_tris);
 }
 
+/** @brief Copy the PsyCross reference readback into @p dst top-down, alpha forced opaque.
+ *
+ * The readback is GL bottom-up at the reference size; @p w by @p h must be
+ * that size.
+ * @param dst Receives w x h RGBA pixels.
+ * @param w Width in pixels.
+ * @param h Height in pixels. */
+static void reference_topdown(unsigned char *dst, int w, int h)
+{
+    for (int y = 0; y < h; y++)
+        memcpy(&dst[(size_t)y * w * 4], &s_nr.readback[(size_t)(h - 1 - y) * w * 4], (size_t)w * 4);
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) dst[i * 4 + 3] = 0xFF;
+}
+
+/** @brief Return the target a reference-size recompose composes into: native_rtt, or shot_rtt while a live --resolution base holds native_rtt.
+ *
+ * Outside a frame: sizing shot_rtt waits idle. When shot_rtt does not
+ * allocate the recompose falls back to native_rtt, whose base size then
+ * fails the reference-size readback, so the capture reports a failure.
+ * @param w Recompose width.
+ * @param h Recompose height.
+ * @return The target. */
+static rhi_texture *recompose_target(int w, int h)
+{
+    rhi_texture *t = (!s_nr.headless && s_rr.plan.active) ? ensure_shot_rtt(w, h) : NULL;
+    return t ? t : s_nr.native_rtt;
+}
+
+/** @brief Read a render target back and write it as a PNG with alpha forced opaque.
+ * @param t The target.
+ * @param path The PNG path.
+ * @return 0 on success, 1 on a readback or write failure. */
+static int rr_write_target_png(rhi_texture *t, const char *path)
+{
+    int w = 0, h = 0;
+    unsigned char *b = freeze_read_target(t, &w, &h);
+    if (!b) return 1;
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) b[i * 4 + 3] = 0xFF;
+    const int rc = openpete_write_png_rgba(path, b, w, h);
+    free(b);
+    return rc;
+}
+
+/** @brief Record the frames of one headless base capture: compose into the base, resample into shot_rtt at C, draw the mod overlay and chrome, run the postfx chains.
+ *
+ * The compose repeats, up to nine times, while HD texture uploads are
+ * pending. Each frame composes the scene full extent into native_rtt at the
+ * base's render widen; the pass into @p rt (cleared black) takes the
+ * resample of B's source rect onto all of C, or the VRAM framebuffer when the
+ * scene is empty and no reference stands in for it, then the mod overlay and
+ * the --screenshot-overlays chrome at C. The SCENE then COMPOSITE chains run
+ * on @p rt under the full-extent mapping at @p cap_wf, so op_scene_rect and
+ * op_scene_grid are C's full-extent values.
+ * @param p The capture's plan; dst is C.
+ * @param rt shot_rtt at C.
+ * @param cap_wf The capture widen.
+ * @param with_ref True when a PsyCross reference stands in for an empty scene.
+ * @param menu_verts Receives the settings menu's glyph-layer vertices drawn.
+ * @return 1 when the scene drew, 0 when it was empty, -1 when a frame did not begin. */
+static int rr_shot_frames(const openpete_render_res_plan_t *p, rhi_texture *rt, float cap_wf,
+                          bool with_ref, int *menu_verts)
+{
+    const int Cw = p->dst[2], Ch = p->dst[3];
+    const float prev_wf = s_render_freeze_wf;
+    bool drew = false;
+    s_rr.in_dump = 1;
+    for (int attempt = 0; attempt < 9; attempt++) {
+        if (!rhi_begin_frame(s_nr.dev)) { s_rr.in_dump = 0; return -1; }
+        upload_synced_textures();
+        hd_flush_pending();
+        openpete_native_hdfold_flush();
+        native_depth_prepass();
+        census_shot_record();
+        drew = rr_compose_into_base(p);
+        s_render_freeze_wf = cap_wf;
+        shot_chrome_prepare(Cw, Ch);
+        rhi_begin_render_target(s_nr.dev, rt, 0.0f, 0.0f, 0.0f, 1.0f);
+        if (drew) rr_resample(p, s_nr.native_rtt);
+        else if (!with_ref && s_vramfb_vb) draw_vram_fallback(s_vramfb_vb);
+        draw_mod_overlay();
+        *menu_verts = shot_chrome_draw(Cw, Ch);
+        rhi_end_render_target(s_nr.dev, rt);
+        s_render_full_extent = 1;
+        native_postfx_run(1 /* SCENE */, rt, Cw, Ch);
+        native_postfx_run(0 /* COMPOSITE */, rt, Cw, Ch);
+        s_render_full_extent = 0;
+        rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
+        rhi_end_offscreen(s_nr.dev);
+        rhi_blit_to_swapchain(s_nr.dev);
+        rhi_end_frame(s_nr.dev);
+        s_render_freeze_wf = prev_wf;
+        if (s_hd_pending_n == 0 && openpete_native_hdfold_pending() == 0) break;
+    }
+    s_rr.in_dump = 0;
+    return drew ? 1 : 0;
+}
+
+/** @brief Read a base capture back from shot_rtt, stand the reference in for an empty scene, and write -vk (and -base under OPENPETE_RENDER_RES_DUMP_BASE=1) or hand the image over.
+ * @param base Screenshot path stem.
+ * @param p The capture's plan; dst is C.
+ * @param rt shot_rtt at C.
+ * @param drew True when the scene drew.
+ * @param with_ref True when a PsyCross reference exists.
+ * @param cap_out When not NULL, receives the malloc'd RGBA buffer and no PNG is written.
+ * @param cap_w Receives the width when @p cap_out is used; may be NULL.
+ * @param cap_h Receives the height when @p cap_out is used; may be NULL.
+ * @return 0 on success, 1 on a readback or write failure. */
+static int rr_shot_output(const char *base, const openpete_render_res_plan_t *p, rhi_texture *rt,
+                          bool drew, bool with_ref, unsigned char **cap_out, int *cap_w, int *cap_h)
+{
+    const int Cw = p->dst[2], Ch = p->dst[3];
+    int nw = 0, nh = 0;
+    unsigned char *nat = freeze_read_target(rt, &nw, &nh);
+    if (!nat || nw != Cw || nh != Ch) { free(nat); return 1; }
+    terrain_key_dump(base, cap_out != NULL);
+    for (size_t i = 0; i < (size_t)Cw * (size_t)Ch; i++) nat[i * 4 + 3] = 0xFF;
+    if (with_ref && !drew && s_nr.readback && Cw == s_nr.ref_w && Ch == s_nr.ref_h)
+        reference_topdown(nat, Cw, Ch);
+    if (cap_out) {
+        *cap_out = nat;
+        if (cap_w) *cap_w = Cw;
+        if (cap_h) *cap_h = Ch;
+        return 0;
+    }
+    char path[1100];
+    path_with_suffix(base, "-vk", path, sizeof(path));
+    int rc = openpete_write_png_rgba(path, nat, Cw, Ch) != 0;
+    OPL_INFO_F("native", "vk screenshot %dx%d (base %dx%d) -> %s rc=%d", Cw, Ch, p->bw, p->bh, path, rc);
+    free(nat);
+    const char *db = getenv("OPENPETE_RENDER_RES_DUMP_BASE");
+    if (db && *db && *db != '0') {
+        path_with_suffix(base, "-base", path, sizeof(path));
+        rc |= rr_write_target_png(s_nr.native_rtt, path);
+    }
+    return rc;
+}
+
+/** @brief Compose one headless capture through the --resolution base, resample it to the capture extent C, run the postfx chains over C and write it as -vk.
+ *
+ * Sizes native_rtt at the base B (held in s_rr.dplan) and shot_rtt at C,
+ * records the frames (rr_shot_frames) and writes the result
+ * (rr_shot_output). The capture never supersamples.
+ * @param base Screenshot path stem.
+ * @param cap_wf The capture widen: the Hor+ factor of a native-only capture, else 1.
+ * @param with_ref True when a PsyCross reference stands in for an empty scene.
+ * @param cap_out When not NULL, receives the malloc'd RGBA buffer and no PNG is written.
+ * @param cap_w Receives the width when @p cap_out is used; may be NULL.
+ * @param cap_h Receives the height when @p cap_out is used; may be NULL.
+ * @return 0 on success, 1 on a target, frame, allocation, readback or write failure. */
+static int native_shot_base(const char *base, float cap_wf, bool with_ref,
+                            unsigned char **cap_out, int *cap_w, int *cap_h)
+{
+    openpete_render_res_plan_t p;
+    if (!rr_capture_plan(cap_wf, &p)) return 1;
+    ensure_native_rtt(true);
+    ensure_opaque_depth();
+    ensure_terrain_key_targets();
+    p = s_rr.dplan;   /* an allocation step in ensure_native_rtt lands here */
+    rhi_texture *rt = ensure_shot_rtt(p.dst[2], p.dst[3]);
+    if (!rt || !s_nr.native_rtt || s_nr.rtt_w != p.bw || s_nr.rtt_h != p.bh || !rr_pipe_ready()) return 1;
+    shot_chrome_setup(p.dst[2], p.dst[3]);
+    vramfb_prepare(cap_wf);
+    int menu_verts = 0;
+    const int drew = rr_shot_frames(&p, rt, cap_wf, with_ref, &menu_verts);
+    if (drew < 0) return 1;
+    s_rr.composes++;
+    shot_chrome_note(menu_verts);
+    census_shot_write(base, cap_out == NULL);
+    rr_report("capture", &p, p.dst[2], p.dst[3], 1, cap_wf, 1);
+    return rr_shot_output(base, &p, rt, drew > 0, with_ref, cap_out, cap_w, cap_h);
+}
+
+/** @brief Route a headless capture with an explicit --resolution N or WxH through native_shot_base.
+ *
+ * The capture extent and widen follow today's dump: a native-only capture
+ * at a Hor+ widen takes that widen, a capture with a reference stays 4:3.
+ * @param base Screenshot path stem.
+ * @param with_ref True when a PsyCross reference exists.
+ * @param cap_out As native_shot_base.
+ * @param cap_w As native_shot_base.
+ * @param cap_h As native_shot_base.
+ * @param rc Receives native_shot_base's return when routed.
+ * @return 1 when the capture was routed, 0 when today's dump runs. */
+static int rr_capture_dispatch(const char *base, bool with_ref, unsigned char **cap_out,
+                               int *cap_w, int *cap_h, int *rc)
+{
+    if (!s_nr.headless || !op_live_get(&s_rr_explicit)) return 0;
+    if (openpete_render_res_unpack(s_rr.bits).kind == OPENPETE_RR_WINDOW) return 0;
+    float cap_wf = 1.0f;
+    if (!with_ref) {
+        const float w = ws_factor_present();
+        if (w > 1.0001f) cap_wf = w;
+    }
+    *rc = native_shot_base(base, cap_wf, with_ref, cap_out, cap_w, cap_h);
+    return 1;
+}
+
+/** @brief Print which freeze backdrop record the leg's compose drew and the state of the live records.
+ *
+ * The freeze quad draws when the scene's freeze word has bit 31 set and the
+ * record active_frozen returns is valid; the line names that record and its
+ * size, and frozen_tex's and frozen_prev's size and validity, so a size
+ * change while paused shows whether the backdrop survived it.
+ * @param suffix The leg's suffix. */
+static void rr_ab_backdrop_line(const char *suffix)
+{
+    int n = 0;
+    uint32_t bg, fade, freeze = 0;
+    (void)scene_present_buf(&n, &bg, &fade, &freeze, NULL, NULL);
+    const freeze_target_t *a = active_frozen();
+    const char *which = a == &s_nr.shot_frozen ? "shot_frozen" : a == &s_nr.frozen_prev ? "frozen_prev" : "frozen_tex";
+    fprintf(stderr, "[render-res-ab] backdrop leg=%s freeze_bit=%u drawn=%d record=%s %dx%d valid=%d wf=%.4f"
+            " frozen_tex=%dx%d/%d frozen_prev=%dx%d/%d\n",
+            suffix, (freeze >> 31) & 1u, (int)(((freeze >> 31) & 1u) && a->valid && a->tex), which, a->w, a->h,
+            (int)a->valid, (double)a->wf, s_nr.frozen_tex.w, s_nr.frozen_tex.h, (int)s_nr.frozen_tex.valid,
+            s_nr.frozen_prev.w, s_nr.frozen_prev.h, (int)s_nr.frozen_prev.valid);
+}
+
+/** @brief Render one leg of the --resolution A/B: the present's scene through the live compose at one value and factor, read back.
+ *
+ * The leg sets the value and the SSAA factor, re-plans and re-ensures the
+ * targets outside the frame, then records one frame: the uploads, the depth
+ * pre-pass and compose_variant with the chrome off, and reads the window
+ * offscreen back. No terrain-cache service and no occlusion-grid publish
+ * run, so every leg composes the same scene slot from the same state. The
+ * image is written as @p base with @p suffix, and under
+ * OPENPETE_RENDER_RES_DUMP_BASE=1 the base image too.
+ * @param bits The packed --resolution value.
+ * @param ssaa The SSAA factor.
+ * @param base Screenshot path stem.
+ * @param suffix The leg's suffix.
+ * @param w Receives the width.
+ * @param h Receives the height.
+ * @return The malloc'd RGBA image, or NULL. */
+static unsigned char *rr_ab_leg(int bits, int ssaa, const char *base, const char *suffix, int *w, int *h)
+{
+    s_rr.bits = bits;
+    s_nr.ssaa = ssaa;
+    rr_plan_live();
+    ensure_native_rtt(true);
+    ensure_ss_rtt();
+    ensure_opaque_depth();
+    ensure_terrain_key_targets();
+    if (!rhi_begin_frame(s_nr.dev)) return NULL;
+    upload_synced_textures();
+    hd_flush_pending();
+    openpete_native_hdfold_flush();
+    native_depth_prepass();
+    const int ov = s_overlay_live;
+    s_overlay_live = 0;
+    compose_variant();
+    s_overlay_live = ov;
+    rhi_blit_to_swapchain(s_nr.dev);
+    rhi_end_frame(s_nr.dev);
+    const size_t cap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
+    unsigned char *buf = cap ? malloc(cap) : NULL;
+    if (!buf || !rhi_read_offscreen(s_nr.dev, buf, cap, w, h)) { free(buf); return NULL; }
+    for (size_t i = 0; i < (size_t)*w * (size_t)*h; i++) buf[i * 4 + 3] = 0xFF;
+    char path[1100];
+    path_with_suffix(base, suffix, path, sizeof path);
+    (void)openpete_write_png_rgba(path, buf, *w, *h);
+    const char *db = getenv("OPENPETE_RENDER_RES_DUMP_BASE");
+    if (s_rr.plan.active && db && *db && *db != '0') {
+        char sfx[64];
+        snprintf(sfx, sizeof sfx, "%s-base", suffix);
+        path_with_suffix(base, sfx, path, sizeof path);
+        (void)rr_write_target_png(s_nr.native_rtt, path);
+    }
+    rr_report("ab", &s_rr.plan, s_nr.win_w, s_nr.win_h, 0, 1.0f, 1);
+    rr_ab_backdrop_line(suffix);
+    return buf;
+}
+
+/** @brief Count the pixels whose RGB differs between two equal-size images, -1 when the sizes differ.
+ * @param a First image.
+ * @param aw First width.
+ * @param ah First height.
+ * @param b Second image.
+ * @param bw Second width.
+ * @param bh Second height.
+ * @return The count, or -1. */
+static long rr_ab_diff(const unsigned char *a, int aw, int ah, const unsigned char *b, int bw, int bh)
+{
+    if (!a || !b || aw != bw || ah != bh) return -1;
+    long n = 0;
+    for (size_t i = 0; i < (size_t)aw * (size_t)ah; i++)
+        n += memcmp(a + i * 4, b + i * 4, 3) != 0;
+    return n;
+}
+
+/** @brief The in-binary --resolution A/B of a windowed capture (OPENPETE_RENDER_RES_AB set to a value, optionally followed by ",ssaa=S").
+ *
+ * Renders three legs of the capture's scene through the live compose: A at
+ * the configured value and factor, B at the variable's, and A' as A again,
+ * each written beside the capture as -abA, -abB and -abA2. A' differing
+ * from A makes the sample VOID; otherwise the line reports the pixels B
+ * differs from A by. The configured value, factor and plan are restored.
+ * Windowed runs only: headless has no live compose.
+ * @param base Screenshot path stem. */
+static void rr_ab_capture(const char *base)
+{
+    const char *e = getenv("OPENPETE_RENDER_RES_AB");
+    if (!e || !*e || s_nr.headless || !s_nr.scene_live) return;
+    char val[64];
+    snprintf(val, sizeof val, "%s", e);
+    int ssaa_b = s_nr.ssaa;
+    char *comma = strchr(val, ',');
+    if (comma) {
+        *comma = '\0';
+        if (!strncmp(comma + 1, "ssaa=", 5)) ssaa_b = atoi(comma + 6);
+    }
+    openpete_render_res_t vb;
+    char msg[160];
+    if (openpete_render_res_parse(val, &vb, msg, sizeof msg) < 0 || ssaa_b < 1) {
+        fprintf(stderr, "[render-res-ab] refused: %s\n", msg[0] ? msg : "ssaa below 1");
+        return;
+    }
+    const int bits_a = s_rr.bits, ssaa_a = s_nr.ssaa;
+    const openpete_render_res_plan_t plan = s_rr.plan, req = s_rr.plan_req;
+    int aw = 0, ah = 0, bw = 0, bh = 0, a2w = 0, a2h = 0;
+    unsigned char *ia = rr_ab_leg(bits_a, ssaa_a, base, "-abA", &aw, &ah);
+    unsigned char *ib = rr_ab_leg(openpete_render_res_pack(&vb), ssaa_b, base, "-abB", &bw, &bh);
+    unsigned char *ia2 = rr_ab_leg(bits_a, ssaa_a, base, "-abA2", &a2w, &a2h);
+    s_rr.bits = bits_a;
+    s_nr.ssaa = ssaa_a;
+    s_rr.plan = plan;
+    s_rr.plan_req = req;
+    ensure_native_rtt(true);
+    ensure_ss_rtt();
+    ensure_terrain_key_targets();
+    const long aa = rr_ab_diff(ia, aw, ah, ia2, a2w, a2h);
+    const long ab = rr_ab_diff(ia, aw, ah, ib, bw, bh);
+    if (aa != 0)
+        fprintf(stderr, "[render-res-ab] VOID A_vs_A2=%ld (the legs did not render one scene)\n", aa);
+    else
+        fprintf(stderr, "[render-res-ab] sample B=%s ssaa_b=%d A_vs_A2=0 A_vs_B=%ld\n", val, ssaa_b, ab);
+    free(ia); free(ib); free(ia2);
+}
+
 /** @brief Write the native `-vk` capture for one screenshot base path, or hand the composed image to the caller.
  *
  * In a windowed run that is not an intermediate capture, `-vk` is first
@@ -25186,6 +25980,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         path_with_suffix(base, "-vk", lp, sizeof(lp));
         live_vk = shot_write_offscreen(lp, "vk (live present)") == 0;
     }
+    rr_ab_capture(base);   /* OPENPETE_RENDER_RES_AB, windowed only */
 
     /* PsyCross display mode: the offscreen the present just blitted holds
      * PsyCross's frame with the mod HUD, postfx and chrome over it, which is
@@ -25231,6 +26026,11 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
     if (live_vk && !with_ref)
         return 0;
 
+    /* A headless capture with an explicit --resolution N or WxH composes
+     * through its base (native_shot_base). */
+    int base_rc = 0;
+    if (rr_capture_dispatch(base, with_ref, cap_out, cap_w, cap_h, &base_rc)) return base_rc;
+
     /* Widescreen (Hor+) native-only capture: render the widened view into the
      * dedicated shot_rtt and write the single -vk image. The widen comes from a
      * fixed --aspect, surfaced headless by openpete_native_widescreen_factor. */
@@ -25246,6 +26046,11 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
      * back. */
     const int W = s_nr.ref_w, H = s_nr.ref_h;
     const size_t frame_px = (size_t)W * (size_t)H;
+    /* native_rtt holds a live --resolution base; a windowed recompose then
+     * composes its reference-size image into shot_rtt, leaving native_rtt
+     * at the live base size. */
+    rhi_texture *const dump_rt = recompose_target(W, H);
+    s_rr.composes++;
 
     /* Background = the gamestate draw-env clear (matching the live native render);
      * scene_bg then corner as fallbacks. See draw_native_scene for the rationale. */
@@ -25278,10 +26083,10 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
          * never drawn, making the dump unable to reproduce a live-visible black
          * region. Where the quad exists (every normal frame) the output is
          * identical. */
-        { int kw, kh; rhi_texture_extent(s_nr.native_rtt, &kw, &kh);
+        { int kw, kh; rhi_texture_extent(dump_rt, &kw, &kh);
           native_terrain_key_pass(1, kw, kh); }
         shot_chrome_prepare(W, H);
-        rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
+        rhi_begin_render_target(s_nr.dev, dump_rt, 0.0f, 0.0f, 0.0f, 1.0f);
         /* Without a reference an empty compose shows the VRAM framebuffer, as
          * the live present does; with one, the reference stands in for it below. */
         scene_drew = draw_scene_or_vram(!with_ref);
@@ -25296,13 +26101,13 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
          * both active). */
         draw_mod_overlay();
         menu_verts = shot_chrome_draw(W, H);   /* --screenshot-overlays */
-        rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
+        rhi_end_render_target(s_nr.dev, dump_rt);
         /* Postfx over the dump compose too: this path bypasses off_image, so
          * without these calls a headless or screenshot-all capture would
          * carry no postfx. SCENE point first (--raster-quantize, dither, mod
          * scene shaders), then COMPOSITE. */
-        native_postfx_run(1 /* SCENE */, s_nr.native_rtt, W, H);
-        native_postfx_run(0 /* COMPOSITE */, s_nr.native_rtt, W, H);
+        native_postfx_run(1 /* SCENE */, dump_rt, W, H);
+        native_postfx_run(0 /* COMPOSITE */, dump_rt, W, H);
         rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
         rhi_end_offscreen(s_nr.dev);
         rhi_blit_to_swapchain(s_nr.dev);
@@ -25331,7 +26136,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
     }
 
     int nw = 0, nh = 0;
-    if (!rhi_read_render_target(s_nr.dev, s_nr.native_rtt, nat, frame_px * 4, &nw, &nh)) {
+    if (!rhi_read_render_target(s_nr.dev, dump_rt, nat, frame_px * 4, &nw, &nh)) {
         free(nat); free(ref);
         return 1;
     }
@@ -25347,11 +26152,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         return 0;
     }
     if (with_ref) {
-        /* The PsyCross readback is GL bottom-up; flip to top-down to match the RTT. */
-        for (int y = 0; y < H; y++)
-            memcpy(&ref[(size_t)y * W * 4],
-                   &s_nr.readback[(size_t)(H - 1 - y) * W * 4], (size_t)W * 4);
-        for (size_t i = 0; i < frame_px; i++) ref[i * 4 + 3] = 0xFF;
+        reference_topdown(ref, W, H);
         /* A compose that drew nothing (load/transition frames) is the one the
          * live present replaces with the VRAM framebuffer: mirror the
          * reference so -vk shows the framebuffer instead of a flat clear. */
@@ -25461,6 +26262,7 @@ void openpete_native_render_shutdown(void)
     openpete_png_async_drain();   /* the player screenshots still queued */
     scene_box_summary();
     hide_hud_report();
+    rr_report_exit();
     /* Kept freeze-backdrop sources: a flip is a settle drawn after the
      * present services, which the settle's exactness excludes. */
     if (s_retained_only_draws || s_area_fade_presents)
@@ -25545,6 +26347,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_texture(s_nr.dev, s_nr.shot_frozen.tex);
     if (s_frz.vt.tex) rhi_destroy_texture(s_nr.dev, s_frz.vt.tex);
     rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex.tex);
+    rhi_destroy_texture(s_nr.dev, s_nr.frozen_prev.tex);
     rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt);
     rhi_destroy_texture(s_nr.dev, s_nr.opaque_depth);
     rhi_destroy_texture(s_nr.dev, s_nr.occl_grid);
@@ -25592,6 +26395,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_plain_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.resolve_pipe);
+    rhi_destroy_pipeline(s_nr.dev, s_rr.pipe);
     blend_family_destroy(s_nr.dev, s_nr.scene_tex_hud_pipes, OPENPETE_STP_SELS);
     rhi_destroy_pipeline(s_nr.dev, s_nr.hd_tex_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_pipe);

@@ -271,6 +271,7 @@ add_library(openpete_core STATIC
     # Native Vulkan renderer. Host-side display consumer built on core/rhi;
     # never writes PSX RAM.
     renderer/native_render.c
+    renderer/render_res.c
     renderer/launcher_title_pass.c
     renderer/launcher_shape_pass.c
     renderer/launcher_sky_pass.c

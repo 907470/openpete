@@ -464,8 +464,8 @@ static const char* next_word(const char* const* words, int n, const char* def) {
  * the schema spells the flag as a free string (--aspect); the other state
  * of a bool; def + 1 for a number, def - 1 past num_max and num_min below
  * it (a 0 sentinel def under a [num_min, num_max] range, as --fov's), so
- * the parser never clamps the control; def with "x" appended for any
- * other string.
+ * the parser never clamps the control; the row's control_str, else def
+ * with "x" appended, for any other string.
  * @param k The row.
  * @param buf Scratch for a formatted value.
  * @param cap Size of buf.
@@ -481,6 +481,7 @@ static const char* control_value(const knob_desc_t* k, char* buf, size_t cap) {
         int on = !strcmp(k->def_str, "1") || !strcmp(k->def_str, "on");
         return on ? "0" : "1";
     }
+    if (ctype == CFG_STRING && k->control_str) return k->control_str;
     if (ctype == CFG_STRING) {
         snprintf(buf, cap, "%sx", k->def_str);
         return buf;

@@ -30,6 +30,7 @@ static const cfg_knob_t g_schema[] = {
     { "fullscreen",       "--fullscreen",       NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "aspect",           "--aspect",           NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "ssaa",             "--ssaa",             NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
+    { "resolution",       "--resolution",       NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "vsync",            "--vsync",            "OPENPETE_PRESENT_MODE", CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "gpu",              "--gpu",              "OPENPETE_VK_DEVICE",    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "perf_stats",       "--perf-stats",       NULL,                    CFG_ENUM,   v_perf,     NULL,       NULL,       0 },

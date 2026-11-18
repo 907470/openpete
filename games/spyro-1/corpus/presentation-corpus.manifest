@@ -68,6 +68,11 @@ artisans-balloonist@heldfx               | 2900  | 100  | freeze | 2996
 artisans-bridge                          | 1700  | 100  |        | 1701,2000
 artisans-bridge-hq                       | 1700  | 100  |        | 2320
 artisans-bridge-hq@vpint                 | 1700  | 100  |        | 2320 | --vertex-precision integer
+# @res1, @res2vp: the scene composed at --resolution 1 and 2 (512x224 and
+# 1024x448 at 4:3, widened at 16:9) and resampled to the capture; @res2vp
+# with integer vertex precision, whose implicit pixelation is inert under N.
+artisans-bridge-hq@res1                  | 1700  | 100  |        | 2320 | --resolution 1
+artisans-bridge-hq@res2vp                | 1700  | 100  |        | 2320 | --resolution 2 --vertex-precision integer
 artisans-distant-water-gaps              | 1700  | 100  |        | 2600,2650
 artisans-distant-water-gaps-2            | 1700  | 100  |        | 2680,2730
 artisans-lp-waterfall                    | 1700  | 100  |        | 1784,1792

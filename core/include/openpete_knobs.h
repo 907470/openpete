@@ -168,6 +168,12 @@ typedef struct knob_desc {
      * the overlay's tooltip shows its resolved binding and --help its
      * built-in one, as a Key field. NULL for a setting no action changes. */
     const char *key_action;
+
+    /* A value of the `cli` flag other than def_str that the parser accepts,
+     * the surface selfcheck's negative control for a string flag whose
+     * grammar refuses def_str with "x" appended. NULL takes that default
+     * control. */
+    const char *control_str;
 } knob_desc_t;
 
 /* Arity of a row's flag: the default, a flag that takes no value

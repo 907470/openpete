@@ -22,6 +22,36 @@ inside an 8 GB card at 1080p, and the size is further capped at the GPU's
 largest image. Changing the factor causes a brief pause at large factors
 while the targets are rebuilt.
 
+## Resolution
+
+Resolution sets how many pixels the 3D scene is drawn with, separately from
+the window. The scene is then stretched to the window's picture area; its
+shape always follows the window and `--aspect`.
+
+| Value | Scene size |
+| --- | --- |
+| `window` (default <!-- id: knob:resolution -->) | The window's own size |
+| `N` (1 to 8) | N times the game's original picture: 512x224 on Spyro 1, 512x216 on Spyro 2 and 3, widened in a widescreen view so each original pixel stays N pixels wide |
+| `WxH` (64 to 16384 a side) | Exactly W by H pixels; the size does not follow window resizes |
+
+The flag is `--resolution window|N|WxH` <!-- id: knob:resolution home -->,
+and the config key `resolution` takes the same values.
+
+A smaller scene is enlarged with sharp edges, keeping each pixel square-cut
+and blending only along the remainder; a larger scene is averaged down. The
+game's HUD is drawn into the scene, at the scene's size; the stats, the
+toasts, the settings menu and screen filters stay at the window's size.
+
+Supersampling stacks on top: the scene is drawn at the resolution times
+the supersampling factor and averaged to the resolution before it is
+stretched. A size larger than the graphics card or four times the window
+allows is reduced, the supersampling factor first, then N, or both sides of
+a `WxH` by one factor.
+
+Under an `N` resolution the scene is already drawn on the original pixel
+grid, so pixelation (`--raster-quantize`) has no effect. Under a `WxH`
+resolution pixelation is off unless you set it.
+
 ## Level of detail
 
 The game draws distant parts of a level with simpler geometry and switches

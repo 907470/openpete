@@ -582,6 +582,13 @@ typedef struct openpete_options {
      * so the A/B-vs-PsyCross comparison stays 1:1 pixel-exact. */
     int ssaa;
 
+    /* --resolution window|N|WxH (default window): the native scene's base
+     * size, packed by openpete_render_res_pack (0 = window). resolution_set
+     * is 1 when a flag or the config key gave an N or WxH value; headless
+     * captures compose through a base only then. */
+    int resolution;
+    int resolution_set;
+
     /* Performance-stats overlay level on the native vk window, one of the
      * OPENPETE_PERF_* values: off, the FPS counter (the default), or the
      * counter plus a pacing readout. --perf-stats at launch; the O menu's

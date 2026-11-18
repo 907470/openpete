@@ -753,9 +753,12 @@ static int rp_arg(rp_argv_t* a, const char* s)
  * output (the screenshot and record modifiers): the developer's own
  * capture flags decide the replay's outputs, and a modifier left without
  * its output can select a path no consumer brings up. Display flags
- * (--renderer, --window, --fullscreen, --vsync, --gpu, --ssaa, --aspect)
- * pass: --headless leaves the window ones inert, and the renderer ones
- * reach the developer's captures as they reached the tester's display. */
+ * (--renderer, --window, --fullscreen, --vsync, --gpu, --ssaa, --aspect,
+ * --resolution) pass: --headless leaves the window ones inert, and the
+ * renderer ones reach the developer's captures as they reached the
+ * tester's display. A --resolution given by the flag or by the bundle's
+ * config key counts as explicit, so the replay's captures compose through
+ * the tester's base. */
 static const struct { const char* flag; int values; } k_drop[] = {
     {"--disc", 1}, {"--card1", 1}, {"--card2", 1}, {"--card-dir", 1}, {"--no-card", 0},
     {"--no-card1", 0}, {"--no-card2", 0}, {"--mods-dir", 1}, {"--config", 1}, {"--no-config", 0},

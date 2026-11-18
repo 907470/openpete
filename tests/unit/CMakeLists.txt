@@ -122,6 +122,18 @@ if(NOT WIN32)
     add_test(NAME live_latch_test COMMAND live_latch_test)
 endif()
 
+# render_res_test - the --resolution grammar and the base-image arithmetic
+# (render_res.c): strict parser, pack round trip, the N width rule, the bound
+# steps and the per-axis filter choice. Pure C, no device.
+add_executable(render_res_test render_res_test.c
+    ${CMAKE_SOURCE_DIR}/core/renderer/render_res.c)
+target_include_directories(render_res_test PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
+set_target_properties(render_res_test PROPERTIES C_STANDARD 11)
+if(NOT WIN32)
+    target_link_libraries(render_res_test PRIVATE m)
+endif()
+add_test(NAME render_res_test COMMAND render_res_test)
+
 # openpete_time_test - verifies the high-resolution monotonic clock +
 # hybrid sleep+spin waiter.
 # Compiles openpete_time.c directly to stay SDL-free. The Win32 path
@@ -339,6 +351,7 @@ endif()
 add_executable(knob_registry_test
     knob_registry_test.c
     ${CMAKE_SOURCE_DIR}/core/config/knob_registry.c
+    ${CMAKE_SOURCE_DIR}/core/renderer/render_res.c
     ${CMAKE_SOURCE_DIR}/core/config/config.c
     ${CMAKE_SOURCE_DIR}/core/config/config_schema.c
     # keymap.c rides along because config.c now seeds and resolves the
@@ -355,6 +368,9 @@ target_include_directories(knob_registry_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(knob_registry_test PROPERTIES C_STANDARD 11)
+if(NOT WIN32)
+    target_link_libraries(knob_registry_test PRIVATE m)   # render_res.c: floor, ceil
+endif()
 add_test(NAME knob_registry_test COMMAND knob_registry_test)
 
 # paths_lock_wait_test - openpete_paths_lock_wait, the lock a first-boot
@@ -542,6 +558,7 @@ if(TARGET SDL3::SDL3-static)
     add_executable(options_validate_test
         options_validate_test.c
         ${CMAKE_SOURCE_DIR}/core/config/options.c
+        ${CMAKE_SOURCE_DIR}/core/renderer/render_res.c
         ${CMAKE_SOURCE_DIR}/core/config/config.c
         ${CMAKE_SOURCE_DIR}/core/config/config_schema.c
         ${CMAKE_SOURCE_DIR}/core/input/keymap.c
