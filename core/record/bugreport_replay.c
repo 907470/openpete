@@ -1040,6 +1040,7 @@ static const struct { const char* name; const char* why; } k_env_gameplay[] = {
     {"OPENPETE_GTE_HASH_POKE", "injects a fault"},
     {"OPENPETE_PSXTRACE_POKE", "injects a fault"},
     {"OPENPETE_S3_SCAN_POKE", "injects a fault"},
+    {"OPENPETE_ENV_LODDIST", "writes the LOD distance word for the terrain draw"},
     {"OPENPETE_MODSAVE_FAULT_*", "injects a card fault"},
 };
 

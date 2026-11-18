@@ -47,6 +47,8 @@
 #                OPENPETE_BUGREPORT_REPLAY_ENV, rendering one native
 #                screenshot so the terrain audit runs
 #   env-refused  OPENPETE_BUGREPORT_REPLAY_ENV naming OPENPETE_PLAYER_POSE
+#   env-refused-ram  OPENPETE_BUGREPORT_REPLAY_ENV naming OPENPETE_ENV_LODDIST,
+#                an instrument that writes guest RAM
 #   knobs        the knobs bundle, a native screenshot at feed key 4390
 #   knobs-off    as knobs under OPENPETE_BUGREPORT_REPLAY_KNOBS=0 (negative
 #                control: the live values are not applied)
@@ -332,6 +334,12 @@ v_ref="$(verdict "$LOG")"
 (( RC == 64 )) || fail+=("env-refused: exit $RC, want 64")
 grep -q 'REFUSED OPENPETE_BUGREPORT_REPLAY_ENV: OPENPETE_PLAYER_POSE' "$LOG" ||
     fail+=("env-refused: no refusal naming OPENPETE_PLAYER_POSE")
+
+REPLAY_ENV=("OPENPETE_BUGREPORT_REPLAY_ENV=OPENPETE_ENV_LODDIST=0x10000")
+replay env-refused-ram "$skip_zip"
+(( RC == 64 )) || fail+=("env-refused-ram: exit $RC, want 64")
+grep -q 'REFUSED OPENPETE_BUGREPORT_REPLAY_ENV: OPENPETE_ENV_LODDIST' "$LOG" ||
+    fail+=("env-refused-ram: no refusal naming OPENPETE_ENV_LODDIST")
 
 # png_cmp A B: "equal", or "differ <bytes>" over the decoded image data, or "missing".
 png_cmp() {
