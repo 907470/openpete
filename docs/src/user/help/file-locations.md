@@ -12,6 +12,7 @@ every location below as this install resolves it, then exits.
 | `cards/` | memory cards `card1.mcr` and `card2.mcr`: the game's own saves |
 | `states/` | [savestate](glossary.md#savestate) slots, one folder per game (`states/spyro-1/`) |
 | `logs/` | `openpete.log` for the current run, `openpete.log.1` for the one before, up to `openpete.log.15` for the oldest kept; `hang-trace.bin` and `hang-ram.bin` after the game stopped responding; `openpete-crash.dmp` after a crash on Windows |
+| `openpete-devui.ini` | the [dev overlay](../playing/dev-overlay.md)'s window positions, one file shared by every game |
 | `cache/` | the graphics pipeline cache and the game page's pictures, one folder per game; safe to delete, rebuilt on the next start |
 | `library/` | your ingested disc image and the game code compiled from it |
 | `mods/` | installed mods ([Mods](../customizing/mods.md)) |
@@ -33,7 +34,7 @@ program's folder is not writable, per-user is used and the log says so.
     `openpete.exe`:
 
     ```
-    openpete.toml  gamecontrollerdb.txt
+    openpete.toml  gamecontrollerdb.txt  openpete-devui.ini
     cards\  states\  logs\  cache\  library\  mods\  assets\  bk2\  screenshots\  bugreports\
     ```
 
@@ -46,6 +47,7 @@ program's folder is not writable, per-user is used and the log says so.
 
     ```
     %APPDATA%\openpete\                     openpete.toml, gamecontrollerdb.txt
+    %LOCALAPPDATA%\openpete\               openpete-devui.ini
     %LOCALAPPDATA%\openpete\cards\  states\  logs\  cache\
     %LOCALAPPDATA%\openpete\library\  mods\  assets\  bk2\  screenshots\  bugreports\
     ```
@@ -56,7 +58,7 @@ program's folder is not writable, per-user is used and the log says so.
 
     ```
     ~/.config/openpete/         openpete.toml, gamecontrollerdb.txt
-    ~/.local/state/openpete/    cards/  states/  logs/  cache/
+    ~/.local/state/openpete/    openpete-devui.ini, cards/  states/  logs/  cache/
     ~/.local/share/openpete/    library/  mods/  assets/  bk2/  screenshots/  bugreports/
     ```
 
@@ -83,8 +85,9 @@ documentation and examples, in packages built with it.
 ## Files from earlier versions
 
 Earlier versions kept every game's savestate slots in `states/`, and
-some kept the [dev overlay](../playing/dev-overlay.md)'s window layout in
-one file per game (`openpete-devui-spyro-1.ini`) next to the program. The
+kept the [dev overlay](../playing/dev-overlay.md)'s window layout next to
+the program, in `openpete-devui.ini` or in one file per game
+(`openpete-devui-spyro-1.ini`). The
 first time a game runs on this version, it copies these files to their
 current names and leaves the originals where they are; nothing is moved
 or deleted:
@@ -101,17 +104,19 @@ or deleted:
   the file came from this game. Otherwise it stays in `states/`, the log
   names it, no `.seeded` file is written, and each later run checks it
   again.
-- When `openpete-devui.ini` does not exist, the most recently written
-  `openpete-devui-<game>.ini` is copied to `openpete-devui.ini`, which every
-  game then reads and writes. The other per-game files are not read.
+- When `openpete-devui.ini` does not exist in the folder that holds
+  `cards/`, the `openpete-devui.ini` next to the program is copied there;
+  when there is none, the most recently written `openpete-devui-<game>.ini`
+  next to the program is copied instead. Every game then reads and writes
+  the copy. The other per-game files are not read. In the portable layout
+  that folder is the program's own, so an existing `openpete-devui.ini`
+  stays in use where it is.
 
 The log lists every file copied and every file left in place, with the
 reason.
 
 ## Other files
 
-- `openpete-devui.ini`: the [dev overlay](../playing/dev-overlay.md)'s
-  window positions, next to the program, one file shared by every game.
 - `hang-trace.bin` and `hang-ram.bin`: written into the `logs` folder, beside
   `openpete.log`, when the game stops responding and the program exits
   ([Reporting a bug](reporting-a-bug.md)).

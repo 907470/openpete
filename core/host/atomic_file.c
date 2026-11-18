@@ -152,14 +152,17 @@ int op_atomic_file_open_ex(op_atomic_file_t* af, const char* path, unsigned flag
     af->tmp[0] = '\0';
     af->flags = flags;
     if (!path || strlen(path) >= sizeof af->path) {
-        OPL_ERROR_F("atomic-file", "path too long: %s", path ? path : "(null)");
+        if (!(flags & OP_ATOMIC_QUIET))
+            OPL_ERROR_F("atomic-file", "path too long: %s", path ? path : "(null)");
+        errno = ENAMETOOLONG;
         return -1;
     }
     snprintf(af->path, sizeof af->path, "%s", path);
     snprintf(af->tmp, sizeof af->tmp, "%s.tmp-%d", path, (int)op_getpid());
     af->f = fopen(af->tmp, "wb");
     if (!af->f) {
-        OPL_ERROR_F("atomic-file", "cannot create %s: %s", af->tmp, strerror(errno));
+        if (!(flags & OP_ATOMIC_QUIET))
+            OPL_ERROR_F("atomic-file", "cannot create %s: %s", af->tmp, strerror(errno));
         return -1;
     }
     return 0;
@@ -212,8 +215,10 @@ int op_atomic_file_commit(op_atomic_file_t* af) {
     }
     if (why) {
         remove(af->tmp);
-        OPL_ERROR_F("atomic-file", "%s: %s%s%s - previous file kept", af->path, why,
-                    err ? ": " : "", err ? strerror(err) : "");
+        if (!(af->flags & OP_ATOMIC_QUIET))
+            OPL_ERROR_F("atomic-file", "%s: %s%s%s - previous file kept", af->path, why,
+                        err ? ": " : "", err ? strerror(err) : "");
+        errno = err;
         return -1;
     }
     return 0;
@@ -227,7 +232,8 @@ int op_atomic_write_file_ex(const char* path, const void* data, size_t n, unsign
     op_atomic_file_t af;
     if (op_atomic_file_open_ex(&af, path, flags) != 0) return -1;
     if (n && fwrite(data, 1, n, af.f) != n) {
-        OPL_ERROR_F("atomic-file", "%s: short write - previous file kept", path);
+        if (!(flags & OP_ATOMIC_QUIET))
+            OPL_ERROR_F("atomic-file", "%s: short write - previous file kept", path);
         op_atomic_file_abort(&af);
         return -1;
     }

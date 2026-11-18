@@ -441,14 +441,36 @@ static void hint_legacy_state(const char* leaf, const char* portable_dir) {
                         "holds the old files", leaf, portable_dir, legacy);
 }
 
-int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create) {
+/** @brief Resolve the directory every state leaf and state file lives in: the exe directory in the portable layout, else the per-user state openpete directory.
+ * @param out Receives the directory.
+ * @param cap Capacity of @p out.
+ * @param create Non-zero to make the per-user directories.
+ * @param portable Receives openpete_paths_portable's answer.
+ * @return 0, or -1 when no base resolves or the path does not fit. */
+static int state_base(char* out, size_t cap, int create, int* portable) {
+    *portable = openpete_paths_portable();
+    if (*portable) return openpete_exe_dir(out, cap) != 0 ? -1 : 0;
+    return user_state_dir(out, cap, create);
+}
+
+int openpete_paths_state_file(const char* name, char* out, size_t cap, int create) {
     char base[OPP_PATH_MAX];
-    int portable = openpete_paths_portable();
-    if (portable) {
-        if (openpete_exe_dir(base, sizeof base) != 0) return -1;
-    } else if (user_state_dir(base, sizeof base, create) != 0) {
+    int portable;
+    if (state_base(base, sizeof base, create, &portable) != 0) return -1;
+    char path[OPP_PATH_MAX + 64];
+    openpete_paths_join(path, sizeof path, base, name);
+    if (strlen(path) >= cap || strlen(path) >= sizeof path - 1) {
+        OPL_ERROR_F("paths", "%s path too long", name);
         return -1;
     }
+    snprintf(out, cap, "%s", path);
+    return 0;
+}
+
+int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create) {
+    char base[OPP_PATH_MAX];
+    int portable;
+    if (state_base(base, sizeof base, create, &portable) != 0) return -1;
 
     char dir[OPP_PATH_MAX + 16];
     openpete_paths_join(dir, sizeof dir, base, leaf);

@@ -2313,8 +2313,8 @@ static int run_host_init(const openpete_options_t* opts) {
                           opts->handoff_argv);
     if (openpete_bugreport_replay_admit(opts) != 0) return OPENPETE_BUGREPORT_REPLAY_REFUSED;
     /* Savestate slots every game shared are copied into this game's own
-     * folder; the newest per-game overlay ini is adopted as the one
-     * openpete-devui.ini every game shares. */
+     * folder; an overlay ini an earlier layout kept beside the executable
+     * is copied to the state directory's openpete-devui.ini. */
     (void)openpete_state_seed_game_dir();
     (void)openpete_devui_seed_ini();
 

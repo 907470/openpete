@@ -55,6 +55,7 @@ extern "C" {
 #include <utility>
 #include <vector>
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -106,25 +107,49 @@ int openpete_devui_inject_mouse_requested(float *x, float *y)
     return 1;
 }
 
-/** @brief Format the overlay's ini path: openpete-devui.ini beside the executable, or in the config directory under a sandbox.
+/** @brief Format the overlay's ini path: openpete-devui.ini in the state directory, made when missing.
  *
- * Under a sandbox (openpete_paths_sandbox) the file is
- * <root>/config/openpete/openpete-devui.ini, the directory made; when that
- * does not resolve the path is empty and no ini is loaded or written.
+ * The state directory is openpete_paths_state_file's: beside the executable
+ * in the portable layout, the per-user state directory otherwise, and
+ * <root>/state/openpete under a sandbox. A read-only install (an AppImage
+ * mount, Program Files) therefore never holds the file. When the path does
+ * not resolve it is empty and no ini is loaded or written.
  * @param out Receives the path.
  * @param cap Capacity of @p out. */
 static void devui_ini_path(char *out, size_t cap)
 {
-    if (openpete_paths_sandbox()) {
-        char dir[1024];
-        if (openpete_paths_user_config_dir(dir, sizeof dir, 1) == 0)
-            openpete_paths_join(out, cap, dir, "openpete-devui.ini");
-        else if (cap)
-            out[0] = '\0';
-        return;
+    if (openpete_paths_state_file("openpete-devui.ini", out, cap, 1) != 0 && cap)
+        out[0] = '\0';
+}
+
+/** @brief Name the overlay ini an earlier layout left beside the executable.
+ *
+ * openpete-devui.ini in the executable's directory when it is a file, else
+ * the most recently written openpete-devui-<game id>.ini there (the one-ini
+ * per game layout), else nothing.
+ * @param base The executable's directory, with its trailing separator.
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @return 1 when @p out names a file, 0 when there is none. */
+static int devui_legacy_ini(const char *base, char *out, size_t cap)
+{
+    SDL_PathInfo info;
+    snprintf(out, cap, "%sopenpete-devui.ini", base);
+    if (SDL_GetPathInfo(out, &info) && info.type == SDL_PATHTYPE_FILE) return 1;
+    out[0] = '\0';
+    int count = 0;
+    char **names = SDL_GlobDirectory(base, "openpete-devui-*.ini", 0, &count);
+    SDL_Time newest_time = 0;
+    for (int i = 0; names && i < count; i++) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s%s", base, names[i]);
+        if (!SDL_GetPathInfo(path, &info) || info.type != SDL_PATHTYPE_FILE) continue;
+        if (out[0] && info.modify_time <= newest_time) continue;
+        snprintf(out, cap, "%s", path);
+        newest_time = info.modify_time;
     }
-    const char *base = SDL_GetBasePath();
-    snprintf(out, cap, "%sopenpete-devui.ini", base ? base : "");
+    SDL_free(names);
+    return out[0] != '\0';
 }
 
 int openpete_devui_seed_ini(void)
@@ -132,39 +157,31 @@ int openpete_devui_seed_ini(void)
     static bool s_done = false;
     if (s_done) return 0;
     s_done = true;
-    if (openpete_paths_sandbox()) return 0;  /* per-game inis live beside the exe */
-    char shared[1024];
-    devui_ini_path(shared, sizeof shared);
+    if (openpete_paths_sandbox()) return 0;  /* a sandbox never reads the install's files */
+    char target[1024];
+    devui_ini_path(target, sizeof target);
     SDL_PathInfo info;
-    if (SDL_GetPathInfo(shared, &info)) return 0;
+    if (!target[0] || SDL_GetPathInfo(target, &info)) return 0;
     const char *base = SDL_GetBasePath();
-    if (!base) return 0;
-    int count = 0;
-    char **names = SDL_GlobDirectory(base, "openpete-devui-*.ini", 0, &count);
-    char newest[1024] = "";
-    SDL_Time newest_time = 0;
-    for (int i = 0; names && i < count; i++) {
-        char path[1024];
-        snprintf(path, sizeof path, "%s%s", base, names[i]);
-        if (!SDL_GetPathInfo(path, &info) || info.type != SDL_PATHTYPE_FILE) continue;
-        if (newest[0] && info.modify_time <= newest_time) continue;
-        snprintf(newest, sizeof newest, "%s", path);
-        newest_time = info.modify_time;
-    }
-    SDL_free(names);
-    if (!newest[0]) return 0;
-    if (op_atomic_copy_file(newest, shared) != 0) return -1;
-    OPL_INFO_F("devui", "copied %s, the most recently written per-game overlay ini, to %s; "
-               "every per-game ini stays in place", newest, shared);
+    char legacy[1024];
+    if (!base || !devui_legacy_ini(base, legacy, sizeof legacy)) return 0;
+    if (op_atomic_copy_file(legacy, target) != 0) return -1;
+    OPL_INFO_F("devui", "copied %s, the overlay ini of an earlier layout, to %s; "
+               "the original stays in place", legacy, target);
     return 1;
 }
+
+/* Overlay ini saves that failed this session; the first one logs. */
+static SDL_AtomicInt s_ini_save_failures;
 
 /** @brief Write imgui's window state to the overlay's ini path when imgui asks for a save, or unconditionally when forced.
  *
  * io.IniFilename is NULL, so imgui never writes the file itself: it raises
  * io.WantSaveIniSettings and this replaces the file atomically (synced) from
- * SaveIniSettingsToMemory. A failed write leaves the previous file whole and
- * is retried at the next request.
+ * SaveIniSettingsToMemory. The request is consumed whether or not the write
+ * succeeds: a failed write leaves the previous file whole and is retried at
+ * imgui's next request (the next layout change) and at shutdown, not on
+ * every present. Only the session's first failure logs a warning.
  * @param force Save even without a pending request once settings are
  *        loaded (at shutdown, where imgui itself would have saved). */
 static void devui_save_ini(bool force)
@@ -172,16 +189,21 @@ static void devui_save_ini(bool force)
     ImGuiIO &io = ImGui::GetIO();
     if (!s_ini_path[0]) return;   /* no context: no ini is loaded or written */
     if (force ? !ImGui::GetCurrentContext()->SettingsLoaded : !io.WantSaveIniSettings) return;
+    io.WantSaveIniSettings = false;
     size_t n = 0;
     const char *text = ImGui::SaveIniSettingsToMemory(&n);
-    if (op_atomic_write_file(s_ini_path, text, n) == 0) io.WantSaveIniSettings = false;
+    if (op_atomic_write_file_ex(s_ini_path, text, n, OP_ATOMIC_QUIET) == 0) return;
+    const int err = errno;
+    if (SDL_AddAtomicInt(&s_ini_save_failures, 1) != 0) return;
+    OPL_WARN_F("devui", "cannot save the overlay layout to %s: %s; later failures this "
+               "session are not logged", s_ini_path, err ? strerror(err) : "write refused");
 }
 
 /** @brief Seed and load the overlay ini once per context.
  *
- * UI state (window position, collapse) lives in one file beside the
- * executable (in the config directory under a sandbox), not the working
- * directory, shared by every game the executable runs and by the launcher. */
+ * UI state (window position, collapse) lives in one file in the state
+ * directory (devui_ini_path), not the working directory, shared by every
+ * game the executable runs and by the launcher. */
 static void devui_load_ini(void)
 {
     if (s_ini_path[0]) return;

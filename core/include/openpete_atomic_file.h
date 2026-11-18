@@ -38,13 +38,17 @@ extern "C" {
 
 /** Write-class flag: rename without flushing data or directory to the device. */
 #define OP_ATOMIC_NOSYNC 1u
+/** Flag: log nothing on failure; the caller reports it, with errno holding
+ * the failed step's error (0 for an injected failure). Combines with either
+ * write class. */
+#define OP_ATOMIC_QUIET 2u
 
 /** An atomic replacement in progress: stdio writes go to f, the temporary. */
 typedef struct op_atomic_file {
     FILE* f;                            /* the temporary, open "wb" */
     char  path[OP_ATOMIC_PATH_MAX];     /* the target */
     char  tmp[OP_ATOMIC_PATH_MAX + 24]; /* the temporary's path */
-    unsigned flags;                     /* OP_ATOMIC_NOSYNC or 0 */
+    unsigned flags;                     /* OP_ATOMIC_NOSYNC, OP_ATOMIC_QUIET or 0 */
 } op_atomic_file_t;
 
 /** @brief Open a temporary file beside path for an atomic replacement of path.
@@ -60,7 +64,7 @@ int op_atomic_file_open(op_atomic_file_t* af, const char* path);
  * As op_atomic_file_open, which is this with flags 0 (synced).
  * @param af Receives the open replacement.
  * @param path The target file; its directory must exist.
- * @param flags OP_ATOMIC_NOSYNC for the unsynced class, else 0.
+ * @param flags OP_ATOMIC_NOSYNC for the unsynced class, else 0; OP_ATOMIC_QUIET or-ed in to log nothing.
  * @return 0 on success, -1 when the path is too long or the temporary cannot be created. */
 int op_atomic_file_open_ex(op_atomic_file_t* af, const char* path, unsigned flags);
 
@@ -92,7 +96,7 @@ int op_atomic_write_file(const char* path, const void* data, size_t n);
  * @param path The target file; its directory must exist.
  * @param data The new content.
  * @param n Its length in bytes.
- * @param flags OP_ATOMIC_NOSYNC for the unsynced class, else 0.
+ * @param flags OP_ATOMIC_NOSYNC for the unsynced class, else 0; OP_ATOMIC_QUIET or-ed in to log nothing.
  * @return 0 when the target holds exactly the n bytes, -1 with the target unchanged otherwise. */
 int op_atomic_write_file_ex(const char* path, const void* data, size_t n, unsigned flags);
 

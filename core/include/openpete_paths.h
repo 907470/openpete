@@ -207,6 +207,19 @@ int openpete_paths_user_config_dir(char* out, size_t cap, int create);
  * @return 0 on success, -1 when no base resolves or the path does not fit. */
 int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create);
 
+/** @brief Resolve a file kept directly in the state directory that openpete_paths_state_dir's leaves sit in.
+ *
+ * Portable layout: <exe dir>/<name>. Otherwise <name> under the openpete
+ * directory in the per-user state base, which a sandbox places at
+ * <root>/state/openpete. With @p create that directory is made; the file is
+ * not.
+ * @param name The file name ("openpete-devui.ini").
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @param create Non-zero to create the directory.
+ * @return 0 on success, -1 when no base resolves or the path does not fit. */
+int openpete_paths_state_file(const char* name, char* out, size_t cap, int create);
+
 /** @brief Name a leaf under the per-user state directory, whatever the layout or sandbox, creating nothing.
  *
  * <leaf> under the openpete directory in the per-user state base

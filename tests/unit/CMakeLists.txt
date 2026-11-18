@@ -413,6 +413,22 @@ if(NOT WIN32)
     add_test(NAME paths_lock_wait_test COMMAND paths_lock_wait_test)
 endif()
 
+# paths_state_file_test - openpete_paths_state_file, where the dev overlay's
+# openpete-devui.ini lives: beside the state leaves in the sandbox, per-user
+# and portable layouts, its directory made and the file not. POSIX only
+# (mkdtemp, setenv).
+if(NOT WIN32)
+    add_executable(paths_state_file_test
+        paths_state_file_test.c
+        ${CMAKE_SOURCE_DIR}/core/config/paths.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+    target_include_directories(paths_state_file_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+    set_target_properties(paths_state_file_test PROPERTIES C_STANDARD 11)
+    add_test(NAME paths_state_file_test COMMAND paths_state_file_test)
+endif()
+
 # bugreport_replay_knobs_test - --bug-report-replay applies a recorded knob
 # value only to a row this build classifies render, whatever class the
 # bundle's knobs.txt line names. The registry and the member reader are

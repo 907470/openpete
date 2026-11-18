@@ -156,9 +156,9 @@ cache, and reads the player's config. A scripted run sets
 config, state and data directories to `<root>/config/openpete`,
 `<root>/state/openpete` and `<root>/data/openpete` on every platform: logs
 and hang files in `state/openpete/logs`, cards, savestates and the pipeline
-cache in `state/openpete`, bundles, screenshots, recordings, the library
-and modules in `data/openpete`, the settings file and the overlay's
-`openpete-devui.ini` in `config/openpete`. The portable layout and the
+cache and the overlay's `openpete-devui.ini` in `state/openpete`, bundles,
+screenshots, recordings, the library and modules in `data/openpete`, the
+settings file in `config/openpete`. The portable layout and the
 adoption of directories beside the executable are off, and the default
 screenshot, `--bk2-record` and hang-file paths never fall back to the
 working directory.

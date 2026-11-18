@@ -41,8 +41,8 @@ union SDL_Event;
  * Call after rhi_create. The launcher calls it on the device it creates and
  * draws through openpete_devui_render_frame; the overlay itself stays
  * unattached until openpete_devui_init. Stores window state in
- * openpete-devui.ini beside the executable, one file for every game and
- * the launcher. A second call on the same device returns 1 at once.
+ * openpete-devui.ini in the state directory (openpete_paths_state_file),
+ * one file for every game and the launcher. A second call on the same device returns 1 at once.
  * @param dev The device.
  * @param win Its window.
  * @return 1 when the context exists on @p dev, 0 when a handle is missing,
@@ -50,16 +50,19 @@ union SDL_Event;
  *         initialise, or the context exists on another device. */
 int  openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win);
 
-/** @brief Adopt the newest per-game overlay ini as openpete-devui.ini, once per process.
+/** @brief Copy the overlay ini an earlier layout kept beside the executable into the state directory, once per process.
  *
- * When openpete-devui.ini does not exist beside the executable and one or
- * more openpete-devui-<game id>.ini files (written by builds that kept one
- * ini per game) do, the one with the latest modification time is copied to
- * openpete-devui.ini through a temporary renamed into place; every
- * per-game file is only read and stays in place. Runs headless too: it
- * touches files only. openpete_devui_create calls it before loading the
- * ini; the session start calls it so a headless run migrates as well.
- * Under a sandbox (openpete_paths_sandbox) nothing is copied.
+ * When openpete-devui.ini does not exist in the state directory
+ * (openpete_paths_state_file), the executable's directory is searched:
+ * its openpete-devui.ini, else the most recently written
+ * openpete-devui-<game id>.ini (builds that kept one ini per game). The
+ * file found is copied through a temporary renamed into place; the
+ * original is only read and stays in place. In the portable layout the
+ * state directory is the executable's, so an existing shared file is
+ * already in place. Runs headless too: it touches files only.
+ * openpete_devui_create calls it before loading the ini; the session start
+ * calls it so a headless run migrates as well. Under a sandbox
+ * (openpete_paths_sandbox) nothing is copied.
  * @return 1 when a file was copied, 0 when nothing was due, -1 when the
  *         copy failed. */
 int  openpete_devui_seed_ini(void);
