@@ -40,8 +40,15 @@
 #
 # Reduced sample: --filter SUBSTR keeps rows whose level field or tile key
 # contains SUBSTR (pg_row_selected); --stride N[:K] then keeps the K-th of
-# every N selected rows (K default 0). A leg takes 4-6 min on a loaded host;
-# the full corpus is 43 rows, 86 legs (5-7 h).
+# every N selected rows (K default 0). The full corpus is 43 rows, 86 legs.
+#
+# Concurrency: the legs of every selected game run CORPUS_JOBS at a time
+# (scripts/corpus-jobs.sh; CORPUS_JOBS=1 runs them serially). A leg writes
+# only its own <leg>.log, <leg>-vk.png and <leg>.rc, and boots in its own
+# sandbox root (pg_capture), so no file is shared between legs. results.tsv
+# is assembled from the <leg>.rc files after every leg has exited, in
+# manifest order, and is identical at every job count; a leg that left no
+# .rc fails the run under its name.
 #
 # Usage:
 #   tests/harness/check_terrain_claims.sh [--game SLUG]... [--build-dir=DIR]
@@ -60,6 +67,8 @@ set -u
 export OPENPETE_VIBRATION=0
 
 cd "$(dirname "$0")/../.."
+# shellcheck source=scripts/corpus-jobs.sh
+source scripts/corpus-jobs.sh
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
 
@@ -124,7 +133,22 @@ rm -f "${RESULTS:?}"
 
 trim() { sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<<"$1"; }
 
-legs=0
+# run_leg ID STEM VBL LEVEL -- <run args...>: one leg, run in the background
+# by cj_run. Its exit status goes to STEM.rc, the only channel from the job
+# back to the harness; the caller deletes STEM.rc before queueing the leg, so
+# a job killed before it writes leaves no stale status behind.
+run_leg() {
+    local id="$1" stem="$2" vbl="$3" lvl="$4"; shift 5
+    # pg_capture deletes the log and the capture before the run.
+    pg_capture "$stem.log" "$stem-vk.png" -- "$@" </dev/null
+    local rc=$?
+    echo "$rc" > "$stem.rc" || return 1
+    echo "  [$PG_GAME $id] level=$lvl vbl=$vbl rc=$rc"
+}
+
+# The legs in launch order, one `game<TAB>id<TAB>vbl<TAB>stem` entry each;
+# results.tsv is written from this list, not in completion order.
+ORDER=()
 for game in "${GAMES[@]}"; do
     PG_BUILD_DIR="$BUILD_DIR"
     pg_resolve "$game" || exit 64
@@ -163,20 +187,32 @@ for game in "${GAMES[@]}"; do
                             OPENPETE_TERRAIN_GPU_DBG=1 "${ROW_ENV[@]}")
             (( CAL )) && PG_CAPTURE_ENV+=(OPENPETE_TERRAIN_CANIMNEAR=0)
             PG_CAPTURE_TIMEOUT=600
-            # pg_capture deletes the log and the capture before the run.
-            pg_capture "$stem.log" "$stem-vk.png" -- \
+            rm -f "${stem:?}.rc"
+            ORDER+=("$PG_GAME"$'\t'"$id"$'\t'"$vbl"$'\t'"$stem")
+            # cj_run forks the job with this iteration's PG_* and row arrays.
+            cj_run run_leg "$id" "$stem" "$vbl" "$lvl" -- \
                 --renderer vk --mute 1 --aspect 4:3 --no-card --lod "$lod" \
                 "${boot[@]}" --freecam-pose "${POSES[$i]}" "${ROW_ARGS[@]}" \
                 --screenshot-native-only --screenshot-on-frame "$vbl" \
                 --screenshot-output "$stem.png" \
-                --frame-limit $((vbl + 10)) --max-runtime-seconds 580 </dev/null
-            rc=$?
-            printf '%s\t%s\t%s\t%s\t%s\n' "$PG_GAME" "$id" "$vbl" "$rc" "$stem" >> "$RESULTS"
-            echo "  [$PG_GAME $id] level=$lvl vbl=$vbl rc=$rc"
-            legs=$((legs + 1))
+                --frame-limit $((vbl + 10)) --max-runtime-seconds 580
         done
     done
 done
+cj_wait || echo "terrain-claims: a leg job failed to record its exit status"
+
+legs=0 lost=()
+for e in "${ORDER[@]}"; do
+    IFS=$'\t' read -r game id vbl stem <<<"$e"
+    rc="$(cat "$stem.rc" 2>/dev/null)"
+    if ! [[ "$rc" =~ ^[0-9]+$ ]]; then lost+=("$game/$id"); continue; fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$game" "$id" "$vbl" "$rc" "$stem" >> "$RESULTS"
+    legs=$((legs + 1))
+done
+if (( ${#lost[@]} )); then
+    echo "terrain-claims: FAIL (no exit status recorded: ${lost[*]})"
+    exit 1
+fi
 
 if (( legs == 0 )); then
     echo "terrain-claims: VACUOUS (no leg selected: filter='$FILTER' stride=$STRIDE:$STRIDE_K)"

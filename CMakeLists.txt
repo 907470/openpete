@@ -2740,8 +2740,10 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # walk at the capture VBL must claim 0 sectors in every class (arena
     # included). Exit 2 is VACUOUS (a leg's walk saw no sector or wrote no
     # census line) and fails the test. Skips (exit 64) without a binary, a
-    # disc or a Vulkan loader. The legs run serially, 4-6 min each on a
-    # loaded host (one --skip-to-level boot to the capture VBL).
+    # disc or a Vulkan loader. The legs run CORPUS_JOBS at a time
+    # (scripts/corpus-jobs.sh), each one --skip-to-level boot to the capture
+    # VBL. The rows hold the lock: each runs a full machine's worth of
+    # legs, and all of them write one default output directory.
     foreach(_tc_game IN ITEMS spyro-1 spyro-2 spyro-3)
         add_test(NAME terrain_claims_${_tc_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_terrain_claims.sh
