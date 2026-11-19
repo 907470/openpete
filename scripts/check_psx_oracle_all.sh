@@ -27,9 +27,22 @@
 # row closes, which no ratchet entry expresses).
 #
 # Usage:
-#   scripts/check_psx_oracle_all.sh [-- <extra openpete flags>]
+#   scripts/check_psx_oracle_all.sh [--windows-smoke] [-- <extra openpete flags>]
 #
 # OPENPETE_ORACLE_JOBS (default 3) caps the gates running at once.
+#
+# --windows-smoke: the stock row of every game on the Windows exe of
+# build/windows-mingw (OPENPETE_WIN_BUILD; the gate forwards its knobs
+# through WSLENV), truncated at OPENPETE_FRAME_LIMIT (default 8000 VBLs,
+# about 3000 records per game, no level-load coverage; about a minute),
+# two games at a time (OPENPETE_ORACLE_JOBS default 2). It catches a
+# Windows-only divergence (host input, CRT or compiler differences) that the
+# Linux gate cannot see; it is not the full gate. It exits 64 before starting anything while
+# ~/.local/share/openpete/bench/TIMING-WINDOW exists, when an exe is
+# missing, or when an openpete exe already runs on Windows (or tasklist.exe
+# cannot tell). This script starts no exe itself: each row's
+# tests/harness/check_psx_oracle.sh forwards every OPENPETE_* variable
+# through WSLENV and checks each crossed (wslenv-guard: no-launch).
 #
 # Exit 0 when every row ran and PASSed, 2 when any row diverged, was
 # VACUOUS or errored, 64 when none did and at least one row SKIPped (its
@@ -41,19 +54,52 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+WIN_SMOKE=0
+if [[ "${1:-}" == --windows-smoke ]]; then WIN_SMOKE=1; shift; fi
 PASSTHRU=("$@")
-JOBS="${OPENPETE_ORACLE_JOBS:-3}"
+JOBS="${OPENPETE_ORACLE_JOBS:-$(( WIN_SMOKE ? 2 : 3 ))}"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "[psx-oracle-all] OPENPETE_ORACLE_JOBS=$JOBS is not a positive count" >&2; exit 64; }
 
 GAMES=()
 for c in games/*/oracle.conf; do GAMES+=("$(basename "$(dirname "$c")")"); done
 [[ ${#GAMES[@]} -gt 0 ]] || { echo "[psx-oracle-all] no games/*/oracle.conf" >&2; exit 64; }
 
+# The Windows smoke's preconditions: no timing window open, every game's exe
+# built, and no openpete process already on the Windows side.
+declare -A WIN_BIN=()
+if (( WIN_SMOKE )); then
+    _timing="$HOME/.local/share/openpete/bench/TIMING-WINDOW"
+    if [[ -e "$_timing" ]]; then
+        echo "[psx-oracle-all] SKIP: $_timing exists (a timing run owns the machine)" >&2
+        exit 64
+    fi
+    # shellcheck source=scripts/lib/wslenv.sh
+    source scripts/lib/wslenv.sh
+    for g in "${GAMES[@]}"; do
+        WIN_BIN[$g]="$(win_tree_exe "${OPENPETE_WIN_BUILD:-build/windows-mingw}" "$g")"
+        if [[ ! -f "${WIN_BIN[$g]}" ]]; then
+            echo "[psx-oracle-all] SKIP: no Windows exe ${WIN_BIN[$g]} for $g" >&2
+            exit 64
+        fi
+    done
+    if ! _tl="$(tasklist.exe /FO CSV /NH 2>/dev/null | tr -d '\r')"; then
+        echo "[psx-oracle-all] SKIP: tasklist.exe did not run; Windows-side openpete processes unchecked" >&2
+        exit 64
+    fi
+    _busy="$(grep -oiE '^"openpete(-spyro[0-9])?\.exe","[0-9]+"' <<<"$_tl" || true)"
+    if [[ -n "$_busy" ]]; then
+        echo "[psx-oracle-all] SKIP: openpete already runs on Windows: $(tr '\n' ' ' <<<"$_busy")" >&2
+        exit 64
+    fi
+    export OPENPETE_FRAME_LIMIT="${OPENPETE_FRAME_LIMIT:-8000}"
+    echo "[psx-oracle-all] windows smoke: stock rows, frame limit $OPENPETE_FRAME_LIMIT, $JOBS at a time"
+fi
+
 if [[ -n "${OPENPETE_ORACLE_LOG_DIR:-}" ]]; then
     LOGDIR="$OPENPETE_ORACLE_LOG_DIR"; mkdir -p "$LOGDIR"
 else
     LOGDIR="$(mktemp -d "${TMPDIR:-/tmp}/psx-oracle-all.XXXXXX")"
-    trap 'rm -rf "$LOGDIR"' EXIT
+    trap 'rm -rf "${LOGDIR:?}"' EXIT
 fi
 
 # The row list: one "game row recipe mode" entry per row, in table order.
@@ -61,6 +107,7 @@ ROW_GAME=(); ROW_NAME=(); ROW_RECIPE=(); ROW_MODE=()
 add_row() { ROW_GAME+=("$1"); ROW_NAME+=("$2"); ROW_RECIPE+=("$3"); ROW_MODE+=("$4"); }
 for g in "${GAMES[@]}"; do
     add_row "$g" stock "games/$g/oracle.conf" stock
+    (( WIN_SMOKE )) && continue
     add_row "$g" clock "games/$g/oracle.conf" clock
     for r in games/"$g"/oracle-*.conf; do
         [[ -f "$r" ]] || continue
@@ -101,8 +148,9 @@ for i in "${!ROW_NAME[@]}"; do
     else
         env_args=(); flags=("${PASSTHRU[@]}")
     fi
+    (( WIN_SMOKE )) && env_args+=(OPENPETE_BIN="${WIN_BIN[$g]}")
     (( running < JOBS )) || reap_one
-    rm -f "${LOGDIR:?}/$logname"
+    rm -f "${LOGDIR:?}/${logname:?}"
     env "${env_args[@]}" tests/harness/check_psx_oracle.sh --game "$g" "${recipe_args[@]}" "${flags[@]}" \
         >"${LOGS[i]}" 2>&1 &
     PID_ROW[$!]=$i

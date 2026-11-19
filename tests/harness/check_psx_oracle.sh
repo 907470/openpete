@@ -70,6 +70,15 @@
 #   binary:     build/linux-release/openpete
 #   disc:       env $OPENPETE_DISC or the recipe's
 #
+# Windows exe: OPENPETE_BIN=build/windows-mingw/openpete.exe runs the same
+# gate on the Windows build from WSL. Every OPENPETE_* variable set when the
+# exe starts (the ones this script exports and the caller's) crosses through
+# scripts/lib/wslenv.sh, a value that names an existing path translated
+# to its Windows spelling; the disc, trace, seed, bk2 and card
+# arguments are passed as Windows paths. Flags forwarded after `--` are
+# passed verbatim. The exe's CRLF line ends are stripped from the log. The
+# windowed row (OPENPETE_ORACLE_WINDOWED) needs the Linux binary.
+#
 # Sibling artifacts (auto-detected - produced by pcsx-redux-trace.lua):
 #   <trace>.seed.ram   passed to openpete via --seed-ram (RAM at trace t0)
 #   <trace>.seed.cpu   passed via --seed-cpu (528B 'CSv1' CPU state at t0)
@@ -244,6 +253,25 @@ if [[ ! -f "$DISC" ]]; then
     echo "[psx-oracle] disc not found: $DISC (override with OPENPETE_DISC=)" >&2
     exit 64
 fi
+# A Windows exe reads only the environment WSLENV names and Windows paths.
+WIN_EXE=0
+if [[ "$BIN" == *.exe ]]; then
+    WIN_EXE=1
+    if ! command -v wslpath >/dev/null; then
+        echo "[psx-oracle] $BIN is a Windows exe and wslpath is missing (not WSL)" >&2
+        exit 64
+    fi
+    if [[ "${OPENPETE_ORACLE_WINDOWED:-0}" != 0 ]]; then
+        echo "[psx-oracle] OPENPETE_ORACLE_WINDOWED needs the Linux binary (llvmpipe under Xvfb)" >&2
+        exit 64
+    fi
+    # shellcheck source=scripts/lib/wslenv.sh
+    source scripts/lib/wslenv.sh
+fi
+# bin_path PATH: PATH as the binary reads it (the Windows spelling for an exe).
+bin_path() {
+    if (( WIN_EXE )); then wslpath -w "$(realpath "$1")"; else printf '%s\n' "$1"; fi
+}
 
 # The golden names the DuckStation build that captured it; a golden from a
 # commit other than the patch series applied onto the pinned upstream
@@ -321,11 +349,11 @@ SEED_RAM="${TRACE}.seed.ram"
 SEED_CPU="${TRACE}.seed.cpu"
 BK2="${TRACE}.bk2"
 
-[[ -f "$SEED_RAM" ]] && EXTRA+=(--seed-ram "$SEED_RAM") && \
+[[ -f "$SEED_RAM" ]] && EXTRA+=(--seed-ram "$(bin_path "$SEED_RAM")") && \
     echo "[psx-oracle] seed RAM: $SEED_RAM"
-[[ -f "$SEED_CPU" ]] && EXTRA+=(--seed-cpu "$SEED_CPU") && \
+[[ -f "$SEED_CPU" ]] && EXTRA+=(--seed-cpu "$(bin_path "$SEED_CPU")") && \
     echo "[psx-oracle] seed CPU: $SEED_CPU"
-[[ -f "$BK2"      ]] && EXTRA+=(--bk2 "$BK2") && \
+[[ -f "$BK2"      ]] && EXTRA+=(--bk2 "$(bin_path "$BK2")") && \
     echo "[psx-oracle] bk2:      $BK2"
 # Every sidecar the recipe's capture flags record must sit beside the
 # golden: a golden copied without one replays without that part of the
@@ -388,7 +416,7 @@ if [[ -n "$CARD1_FIXTURE" ]]; then
     fi
     CARD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/psx-oracle-card.XXXXXX")"
     cp "$CARD1_FIXTURE" "$CARD_DIR/card1.mcr"
-    RUN_ARGS+=(--card1 "$CARD_DIR/card1.mcr")
+    RUN_ARGS+=(--card1 "$(bin_path "$CARD_DIR/card1.mcr")")
     echo "[psx-oracle] card fixture: $CARD1_FIXTURE (slot 1, scratch copy) sha256 $(sha256sum < "$CARD_DIR/card1.mcr" | cut -c1-64)"
 fi
 
@@ -415,7 +443,7 @@ _oracle_cleanup() {
     op_scratch_cards_cleanup
 }
 trap _oracle_cleanup EXIT
-rm -f "$LOG"
+rm -f "${LOG:?}"
 
 # OPENPETE_ORACLE_WINDOWED=1: the windowed row. Headless never starts the
 # present thread, native extraction's live path or eager production, so a
@@ -451,16 +479,52 @@ MODS_OFF=(--mods "")
 for _a in "${PASSTHRU[@]}"; do
     [[ $_a == --mods-dir || $_a == --mods-dir=* ]] && MODS_OFF=()
 done
+# A Windows exe gets every OPENPETE_* variable now set, as the Linux child
+# inherits them: the sandbox, card directory and thread-role report through
+# the helper's own translated entries, any other value naming an existing
+# path (a `/` in it) as its Windows path, the rest verbatim. The Mesa selection
+# (sw_render_env) stays behind: the exe renders on the Windows GPU.
+LAUNCH_ENV=()
+if (( WIN_EXE )); then
+    _fwd=(); _names=()
+    while IFS= read -r _k; do
+        case "$_k" in
+            OPENPETE_SANDBOX|OPENPETE_CARD_DIR|OPENPETE_THREAD_ROLE_REPORT|OPENPETE_THREAD_ROLE_FATAL|OPENPETE_CARD_GUARD)
+                _names+=("$_k"); continue ;;
+        esac
+        _v="${!_k}"
+        [[ "$_v" == */* && -e "$_v" ]] && _v="$(bin_path "$_v")"
+        _fwd+=("$_k=$_v"); _names+=("$_k")
+    done < <(compgen -e | grep '^OPENPETE_' | sort)
+    wslenv_forward "${_fwd[@]}"
+    LAUNCH_ENV=(env "${WSLENV_ARGS[@]}")
+    # Engagement: a Windows process started with the same environment must
+    # read every name; one that does not cross makes the run VACUOUS.
+    _seen="$(cd /mnt/c 2>/dev/null; "${LAUNCH_ENV[@]}" cmd.exe /d /c set OPENPETE_ 2>/dev/null | tr -d '\r' || true)"
+    _lost=()
+    for _k in "${_names[@]}"; do
+        grep -q "^$_k=" <<<"$_seen" || _lost+=("$_k")
+    done
+    if (( ${#_lost[@]} )); then
+        echo "[psx-oracle] windows exe: did not cross WSLENV: ${_lost[*]}; VACUOUS" >&2
+        exit 3
+    fi
+    mapfile -t _recv < <(grep -E "^($(IFS='|'; echo "${_names[*]}"))=" <<<"$_seen")
+    echo "[psx-oracle] windows exe: received ${_recv[*]}"
+fi
 # The run and its tee are one background job the script waits on, so a
 # TERM, INT or HUP to the script stops them (scripts/lib/own_children.sh);
-# pipefail makes the job's status the binary's.
-op_own_run bash -c 'set -o pipefail; log="$1"; shift; "$@" 2>&1 | tee "$log"' _ "$LOG" \
-    "${OP_XVFB[@]}" "$BIN" "${MODE[@]}" \
+# pipefail makes the job's status the binary's. The CR of a Windows exe's
+# CRLF line ends is dropped, so every log match below reads the same text.
+# --input-lock 1 sits before PASSTHRU: a connected pad never reaches the
+# guest pad buffer, and a forwarded `-- --input-lock 0` still wins.
+op_own_run bash -c 'set -o pipefail; log="$1"; shift; "$@" 2>&1 | tr -d "\r" | tee "$log"' _ "$LOG" \
+    "${OP_XVFB[@]}" "${LAUNCH_ENV[@]}" "$BIN" "${MODE[@]}" \
     --no-config \
     "${MODS_OFF[@]}" \
-    --disc "$DISC" --disc-cache 0 \
-    --mute 1 \
-    --psxtrace-verify "$TRACE" \
+    --disc "$(bin_path "$DISC")" --disc-cache 0 \
+    --mute 1 --input-lock 1 \
+    --psxtrace-verify "$(bin_path "$TRACE")" \
     --frame-limit "$LIMIT" \
     "${EXTRA[@]}" \
     "${PASSTHRU[@]}"
@@ -499,7 +563,7 @@ fi
 # GTE hash row engagement: the row counts only when instructions were hashed
 # on compared intervals; zero is VACUOUS (exit 3), not a pass.
 if [[ "$GTE_ROW" == 1 ]]; then
-    GTE_LINE=$(grep -o 'gte: records=.*' "$LOG" | tail -1)
+    GTE_LINE=$(grep -o 'gte: records=.*' "$LOG" | tail -1 || true)
     GTE_OPS=$(sed -n 's/.* ops_hashed=\([0-9]*\).*/\1/p' <<<"$GTE_LINE")
     GTE_MISM=$(sed -n 's/.* mismatches=\([0-9]*\).*/\1/p' <<<"$GTE_LINE")
     if [[ -z "$GTE_LINE" || "${GTE_OPS:-0}" == 0 ]]; then
@@ -531,7 +595,7 @@ VERDICT_LINE=$(grep -o 'psxtrace: verdict: .*' "$LOG" | tail -1 || true)
 # charged no libspu call or SPU register access ran the stock timing under
 # another name.
 if [[ "$CLOCK" != "0" ]]; then
-    CLOCK_LINE=$(grep -o 'clock: vblpos delivered=.*' "$LOG" | tail -1)
+    CLOCK_LINE=$(grep -o 'clock: vblpos delivered=.*' "$LOG" | tail -1 || true)
     CLK_DELIV=$(sed -n 's/.*vblpos delivered=\([0-9]*\).*/\1/p' <<<"$CLOCK_LINE")
     CLK_CHARGED=$(sed -n 's/.*spuq charged=\([0-9]*\).*/\1/p' <<<"$CLOCK_LINE")
     CLK_REG=$(sed -n 's/.*spureg charged=\([0-9]*\).*/\1/p' <<<"$CLOCK_LINE")
@@ -578,7 +642,7 @@ fi
 # measured values printed so they can be recorded. A missing line means
 # the body never ran.
 if [[ "$rc" == "0" ]]; then
-    SUMMARY=$(grep -o 'music: summary: .*' "$LOG" | tail -1)
+    SUMMARY=$(grep -o 'music: summary: .*' "$LOG" | tail -1 || true)
     if [[ -z "$SUMMARY" ]]; then
         echo "[psx-oracle] music routing: no summary line (body never engaged)" >&2
         rc=2
