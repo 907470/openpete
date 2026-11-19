@@ -202,6 +202,7 @@ enum {
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u
+#define OPTC_FF_TIER_LP    (1u << 9)   /* face_flags: a low-poly tier face (terrain.vert FF_TIER_LP) */
 #define OPTC_SLOTS         512
 /* Build stamps: a VBL counter, or a scene id from the eager scene ring. Scene
  * ids carry the top bit so the two spaces never collide. */

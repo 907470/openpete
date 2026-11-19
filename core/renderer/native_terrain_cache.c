@@ -198,17 +198,20 @@ _Static_assert(offsetof(tc_globals_ubo, fog) == 7 * 16 &&
  * moving cameras render one tick ahead of the CPU-fed scene around them.
  * Re-extracted presents (windowed intermediates + canon-lag re-extract)
  * publish immediately: their build IS the displayed state. */
-/* Draw ranges of one state: per (arena, buffer), the element spans holding
- * a chunk the state's sector flags select, in ascending order, adjacent
- * spans closer than the arena's merge gap joined. Built at frame_commit
- * from the builder's chunk registry. n < 0 means no list (a build still
- * open, or more spans than TC_RANGE_MAX): the state draws every buffer's
- * whole high-water range. Must stay the last member of tc_state, and `r`
- * the last member here: tc_state_copy copies only the n spans in use. */
+/* Draw ranges of one state: per pass class and (arena, buffer), the
+ * element spans holding a chunk the state's sector flags select for that
+ * class, in ascending order, adjacent spans closer than the arena's merge
+ * gap joined. Class TC_RC_DRAW serves pass_sel 0 and 2, class TC_RC_FILL
+ * pass_sel 1 (tc_chunk_class_drawn). Built at frame_commit from the
+ * builder's chunk registry. n < 0 means no list (a build still open, or
+ * more spans than TC_RANGE_MAX): the state draws every buffer's whole
+ * high-water range. Must stay the last member of tc_state, and `r` the last
+ * member here: tc_state_copy copies only the n spans in use. */
 #define TC_RANGE_MAX 4096
+enum { TC_RC_DRAW, TC_RC_FILL, TC_RC_N };
 typedef struct {
     int      n;
-    uint16_t off[OPTC_ARENA_COUNT * TC_BUF_SLOTS + 1]; /* first span of (arena, buf) */
+    uint16_t off[TC_RC_N][OPTC_ARENA_COUNT * TC_BUF_SLOTS + 1]; /* first span of (class, arena, buf) */
     tc_span  r[TC_RANGE_MAX];
 } tc_ranges;
 
@@ -231,13 +234,14 @@ typedef struct {
 } tc_state;
 
 /* One chunk in the builder's registry: its element span in one arena
- * buffer and the sector slot and generation its elements carry in
- * face_flags. `uniform` is 0 when the elements disagree on either, and such
- * a chunk is drawn by every state. */
+ * buffer and the sector slot, generation and tier (OPTC_FF_TIER_LP) its
+ * elements carry in face_flags. `uniform` is 0 when the elements disagree
+ * on any of the three, and such a chunk is drawn by every state and pass. */
 typedef struct {
     uint32_t first, count;
     uint16_t slot;
     uint8_t  gen, uniform;
+    uint8_t  lp;                      /* the elements are low-poly tier faces */
 } tc_chunk;
 
 /* Builder-owned chunk registry of one arena buffer, sorted by `first`. */
@@ -442,6 +446,8 @@ static struct {
     _Atomic uint32_t nonlocal_bufs;  /* device thread counts, builder reads    */
     uint32_t         bufs_max[OPTC_ARENA_COUNT];
     uint32_t         ranges_max;
+    uint32_t         range_overflows; /* builds whose range lists overflowed TC_RANGE_MAX */
+    uint64_t         class_dropped[TC_RC_N]; /* elements a class list left out by sector admission */
     uint32_t         consolidations, prev_grow, sealed_draws, sealed_allocs, migrate_ticks;
     /* Growth answered while a replacement retires: the device counts the
      * buffers and stores it answers in RETIRE (retire_answers) and any
@@ -1301,12 +1307,15 @@ void openpete_tercache_shutdown(rhi_device *dev)
         if (e && *e && *e != '0' && s_tc.cen_presents)
             fprintf(stderr, "[tercache] submit census: presents=%llu "
                     "verts_per_present=%.0f whole_range_verts_per_present=%.0f "
-                    "draws_per_present=%.1f nolist_draws=%u range_draw=%d\n",
+                    "draws_per_present=%.1f nolist_draws=%u range_draw=%d "
+                    "class_dropped_draw=%llu class_dropped_fill=%llu range_overflows=%u\n",
                     (unsigned long long)s_tc.cen_presents,
                     (double)s_tc.cen_verts / (double)s_tc.cen_presents,
                     (double)s_tc.cen_verts_whole / (double)s_tc.cen_presents,
                     (double)s_tc.cen_draws / (double)s_tc.cen_presents,
-                    s_tc.cen_nolist, tc_range_draw_on());
+                    s_tc.cen_nolist, tc_range_draw_on(),
+                    (unsigned long long)s_tc.class_dropped[TC_RC_DRAW],
+                    (unsigned long long)s_tc.class_dropped[TC_RC_FILL], s_tc.range_overflows);
     }
     for (int a = 0; a < OPTC_ARENA_COUNT; a++)
         for (int b = 0; b < TC_BUF_SLOTS; b++) free(s_tc.reg[a][b].c);
@@ -1749,18 +1758,19 @@ static void tc_reg_clear(void)
  * @param count Element count.
  * @param ff First face_flags word.
  * @param stride Bytes between consecutive face_flags words.
- * @return The entry; uniform when every element's slot and generation equal the first's. */
+ * @return The entry; uniform when every element's slot, generation and tier equal the first's. */
 static tc_chunk tc_chunk_of(uint32_t first, int count, const uint8_t *ff, size_t stride)
 {
     uint32_t f0;
     memcpy(&f0, ff, sizeof f0);
     tc_chunk c = { first, (uint32_t)count, (uint16_t)(f0 & OPTC_SLOT_DEAD),
-                   (uint8_t)((f0 >> 29) & 7u), 1 };
-    const uint32_t key = f0 & (OPTC_SLOT_DEAD | 0xE0000000u);
+                   (uint8_t)((f0 >> 29) & 7u), 1, (uint8_t)((f0 & OPTC_FF_TIER_LP) != 0u) };
+    const uint32_t mask = OPTC_SLOT_DEAD | OPTC_FF_TIER_LP | 0xE0000000u;
+    const uint32_t key = f0 & mask;
     for (int i = 1; i < count && c.uniform; i++) {
         uint32_t f;
         memcpy(&f, ff + (size_t)i * stride, sizeof f);
-        if ((f & (OPTC_SLOT_DEAD | 0xE0000000u)) != key) c.uniform = 0;
+        if ((f & mask) != key) c.uniform = 0;
     }
     return c;
 }
@@ -1786,6 +1796,27 @@ static int tc_chunk_selected(const tc_state *T, int arena, const tc_chunk *c)
     return near_family == ((sf & OPTC_SF_NEARVAR) != 0);
 }
 
+/** @brief Return 1 when a pass class may draw any element of a selected chunk.
+ *
+ * Mirrors the vertex stage's sector admission (terrain.vert, the pass and
+ * tier admission after the material-pass test): the fill class (pass_sel 1)
+ * draws only low-poly faces of a sector with OPTC_SF_FILLLP, the draw class
+ * (pass_sel 0 and 2) a tier's faces only under its OPTC_SF_DRAWLP or
+ * OPTC_SF_DRAWHP. The flags are the state's published sector words, the
+ * ones the stage reads. A chunk mixing slots, generations or tiers is
+ * drawn by both classes.
+ * @param T The state.
+ * @param c The chunk, already selected (tc_chunk_selected).
+ * @param cls TC_RC_DRAW or TC_RC_FILL. */
+static int tc_chunk_class_drawn(const tc_state *T, const tc_chunk *c, int cls)
+{
+    if (!c->uniform) return 1;
+    union { float f; uint32_t u; } w;
+    w.f = T->sec[c->slot].o[3];
+    if (cls == TC_RC_FILL) return c->lp && (w.u & OPTC_SF_FILLLP) != 0u;
+    return (w.u & (c->lp ? OPTC_SF_DRAWLP : OPTC_SF_DRAWHP)) != 0u;
+}
+
 /** @brief Return the gap below which two selected spans of an arena are drawn as one.
  *
  * Joining spans draws the elements between them, which the vertex stage
@@ -1798,12 +1829,13 @@ static uint32_t tc_range_gap(int arena)
     return OPTC_ARENA_IS_CELL(arena) ? 2u : 192u;
 }
 
-/** @brief Append one arena buffer's selected spans to a state's range list.
+/** @brief Append one arena buffer's spans a pass class selects to a state's range list.
  * @param T The state.
+ * @param cls TC_RC_DRAW or TC_RC_FILL.
  * @param arena Arena index.
  * @param buf Buffer index.
  * @return 0, or -1 when the list is full. */
-static int tc_ranges_add_buf(tc_state *T, int arena, int buf)
+static int tc_ranges_add_buf(tc_state *T, int cls, int arena, int buf)
 {
     const tc_chunk_list *l = &s_tc.reg[arena][buf];
     const uint32_t gap = tc_range_gap(arena);
@@ -1812,6 +1844,10 @@ static int tc_ranges_add_buf(tc_state *T, int arena, int buf)
     for (int i = 0; i < l->n; i++) {
         const tc_chunk *c = &l->c[i];
         if (!tc_chunk_selected(T, arena, c)) continue;
+        if (!tc_chunk_class_drawn(T, c, cls)) {
+            s_tc.class_dropped[cls] += c->count;
+            continue;
+        }
         if (open && c->first <= hi + gap) {
             if (c->first + c->count > hi) hi = c->first + c->count;
             continue;
@@ -1829,21 +1865,28 @@ static int tc_ranges_add_buf(tc_state *T, int arena, int buf)
     return 0;
 }
 
-/** @brief Build a committed state's range list from the chunk registry and its sector flags.
+/** @brief Build a committed state's range lists, one per pass class, from the chunk registry and its sector flags.
  *
- * Leaves the list absent (n = -1) when the registry is incomplete or the
- * spans overflow TC_RANGE_MAX, so the state draws whole ranges.
+ * Leaves the lists absent (n = -1) when the registry is incomplete or the
+ * spans of both classes overflow TC_RANGE_MAX, so the state draws whole
+ * ranges (counted in range_overflows).
  * @param T The state. */
 static void tc_ranges_build(tc_state *T)
 {
     T->rl.n = 0;
     if (s_tc.reg_broken) { T->rl.n = -1; return; }
-    for (int a = 0; a < OPTC_ARENA_COUNT; a++)
-        for (int b = 0; b < TC_BUF_SLOTS; b++) {
-            T->rl.off[a * TC_BUF_SLOTS + b] = (uint16_t)T->rl.n;
-            if (tc_ranges_add_buf(T, a, b) != 0) { T->rl.n = -1; return; }
-        }
-    T->rl.off[OPTC_ARENA_COUNT * TC_BUF_SLOTS] = (uint16_t)T->rl.n;
+    for (int cls = 0; cls < TC_RC_N; cls++) {
+        for (int a = 0; a < OPTC_ARENA_COUNT; a++)
+            for (int b = 0; b < TC_BUF_SLOTS; b++) {
+                T->rl.off[cls][a * TC_BUF_SLOTS + b] = (uint16_t)T->rl.n;
+                if (tc_ranges_add_buf(T, cls, a, b) != 0) {
+                    T->rl.n = -1;
+                    s_tc.range_overflows++;
+                    return;
+                }
+            }
+        T->rl.off[cls][OPTC_ARENA_COUNT * TC_BUF_SLOTS] = (uint16_t)T->rl.n;
+    }
     if ((uint32_t)T->rl.n > s_tc.ranges_max) s_tc.ranges_max = (uint32_t)T->rl.n;
 }
 
@@ -3733,7 +3776,8 @@ static void tc_draw_buf(int arena, int bi, const tc_buf *b, const tc_pc *pc)
     const tc_ranges *rl = &s_tc.sel.rl;
     const int listed = rl->n >= 0 && tc_range_draw_on();
     const int k = arena * TC_BUF_SLOTS + bi;
-    if (listed && rl->off[k] == rl->off[k + 1]) {
+    const uint16_t *off = rl->off[pc->pass_sel == 1 ? TC_RC_FILL : TC_RC_DRAW];
+    if (listed && off[k] == off[k + 1]) {
         s_tc.cen_verts_whole += (uint64_t)nverts * (cells ? per : 1u);
         return;                           /* nothing selected in this buffer */
     }
@@ -3746,7 +3790,7 @@ static void tc_draw_buf(int arena, int bi, const tc_buf *b, const tc_pc *pc)
         s_tc.cen_nolist++;
         tc_issue(pc, arena, bi, cells, per, 0, nverts);
     } else {
-        for (int i = rl->off[k]; i < rl->off[k + 1]; i++) {
+        for (int i = off[k]; i < off[k + 1]; i++) {
             const uint32_t lo = rl->r[i].first;
             if (lo >= nverts) break;
             const uint32_t hi = lo + rl->r[i].count < nverts ? lo + rl->r[i].count : nverts;
