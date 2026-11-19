@@ -2232,6 +2232,7 @@ static int env_freecam_pose_check(void) {
  * Runs after the flag chain, so a typed flag has already claimed its slot.
  * Covers OPENPETE_VIBRATION, OPENPETE_MOUSE, OPENPETE_INPUT_LOCK,
  * OPENPETE_BACKGROUND, OPENPETE_PAD_UNFOCUSED and OPENPETE_SCREENSHOT_OVERLAYS,
+ * turns the input lock on for a --psxtrace-verify run that left it unset,
  * and refuses --input-lock with OPENPETE_INPUT_LEGACY.
  * @param opts The options block. */
 static int apply_env_spellings(openpete_options_t* opts) {
@@ -2273,6 +2274,14 @@ static int apply_env_spellings(openpete_options_t* opts) {
     }
 
     if (env_freecam_pose_check() != 0) return OPENPETE_EXIT_SETUP_ERROR;
+
+    /* --psxtrace-verify replays the reference's input: the run's pad is the
+     * reference's (a recorded movie, else no input), never a host device. A
+     * connected gamepad at rest otherwise reads into the guest's pad buffer
+     * (its sticks map to 0x7F, the reference's centred pad reads 0x80). An
+     * explicit --input-lock 0 or OPENPETE_INPUT_LOCK=0 still wins. */
+    if (opts->input_lock < 0 && opts->psxtrace_verify_path)
+        opts->input_lock = 1;
 
     /* The legacy input path hands the event pump and the pad decode to
      * PsyCross, where the lock has no filter. */
