@@ -354,6 +354,10 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
  * they write the pre-pass image's 1 - 1/vz beside prepass.vert. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 layout(constant_id = 1) const bool AFFINE_UV = false;
+/* Spec-constant 4, as terrain_shade.glsl: the scene is submitted through one
+ * ordering table, so a terrain key is stored in its bucket's tier order
+ * (op_key_tier_key); the key pass's window depth bounds that store. */
+layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
 layout(location = 0)      out vec2  vUV;    /* pre-multiplied by q (scene contract) */
 layout(location = 1)      out vec4  vColor; /* pre-multiplied by q                  */
@@ -3157,7 +3161,15 @@ void main()
         float K  = koff - 0.5;
         float kv = max(K, 1.0);
         vec2 cxy = clip_of(sscr);
-        gl_Position = op_key_clip(cxy, kv, kv);
+        /* terrain_key_cache.frag declares depth_greater. Every depth it
+         * stores for this face is op_key_store of at least kfloor: kv plus a
+         * non-negative drain sub-cell key, and on one ordering table at least
+         * the key's bucket floor (op_key_tier_key). The window depth sits a
+         * factor 1 - 2^-16 below op_key_store(kfloor), so an early depth test
+         * rejects only a fragment the stored depth's late test rejects. */
+        float kfloor = (SLOT_CONTEST && OP_KEY_TIER_ORDER != 0)
+                     ? floor(kv / OP_KEY_SLOT) * OP_KEY_SLOT : kv;
+        gl_Position = vec4(cxy * kv, op_key_store(kfloor) * kv * (1.0 - 1.0 / 65536.0), kv);
         float fvz = float(mo.z) * 16.0;              /* TRUE per-vertex view-Z */
         float wq  = AFFINE_UV ? 1.0 : max(fvz, 1.0);
         vUV = uv / wq;

@@ -38,6 +38,9 @@ layout(location = 13) flat in vec4 vKn2;   /*   BL.z BR.xyz                   */
 layout(location = 15) flat in float vKcls; /* the face's terrain class byte   */
 
 layout(location = 0) out vec4 outColor;
+/* The stored depth is never below the window depth terrain.vert places
+ * (the key pass's bound), so early depth tests may reject against it. */
+layout(depth_greater) out float gl_FragDepth;
 
 /* Fragment spec-constant 4 (`SLOT_CONTEST`): the scene is submitted through
  * one ordering table; a terrain key is stored in its bucket's tier order
