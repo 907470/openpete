@@ -5819,6 +5819,9 @@ typedef struct {
     float        wf;      /* the widen the scene was rendered at, 0 as above */
 } freeze_target_t;
 
+/* The key images whose pass is skipped while empty and clean (key_image_pass). */
+enum { NR_KI_MOBY, NR_KI_ACTOR, NR_KI_PKEY, NR_KI_RANK, NR_KI_N };
+
 static struct {
     bool          enabled;
     /* Native scene extraction and interpolation are running: the feature
@@ -6089,6 +6092,10 @@ static struct {
                                        * (rank lo, rank hi, moby ordinal) of the
                                        * LAST-painted ranked face per pixel -
                                        * the same-moby painter select input */
+    uint8_t       key_clean[NR_KI_N]; /* per NR_KI_* image: 1 while it holds exactly its
+                                       * pass's clear, so an empty batch's pass would
+                                       * rewrite the same bits; 0 after a drawn batch
+                                       * and on every (re)allocation */
     rhi_pipeline *moby_rank_pipe;     /* untextured ranked faces (moby_rank.vert/.frag) */
     rhi_pipeline *moby_rank_cutout_pipe; /* textured: alpha-aware cutout - rank
                                           * exists only on opaque texels */
@@ -10550,6 +10557,7 @@ static void key_images_release(void)
         rhi_destroy_texture(s_nr.dev, *slots[i]);
         *slots[i] = NULL;
     }
+    memset(s_nr.key_clean, 0, sizeof s_nr.key_clean);
 }
 
 /** @brief Return whether every key-contest image exists. */
@@ -11548,6 +11556,37 @@ static void draw_rank_batch(int base, int m, int untex,
     draw_keyrun_batch(&p, base, m, untex, spans, nspans);
 }
 
+/* One packed key-layout batch of terrain_key_vb: its offset, vertex count,
+ * untextured prefix and material spans. */
+typedef struct { int base, m, untex, nspans; const keytex_span_t *spans; } key_draw_t;
+
+/** @brief Record one key image's pass, or skip it when the batch is empty and the image already holds the pass's clear.
+ *
+ * The pass clears colour to (0, 0, 0, @p clear_a) and depth to far, then
+ * draws the batch. An empty batch leaves exactly the clear, so after one
+ * such pass the image is marked clean and later empty passes are skipped:
+ * every reader sees the same texels without the full-extent clear and
+ * store. Any drawn batch marks the image dirty. The only writers of these
+ * images are their passes here, and a (re)allocation clears the marks.
+ * @param ki The image's NR_KI_* index.
+ * @param rt The image.
+ * @param clear_a Colour clear alpha.
+ * @param vw Viewport width.
+ * @param vh Viewport height.
+ * @param draw The batch's draw (draw_key_batch or draw_rank_batch).
+ * @param b The batch. */
+static void key_image_pass(int ki, rhi_texture *rt, float clear_a, int vw, int vh,
+                           void (*draw)(int, int, int, const keytex_span_t *, int),
+                           const key_draw_t *b)
+{
+    if (b->m <= 0 && s_nr.key_clean[ki]) return;
+    rhi_begin_render_target(s_nr.dev, rt, 0.0f, 0.0f, 0.0f, clear_a);
+    rhi_set_viewport(s_nr.dev, vw, vh);
+    draw(b->base, b->m, b->untex, b->spans, b->nspans);
+    rhi_end_render_target(s_nr.dev, rt);
+    s_nr.key_clean[ki] = b->m <= 0;
+}
+
 /* The depth pre-pass's WORLD batch layout, written by
  * prepass_pack_world_runs and drawn by prepass_draw_world_runs within one
  * native_depth_prepass. */
@@ -12460,26 +12499,17 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         openpete_tercache_draw(OPTC_DRAW_KEY, &taff, s_nr.vram_tex, 0, NULL);
     }
     rhi_end_render_target(s_nr.dev, s_nr.terrain_key_depth);
-    rhi_begin_render_target(s_nr.dev, s_nr.moby_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
-    rhi_set_viewport(s_nr.dev, vw, vh);
-    draw_key_batch(s_tk_base + m, mm, m_untex, mspans, m_nspans);
-    rhi_end_render_target(s_nr.dev, s_nr.moby_key_depth);
-    rhi_begin_render_target(s_nr.dev, s_nr.actor_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
-    rhi_set_viewport(s_nr.dev, vw, vh);
-    draw_key_batch(s_tk_base + m + mm, am, a_untex, aspans, a_nspans);
-    rhi_end_render_target(s_nr.dev, s_nr.actor_key_depth);
-    rhi_begin_render_target(s_nr.dev, s_nr.actor_pkey_depth, 0.0f, 0.0f, 0.0f, 1.0f);
-    rhi_set_viewport(s_nr.dev, vw, vh);
-    draw_key_batch(s_tk_base + m + mm + am + rr, pm, p_untex, pspans, p_nspans);
-    rhi_end_render_target(s_nr.dev, s_nr.actor_pkey_depth);
-    if (s_nr.moby_rank_rt) {
-        /* Rank image: colour clears to 0 (decodes rank 0 = "no cover"), depth
-         * to far (rank -1); an empty batch still renders the clear. */
-        rhi_begin_render_target(s_nr.dev, s_nr.moby_rank_rt, 0.0f, 0.0f, 0.0f, 0.0f);
-        rhi_set_viewport(s_nr.dev, vw, vh);
-        draw_rank_batch(s_tk_base + m + mm + am, rr, r_untex, rspans, r_nspans);
-        rhi_end_render_target(s_nr.dev, s_nr.moby_rank_rt);
-    }
+    const key_draw_t kb_moby  = { s_tk_base + m, mm, m_untex, m_nspans, mspans };
+    const key_draw_t kb_actor = { s_tk_base + m + mm, am, a_untex, a_nspans, aspans };
+    const key_draw_t kb_pkey  = { s_tk_base + m + mm + am + rr, pm, p_untex, p_nspans, pspans };
+    const key_draw_t kb_rank  = { s_tk_base + m + mm + am, rr, r_untex, r_nspans, rspans };
+    key_image_pass(NR_KI_MOBY, s_nr.moby_key_depth, 1.0f, vw, vh, draw_key_batch, &kb_moby);
+    key_image_pass(NR_KI_ACTOR, s_nr.actor_key_depth, 1.0f, vw, vh, draw_key_batch, &kb_actor);
+    key_image_pass(NR_KI_PKEY, s_nr.actor_pkey_depth, 1.0f, vw, vh, draw_key_batch, &kb_pkey);
+    /* Rank image: colour clears to 0 (decodes rank 0 = "no cover"), depth to
+     * far (rank -1). */
+    if (s_nr.moby_rank_rt)
+        key_image_pass(NR_KI_RANK, s_nr.moby_rank_rt, 0.0f, vw, vh, draw_rank_batch, &kb_rank);
     s_tk_base += m + mm + am + rr + pm;
     NR_PROF_END();   /* key.rec */
     NR_PROF_BEGIN("key.shell");
