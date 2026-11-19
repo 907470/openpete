@@ -10,6 +10,9 @@
 # model_ref_indep.py. The search loads the module through ctypes from
 # modsave_model_py.
 # Timeouts are twice the measured wall time (quick 49 s, full 326 s).
+# Every test here carries the `unit` label, as in tests/unit; the full-depth
+# variants are also `slow`, which the landing's unit set excludes.
+cmake_language(DEFER CALL openpete_label_directory_tests unit)
 
 add_library(modsave_model STATIC modsave_model.c)
 target_include_directories(modsave_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

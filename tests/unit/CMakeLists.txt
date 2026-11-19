@@ -3,6 +3,10 @@
 # These don't boot the PSX runtime; they exercise pure functions
 # (parsers, decoders) that we'd rather catch regressions in without a full
 # game build. Hooked into ctest via enable_testing() in the root list.
+#
+# Every test defined in this directory carries the `unit` label: the landing
+# runs `ctest -L unit -LE slow`, so a new test here joins that set unasked.
+cmake_language(DEFER CALL openpete_label_directory_tests unit)
 
 # bk2_movie depends on miniz (zip read) + the log macros. Compile those
 # sources directly into the test target instead of linking openpete_core,
@@ -921,6 +925,10 @@ endif()
 # compute unavailable; the compute case must skip with the pipeline create
 # refused while the other cases pass.
 if(TARGET rhi_smoketest)
+    # rhi_smoketest is defined in core/rhi; this target puts it in
+    # tests/unit/all, the target that builds every program these tests run.
+    add_custom_target(rhi_smoketest_unit ALL)
+    add_dependencies(rhi_smoketest_unit rhi_smoketest)
     add_test(NAME rhi_smoketest_headless COMMAND rhi_smoketest --headless)
     set_tests_properties(rhi_smoketest_headless PROPERTIES LABELS "vulkan"
                          SKIP_RETURN_CODE 77 TIMEOUT 120)

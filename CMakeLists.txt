@@ -318,6 +318,18 @@ if(NOT CMAKE_CROSSCOMPILING)
     endif()
 endif()
 
+# openpete_label_directory_tests(<label>): append <label> to every test the
+# calling directory defines, run at the end of that directory through
+# cmake_language(DEFER), so a test added anywhere in the file is covered.
+# The LABELS directory property is not used: CTest 3.22 does not apply it to
+# a test that sets WORKING_DIRECTORY.
+function(openpete_label_directory_tests label)
+    get_property(_tests DIRECTORY PROPERTY TESTS)
+    if(_tests)
+        set_property(TEST ${_tests} APPEND PROPERTY LABELS ${label})
+    endif()
+endfunction()
+
 if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMakeLists.txt")
     add_subdirectory(tests/unit)
     add_subdirectory(tests/modsave)
