@@ -15,7 +15,11 @@ licence file under `third_party/` belongs to no row, a `third_party/`
 directory is covered by no row, or a row names a path that does not exist.
 `scripts/dist_compliance.py scan` refuses a package whose binaries carry a
 marker of a copyleft library that must not ship (a statically linked FFmpeg
-or x264).
+or x264). `scripts/dist_compliance.py docs` refuses a package whose
+documentation site holds `assets/javascripts/lunr/` (the search language
+files, which packaging deletes), whose search index names a language other
+than English, or where a path a `NOTICE.md` documentation-site row names is
+missing.
 
 The decomp submodules `games/<game>/<game>/` are separate repositories,
 each under CC0 1.0.

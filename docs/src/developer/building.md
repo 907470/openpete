@@ -764,7 +764,9 @@ stamp-guarded) runs `tools/gen_mod_docs.py` and builds the published
 sections, User and Modding, into one offline site at
 `build/<preset>/games/spyro-1/docs-site/`; `scripts/package-dist.sh`
 stages that site as `docs/` beside the executable in every archive (zip,
-tarball, AppImage) and refuses a tree without it. `use_directory_urls:
+tarball, AppImage) and refuses a tree without it. Staging deletes
+`assets/javascripts/lunr/`, the search language files, which the
+English-only search (`search: lang: en`) never loads. `use_directory_urls:
 false`, the `offline` plugin and relative links let `docs/index.html`
 browse from `file://`; a link into Developer or Spyro, which are not
 published, renders as its text. Packaging therefore needs `mkdocs==1.6.1`

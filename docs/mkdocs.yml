@@ -58,8 +58,12 @@ theme:
 # file:// the material bundle loads search/search_index.js, which only the
 # offline plugin emits; without it the bundle aborts before mounting the
 # sidebar, leaving the nav unsized and clipped at the bottom of the window.
+# Search is English only: the search worker then loads no file from
+# assets/javascripts/lunr/, which scripts/package-dist.sh deletes from every
+# package, and scripts/dist_compliance.py docs refuses another language.
 plugins:
-  - search
+  - search:
+      lang: en
   - offline
 
 # mkdocs_surface.py expands the surface macros of the User pages from

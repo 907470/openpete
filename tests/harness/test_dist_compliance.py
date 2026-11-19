@@ -6,7 +6,9 @@ third_party/ tree, packaging texts), runs the licences check from its root
 and compares the exit code and the refusal's text. The baseline passes; each
 refusal case removes or adds one thing the check accounts for. Cases run
 with and without a git repository, since the check lists third_party/ through
-git where it can and by walking the tree where it cannot.
+git where it can and by walking the tree where it cannot. The docs cases stage
+a synthetic documentation site and run the docs check against a NOTICE.md
+with a documentation-site section.
 """
 
 import os
@@ -93,6 +95,86 @@ def case(name, expect_rc, expect_text, rows=None, files=None, extra=None, git=Fa
         shutil.rmtree(root)
 
 
+DOCS_NOTICE = NOTICE + """
+## Documentation site - bundled under `docs/`
+
+| Component | License | Upstream |
+| --------- | ------- | -------- |
+| theme (`assets/stylesheets/`, `assets/javascripts/bundle.*.min.js`) | MIT | https://example.invalid/theme |
+| icons (inlined in the pages) | Apache-2.0 | https://example.invalid/icons |
+| shim (`assets/javascripts/shim.js`; text also as `shim-LICENSE` beside it) | MIT | https://example.invalid/shim |
+
+## Bundled data
+
+| Component | License | Upstream |
+| --------- | ------- | -------- |
+| data (`assets/not-docs.bin`) | MIT | https://example.invalid/data |
+"""
+
+DOCS_FILES = {
+    "docs/index.html": "<html></html>\n",
+    "docs/search/search_index.json": '{"config": {"lang": ["en"]}, "docs": []}\n',
+    "docs/assets/stylesheets/main.css": "a{}\n",
+    "docs/assets/javascripts/bundle.0123.min.js": "x\n",
+    "docs/assets/javascripts/shim.js": "x\n",
+}
+
+
+def docs_case(name, expect_rc, expect_text, notice=DOCS_NOTICE, drop=(), extra=None):
+    """Stage a synthetic docs site, run the docs check, compare; return True on a match."""
+    root = tempfile.mkdtemp(prefix="dist-compliance-docs-")
+    try:
+        files = {k: v for k, v in DOCS_FILES.items() if k not in drop}
+        files.update(extra or {})
+        for path, body in files.items():
+            full = os.path.join(root, "stage", path)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(body)
+        with open(os.path.join(root, "NOTICE.md"), "w", encoding="utf-8") as f:
+            f.write(notice)
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "docs", "--stage",
+                            os.path.join(root, "stage")],
+                           cwd=root, capture_output=True, text=True)
+        ok = r.returncode == expect_rc and expect_text in (r.stderr if expect_rc else r.stdout)
+        print(f"[dist-compliance-test] {'PASS' if ok else 'FAIL'} docs: {name}"
+              + ("" if ok else f": rc {r.returncode}, out {(r.stdout + r.stderr).strip()!r}"))
+        return ok
+    finally:
+        shutil.rmtree(root)
+
+
+def docs_cases():
+    """Return the results of the docs subcommand's cases."""
+    lunr = "docs/assets/javascripts/lunr/min/lunr.ja.min.js"
+    return [
+        docs_case("baseline", 0, "docs PASS: 3 rows, 3 paths present"),
+        docs_case("search language directory staged", 1,
+                  "assets/javascripts/lunr staged", extra={lunr: "x\n"}),
+        docs_case("search language directory holding one file staged", 1,
+                  "assets/javascripts/lunr staged",
+                  extra={"docs/assets/javascripts/lunr/tinyseg.js": "x\n"}),
+        docs_case("search language other than English", 1, "search languages",
+                  extra={"docs/search/search_index.json":
+                         '{"config": {"lang": ["en", "ja"]}}\n'}),
+        docs_case("search index missing", 1, "has no config.lang",
+                  drop=("docs/search/search_index.json",)),
+        docs_case("row lists a file that does not ship", 1,
+                  "assets/javascripts/shim.js (shim",
+                  drop=("docs/assets/javascripts/shim.js",)),
+        docs_case("row lists a glob that matches nothing", 1,
+                  "assets/javascripts/bundle.*.min.js (theme",
+                  drop=("docs/assets/javascripts/bundle.0123.min.js",)),
+        docs_case("row lists a directory that does not ship", 1,
+                  "assets/stylesheets/ (theme",
+                  drop=("docs/assets/stylesheets/main.css",)),
+        docs_case("no docs site staged", 1, "no documentation site staged",
+                  drop=("docs/index.html",)),
+        docs_case("NOTICE without a docs section", 1, "no '## Documentation site' rows",
+                  notice=NOTICE),
+    ]
+
+
 def main():
     """Run every case under both listing paths; exit 1 on any mismatch."""
     no_sub = {k: v for k, v in FILES.items() if k != "third_party/liba/sub/LICENSE-bsd.txt"}
@@ -137,6 +219,7 @@ def main():
         case("gitignored directory is not walked", 0, "",
              extra={"third_party/built/COPYING": "x\n"}),
     ]
+    results += docs_cases()
     print(f"[dist-compliance-test] {sum(results)}/{len(results)} cases")
     return 0 if all(results) else 1
 

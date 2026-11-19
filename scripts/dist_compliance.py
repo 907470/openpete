@@ -18,10 +18,21 @@
       packaging/licences/ text is named by no row, or an active row's text
       is missing or empty.
 
+  dist_compliance.py docs --stage DIR
+      Checks the documentation site staged at DIR/docs against NOTICE.md.
+      Exit 1 when DIR/docs/index.html is missing, the site's search index
+      names a language other than English, DIR/docs holds
+      assets/javascripts/lunr/ (the search language files, which no package
+      ships), or a path in a NOTICE.md row of the documentation-site section
+      (a backquoted token starting "assets/", a glob relative to DIR/docs)
+      matches no staged file.
+
 Runs from the repository root.
 """
 
 import argparse
+import glob
+import json
 import mmap
 import os
 import re
@@ -47,6 +58,12 @@ PACKAGING_TEXTS = "packaging/licences"
 # A licence file's base name: LICENSE, LICENCE or COPYING, with an optional
 # suffix after "." or "-" (LICENSE.txt, LICENSE-bsd.txt, COPYING.txt).
 LICENCE_NAME = re.compile(r"^(LICEN[CS]E|COPYING)([.-][^/]*)?$")
+# The NOTICE.md section listing the documentation site's components, the
+# staged directory its search worker imports language files from, and the
+# path form a row of that section names its files by.
+DOCS_SECTION = "## Documentation site"
+DOCS_LUNR = "assets/javascripts/lunr"
+DOCS_PATH = re.compile(r"`(assets/[^`]+)`")
 
 
 def fail(msg):
@@ -272,6 +289,64 @@ def cmd_licences(args):
           f" (scopes: {' '.join(sorted(scopes))})")
 
 
+def docs_section_rows():
+    """Return the table body rows of NOTICE.md's documentation-site section."""
+    rows, inside = [], False
+    with open(NOTICE, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("## "):
+                inside = line.startswith(DOCS_SECTION)
+                continue
+            if not inside or not line.startswith("|"):
+                continue
+            cell = line.split("|")[1].strip()
+            if cell != "Component" and not set(cell) <= {"-", ":"}:
+                rows.append(line)
+    return rows
+
+
+def search_languages(docs):
+    """Return the language list of the staged site's search index config."""
+    path = os.path.join(docs, "search", "search_index.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)["config"]["lang"]
+    except (OSError, ValueError, KeyError, TypeError):
+        fail(f"{path} missing or has no config.lang")
+    return None
+
+
+def cmd_docs(args):
+    """Check the staged documentation site against NOTICE.md's docs rows."""
+    docs = os.path.join(args.stage, "docs")
+    if not os.path.isfile(os.path.join(docs, "index.html")):
+        fail(f"{docs}/index.html missing: no documentation site staged")
+    langs = search_languages(docs)
+    if langs != ["en"]:
+        fail(f"search languages {langs}: the worker would import files from"
+             f" {DOCS_LUNR}/, which no package ships; set search lang: en")
+    if os.path.lexists(os.path.join(docs, DOCS_LUNR)):
+        fail(f"{docs}/{DOCS_LUNR} staged: its search language files ship in"
+             " no package")
+    rows = docs_section_rows()
+    if not rows:
+        fail(f"NOTICE.md has no '{DOCS_SECTION}' rows")
+    absent = []
+    n_paths = 0
+    for row in rows:
+        for rel in DOCS_PATH.findall(row):
+            n_paths += 1
+            hits = [p for p in glob.glob(os.path.join(docs, rel))
+                    if os.path.isfile(p) or os.listdir(p)]
+            if not hits:
+                absent.append(f"{rel} ({row.split('|')[1].strip().split(' (')[0]})")
+    if absent:
+        fail("NOTICE.md lists a licence for docs files that do not ship: "
+             + "; ".join(absent))
+    print(f"[dist-compliance] docs PASS: {len(rows)} rows, {n_paths} paths"
+          f" present, search {langs[0]}, no {DOCS_LUNR}/")
+
+
 def main():
     """Parse the subcommand and run it."""
     ap = argparse.ArgumentParser(description=__doc__,
@@ -287,6 +362,9 @@ def main():
                               "toolchain-linux", "appimage"])
     lic.add_argument("--toolchain-dir")
     lic.set_defaults(fn=cmd_licences)
+    d = sub.add_parser("docs")
+    d.add_argument("--stage", required=True)
+    d.set_defaults(fn=cmd_docs)
     args = ap.parse_args()
     args.fn(args)
 

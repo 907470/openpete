@@ -291,6 +291,14 @@ sys.exit(0 if any(g in games for g in sys.argv[2:]) else 3)
     # sitemap. openpete.com serves them from the build directory's copy.
     rm -f "${STAGE:?}/docs/404.html" "${STAGE:?}/docs/sitemap.xml" \
           "${STAGE:?}/docs/sitemap.xml.gz"
+    # Search language files (lunr-languages MPL-1.1, wordcut LGPL-3.0,
+    # TinySegmenter): the worker imports from lunr/ only for a search
+    # language other than English, and docs/mkdocs.yml pins English.
+    # dist_compliance.py docs refuses the directory, another language, and
+    # a NOTICE.md docs row whose files are not in the staged site.
+    rm -rf "${STAGE:?}/docs/assets/javascripts/lunr"
+    python3 scripts/dist_compliance.py docs --stage "$STAGE" \
+        || { echo "[package-dist] the staged docs fail the licence check" >&2; exit 1; }
     # The docs ship only the images packaging/docs-images.txt lists: User
     # docs screenshots show the launcher before a disc is added, and no
     # picture derived from a game ships.
@@ -453,6 +461,8 @@ build_appimage() {  # build_appimage <stage-dir>
     # texts only the image carries (its runtime, its bundled compiler).
     stage_licences "$APPDIR/usr" --scope appimage --scope toolchain-linux \
         --toolchain-dir "$APPDIR/usr/recomp/tools/clang"
+    python3 scripts/dist_compliance.py docs --stage "$APPDIR/usr" \
+        || { echo "[package] the image's docs fail the licence check" >&2; exit 1; }
     assert_no_copyleft "$APPDIR"
 
     assert_appdir_closure "$APPDIR" "$APPDIR/usr/$EXE" \

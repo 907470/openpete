@@ -57,17 +57,14 @@ libstdc++ / libgcc (static)	all	-	the GCC Runtime Library Exception permits dist
 MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows)	windows	packaging/licences/mingw-w64-runtime.txt	mingw-w64-runtime.txt	-
 MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows)	windows	packaging/licences/winpthreads.txt	winpthreads.txt	-
 OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`)	windows	third_party/OpenAL-mingw/COPYING	OpenAL-Soft.txt	third_party/OpenAL-mingw
-Material for MkDocs 9.7.6 (theme, `assets/stylesheets/`, `bundle.*.min.js`, `workers/search.*.min.js`, `images/favicon.png`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+Material for MkDocs 9.7.6 (theme, `assets/stylesheets/`, `assets/javascripts/bundle.*.min.js`, `assets/javascripts/workers/search.*.min.js`, `assets/images/favicon.png`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
 Material Design Icons (SVG icons inlined in the pages)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
-lunr.js 2.3.9 (in `workers/search.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
-RxJS (in `bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
-clipboard.js (in `bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
-escape-html (in `bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
-tslib (in `bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
-focus-visible (in `bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
-TinySegmenter (`lunr/tinyseg.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
-lunr-languages (`lunr/min/*.js`, with Snowball JavaScript Library v0.3)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
-wordcut (`lunr/wordcut.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+lunr.js 2.3.9 (in `assets/javascripts/workers/search.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+RxJS (in `assets/javascripts/bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+clipboard.js (in `assets/javascripts/bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+escape-html (in `assets/javascripts/bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+tslib (in `assets/javascripts/bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
+focus-visible (in `assets/javascripts/bundle.*.min.js`)	all	packaging/licences/docs-site-components.txt	docs-site.txt	-
 iframe-worker 1.0.4 shim (`assets/javascripts/iframe-worker-shim.js`; text also as `iframe-worker-LICENSE` beside it)	all	docs/src/assets/javascripts/iframe-worker-LICENSE	iframe-worker.txt	docs/src/assets/javascripts/iframe-worker-shim.js
 SDL_GameControllerDB (`gamecontrollerdb.txt`)	all	packaging/licences/gamecontrollerdb.txt	SDL_GameControllerDB.txt	gamecontrollerdb.txt
 llvm-mingw (LLVM/Clang, lld, llvm-ar, ...)	toolchain-windows	LICENSE.TXT	llvm-mingw.txt	-
