@@ -6092,6 +6092,9 @@ static struct {
                                        * (rank lo, rank hi, moby ordinal) of the
                                        * LAST-painted ranked face per pixel -
                                        * the same-moby painter select input */
+    uint8_t       key_order_packed; /* a key face packed since the last key pass began
+                                     * carries a key-order owner mark; 1 from a key
+                                     * image (re)allocation to the next pack */
     uint8_t       key_clean[NR_KI_N]; /* per NR_KI_* image: 1 while it holds exactly its
                                        * pass's clear, so an empty batch's pass would
                                        * rewrite the same bits; 0 after a drawn batch
@@ -10558,6 +10561,7 @@ static void key_images_release(void)
         *slots[i] = NULL;
     }
     memset(s_nr.key_clean, 0, sizeof s_nr.key_clean);
+    s_nr.key_order_packed = 1;
 }
 
 /** @brief Return whether every key-contest image exists. */
@@ -10976,6 +10980,7 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
                       actor_own_key_on();
     const uint32_t rgba = key_order_owner_alpha(T, prop_class) |
                           (owner ? (T->mid & 0xFFFFFFu) : 0u);
+    if ((rgba >> 24) != 0xFFu) s_nr.key_order_packed = 1;
     for (int k = 0; k < 3; k++) {
         float cx, cy;
         scene_to_clip(T->v[k].sx, T->v[k].sy, &cx, &cy);
@@ -12370,6 +12375,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         { rbuf, 0, 0, 0, rspans }, { pkbuf, 0, 0, 0, pspans } };
     const int rank_on = s_nr.moby_rank_rt && s_nr.moby_rank_pipe;
     torder_census(scene, scene_n);
+    s_nr.key_order_packed = 0;
     pack_key_batches(scene, scene_n, full_extent, rank_on, kb);
     int m = kb[KB_TERRAIN].m, mm = kb[KB_PROP].m, am = kb[KB_ACTOR].m, rr = kb[KB_RANK].m,
         pm = kb[KB_ACTOR_PX].m;
@@ -16682,7 +16688,11 @@ static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
  *
  * The terrain key image (set 1), the moby key image (set 2) and the actor
  * key image with its owner colour (set 7), as this present's key pass left
- * them; a member is NULL while its image is not allocated.
+ * them; a member is NULL while its image is not allocated. The flags state
+ * OPTC_KEYS_PROP_CLEAR while the moby key image holds its clear
+ * (key_image_pass's clean mark), and OPTC_KEYS_ORDER_UNMARKED while the
+ * actor key image holds its clear or no face of the batch it holds was packed
+ * with a key-order owner mark.
  * @return The images, valid until the next call. */
 static const openpete_tercache_keys *nr_tercache_keys(void)
 {
@@ -16690,6 +16700,9 @@ static const openpete_tercache_keys *nr_tercache_keys(void)
     s_keys.hp    = s_nr.terrain_key_depth;
     s_keys.prop  = s_nr.moby_key_depth;
     s_keys.actor = s_nr.actor_key_depth;
+    s_keys.flags = (s_nr.moby_key_depth && s_nr.key_clean[NR_KI_MOBY] ? OPTC_KEYS_PROP_CLEAR : 0u) |
+                   (s_nr.actor_key_depth && (s_nr.key_clean[NR_KI_ACTOR] || !s_nr.key_order_packed)
+                        ? OPTC_KEYS_ORDER_UNMARKED : 0u);
     return &s_keys;
 }
 

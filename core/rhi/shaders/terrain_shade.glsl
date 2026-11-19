@@ -86,7 +86,10 @@ layout(push_constant) uniform TerrainPC {
     int  mat_pass;
     int  snap;
     int  cover;          /* 1: discard what a portal preview covers        */
-    int  pad0, pad1, pad2;
+    int  pad0;
+    uint kflags;         /* OPTC_KEYS_*: 1 the prop key image is all clear,
+                          * 2 no actor key owner texel is key-order marked */
+    int  pad2;
     vec4 fc;             /* gl_FragCoord -> PSX screen: x = fc.x * fx + fc.y, y = fc.z * fy + fc.w (the portal discards and ter_key_plane_init) */
 } ter_pc;
 
@@ -231,7 +234,9 @@ bool ter_key_loses()
         op_key_from_stored(texelFetch(u_hpkey,   ivec2(gl_FragCoord.xy), 0).r),
         texelFetch(u_hpattr, ivec2(gl_FragCoord.xy), 0),
         OP_KEY_NONE, OP_KEY_NONE,
-        op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
+        (ter_pc.kflags & 1u) != 0u
+            ? OP_KEY_NONE
+            : op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
         op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
         koff, 0.0, vec2(vKcls, ter_key_plane),
         false, false, true, SLOT_CONTEST);
@@ -251,7 +256,7 @@ layout(set = 7, binding = 1) uniform sampler2D u_actorown;
  * reaches here: ter_key_loses discards it first. */
 int ter_key_order()
 {
-    if (vKoff <= 0.25) return 0;
+    if (vKoff <= 0.25 || (ter_pc.kflags & 2u) != 0u) return 0;
     vec4 owner = texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0);
     if (op_key_order_mark(owner) == 0) return 0;
     float koff = op_drain_koff_pf(vKoff, vKfl / vKq, vKc0, vKc1, vKd / vKq, vKn0.xyz,

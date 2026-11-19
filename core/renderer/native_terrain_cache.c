@@ -478,6 +478,9 @@ static struct {
     uint64_t         stale_bytes;
     uint32_t         budget_claims, budget_episodes, budget_walks_max, budget_open, budget_age_max;
     uint32_t         budget_starved;
+    uint32_t         kflags;              /* OPTC_KEYS_* of the key images bound by the
+                                           * openpete_tercache_draw in progress; 0 when
+                                           * it binds none */
 } s_tc;
 
 static void tc_est_col(char *out, size_t cap, const uint32_t *v);
@@ -835,7 +838,8 @@ typedef struct {
     int32_t mat_pass;      /* -1 = every face, 0 = stock, >0 = that material's pass */
     int32_t snap;          /* 1 = integer vertex precision (screen-point floor) */
     int32_t cover;         /* 1 = portal cover discard (terrain.frag) */
-    int32_t pad_[3];
+    int32_t pad_[3];       /* [1]: OPTC_KEYS_* of the pass's key images (terrain.frag
+                            * kflags); terrain_faceid.frag reads all three as its words */
     float   fc[4];         /* gl_FragCoord -> PSX screen affine, read by the portal discards */
     uint32_t cls_mask[8];  /* mat_pass >= 0: bit c keeps the faces of resolution class c */
 } tc_pc;
@@ -3772,8 +3776,9 @@ static uint32_t tc_arena_high(int arena)
  *
  * Zeroes the block, copies the clip mapping's extents, band and freeze
  * factor, the portal cover flag and fragment affine, and stamps the material
- * pass (s_tc_mat_pass) with its class mask (s_tc_mat_mask) and the vertex
- * precision snap latched for this present (s_tc_snap).
+ * pass (s_tc_mat_pass) with its class mask (s_tc_mat_mask), the vertex
+ * precision snap latched for this present (s_tc_snap) and the key-image
+ * flags of the draw in progress (s_tc.kflags).
  * @param pc Out: the block to fill.
  * @param pass_sel Pass selector.
  * @param c Clip mapping; must not be NULL. */
@@ -3789,6 +3794,7 @@ static void tc_pc_fill(tc_pc *pc, int pass_sel, const openpete_tercache_clip *c)
     memcpy(pc->cls_mask, s_tc_mat_mask, sizeof pc->cls_mask);
     pc->snap = s_tc_snap;
     pc->cover = c->cover;
+    pc->pad_[1] = (int32_t)s_tc.kflags;
     memcpy(pc->fc, c->fc, sizeof pc->fc);
 }
 
@@ -4139,6 +4145,7 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
         case OPTC_DRAW_KEY:     p = s_tc.ps.pipe_key;     break;
     }
     if (!p) return;
+    s_tc.kflags = keys ? keys->flags : 0u;
     tc_ubo_flush_frame();
     rhi_gpu_zone_begin(s_tc.dev, tc_zone_name(which));
     rhi_bind_pipeline(s_tc.dev, p);

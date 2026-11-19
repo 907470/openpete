@@ -1082,7 +1082,15 @@ typedef struct openpete_tercache_keys {
     struct rhi_texture *prop;   /* moby key image (prop true depth), set 2   */
     struct rhi_texture *actor;  /* actor key image with its owner colour,
                                  * set 7 (the key-order contest)             */
+    unsigned flags;             /* OPTC_KEYS_* facts about the images' texels */
 } openpete_tercache_keys;
+
+/* openpete_tercache_keys.flags: the prop key image holds its clear at every
+ * texel (op_key_from_stored reads OP_KEY_NONE everywhere). */
+#define OPTC_KEYS_PROP_CLEAR    1u
+/* openpete_tercache_keys.flags: no actor key owner texel carries a key-order
+ * mark (op_key_order_mark 0 everywhere). */
+#define OPTC_KEYS_ORDER_UNMARKED 2u
 
 /** @brief Draw one pass of the selected retained terrain state.
  *
