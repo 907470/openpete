@@ -43,12 +43,17 @@ original disc (NTSC-U, SCUS-94228; described under
 native build and its prerequisites, the presets and each gate's container
 form.
 
+## Contributing
+
+openpete is not accepting contributions at this time, and pull requests are
+turned off. The source is published to be read and learned from. See
+`CONTRIBUTING.md` for the terms that apply when contributions open.
+
 ## License
 
 Source code is offered under the MIT License (`LICENSE`). The Spyro
 decompilation submodule, PsyCross, psxrecomp, and other vendored deps retain
-their respective upstream licenses; see `NOTICE.md`. Contributions are
-accepted under the Developer Certificate of Origin; see `CONTRIBUTING.md`.
+their respective upstream licenses; see `NOTICE.md`.
 
 This project is not affiliated with or endorsed by Sony, Insomniac Games,
 or Activision.

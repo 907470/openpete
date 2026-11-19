@@ -1,5 +1,12 @@
 # Contributing
 
+openpete is not accepting contributions at this time. Pull requests are
+turned off, and a patch sent another way is not reviewed or merged. The
+source is published to be read and learned from. This notice is removed
+when contributions open.
+
+The rest of this file states the terms and checks that apply once they do.
+
 openpete is licensed under the MIT License (`LICENSE`). A contribution is
 accepted under the same licence; no copyright assignment and no separate
 contributor agreement.
