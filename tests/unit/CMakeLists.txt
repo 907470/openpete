@@ -1258,7 +1258,11 @@ add_test(NAME sfx_name_parse_test COMMAND sfx_name_parse_test)
 # environment, installs results and retires pipelines (contract in the
 # source). Compiles the mod registry with local stubs for the loader, the
 # GLSL front end and the renderer, and links the RHI. Needs a Vulkan device:
-# exit 77 (no device) is a skip.
+# exit 77 (no device) is a skip. The verdict on lock contention counts
+# rather than times: the link wraps SDL's read-write lock calls
+# (RHI_STRESS_LINK) so the harness sees which threads take the registry
+# lock, and it routes volk's vkCreateGraphicsPipelines through a census of
+# pipelines created holding that lock.
 set(RHI_STRESS_SOURCES
     rhi_compile_stress.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_shader.c
@@ -1276,10 +1280,17 @@ set(RHI_STRESS_INCLUDES
     ${CMAKE_SOURCE_DIR}/core/include/psxrt
     ${CMAKE_SOURCE_DIR}/core/mods
     ${CMAKE_SOURCE_DIR}/core/host
-    ${CMAKE_SOURCE_DIR}/core/rhi)
+    ${CMAKE_SOURCE_DIR}/core/rhi
+    ${CMAKE_SOURCE_DIR}/third_party/vulkan-headers/include
+    ${CMAKE_SOURCE_DIR}/third_party/volk)
+set(RHI_STRESS_LINK
+    -Wl,--wrap=SDL_LockRWLockForReading
+    -Wl,--wrap=SDL_LockRWLockForWriting
+    -Wl,--wrap=SDL_UnlockRWLock)
 add_executable(rhi_compile_stress ${RHI_STRESS_SOURCES})
 target_include_directories(rhi_compile_stress PRIVATE ${RHI_STRESS_INCLUDES})
-target_compile_definitions(rhi_compile_stress PRIVATE OPENPETE_NO_GLSLANG)
+target_compile_definitions(rhi_compile_stress PRIVATE OPENPETE_NO_GLSLANG VK_NO_PROTOTYPES)
+target_link_options(rhi_compile_stress PRIVATE ${RHI_STRESS_LINK})
 target_link_libraries(rhi_compile_stress PRIVATE openpete_rhi SDL3::SDL3-static ${CMAKE_DL_LIBS})
 set_target_properties(rhi_compile_stress PROPERTIES C_STANDARD 11)
 add_test(NAME rhi_compile_stress COMMAND rhi_compile_stress 4 3)
@@ -1298,12 +1309,10 @@ if(NOT WIN32 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     endforeach()
     add_executable(rhi_compile_stress_tsan EXCLUDE_FROM_ALL
         ${RHI_STRESS_SOURCES} ${OPENPETE_RHI_SOURCES})
-    target_include_directories(rhi_compile_stress_tsan PRIVATE ${RHI_STRESS_INCLUDES}
-        ${CMAKE_SOURCE_DIR}/third_party/vulkan-headers/include
-        ${CMAKE_SOURCE_DIR}/third_party/volk)
+    target_include_directories(rhi_compile_stress_tsan PRIVATE ${RHI_STRESS_INCLUDES})
     target_compile_definitions(rhi_compile_stress_tsan PRIVATE OPENPETE_NO_GLSLANG VK_NO_PROTOTYPES)
     target_compile_options(rhi_compile_stress_tsan PRIVATE -fsanitize=thread -g -O1)
-    target_link_options(rhi_compile_stress_tsan PRIVATE -fsanitize=thread)
+    target_link_options(rhi_compile_stress_tsan PRIVATE -fsanitize=thread ${RHI_STRESS_LINK})
     target_link_libraries(rhi_compile_stress_tsan PRIVATE SDL3::SDL3-static ${CMAKE_DL_LIBS})
     set_target_properties(rhi_compile_stress_tsan PROPERTIES C_STANDARD 11)
     # openpete_rhi's build generates the embedded-shader source.

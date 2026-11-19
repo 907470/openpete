@@ -35,12 +35,18 @@
  * counts, seam violations, and, on Linux, the getenv and fopen calls made on
  * worker threads (harness workers and the pool's openpete-compile threads;
  * the harness interposes both and attributes each by its caller: this
- * executable, which links the RHI, or the Vulkan driver's shared library).
- * Exit 0 when each compiling leg ran jobs, installed results, made no getenv
- * or fopen call from this executable's code on a worker, and grew no read
- * hold's CPU time or writer maximum beyond max(2 x, +5 ms) of the no-compile
- * run (a writer rise within the longest hold plus the unlocked control
- * section's jitter reads JITTER, not a failure); the pool leg swapped
+ * executable, which links the RHI, or the Vulkan driver's shared library),
+ * and in each leg the registry lock acquisitions and the pipeline creations
+ * by thread role, and the creations made holding the registry lock (the
+ * census: the link wraps SDL's read-write lock calls, and volk's
+ * vkCreateGraphicsPipelines pointer is routed through the harness). The
+ * times are reported, not judged: they follow the host's scheduling.
+ * Exit 0 when each compiling leg ran jobs, installed results, created
+ * pipelines on compile workers, made no getenv or fopen call from this
+ * executable's code on a worker, took the registry lock on no thread but
+ * the display owner and the guest, and created no pipeline holding it (so
+ * a writer waits only on the display owner's holds, and those hold no
+ * compile); the pool leg swapped
  * rebuilds, superseded one, discarded stale results, lost a member to
  * retirement in flight and failed none; no seam violation was seen; a link
  * and unlink made off the display owner each counted one seam violation (the
@@ -68,6 +74,7 @@
 #include "openpete_mods.h"
 #include "openpete_native_render.h"
 #include "mod_glsl.h"
+#include "volk.h"
 
 #include <SDL3/SDL.h>
 
@@ -172,6 +179,111 @@ FILE *fopen(const char *path, const char *mode)
     return real ? real(path, mode) : NULL;
 }
 #endif
+
+/* ---- registry lock and pipeline creation census ---------------------- */
+
+/* Thread roles: the display owner (main), the guest thread, and every other
+ * thread (the harness's compile workers, the RHI pool's openpete-compile
+ * threads, the driver's own threads). */
+enum { ROLE_OTHER, ROLE_DISPLAY, ROLE_GUEST, ROLE_COUNT };
+static _Thread_local int t_role;
+/* The registry lock's read or write depth on this thread. */
+static _Thread_local int t_reg_depth;
+/* Set while main takes the registry lock once to learn its address. */
+static _Thread_local int t_reg_capture;
+static SDL_RWLock *s_reg_rwlock;
+
+/* One leg's census: registry lock acquisitions by role, and
+ * vkCreateGraphicsPipelines calls by role and with the registry lock held. */
+static struct {
+    atomic_uint reg_taken[ROLE_COUNT];
+    atomic_uint creates[ROLE_COUNT];
+    atomic_uint creates_under_registry;
+} s_census;
+
+/** @brief Count a registry lock acquisition by the calling thread's role.
+ *
+ * The link maps SDL_LockRWLockForReading and SDL_LockRWLockForWriting to
+ * the wrappers below (-Wl,--wrap), so every acquisition mod_shader.c makes
+ * passes here; the registry's lock is told apart from every other SDL
+ * read-write lock by the address main captured.
+ * @param lock The lock being taken. */
+static void reg_census_take(SDL_RWLock *lock)
+{
+    if (t_reg_capture) s_reg_rwlock = lock;
+    if (!lock || lock != s_reg_rwlock) return;
+    t_reg_depth++;
+    atomic_fetch_add(&s_census.reg_taken[t_role], 1u);
+}
+
+void SDLCALL __real_SDL_LockRWLockForReading(SDL_RWLock *rwlock);
+void SDLCALL __real_SDL_LockRWLockForWriting(SDL_RWLock *rwlock);
+void SDLCALL __real_SDL_UnlockRWLock(SDL_RWLock *rwlock);
+
+/** @brief Take a read-write lock for reading, counting a registry acquisition.
+ *
+ * @param rwlock The lock. */
+void SDLCALL __wrap_SDL_LockRWLockForReading(SDL_RWLock *rwlock)
+{
+    __real_SDL_LockRWLockForReading(rwlock);
+    reg_census_take(rwlock);
+}
+
+/** @brief Take a read-write lock for writing, counting a registry acquisition.
+ *
+ * @param rwlock The lock. */
+void SDLCALL __wrap_SDL_LockRWLockForWriting(SDL_RWLock *rwlock)
+{
+    __real_SDL_LockRWLockForWriting(rwlock);
+    reg_census_take(rwlock);
+}
+
+/** @brief Release a read-write lock, ending the thread's registry hold when it is the registry's.
+ *
+ * @param rwlock The lock. */
+void SDLCALL __wrap_SDL_UnlockRWLock(SDL_RWLock *rwlock)
+{
+    if (rwlock && rwlock == s_reg_rwlock && t_reg_depth > 0) t_reg_depth--;
+    __real_SDL_UnlockRWLock(rwlock);
+}
+
+static PFN_vkCreateGraphicsPipelines s_real_create_pipelines;
+
+/** @brief vkCreateGraphicsPipelines through the census: count the call by role and when the caller holds the registry lock, then create.
+ *
+ * Installed in volk's function pointer after the device is created, so
+ * every pipeline the RHI creates (compile runs, variant probes, library
+ * links) passes here.
+ * @param device Device.
+ * @param cache Pipeline cache.
+ * @param n Create info count.
+ * @param infos Create infos.
+ * @param alloc Allocator.
+ * @param out Receives the pipelines.
+ * @return The driver's result. */
+static VKAPI_ATTR VkResult VKAPI_CALL census_create_pipelines(
+    VkDevice device, VkPipelineCache cache, uint32_t n, const VkGraphicsPipelineCreateInfo *infos,
+    const VkAllocationCallbacks *alloc, VkPipeline *out)
+{
+    atomic_fetch_add(&s_census.creates[t_role], 1u);
+    if (t_reg_depth) atomic_fetch_add(&s_census.creates_under_registry, 1u);
+    return s_real_create_pipelines(device, cache, n, infos, alloc, out);
+}
+
+/** @brief Start the census on the main thread: learn the registry lock's address, then route pipeline creation through the census.
+ *
+ * Runs after the device exists and before any leg starts a thread; main
+ * has already made the registry's first, unsynchronized lock use. */
+static void census_start(void)
+{
+    t_role = ROLE_DISPLAY;
+    t_reg_capture = 1;
+    openpete_mods_registry_read_lock();
+    t_reg_capture = 0;
+    openpete_mods_registry_read_unlock();
+    s_real_create_pipelines = vkCreateGraphicsPipelines;
+    vkCreateGraphicsPipelines = census_create_pipelines;
+}
 
 /* ---- stubs for the mod loader and renderer symbols mod_shader.c calls -- */
 
@@ -439,6 +551,7 @@ static int SDLCALL guest_main(void *arg)
 {
     (void)arg;
     int fx = -1, mat = -1;
+    t_role = ROLE_GUEST;
     mod_register(&fx, &mat);
     unsigned char block[16] = {0};
     for (unsigned it = 0; !atomic_load(&s_guest_stop); it++) {
@@ -822,6 +935,7 @@ static void env_write(unsigned cycle, const char *shader_dir)
 static void run_leg(leg_mode mode, int workers, int seconds, const char *shader_dir)
 {
     memset(&s_st, 0, sizeof s_st);
+    memset(&s_census, 0, sizeof s_census);
     memset(s_pending, 0, sizeof s_pending);
     atomic_store(&s_guest_stop, false);
     s_q.stop = false;
@@ -889,50 +1003,50 @@ static void report(const char *name)
            (double)s_st.hold_cpu_max_ns / 1e6,
            s_st.holds ? (double)s_st.hold_sum_ns / 1e6 / s_st.holds : 0.0,
            (double)s_st.ctl_max_ns / 1e6);
+    printf("leg=%s registry_taken display=%u guest=%u other=%u pipeline_creates display=%u "
+           "guest=%u other=%u under_registry=%u\n", name,
+           atomic_load(&s_census.reg_taken[ROLE_DISPLAY]), atomic_load(&s_census.reg_taken[ROLE_GUEST]),
+           atomic_load(&s_census.reg_taken[ROLE_OTHER]), atomic_load(&s_census.creates[ROLE_DISPLAY]),
+           atomic_load(&s_census.creates[ROLE_GUEST]), atomic_load(&s_census.creates[ROLE_OTHER]),
+           atomic_load(&s_census.creates_under_registry));
 }
 
-/** @brief Return the growth bound of a no-compile maximum: twice it or 5 ms more, whichever is larger.
+/** @brief Judge a compiling leg: engagement, and which threads took the registry lock and created pipelines under it.
  *
- * @param base The no-compile maximum, ns.
- * @return The bound, ns. */
-static uint64_t growth_bound(uint64_t base)
-{
-    return base * 2 > base + 5000000u ? base * 2 : base + 5000000u;
-}
-
-/** @brief Judge a compiling leg against the no-compile leg: engagement, read-hold CPU growth, writer maxima.
- *
- * Workers take no registry lock, so a writer waits only on the display
- * owner's read holds. The holds' CPU time (wall time minus preemption) is
- * judged against the no-compile run; a writer's maximum is judged
- * likewise, and a rise the leg's longest wall hold plus its scheduling
- * jitter (the control) accounts for is reported, not failed: CPU
- * contention from the workers stretches a hold, the hold's work does not
- * grow.
+ * A writer waits only on the display owner's read holds when no other
+ * thread takes the registry lock and no hold contains a pipeline creation
+ * (a compile). Both are counted, not timed: a wait's length depends on
+ * how the host schedules the threads, a count does not. The leg is
+ * engaged when its jobs compiled and installed, compile workers created
+ * pipelines, and the display owner and the guest each took the lock.
+ * The writer and hold times report() prints are not judged.
  * @param leg Leg name.
- * @param base_max The no-compile leg's writer maxima.
- * @param base_hold The no-compile leg's read-hold CPU maximum.
  * @return 1 on a failure, else 0. */
-static int judge_leg(const char *leg, const uint64_t base_max[4], uint64_t base_hold)
+static int judge_leg(const char *leg)
 {
     int fail = 0;
-    if (!atomic_load(&s_st.ran_ok) || !s_st.installed) {
-        printf("verdict: leg=%s VACUOUS (no job compiled or installed)\n", leg);
+    const unsigned other = atomic_load(&s_census.reg_taken[ROLE_OTHER]);
+    const unsigned locked = atomic_load(&s_census.creates_under_registry);
+    const struct { const char *what; unsigned n; } need[] = {
+        { "job compiled", atomic_load(&s_st.ran_ok) }, { "result installed", s_st.installed },
+        { "pipeline created on a compile worker", atomic_load(&s_census.creates[ROLE_OTHER]) },
+        { "registry hold by the display owner", atomic_load(&s_census.reg_taken[ROLE_DISPLAY]) },
+        { "registry write by the guest", atomic_load(&s_census.reg_taken[ROLE_GUEST]) },
+    };
+    for (size_t i = 0; i < sizeof need / sizeof need[0]; i++) {
+        if (need[i].n) continue;
+        printf("verdict: leg=%s VACUOUS (no %s)\n", leg, need[i].what);
         fail = 1;
     }
-    if (s_st.hold_cpu_max_ns > growth_bound(base_hold)) {
-        printf("verdict: leg=%s GROWTH read_hold cpu max_ms %.3f -> %.3f\n", leg,
-               (double)base_hold / 1e6, (double)s_st.hold_cpu_max_ns / 1e6);
+    if (other) {
+        printf("verdict: leg=%s LOCKED registry lock taken %u times on a thread other than the "
+               "display owner and the guest\n", leg, other);
         fail = 1;
     }
-    for (int w = 0; w < 4; w++) {
-        if (s_st.max_ns[w] <= growth_bound(base_max[w])) continue;
-        const bool explained = s_st.max_ns[w] <= s_st.hold_max_ns + s_st.ctl_max_ns + 1000000u;
-        printf("verdict: leg=%s %s writer=%s max_ms %.3f -> %.3f (hold max %.3f + control max %.3f)\n",
-               leg, explained ? "JITTER" : "GROWTH", k_writer[w], (double)base_max[w] / 1e6,
-               (double)s_st.max_ns[w] / 1e6, (double)s_st.hold_max_ns / 1e6,
-               (double)s_st.ctl_max_ns / 1e6);
-        if (!explained) fail = 1;
+    if (locked) {
+        printf("verdict: leg=%s LOCKED %u pipeline creations made holding the registry lock\n",
+               leg, locked);
+        fail = 1;
     }
     return fail;
 }
@@ -1194,21 +1308,19 @@ int main(int argc, char **argv)
     s_dev = rhi_create_headless("rhi_compile_stress", 64, 64, NULL);
     if (!s_dev) { fprintf(stderr, "rhi_compile_stress: no Vulkan device - SKIP\n"); return 77; }
     if (!load_frag_words()) { fprintf(stderr, "rhi_compile_stress: no raster_quantize.frag.spv\n"); return 1; }
+    census_start();
 
     const bool p1_leg = !legs || strcmp(legs, "pool") != 0;
     SDL_setenv_unsafe("OPENPETE_COMPILE_POOL", argc > 1 ? argv[1] : "4", 1);   /* read at the pool's start */
     run_leg(MODE_NONE, 0, seconds, shader_dir);
     report("no_compile");
-    uint64_t base_max[4];
-    for (int w = 0; w < 4; w++) base_max[w] = s_st.max_ns[w];
-    const uint64_t base_hold = s_st.hold_cpu_max_ns;
     int fail = 0;
     if (p1_leg) {
         atomic_store(&s_worker_getenv, 0u);
         atomic_store(&s_worker_fopen, 0u);
         run_leg(MODE_QUEUE, workers, seconds, shader_dir);
         report("compile");
-        fail |= judge_leg("compile", base_max, base_hold);
+        fail |= judge_leg("compile");
         fail |= judge_worker_calls("compile");
     }
     atomic_store(&s_worker_getenv, 0u);
@@ -1219,7 +1331,7 @@ int main(int argc, char **argv)
     rhi_compile_pool_stats_get(s_dev, &p0);
     run_leg(MODE_POOL, workers, seconds, shader_dir);
     report("pool");
-    fail |= judge_leg("pool", base_max, base_hold);
+    fail |= judge_leg("pool");
     fail |= judge_pool(&p0);
     fail |= judge_worker_calls("pool");
     const unsigned seams = rhi_seam_violations();
