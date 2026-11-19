@@ -46,6 +46,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <process.h>
+#define op_getpid _getpid
+#else
+#include <unistd.h>
+#define op_getpid getpid
+#endif
 
 #define MAX_ENTRIES 512
 #define MAX_MEMBERS 64
@@ -70,7 +77,12 @@ static const char* s_sdk;
 static const char* s_spirv_val;
 static int s_vk;
 static int s_fail, s_modules, s_vk_pipes;
-static const char* const k_log = "mod_material_link_test.log";
+/* Scratch files in the working directory, named by process id: the
+ * mod_material_link and mod_material_link_vk tests run this program at once
+ * under ctest -j, and a shared name lets one remove or overwrite the
+ * other's module before spirv-val reads it. Set by scratch_names(). */
+static char s_log[64];
+static char s_spv[64];
 static const char* const k_prof[OPENPETE_MOD_LINK_PROFILES] = { "stock", "terrain", "portal" };
 
 /** @brief Report a failed check and count it. */
@@ -93,7 +105,7 @@ static size_t compile_standalone(const char* path, const char* src, int profile,
     openpete_mod_glsl_include_t inc;
     openpete_mod_glsl_include_init(&inc, path, s_sdk);
     return openpete_mod_glsl_compile(src, OPENPETE_MOD_GLSL_STAGE_FRAG, &inc,
-                                     openpete_mod_link_profile_preamble(contract, profile), k_log,
+                                     openpete_mod_link_profile_preamble(contract, profile), s_log,
                                      out);
 }
 
@@ -118,7 +130,7 @@ static entry_t* add_entry(const char* path, const char* label, int census) {
         if (!e->words[p]) { fail("standalone compile", path); continue; }
         openpete_mod_link_inspect(e->contract, p, e->spv[p], e->words[p], &e->m[p]);
         if (e->m[p].verdict != OPENPETE_MOD_LINK_PENDING) fail("inspect not pending", path);
-        openpete_mod_link_prepare(s_ctx, src, path, NULL, NULL, k_log, &e->m[p]);
+        openpete_mod_link_prepare(s_ctx, src, path, NULL, NULL, s_log, &e->m[p]);
     }
     free(src);
     return e;
@@ -168,7 +180,7 @@ static void collect(const char* root, const char* dir) {
  * @return 0 when valid or when no validator was given, 1 otherwise. */
 static int spirv_val(const uint32_t* w, size_t n) {
     if (!s_spirv_val) return 0;
-    const char* path = "mod_material_link_test.spv";
+    const char* path = s_spv;
     FILE* f = fopen(path, "wb");
     if (!f) return 1;
     const size_t put = fwrite(w, sizeof *w, n, f);
@@ -226,7 +238,7 @@ static int same_in_order(const openpete_mod_link_member_t* const* mem, int n, in
     int cases[MAX_MEMBERS];
     for (int i = 0; i < n; i++) in[i] = mem[ord[i]];
     openpete_mod_link_module_t m;
-    int bad = openpete_mod_link_build(s_ctx, in, n, contract, profile, NULL, NULL, k_log, cases, &m) != 0;
+    int bad = openpete_mod_link_build(s_ctx, in, n, contract, profile, NULL, NULL, s_log, cases, &m) != 0;
     bad = bad || m.words != ref->words || strcmp(m.text, ref->text) != 0 ||
           memcmp(m.spv, ref->spv, m.words * 4) != 0;
     for (int i = 0; i < n && !bad; i++) bad = cases[i] != ref_case[ord[i]];
@@ -289,7 +301,7 @@ static int build_and_check(const char* name, const openpete_mod_link_member_t* c
                            int contract, int profile, int expect, int min_tables) {
     openpete_mod_link_module_t mod;
     int cases[MAX_MEMBERS];
-    const int rc = openpete_mod_link_build(s_ctx, mem, n, contract, profile, NULL, NULL, k_log, cases, &mod);
+    const int rc = openpete_mod_link_build(s_ctx, mem, n, contract, profile, NULL, NULL, s_log, cases, &mod);
     int bad = 0;
     if (expect == 0 && rc != 0) { fail(name, mod.log); bad = 1; }
     else if (expect != 0 && (rc == 0 || (expect == 2) != (mod.kills != 0))) { fail("expected refusal", name); bad = 1; }
@@ -496,6 +508,18 @@ static void report_census(int first, int expect_linkable) {
            linkable, ident);
 }
 
+/** @brief Name the glslang log and the spirv-val input after this process, so concurrent runs share no file. */
+static void scratch_names(void) {
+    const long pid = (long)op_getpid();
+    snprintf(s_log, sizeof s_log, "mod_material_link_test.%ld.log", pid);
+    snprintf(s_spv, sizeof s_spv, "mod_material_link_test.%ld.spv", pid);
+}
+
+/** @brief Run the census and fixture checks the command line names and report the failures.
+ *
+ * @param argc Argument count.
+ * @param argv The SDK directory, the spirv-val path or "", then the options in the usage line.
+ * @return 0 when every check passed, 1 on a failure, 77 under --vk with no device or layer. */
 int main(int argc, char** argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s <sdk-dir> <spirv-val|\"\"> [--vk] [--expect-linkable] "
@@ -503,6 +527,7 @@ int main(int argc, char** argv) {
                 argv[0]);
         return 1;
     }
+    scratch_names();
     s_sdk = argv[1];
     s_spirv_val = argv[2][0] ? argv[2] : NULL;
     int expect_linkable = 0;
@@ -533,7 +558,7 @@ int main(int argc, char** argv) {
         }
     openpete_mod_link_ctx_free(s_ctx);
     if (s_vk) link_vk_close();
-    remove(k_log);
+    remove(s_log);
     if (!s_modules) fail("VACUOUS", "no combined module was built");
     if (s_vk && !s_vk_pipes) fail("VACUOUS", "no pipeline was created under the validation layer");
     printf("mod_material_link: %d entr%s, %d module(s), %d pipeline(s), %d failure(s)\n", s_n,
