@@ -359,28 +359,32 @@ layout(constant_id = 1) const bool AFFINE_UV = false;
  * (op_key_tier_key); the key pass's window depth bounds that store. */
 layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
-layout(location = 0)      out vec2  vUV;    /* pre-multiplied by q (scene contract) */
-layout(location = 1)      out vec4  vColor; /* pre-multiplied by q                  */
-layout(location = 2) flat out uvec4 vMat;   /* x: mat0, y: clx | cly<<16 (post-ladder),
-                                             * zw: HQ ladder-fade words (psx_hq_fog.glsl) */
-layout(location = 3) flat out float vKoff;  /* og OT key (feed koff mirror)         */
-layout(location = 4)      out float vQ;     /* q (frag divides UV/colour by it)     */
-layout(location = 6)      out vec2  vKfl;   /* drain face-local coordinate x vKq   */
-layout(location = 7)      out float vKq;    /* vQ: p interpolates as the UV does    */
-layout(location = 8) flat out uvec4 vKc0;   /* drain sub-cell key table            */
-layout(location = 9) flat out uvec4 vKc1;   /*   (psx_key_contest.glsl)            */
-layout(location = 10)     out vec3  vKd;    /* fold position D x vKq                */
-layout(location = 11) flat out vec4 vKn0;   /* fold corners TL.xyz TR.x             */
-layout(location = 12) flat out vec4 vKn1;   /*   TR.yz BL.xy                        */
-layout(location = 13) flat out vec4 vKn2;   /*   BL.z BR.xyz                        */
-layout(location = 14) flat out uint vRim;  /* 1 + accepting plane of an inner rim discarded per
-                                            * fragment (terrain.frag); 0 = not rim */
+/* Outputs, component-packed into eleven locations: the interpolated
+ * values share locations 0 and 5 with each other's free components, the
+ * flat scalars share locations 3 and 4. vQ is also the divisor of vKfl and
+ * vKd, which interpolate as the UV does (psx_key_contest.glsl).
+ * terrain_shade.glsl and terrain_key_cache.frag declare the same layout. */
+layout(location = 0, component = 0)      out vec2  vUV;    /* pre-multiplied by q (scene contract) */
+layout(location = 0, component = 2)      out vec2  vKfl;   /* drain face-local coordinate x vQ    */
+layout(location = 1)                     out vec4  vColor; /* pre-multiplied by q                  */
+layout(location = 2)                flat out uvec4 vMat;   /* x: mat0, y: clx | cly<<16 (post-ladder),
+                                                            * zw: HQ ladder-fade words (psx_hq_fog.glsl) */
+layout(location = 3, component = 0) flat out float vKoff;  /* og OT key (feed koff mirror)         */
 /* The face's terrain class byte (psx_key_contest.glsl op_key_class): the
  * key pass writes it beside the key, the scene stages bound the override
  * with it. OP_KEY_CLASS_NONE on an unkeyed face. */
-layout(location = 15) flat out float vKcls;
-layout(location = 5) flat out uint  vHd;    /* HD-fold: entry id (bits 0-15, 0=none)
-                                             * | ladder-face 1<<16 | fogbias 1<<17  */
+layout(location = 3, component = 1) flat out float vKcls;
+layout(location = 4, component = 0) flat out uint  vHd;    /* HD-fold: entry id (bits 0-15, 0=none)
+                                                            * | ladder-face 1<<16 | fogbias 1<<17  */
+layout(location = 4, component = 1) flat out uint  vRim;   /* 1 + accepting plane of an inner rim discarded
+                                                            * per fragment (terrain.frag); 0 = not rim */
+layout(location = 5, component = 0)      out vec3  vKd;    /* fold position D x vQ                 */
+layout(location = 5, component = 3)      out float vQ;     /* q (frag divides UV/colour by it)     */
+layout(location = 6)                flat out uvec4 vKc0;   /* drain sub-cell key table            */
+layout(location = 7)                flat out uvec4 vKc1;   /*   (psx_key_contest.glsl)            */
+layout(location = 8)                flat out vec4  vKn0;   /* fold corners TL.xyz TR.x             */
+layout(location = 9)                flat out vec4  vKn1;   /*   TR.yz BL.xy                        */
+layout(location = 10)               flat out vec4  vKn2;   /*   BL.z BR.xyz                        */
 
 /* Select emitted as OpSelect (mix with a bool), never as a branch: t when
  * c holds, else f, for every input including NaN. The position chain's
@@ -1274,7 +1278,7 @@ void kill_vert() {
 #endif
     vUV = vec2(0.0); vColor = vec4(0.0); vMat = uvec4(0u);
     vKoff = 0.0; vKcls = OP_KEY_CLASS_NONE; vQ = 1.0;
-    vKfl = vec2(0.0); vKq = 1.0; vKc0 = uvec4(0u); vKc1 = uvec4(0u);
+    vKfl = vec2(0.0); vKc0 = uvec4(0u); vKc1 = uvec4(0u);
     vKd = vec3(0.0); vKn0 = vec4(0.0); vKn1 = vec4(0.0); vKn2 = vec4(0.0);
     vRim = 0u;
 }
@@ -3180,7 +3184,6 @@ void main()
         /* p interpolates as the UV does (psx_key_contest.glsl). */
         vKfl = mfl / wq;
         vKd  = kd / wq;
-        vKq  = 1.0 / wq;
         return;
     }
 
@@ -3254,7 +3257,6 @@ void main()
     vQ     = q;
     vKfl = mfl * q;      /* p interpolates as the UV does (psx_key_contest.glsl) */
     vKd  = kd * q;
-    vKq  = q;
 #ifdef TERRAIN_READBACK
     rb_emit(rbk, slot);
 #endif

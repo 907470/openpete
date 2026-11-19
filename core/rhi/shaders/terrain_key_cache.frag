@@ -22,20 +22,21 @@
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 
-layout(location = 0)      in vec2  vUV;    /* u/wq (recover via vQ)          */
-layout(location = 1)      in vec4  vColor; /* x: the owner's true 1/view-Z   */
-layout(location = 2) flat in uvec4 vMat;
-layout(location = 3) flat in float vKoff;  /* the face's key + 0.5           */
-layout(location = 4)      in float vQ;     /* 1/wq                           */
-layout(location = 6)      in vec2  vKfl;   /* face-local coordinate x vKq    */
-layout(location = 7)      in float vKq;
-layout(location = 8) flat in uvec4 vKc0;
-layout(location = 9) flat in uvec4 vKc1;
-layout(location = 10)     in vec3  vKd;    /* fold position D x vKq           */
-layout(location = 11) flat in vec4 vKn0;   /* fold corners TL.xyz TR.x        */
-layout(location = 12) flat in vec4 vKn1;   /*   TR.yz BL.xy                   */
-layout(location = 13) flat in vec4 vKn2;   /*   BL.z BR.xyz                   */
-layout(location = 15) flat in float vKcls; /* the face's terrain class byte   */
+/* terrain.vert's component-packed output layout (location 4, the HD-fold
+ * and rim words, is not read here). */
+layout(location = 0, component = 0)      in vec2  vUV;    /* u/wq (recover via vQ)          */
+layout(location = 0, component = 2)      in vec2  vKfl;   /* face-local coordinate x vQ     */
+layout(location = 1)                     in vec4  vColor; /* x: the owner's true 1/view-Z   */
+layout(location = 2)                flat in uvec4 vMat;
+layout(location = 3, component = 0) flat in float vKoff;  /* the face's key + 0.5           */
+layout(location = 3, component = 1) flat in float vKcls;  /* the face's terrain class byte   */
+layout(location = 5, component = 0)      in vec3  vKd;    /* fold position D x vQ            */
+layout(location = 5, component = 3)      in float vQ;     /* 1/wq                           */
+layout(location = 6)                flat in uvec4 vKc0;
+layout(location = 7)                flat in uvec4 vKc1;
+layout(location = 8)                flat in vec4  vKn0;   /* fold corners TL.xyz TR.x        */
+layout(location = 9)                flat in vec4  vKn1;   /*   TR.yz BL.xy                   */
+layout(location = 10)               flat in vec4  vKn2;   /*   BL.z BR.xyz                   */
 
 layout(location = 0) out vec4 outColor;
 /* The stored depth is never below the window depth terrain.vert places
@@ -79,9 +80,9 @@ void main()
     if (op_drain_grid(vKc0) == OP_DRAIN_NONE) {
         gl_FragDepth = op_key_store(op_key_tier_key(max(vKoff - 0.5, 1.0), vKcls, SLOT_CONTEST));
     } else {
-        float d = op_drain_delta(vKfl / vKq, vKc0, vKc1, 0.0);
+        float d = op_drain_delta(vKfl / vQ, vKc0, vKc1, 0.0);
         if (d >= OP_DRAIN_SKIP && op_drain_folded(vKc0))
-            d = op_drain_fold_delta(vKd / vKq, vKn0.xyz, vec3(vKn0.w, vKn1.xy),
+            d = op_drain_fold_delta(vKd / vQ, vKn0.xyz, vec3(vKn0.w, vKn1.xy),
                                     vec3(vKn1.zw, vKn2.x), vKn2.yzw, vKc0, vKc1, 0.0);
         if (d >= OP_DRAIN_SKIP) discard;       /* a sub-cell the drain skips */
         gl_FragDepth = op_key_store(op_key_tier_key(max(vKoff - 0.5, 1.0) + d, vKcls,

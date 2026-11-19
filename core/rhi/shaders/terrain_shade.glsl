@@ -29,23 +29,24 @@ layout(set = 1, binding = 1) uniform sampler2D u_hpattr;
 layout(set = 2, binding = 0) uniform sampler2D u_mobykey; /* prop true-depth image */
 layout(set = 4, binding = 0) uniform sampler2D u_hdatlas; /* HD-fold atlas (NEAREST) */
 
-layout(location = 0)      in vec2  vUV;    /* x vQ (divide by vQ)            */
-layout(location = 1)      in vec4  vColor; /* x vQ (divide by vQ)            */
-layout(location = 2) flat in uvec4 vMat;   /* x: tpx|tpy<<10|bppc<<19|textured<<23,
-                                            * y: clx | cly<<16, zw: HQ ladder-fade
-                                            * words (psx_hq_fog.glsl) */
-layout(location = 3) flat in float vKoff;  /* OT key (0 = out of contest) */
-layout(location = 4)      in float vQ;
-layout(location = 5) flat in uint  vHd;    /* HD-fold entry id | flags */
-layout(location = 6)      in vec2  vKfl;   /* drain face-local coordinate x vKq */
-layout(location = 7)      in float vKq;
-layout(location = 8) flat in uvec4 vKc0;   /* drain sub-cell key table */
-layout(location = 9) flat in uvec4 vKc1;
-layout(location = 10)     in vec3  vKd;    /* fold position D x vKq */
-layout(location = 11) flat in vec4 vKn0;   /* fold corners (psx_key_contest.glsl) */
-layout(location = 12) flat in vec4 vKn1;
-layout(location = 13) flat in vec4 vKn2;
-layout(location = 15) flat in float vKcls; /* the face's terrain class byte */
+/* terrain.vert's component-packed output layout. vQ divides vKfl and vKd
+ * as it divides vUV. */
+layout(location = 0, component = 0)      in vec2  vUV;    /* x vQ (divide by vQ)            */
+layout(location = 0, component = 2)      in vec2  vKfl;   /* drain face-local coordinate x vQ */
+layout(location = 1)                     in vec4  vColor; /* x vQ (divide by vQ)            */
+layout(location = 2)                flat in uvec4 vMat;   /* x: tpx|tpy<<10|bppc<<19|textured<<23,
+                                                           * y: clx | cly<<16, zw: HQ ladder-fade
+                                                           * words (psx_hq_fog.glsl) */
+layout(location = 3, component = 0) flat in float vKoff;  /* OT key (0 = out of contest) */
+layout(location = 3, component = 1) flat in float vKcls;  /* the face's terrain class byte */
+layout(location = 4, component = 0) flat in uint  vHd;    /* HD-fold entry id | flags */
+layout(location = 5, component = 0)      in vec3  vKd;    /* fold position D x vQ */
+layout(location = 5, component = 3)      in float vQ;
+layout(location = 6)                flat in uvec4 vKc0;   /* drain sub-cell key table */
+layout(location = 7)                flat in uvec4 vKc1;
+layout(location = 8)                flat in vec4  vKn0;   /* fold corners (psx_key_contest.glsl) */
+layout(location = 9)                flat in vec4  vKn1;
+layout(location = 10)               flat in vec4  vKn2;
 
 /* Prefix mirror of the vertex stage's TerrainGlobals block. Only the fields
  * this stage reads are named, but every field before them is declared so
@@ -97,7 +98,7 @@ layout(push_constant) uniform TerrainPC {
  * portal's inner rim under a plane that discards its rim per fragment
  * (rim_classified); 0 on every other face. Bits 8-29: the face identity
  * word under debug tint mode 7 (terrain.vert attr_word), else 0. */
-layout(location = 14) flat in uint vRim;
+layout(location = 4, component = 1) flat in uint vRim;
 
 #define OP_COVER_SRC g
 #include "portal_cover.glsl"
@@ -227,7 +228,7 @@ void ter_key_plane_init()
 bool ter_key_loses()
 {
     if (abs(vKoff) <= 0.25) return false;
-    float koff = op_drain_koff_pf(vKoff, vKfl / vKq, vKc0, vKc1, vKd / vKq, vKn0.xyz,
+    float koff = op_drain_koff_pf(vKoff, vKfl / vQ, vKc0, vKc1, vKd / vQ, vKn0.xyz,
                                   vec3(vKn0.w, vKn1.xy), vec3(vKn1.zw, vKn2.x), vKn2.yzw);
     if (op_drain_discards(koff)) return true;
     return op_key_loses(
@@ -259,7 +260,7 @@ int ter_key_order()
     if (vKoff <= 0.25 || (ter_pc.kflags & 2u) != 0u) return 0;
     vec4 owner = texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0);
     if (op_key_order_mark(owner) == 0) return 0;
-    float koff = op_drain_koff_pf(vKoff, vKfl / vKq, vKc0, vKc1, vKd / vKq, vKn0.xyz,
+    float koff = op_drain_koff_pf(vKoff, vKfl / vQ, vKc0, vKc1, vKd / vQ, vKn0.xyz,
                                   vec3(vKn0.w, vKn1.xy), vec3(vKn1.zw, vKn2.x), vKn2.yzw);
     return op_key_order_yields(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
                                owner, koff, SLOT_CONTEST);
