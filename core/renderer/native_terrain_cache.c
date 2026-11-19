@@ -42,7 +42,7 @@ enum { TC_SITE_EDGE, TC_SITE_GROW, TC_SITE_CONS, TC_SITE_STORE, TC_SITE_RING, TC
 /* Colour/depth slots of a cell-record pipeline set. No FILL: cells are HP
  * faces, and the hole-fill backing is LP only. */
 enum { TC_CP_WORLD, TC_CP_MARK, TC_CP_ALPHA, TC_CP_ADD, TC_CP_SUB,
-       TC_CP_PREPASS, TC_CP_PREPASS_DEPTH, TC_CP_KEY, TC_CP_N };
+       TC_CP_PREPASS, TC_CP_KEY, TC_CP_N };
 
 typedef struct { uint32_t first, count; } tc_span;
 
@@ -263,8 +263,8 @@ typedef struct {
     rhi_pipeline *pipe_add;
     rhi_pipeline *pipe_sub;
     rhi_pipeline *pipe_fill;          /* stencil TEST_ZERO                    */
-    rhi_pipeline *pipe_prepass;       /* pre-pass WORLD: depth + packed depth in colour */
-    rhi_pipeline *pipe_prepass_depth; /* pre-pass full footprint: depth only (colour off) */
+    rhi_pipeline *pipe_prepass;       /* pre-pass WORLD: footprint depth, packed depth blended into colour where it paints */
+    rhi_pipeline *pipe_prepass_depth; /* pre-pass hole fill: depth only (colour off) */
     rhi_pipeline *pipe_key;           /* og OT-key emit (pass_sel 2)          */
     /* terrain_anim variants (binding-1 prev twin + vertex-stage lerp). */
     rhi_pipeline *pipe_a_world, *pipe_a_world_mark;
@@ -1025,7 +1025,8 @@ static const char *tc_vert(int v)
  *
  * The slots share terrain.frag and depth test and differ as the world
  * pipelines do: stencil MARK, the three blend equations with depth writes
- * off, the colour-off depth prepass, and the OT-key emit. Each create is
+ * off, the depth prepass, and the OT-key emit. Cell records draw no hole
+ * fill, so the set holds no colour-off prepass slot. Each create is
  * made now, or at the end of the open pipeline batch (tc_cell_pipes_ok
  * then reads the set).
  * @param dev Device.
@@ -1049,10 +1050,8 @@ static void tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
     d[TC_CP_ADD].blend   = RHI_BLEND_ADD;      d[TC_CP_ADD].depth_write_off = true;
     d[TC_CP_SUB].blend   = RHI_BLEND_SUBTRACT; d[TC_CP_SUB].depth_write_off = true;
     d[TC_CP_PREPASS].frag_spv = "terrain_prepass_cutout.frag.spv";   /* colour = packed depth */
+    d[TC_CP_PREPASS].blend = RHI_BLEND_ALPHA;
     d[TC_CP_PREPASS].depth_class = RHI_DEPTH_FORWARD;
-    d[TC_CP_PREPASS_DEPTH].frag_spv = "terrain_prepass.frag.spv";
-    d[TC_CP_PREPASS_DEPTH].color_write_off = true;
-    d[TC_CP_PREPASS_DEPTH].depth_class = RHI_DEPTH_FORWARD;
     d[TC_CP_KEY].frag_spv = "terrain_key_cache.frag.spv";
     d[TC_CP_KEY].depth_class = RHI_DEPTH_FORWARD;
     for (int i = 0; i < TC_CP_N; i++) tc_pipe(dev, &d[i], &out[i]);
@@ -1097,13 +1096,14 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
     tc_pipe(dev, &d, &ps->pipe_sub);
     d = world_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
     tc_pipe(dev, &d, &ps->pipe_fill);
-    /* Pre-pass pair: the WORLD run writes its packed depth to colour (the
-     * occlusion grid's source) where terrain.frag would paint, its
-     * transparent texels cut out (terrain_prepass_cutout.frag); the depth
-     * run writes depth only, over whole footprints. */
+    /* Pre-pass pair: the WORLD faces write their footprint depth and blend
+     * their packed depth into colour (the occlusion grid's source) at alpha
+     * 1 where terrain.frag would paint and alpha 0 on a transparent texel
+     * (terrain_prepass_cutout.frag); the hole-fill faces write depth only. */
     d = world_desc; d.frag_spv = "terrain_prepass_cutout.frag.spv";
-    d.depth_class = RHI_DEPTH_FORWARD;
+    d.blend = RHI_BLEND_ALPHA; d.depth_class = RHI_DEPTH_FORWARD;
     tc_pipe(dev, &d, &ps->pipe_prepass);
+    d.blend = RHI_BLEND_NONE;
     d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
     tc_pipe(dev, &d, &ps->pipe_prepass_depth);
     d = world_desc; d.frag_spv = "terrain_key_cache.frag.spv";
@@ -1131,8 +1131,9 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
     d = anim_desc; d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true;
     tc_pipe(dev, &d, &ps->pipe_a_sub);
     d = anim_desc; d.frag_spv = "terrain_prepass_cutout.frag.spv";
-    d.depth_class = RHI_DEPTH_FORWARD;
+    d.blend = RHI_BLEND_ALPHA; d.depth_class = RHI_DEPTH_FORWARD;
     tc_pipe(dev, &d, &ps->pipe_a_prepass);
+    d.blend = RHI_BLEND_NONE;
     d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
     tc_pipe(dev, &d, &ps->pipe_a_prepass_depth);
     d = anim_desc; d.frag_spv = "terrain_key_cache.frag.spv";
@@ -1163,8 +1164,9 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
     d = near_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
     tc_pipe(dev, &d, &ps->pipe_n_fill);
     d = near_desc; d.frag_spv = "terrain_prepass_cutout.frag.spv";
-    d.depth_class = RHI_DEPTH_FORWARD;
+    d.blend = RHI_BLEND_ALPHA; d.depth_class = RHI_DEPTH_FORWARD;
     tc_pipe(dev, &d, &ps->pipe_n_prepass);
+    d.blend = RHI_BLEND_NONE;
     d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
     tc_pipe(dev, &d, &ps->pipe_n_prepass_depth);
     d = near_desc; d.frag_spv = "terrain_key_cache.frag.spv";
@@ -4213,20 +4215,7 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_anim(s_tc.ps.pipe_n_prepass, OPTC_ARENA_N_LP,     0, clip);
             break;
         case OPTC_DRAW_PREPASS_DEPTH:
-            /* The OPTC_DRAW_PREPASS set again over whole footprints, then
-             * the hole-fill faces of the OPTC_DRAW_FILL set. */
-            tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip);
-            tc_draw_arena(OPTC_ARENA_LP,     0, clip);
-            tc_draw_anim(s_tc.ps.pipe_a_prepass_depth, OPTC_ARENA_A_OPAQUE, 0, clip);
-            tc_draw_anim(s_tc.ps.pipe_ca[TC_CP_PREPASS_DEPTH], OPTC_ARENA_CA_OPAQUE, 0, clip);
-            tc_draw_anim(s_tc.ps.pipe_a_prepass_depth, OPTC_ARENA_A_LP,     0, clip);
-            tc_draw_anim(s_tc.ps.pipe_n_prepass_depth, OPTC_ARENA_N_OPAQUE, 0, clip);
-            tc_draw_anim(s_tc.ps.pipe_cn[TC_CP_PREPASS_DEPTH], OPTC_ARENA_CN_OPAQUE, 0, clip);
-            tc_draw_anim(s_tc.ps.pipe_n_prepass_depth, OPTC_ARENA_N_LP,     0, clip);
-            /* The base arena takes the base pipeline back: a variant
-             * pipeline bound above reads its binding-1 twin, which a base
-             * arena does not bind. */
-            rhi_bind_pipeline(s_tc.dev, p);
+            /* The hole-fill faces of the OPTC_DRAW_FILL set, depth only. */
             tc_draw_arena(OPTC_ARENA_LP,     1, clip);
             tc_draw_anim(s_tc.ps.pipe_a_prepass_depth, OPTC_ARENA_A_LP, 1, clip);
             tc_draw_anim(s_tc.ps.pipe_n_prepass_depth, OPTC_ARENA_N_LP, 1, clip);

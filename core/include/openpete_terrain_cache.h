@@ -98,17 +98,17 @@ enum {
  * draw order. WORLD = opaque arena + LP arena (pass WORLD); FILL = LP arena
  * (pass FILL, stencil TEST_ZERO); ALPHA/ADD/SUB = the blend arenas;
  * PREPASS = the WORLD faces (opaque + LP world pass) into the depth
- * pre-pass target, depth and packed-depth colour where terrain.frag paints;
- * PREPASS_DEPTH = the WORLD faces over their whole footprint and the
- * hole-fill faces (LP fill pass), depth only. */
+ * pre-pass target, depth over each face's whole footprint and packed-depth
+ * colour where terrain.frag paints; PREPASS_DEPTH = the hole-fill faces (LP
+ * fill pass), depth only. */
 enum {
     OPTC_DRAW_WORLD = 0,
     OPTC_DRAW_ALPHA,
     OPTC_DRAW_ADD,
     OPTC_DRAW_SUB,
     OPTC_DRAW_FILL,
-    OPTC_DRAW_PREPASS,       /* depth pre-pass, WORLD faces: depth + packed depth in colour */
-    OPTC_DRAW_PREPASS_DEPTH, /* depth pre-pass, WORLD footprints + hole-fill: depth only */
+    OPTC_DRAW_PREPASS,       /* depth pre-pass, WORLD faces: footprint depth + packed depth in colour */
+    OPTC_DRAW_PREPASS_DEPTH, /* depth pre-pass hole-fill faces: depth only */
     OPTC_DRAW_KEY        /* og OT-key emit into the terrain key-depth image */
 };
 
