@@ -152,7 +152,7 @@ scripts/golden-fleet.py run --all --hosts local,box2 --wait
 scripts/golden-fleet.py run --all --no-local --wait         # keep the dev box free
 scripts/golden-fleet.py run --game spyro-2 --pull all --wait
 scripts/golden-fleet.py run --all --expect moves.txt        # tag streamed moves against predictions
-scripts/golden-fleet.py run --all --commits main~6..main --queries queries --expect moves.txt --wait   # a scored batch
+scripts/golden-fleet.py run --all --commits master~6..master --queries queries --expect moves.txt --wait   # a scored batch
 scripts/golden-fleet.py run --game spyro-2 --hosts ptah \
   --filter summer_forest-12609f --freecam-filter summer_forest-12609f --repeat 40 --wait   # a repeat row
 scripts/golden-fleet.py stop <run-id> --unit spyro-3-presentation
@@ -763,7 +763,7 @@ blessed revision is the first-parent ancestor of the promoting checkout's
 HEAD, at most 500 commits deep, whose tree over the source roots equals
 the record's `source-tree` (other games' corpus directories aside): the
 record's `head` when it matches, else the newest match. A batch captured
-at a commit main has since moved past therefore promotes at that commit.
+at a commit master has since moved past therefore promotes at that commit.
 A record matching no ancestor is refused, naming the nearest commit by
 differing-path count, and nothing is filed into the store. Promote from
 any checkout whose first-parent history holds the batch commit, before

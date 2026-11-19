@@ -393,7 +393,7 @@ with the counters unchanged (candidates for a missing counter).
 sides: such a line can name rows its author saw move.
 
 ```sh
-scripts/golden-fleet.py run --all --commits main~6..main --queries queries --expect build/expect.txt --wait
+scripts/golden-fleet.py run --all --commits master~6..master --queries queries --expect build/expect.txt --wait
 scripts/golden-census.py score --run ~/.cache/openpete-fleet/runs/<run-id> --window
 ```
 

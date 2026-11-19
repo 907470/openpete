@@ -7,7 +7,7 @@
                  --mark MARK.png --logo LOGO.png --out-dir DIR --tag TAG [--layout A|B]
 
 title renders the title over black and over white (DIR/title-black.png,
-DIR/title-white.png, DIR/title.log). The knobs that draw it are not on main:
+DIR/title-white.png, DIR/title.log). The knobs that draw it are not on master:
 patches/title-matte.patch applies to the revision its `Pin:` header line
 names. The step creates the throwaway worktree `credits-title` at that
 revision with scripts/worktree.sh, links the untracked build inputs

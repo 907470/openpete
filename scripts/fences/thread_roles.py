@@ -1742,9 +1742,14 @@ def stale_lines(un, recs, seen, declared):
 
 
 def default_branch_base(root):
-    """-> the merge-base of HEAD and main, or None when the repository has
-    neither."""
-    for ref in ("main", "origin/main"):
+    """-> the merge-base of HEAD and the default branch (the branch the main
+    checkout has checked out) or its origin copy, or None when there is none.
+    """
+    common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir",
+                 check=False).stdout.strip()
+    branch = common and git(root, "--git-dir=" + common, "symbolic-ref", "--short",
+                            "-q", "HEAD", check=False).stdout.strip()
+    for ref in ((branch, "origin/" + branch) if branch else ()):
         p = git(root, "merge-base", "HEAD", ref, check=False)
         if p.returncode == 0 and p.stdout.strip():
             return p.stdout.strip()
@@ -1755,7 +1760,7 @@ def merge_base_compare(root, un, dfr):
     """The stateless half's TSV compare with the merge-base."""
     base = default_branch_base(root)
     if base is None:
-        say("  check 2: no main branch; the merge-base compare did not run")
+        say("  check 2: no default branch; the merge-base compare did not run")
         return []
     p = git(root, "diff", "--name-status", "-M", "-l", "100000", "--diff-filter=R", base)
     renames = {c[1]: c[2] for c in (l.split("\t") for l in p.stdout.splitlines())}

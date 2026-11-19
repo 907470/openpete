@@ -14,7 +14,7 @@
 # deep) whose tree over the build's source roots equals the recorded tree is
 # written (the record's head when it matches), and the promote is refused
 # otherwise, naming the nearest commit and its first differing path
-# (scripts/presentation-blessed.py promote). A capture taken at a revision main
+# (scripts/presentation-blessed.py promote). A capture taken at a revision master
 # has since moved past therefore promotes at that revision.
 #
 # Usage:

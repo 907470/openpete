@@ -1139,8 +1139,10 @@ def keep_commits(keep_days, to_head, now):
     if to_head:
         return [git("rev-parse", "HEAD").strip()]
     paths = all_reference_manifest_paths()
-    ref = "main" if git("rev-parse", "--verify", "-q", "main",
-                        check=False) else "HEAD"
+    # The default branch: the branch the main checkout has checked out.
+    common = git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    ref = (git("--git-dir=" + common, "symbolic-ref", "--short", "-q", "HEAD",
+               check=False) or "HEAD").strip()
     log = git("log", ref, "--format=%H %ct", "--", *paths, cwd=root) or ""
     boundary = now - keep_days * 86400
     inside, before = [], None

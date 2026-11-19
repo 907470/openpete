@@ -706,7 +706,7 @@ container engine under `--container`; and the licence staging
 release image, a build from empty directories, the surface-baseline compare
 and the sysroot header check, as a release. `--test` drops only the tag,
 HEAD-is-tag and clean-tree refusals, prints a surface-baseline difference
-without refusing (main's surface moves between releases; the release commit
+without refusing (master's surface moves between releases; the release commit
 updates `packaging/surface/<game>.json`), and requires a version ending in
 `-test`. Without `--container` the Linux package carries the dev box's
 glibc floor. A test package skips what `create-release.sh` adds: the docs

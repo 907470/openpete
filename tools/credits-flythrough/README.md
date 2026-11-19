@@ -91,7 +91,7 @@ A Spyro 3 scene at 4K SSAA 4 on the Windows exe records in about 2 min to a
 
 ## Engine knobs the render stage needs
 
-On main: `--freecam-path @FILE` with fractional waypoints and `cut`
+On master: `--freecam-path @FILE` with fractional waypoints and `cut`
 entries, `--record-cfr` capture mode, `--record-crf`, `--record-pixfmt`,
 `--hide-player`, `--skip-to-area`, `--input-lock`, `--bk2`,
 `OPENPETE_FREECAM_AT_VBL`, `OPENPETE_CUT_CENSUS` (the `shown=camera`
@@ -114,7 +114,7 @@ state, so a clip recorded with them is not a replay of the unmodified game:
 | `OPENPETE_VIDEO_HIDE_FACES` | 2, 3 | terrain faces made degenerate before each keyframe walk: `SEC` (every face), `SEC/h` or `SEC/l` (every HP or LP face), `SEC/h/F`, `SEC/h/A-B` |
 
 The thumbnail's title matte is the game's 3D letter font drawn by the
-`OPENPETE_VIDEO_TITLE*` knobs, which are not on main: they are
+`OPENPETE_VIDEO_TITLE*` knobs, which are not on master: they are
 `patches/title-matte.patch`, pinned to 14340c09d (its `Pin:` line).
 `thumbnail.py title` creates the throwaway worktree `worktrees/credits-title`
 at the pin with `scripts/worktree.sh`, links the untracked build inputs to

@@ -19,7 +19,7 @@
 # when it ends so (anything else is refused, so a test artifact never
 # carries a release name), else <short HEAD>[-dirty]-test. The surface
 # compare below still runs and prints every difference, but a difference
-# does not stop a test build: main moves its surface between releases, and
+# does not stop a test build: master moves its surface between releases, and
 # the release commit updates the baseline. Everything else below runs in
 # both modes. Inside the
 # container, after the build and before packaging, each shipped game's

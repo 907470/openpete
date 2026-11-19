@@ -4,7 +4,7 @@ title in the game's 3D letter font into the supersampled scene target.
 Pin: applies to openpete 14340c09d (git apply). thumbnail.py's `title`
 step creates a throwaway worktree at that revision, applies this patch,
 builds the engine, renders the title over black and over white, and
-removes the worktree. Not for main.
+removes the worktree. Not for master.
 
 Knobs:
   OPENPETE_VIDEO_TITLE        lines separated by '|'
