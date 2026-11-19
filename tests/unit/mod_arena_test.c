@@ -5,8 +5,10 @@
  * owner, a version-3 savestate section mapped onto the upper segment at the
  * vaddrs it was saved from, the version-4 round trip and in-memory
  * snapshot over the three ranges, KSEG2 and high-KUSEG refusal on region
- * resolution, and a bus read one byte past a segment's committed extent
- * answered by the ROM model; the rewind page tables over the three
+ * resolution and on the bus, the RAM mirror answering an upper-segment
+ * address before its first block, and a bus read one byte past the
+ * general pool's committed extent answered by the ROM model; the rewind
+ * page tables over the three
  * ranges (core/record/rewind_pages.c): copy, compare-and-share against a
  * target, restore from an encoded and from a partly compared table, a
  * compare discarded when its target is released, and the store's release.
@@ -89,11 +91,14 @@ static void test_segments_resolve(void) {
     CHECK(psx_runtime_resolve_region(0x20700000u, NULL, NULL) == 0, "KUSEG at 0x20000000 and up refused");
     CHECK(psx_runtime_resolve_region(0xF1000000u, NULL, NULL) == 0, "a BIOS event handle never reaches the general pool");
     CHECK(s_cpu.read_word(0xC0700000u) == 0xABABABABu, "a KSEG2 read is answered by the ROM model");
+    CHECK(s_cpu.read_word(0x20700000u) == 0xABABABABu, "a KUSEG read at 0x20000000 and up is answered by the ROM model");
 }
 
 /** @brief Checks pool selection, the segment order and per-segment exhaustion. */
 static void test_pools(void) {
-    CHECK(s_cpu.read_word(0x80700000u) == 0xABABABABu, "before any block the upper segment is unmapped");
+    uint8_t* ram = openpete_psx_get_ram();
+    memcpy(ram + 0x100000u, "\x11\x22\x33\x44", 4);
+    CHECK(s_cpu.read_word(0x80700000u) == 0x44332211u, "before any block the upper segment's address reads the RAM mirror");
     const uint32_t a0 = alloc("a", 64, 0, 0);
     CHECK(a0 == 0x80700000u, "first DMA block at the former arena base");
     CHECK(log_has("guest arena live @ 0x80700000"), "upper segment registration logged");

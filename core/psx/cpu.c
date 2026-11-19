@@ -35,6 +35,17 @@
 #endif
 #define RAM_MIRROR_END OPENPETE_PSX_RAM_MIRROR_END
 
+/** @brief Report whether @p addr is a KUSEG, KSEG0 or KSEG1 address (top three bits 0, 4 or 5).
+ *
+ * These are the three segments the R3000A maps onto physical memory
+ * without translation; the RAM mirror answers only through them. KSEG2
+ * (0xC0000000 and up) and KUSEG at 0x20000000 and up reach no RAM.
+ * @param addr Guest address.
+ * @return Nonzero for KUSEG below 0x20000000, KSEG0 or KSEG1. */
+static inline uint32_t ram_alias_segment(uint32_t addr) {
+    return (0x31u >> (addr >> 29)) & 1u;
+}
+
 /* g_ram is non-static because recompiler-emitted accesses index it
  * directly; host code reaches it through `openpete_psx_get_ram()`.
  * Page-aligned so the sub-tick RAM guard can mprotect it (see
@@ -157,8 +168,8 @@ extern uint32_t openpete_hang_last_entry(void) __attribute__((weak));
  * @param width Access width in bytes.
  * @param write 1 for a store, 0 for a load. */
 static __attribute__((noinline, cold)) void unmapped_note(uint32_t addr, unsigned width, int write) {
-    const uint32_t top = addr >> 29, phys = addr & 0x1FFFFFFFu;
-    if (s_probe_running || (top != 0u && top != 4u && top != 5u) ||
+    const uint32_t phys = addr & 0x1FFFFFFFu;
+    if (s_probe_running || !ram_alias_segment(addr) ||
         phys < RAM_MIRROR_END || phys >= 0x1F000000u)
         return;
     __atomic_fetch_add(&s_unmapped_n, 1u, __ATOMIC_RELAXED);
@@ -261,9 +272,10 @@ static void mirror_census_report(void) {
  * address-taken locals, which inlined into span_ptr would give every bus
  * accessor a stack frame and a stack-protector canary on the main-RAM path.
  * A registered region takes the address first; a span that starts in one
- * and runs past its end is NULL. Otherwise a physical address below
- * RAM_MIRROR_END is RAM at `phys & (RAM_SIZE - 1)`, the alias the RAM chips
- * answer on hardware; a span that crosses the end of its 2 MB copy is
+ * and runs past its end is NULL. Otherwise a KUSEG, KSEG0 or KSEG1
+ * address whose physical address is below RAM_MIRROR_END is RAM at
+ * `phys & (RAM_SIZE - 1)`, the alias the RAM chips answer on hardware; a
+ * KSEG2 address is NULL; a span that crosses the end of its 2 MB copy is
  * NULL, as one crossing the top of main RAM is. Hot recompiler-emitted
  * accesses to registered regions bypass this through per-site psxrecomp
  * instruction substitutions.
@@ -282,7 +294,7 @@ static __attribute__((noinline, cold)) uint8_t* span_ptr_far(uint32_t addr, uint
         }
     }
     const uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys >= RAM_MIRROR_END) return NULL;
+    if (!ram_alias_segment(addr) || phys >= RAM_MIRROR_END) return NULL;
     const uint32_t off = phys & (RAM_SIZE - 1u);
     if (len > RAM_SIZE - off) return NULL;
     census_note(addr, CK_MIRROR_HIT);
@@ -324,8 +336,8 @@ void* openpete_psx_to_host_ptr(uint32_t addr) {
 /** @brief Resolve a guest address to its host byte and the bytes left in its region, or NULL.
  *
  * The region is main RAM (any segment), the scratchpad, one entry of the
- * presentation region table, or the 2 MB RAM copy a mirror address names,
- * as span_ptr() classifies it.
+ * presentation region table, or the 2 MB RAM copy a KUSEG, KSEG0 or KSEG1
+ * mirror address names, as span_ptr() classifies it.
  * @param addr PSX virtual address.
  * @param room Receives the byte count from @p addr to the region's end. */
 static uint8_t* region_room(uint32_t addr, uint32_t* room) {
@@ -341,7 +353,7 @@ static uint8_t* region_room(uint32_t addr, uint32_t* room) {
         uint32_t rem = 0;
         if (psx_runtime_resolve_region(addr, &host, &rem)) { *room = rem; return (uint8_t*)host; }
     }
-    if (phys >= RAM_MIRROR_END) return NULL;
+    if (!ram_alias_segment(addr) || phys >= RAM_MIRROR_END) return NULL;
     *room = RAM_SIZE - (phys & (RAM_SIZE - 1u));
     return &g_ram[phys & (RAM_SIZE - 1u)];
 }
@@ -364,8 +376,9 @@ const char* openpete_psx_to_host_str(uint32_t addr, uint32_t max, uint32_t* len_
  *
  * Main RAM and the scratchpad resolve under any segment (the top three
  * address bits are dropped); any other address resolves through the
- * registered presentation region table (psx_region.c), else, below
- * physical RAM_MIRROR_END, to the main-RAM byte it mirrors. An access whose
+ * registered presentation region table (psx_region.c), else, for a KUSEG,
+ * KSEG0 or KSEG1 address below physical RAM_MIRROR_END, to the main-RAM
+ * byte it mirrors. An access whose
  * last byte falls past the end of its region (an unaligned word or half
  * at the top of RAM or the scratchpad) is unmapped. Unlike
  * openpete_psx_to_host_ptr(), address 0 maps to RAM offset 0.

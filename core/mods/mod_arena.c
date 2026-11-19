@@ -6,7 +6,11 @@
 // owns the memory map, so the arena is host memory registered as
 // psx_runtime regions above the 2 MB of main RAM: guest reads/writes
 // reach it through the standard cpu accessors' region cold path, and the
-// mod gets a typed HOST view of the same bytes. It is the ONLY home for
+// mod gets a typed HOST view of the same bytes. Below physical 8 MB the
+// bus otherwise answers with the RAM mirror (cpu.c, RAM_MIRROR_END); a
+// registered region takes the address first, so a segment's committed
+// bytes in [0x80200000, 0x80800000) replace those mirror copies for every
+// access, the game's included. It is the ONLY home for
 // mod memory: the moby format's one narrow address field (the 21-bit
 // vertex-stream field) is bridged by stream handles, so nothing needs to
 // sit inside canonical RAM.
@@ -28,8 +32,10 @@
 // committed in 64 KiB granules as the cursors advance (mmap PROT_NONE +
 // mprotect, or VirtualAlloc reserve + commit), so host views never move.
 // Each segment is a region registered at its committed extent on its
-// first block and grown in place, so a guest read past the committed
-// extent stays an unmapped read instead of touching an uncommitted page.
+// first block and grown in place, so a guest access past the committed
+// extent never touches an uncommitted page: below physical 8 MB it
+// reaches the RAM mirror, at or above it an unmapped address (a read
+// answers 0 or the ROM model, a store is dropped).
 //
 // Contracts and caveats (documented, not hidden):
 //   - Allocation is a session-lifetime bump (no free): the arena is
