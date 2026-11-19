@@ -1,0 +1,21 @@
+#!/bin/sh
+# reference-transaction: while the history-rewrite freeze marker exists, no
+# branch or tag of this repository moves: a commit, merge, pull, rebase,
+# reset, cherry-pick, tag, branch creation or update-ref that would update
+# refs/heads/* or refs/tags/* is aborted in its "prepared" state, in every
+# worktree and from every client (shell, editor, script). Remote-tracking
+# refs (fetch) and a detached HEAD are not refused. The marker
+# (OPENPETE_FREEZE_MARKER, default ~/.local/share/openpete/provenance/FREEZE)
+# names the reason on its first line; removing it lifts the freeze.
+[ "$1" = prepared ] || exit 0
+m=${OPENPETE_FREEZE_MARKER:-$HOME/.local/share/openpete/provenance/FREEZE}
+[ -e "$m" ] || { cat > /dev/null; exit 0; }
+bad=
+while read -r old new ref; do
+  case $ref in
+    refs/heads/*|refs/tags/*) bad="$bad $ref" ;;
+  esac
+done
+[ -z "$bad" ] && exit 0
+echo "reference-transaction: history-rewrite freeze ($(head -n 1 "$m")): refusing to move$bad; the marker $m is removed after the swap" >&2
+exit 1
