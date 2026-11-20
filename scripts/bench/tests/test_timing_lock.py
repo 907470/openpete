@@ -3,6 +3,7 @@
 
 Every test runs against a private OPENPETE_BENCH_DIR, so no real timing
 window is read, created or removed."""
+import json
 import multiprocessing
 import os
 import shutil
@@ -184,6 +185,55 @@ class TimingLockTest(unittest.TestCase):
         env[timing_lock.TOKEN_ENV] = h.token
         inside = subprocess.run(["bash", "-c", sh], env=env, capture_output=True, text=True)
         self.assertIn("rc=0", inside.stdout, inside.stderr)
+        h.release()
+
+    def test_display_hold_beats_and_reads_held(self):
+        """The holder re-asserts on every beat and rewrites its record; the
+        record reads as held only for the window holder's token, a live
+        writer and a fresh beat, never from the last input time; release
+        removes it. A fake child answers PowerShell's protocol."""
+        fake = ("import sys\nprint('display-hold: on prev=2147483648', flush=True)\n"
+                "for _ in sys.stdin: print('display-hold: beat ret=2147483651', flush=True)\n")
+        h = timing_lock.try_acquire("display test")
+        os.environ[timing_lock.TOKEN_ENV] = h.token
+        old = timing_lock.DISPLAY_BEAT_S
+        timing_lock.DISPLAY_BEAT_S = 0.05
+        p = subprocess.Popen([sys.executable, "-c", fake], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, text=True)
+        self.assertTrue(p.stdout.readline().startswith("display-hold: on"))
+        d = timing_lock.DisplayHold(p, h.token, 2147483648)
+        try:
+            first = json.load(open(timing_lock.display_record_path()))["beat"]
+            time.sleep(0.4)
+            rec = json.load(open(timing_lock.display_record_path()))
+            self.assertGreater(rec["beat"], first, "no beat rewrote the record")
+            self.assertEqual(rec["ret"], 2147483651)
+            st = timing_lock.display_hold_state()
+            self.assertTrue(st["held"], st["why"])
+            stale = timing_lock.display_hold_state(
+                now=rec["beat"] + timing_lock.DISPLAY_STALE_S + 1)
+            self.assertFalse(stale["held"])
+            self.assertIn("last beat", stale["why"])
+        finally:
+            d.release()
+            timing_lock.DISPLAY_BEAT_S = old
+        self.assertFalse(os.path.exists(timing_lock.display_record_path()))
+        self.assertIn("no display holder", timing_lock.display_hold_state()["why"])
+        self.assertIsNotNone(p.poll(), "the child outlived release")
+        h.release()
+
+    def test_display_hold_wrong_token_or_dead_writer(self):
+        h = timing_lock.try_acquire("display test")
+        with open(timing_lock.display_record_path(), "w") as f:
+            json.dump({"token": "someone-else", "pid": os.getpid(), "since": time.time(),
+                       "beat": time.time(), "ret": 1}, f)
+        st = timing_lock.display_hold_state()
+        self.assertFalse(st["held"])
+        self.assertIn("token", st["why"])
+        with open(timing_lock.display_record_path(), "w") as f:
+            json.dump({"token": h.token, "pid": 2 ** 22 + 7, "since": time.time(),
+                       "beat": time.time(), "ret": 1}, f)
+        self.assertIn("gone", timing_lock.display_hold_state()["why"])
         h.release()
 
 

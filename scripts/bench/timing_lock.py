@@ -50,6 +50,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 TOKEN_ENV = "OPENPETE_TIMING_TOKEN"
@@ -299,7 +300,10 @@ def ensure_held(purpose, host=None, timeout=None):
 # Wakes the display with a zero-distance mouse move (SetThreadExecutionState
 # alone keeps an awake display on but does not turn a sleeping one on), then
 # holds ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED until stdin
-# reaches end of file; the process's exit returns the execution state.
+# reaches end of file. Each stdin line re-asserts the state and is answered
+# with `display-hold: beat ret=<previous state>` (0 = the call failed), so the
+# Linux side knows the holder is alive and its request in force; the
+# process's exit returns the execution state.
 DISPLAY_PS = r"""
 $ErrorActionPreference = 'Stop'
 Add-Type -Namespace OP -Name Pwr -MemberDefinition @'
@@ -310,13 +314,82 @@ Add-Type -Namespace OP -Name Pwr -MemberDefinition @'
 $prev = [OP.Pwr]::SetThreadExecutionState([uint32]2147483651)
 [Console]::Out.WriteLine("display-hold: on prev=$prev")
 [Console]::Out.Flush()
-while ($null -ne [Console]::In.ReadLine()) { }
+while ($null -ne [Console]::In.ReadLine()) {
+  $r = [OP.Pwr]::SetThreadExecutionState([uint32]2147483651)
+  [Console]::Out.WriteLine("display-hold: beat ret=$r")
+  [Console]::Out.Flush()
+}
 """
+DISPLAY_RECORD = "display-hold.json"
+DISPLAY_BEAT_S = 20.0
+# A record whose last answered beat is older than this is not a hold: the
+# holder or its PowerShell child stopped answering.
+DISPLAY_STALE_S = 3 * DISPLAY_BEAT_S
 
 
-def hold_display():
-    """Start the Windows display holder; a Popen whose stdin, once closed,
-    releases the hold (None when powershell.exe does not run)."""
+def display_record_path():
+    """The display holder's record, <bench>/display-hold.json."""
+    return os.path.join(bench_dir(), DISPLAY_RECORD)
+
+
+class DisplayHold:
+    """A running Windows display holder: the PowerShell child, the thread
+    that re-asserts its request every DISPLAY_BEAT_S, and the record
+    (display-hold.json: token, pid, since, beat, ret) a preflight reads to
+    tell that the display is held."""
+
+    def __init__(self, proc, token, ret):
+        self.proc, self.token = proc, token
+        self.since = time.time()
+        self.stop = threading.Event()
+        self._write(ret)
+        self.thread = threading.Thread(target=self._beat_loop, daemon=True)
+        self.thread.start()
+
+    def _write(self, ret):
+        rec = {"token": self.token, "pid": os.getpid(), "since": self.since,
+               "beat": time.time(), "ret": ret}
+        tmp = display_record_path() + ".%d.tmp" % os.getpid()
+        with open(tmp, "w") as f:
+            json.dump(rec, f)
+        os.replace(tmp, display_record_path())
+
+    def _beat_loop(self):
+        while not self.stop.wait(DISPLAY_BEAT_S):
+            try:
+                self.proc.stdin.write("beat\n")
+                self.proc.stdin.flush()
+                line = self.proc.stdout.readline()
+            except (OSError, ValueError):
+                return
+            if not line.startswith("display-hold: beat ret="):
+                return                   # the child died; the record goes stale
+            try:
+                self._write(int(line.split("=", 1)[1]))
+            except (OSError, ValueError):
+                return
+
+    def release(self):
+        """Stop the beats, remove the record, close the child's stdin and
+        reap it."""
+        self.stop.set()
+        try:
+            rec = json.loads(_read(display_record_path()) or "{}")
+            if rec.get("pid") == os.getpid() and rec.get("token") == self.token:
+                os.unlink(display_record_path())
+        except (OSError, ValueError):
+            pass
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=30)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            self.proc.kill()
+
+
+def hold_display(token=None):
+    """Start the Windows display holder for the window `token` (default this
+    process's OPENPETE_TIMING_TOKEN); a DisplayHold, or None when
+    powershell.exe does not run or does not take the request."""
     try:
         p = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive",
                               "-Command", DISPLAY_PS],
@@ -328,18 +401,59 @@ def hold_display():
     if not line.startswith("display-hold: on"):
         p.kill()
         return None
-    return p
-
-
-def release_display(p):
-    """Close the holder's stdin and reap it."""
-    if p is None:
-        return
     try:
-        p.stdin.close()
-        p.wait(timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        p.kill()
+        ret = int(line.strip().rsplit("=", 1)[1])
+    except (IndexError, ValueError):
+        ret = 0
+    return DisplayHold(p, token or os.environ.get(TOKEN_ENV), ret)
+
+
+def release_display(hold):
+    """Release a DisplayHold (None: nothing to release)."""
+    if hold is not None:
+        hold.release()
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def display_hold_state(now=None):
+    """The display hold as a preflight reads it: {"held": bool, "why": text,
+    "record": dict or None}. Held when display-hold.json exists, its token
+    is the token of the job holding the local window, its writer is alive,
+    its last beat is younger than DISPLAY_STALE_S, and the last
+    SetThreadExecutionState call returned non-zero."""
+    now = time.time() if now is None else now
+    text = _read(display_record_path())
+    if text is None:
+        return {"held": False, "why": "no display holder (run the job under "
+                "timing_lock.py run --hold-display)", "record": None}
+    try:
+        rec = json.loads(text)
+    except ValueError:
+        return {"held": False, "why": "display-hold.json unreadable", "record": None}
+    st = state(None)
+    tok = (st["lock"] or {}).get("token")
+    age = now - float(rec.get("beat", 0))
+    if not tok or rec.get("token") != tok:
+        why = "the holder's token is not the window holder's"
+    elif not _pid_alive(rec.get("pid")):
+        why = "holder pid %s is gone" % rec.get("pid")
+    elif age > DISPLAY_STALE_S:
+        why = "last beat %.0f s ago (bound %.0f s)" % (age, DISPLAY_STALE_S)
+    elif not rec.get("ret"):
+        why = "SetThreadExecutionState returned 0"
+    else:
+        return {"held": True, "record": rec, "why": "held since %s by pid %s; last beat %.0f s "
+                "ago (ES_DISPLAY_REQUIRED re-asserted every %.0f s)" % (
+                    datetime.datetime.fromtimestamp(float(rec["since"])).astimezone()
+                    .isoformat(timespec="seconds"), rec["pid"], age, DISPLAY_BEAT_S)}
+    return {"held": False, "why": why, "record": rec}
 
 
 # ---- commands ----------------------------------------------------------------
@@ -353,7 +467,7 @@ def cmd_run(a):
         sys.stderr.write("timing-lock: no window within %s s\n" % a.timeout)
         return EXIT_TIMEOUT
     sys.stderr.write("timing-lock: window held for %s (token %s)\n" % (a.purpose, h.token))
-    disp = hold_display() if a.hold_display else None
+    disp = hold_display(h.token) if a.hold_display else None
     if a.hold_display and disp is None:
         sys.stderr.write("timing-lock: display holder did not start\n")
     env = dict(os.environ, **{TOKEN_ENV: h.token})
@@ -378,7 +492,7 @@ def cmd_hold(a):
         out.write("timeout\n")
         out.close()
         return EXIT_TIMEOUT
-    disp = hold_display() if a.hold_display else None
+    disp = hold_display(h.token) if a.hold_display else None
     out.write("%s %s\n" % (h.token, "display" if disp else "-"))
     out.close()
     stop = [False]

@@ -24,6 +24,14 @@ def _no_tool(*_a, **_k):
     return None, ""
 
 
+def _put(path, text):
+    with open(path, "w") as f:
+        f.write(text)
+
+
+NOT_HELD = {"held": False, "why": "no display holder", "record": None}
+
+
 class UncheckedTest(unittest.TestCase):
     """A precondition that cannot be read is UNCHECKED, never PASS."""
 
@@ -43,14 +51,16 @@ class UncheckedTest(unittest.TestCase):
         with mock.patch.object(preflight, "_run", _no_tool):
             ds = preflight.windows_display_state()
         self.assertIsNone(ds)
-        c = preflight.check_display(ds, required=True)
+        c = preflight.check_display(ds, "awake", NOT_HELD)
         self.assertEqual(c.status, "UNCHECKED")
         self.assertTrue(c.blocks())
-        self.assertFalse(preflight.check_display(ds, required=False).blocks())
-        self.assertEqual(preflight.check_refresh(ds).status, "UNCHECKED")
+        self.assertFalse(preflight.check_display(ds, None, NOT_HELD).blocks())
+        m = preflight.check_monitors(ds, None, required=True)
+        self.assertEqual(m.status, "UNCHECKED")
+        self.assertTrue(m.blocks())
 
     def test_display_timeout_unreadable(self):
-        c = preflight.check_display({"idle_ms": 5000, "refresh": []}, True)
+        c = preflight.check_display({"idle_ms": 5000, "monitors": []}, "awake", NOT_HELD)
         self.assertEqual(c.status, "UNCHECKED")
 
     def test_ssh_unreachable(self):
@@ -119,9 +129,9 @@ class ReadingsTest(unittest.TestCase):
         self.assertEqual(preflight.load_check("load-linux", a, b, "0.9", 16, []).status, "PASS")
 
     def test_display_states(self):
-        awake = preflight.check_display({"idle_ms": 10000, "videoidle_ac": 900, "refresh": []}, True)
-        asleep = preflight.check_display({"idle_ms": 7200000, "videoidle_ac": 900, "refresh": []},
-                                         True)
+        awake = preflight.check_display({"idle_ms": 10000, "videoidle_ac": 900}, "awake", NOT_HELD)
+        asleep = preflight.check_display({"idle_ms": 7200000, "videoidle_ac": 900}, "awake",
+                                         NOT_HELD)
         self.assertEqual((awake.status, asleep.status), ("PASS", "FAIL"))
 
     def test_window_args(self):
@@ -154,25 +164,6 @@ class ReadingsTest(unittest.TestCase):
                 "/mnt/c/op/openpete.exe", ["--frame-limit", "100"]).status, "PASS")
             self.assertEqual(preflight.check_windows_local(
                 "/home/u/build/windows-mingw/openpete.exe", []).status, "FAIL")
-        finally:
-            shutil.rmtree(d)
-
-    def test_post_log(self):
-        d = tempfile.mkdtemp()
-        try:
-            log = os.path.join(d, "leg.log")
-            with open(log, "w") as f:
-                f.write("present mode: immediate (--vsync 0)\n"
-                        "swapchain: 3 image(s), acquire budget 3.1 ms (refresh 480.000 Hz)\n"
-                        "offscreen extent follows the swapchain at 640x432 (swapchain 640x432)\n")
-            cs = {c.name: c for c in preflight.post_checks(log, "1280x896")}
-            self.assertEqual(cs["window-actual"].status, "FAIL")
-            self.assertEqual(cs["present-mode-actual"].reading, "immediate (--vsync 0)")
-            self.assertEqual(cs["refresh-actual"].reading, "480.000 Hz")
-            cs = {c.name: c for c in preflight.post_checks(log, "640x432")}
-            self.assertEqual(cs["window-actual"].status, "PASS")
-            missing = preflight.post_checks(os.path.join(d, "none.log"), "640x432")
-            self.assertEqual(missing[0].status, "UNCHECKED")
         finally:
             shutil.rmtree(d)
 
@@ -215,6 +206,231 @@ class ReadingsTest(unittest.TestCase):
         self.assertFalse(free.waitable())
         self.assertTrue(held.waitable())
         self.assertTrue(preflight.Check("idle-linux", "FAIL", "1 busy").waitable())
+
+
+MON_OUT = ("idle_ms=1200000\r\nvideoidle_ac=900\r\n"
+           "monitor=\\\\.\\DISPLAY1|0|2560x1440|59|32|2560,0\r\n"
+           "monitor=\\\\.\\DISPLAY2|1|2560x1440|480|32|0,0\r\n")
+HELD = {"held": True, "why": "held since t by pid 1; last beat 3 s ago", "record": {}}
+
+
+class DisplayAndMonitorTest(unittest.TestCase):
+    def test_held_display_passes_past_the_timeout(self):
+        """Last input 1200 s ago against a 900 s timeout: the inference says
+        asleep, the hold record says held, and the check reads the hold."""
+        ds = preflight.parse_display_state(MON_OUT)
+        self.assertEqual(preflight.check_display(ds, "held", HELD).status, "PASS")
+        self.assertEqual(preflight.check_display(ds, "awake", HELD).status, "PASS")
+        self.assertEqual(preflight.check_display(ds, "awake", NOT_HELD).status, "FAIL")
+        c = preflight.check_display(ds, "held", NOT_HELD)
+        self.assertEqual(c.status, "FAIL")
+        self.assertIn("not held", c.reading)
+        self.assertFalse(preflight.check_display(ds, None, NOT_HELD).blocks())
+
+    def test_monitor_parse(self):
+        ds = preflight.parse_display_state(MON_OUT)
+        self.assertEqual(preflight.primary_hz(ds), 480)
+        self.assertEqual([m["hz"] for m in ds["monitors"]], ["59", "480"])
+
+    def test_monitor_baseline(self):
+        d = tempfile.mkdtemp()
+        try:
+            base = os.path.join(d, "base.json")
+            ds = preflight.parse_display_state(MON_OUT)
+            c = preflight.check_monitors(ds, base, True)
+            self.assertEqual(c.status, "PASS")
+            self.assertIn("recorded as the baseline", c.reading)
+            self.assertEqual(preflight.check_monitors(ds, base, True).status, "PASS")
+            changed = preflight.parse_display_state(MON_OUT.replace("|59|", "|144|"))
+            c = preflight.check_monitors(changed, base, True)
+            self.assertEqual(c.status, "FAIL")
+            self.assertIn("differs", c.reading)
+            fewer = preflight.parse_display_state(MON_OUT.split("monitor=\\\\.\\DISPLAY1")[0] +
+                                                  "monitor=\\\\.\\DISPLAY2|1|2560x1440|480|32|0,0")
+            self.assertEqual(preflight.check_monitors(fewer, base, True).status, "FAIL")
+            self.assertEqual(preflight.check_monitors(ds, None, True).status, "FAIL")
+            self.assertEqual(preflight.check_monitors(ds, None, False).status, "INFO")
+        finally:
+            shutil.rmtree(d)
+
+
+class ClassTest(unittest.TestCase):
+    def test_no_class_refuses(self):
+        self.assertTrue(preflight.check_class(None, False, [], {}).blocks())
+
+    def test_cost(self):
+        cc = preflight.check_class
+        self.assertEqual(cc("cost", False, ["--vsync", "0", "--render-fps", "9999"], {}).status,
+                         "PASS")
+        self.assertEqual(cc("cost", False, ["--vsync", "1", "--render-fps", "9999"], {}).status,
+                         "FAIL")
+        self.assertEqual(cc("cost", False, ["--vsync", "0"], {}).status, "FAIL")
+        self.assertEqual(cc("cost", False, ["--vsync", "0", "--render-fps", "600"], {}).status,
+                         "FAIL")
+        self.assertEqual(cc("cost", False, ["--render-fps", "9999"],
+                            {"OPENPETE_PRESENT_MODE": "immediate"}).status, "PASS")
+        self.assertEqual(cc("cost", True, ["--headless"], {}).status, "PASS")
+        self.assertEqual(cc("cost", False, ["--headless", "--vsync", "0",
+                                            "--render-fps", "9999"], {}).status, "FAIL")
+
+    def test_cadence(self):
+        cc = preflight.check_class
+        self.assertEqual(cc("cadence", False, ["--vsync", "1"], {}, 480).status, "PASS")
+        self.assertEqual(cc("cadence", False, [], {}, 480).status, "PASS")
+        self.assertEqual(cc("cadence", False, ["--vsync", "0"], {}, 480).status, "FAIL")
+        self.assertEqual(cc("cadence", False, ["--render-fps", "240"], {}, 480).status, "FAIL")
+        self.assertEqual(cc("cadence", False, ["--render-fps", "480"], {}, 480).status, "PASS")
+        self.assertEqual(cc("cadence", False, [], {"OPENPETE_PRESENT_MODE": "mailbox"},
+                            480).status, "FAIL")
+
+    def test_boot_and_display_need(self):
+        self.assertEqual(preflight.check_class("boot", False, ["--headless"], {}).status, "PASS")
+        self.assertEqual(preflight.display_need("cadence", False), "held")
+        self.assertEqual(preflight.display_need("cost", False), "awake")
+        self.assertIsNone(preflight.display_need("cost", True))
+        self.assertIsNone(preflight.display_need("boot", False))
+
+    def test_pixels(self):
+        cp = preflight.check_pixels
+        self.assertEqual(cp("cost", False, ["--window", "1280x720"], None).status, "PASS")
+        self.assertEqual(cp("cost", False, ["--ssaa", "2"], None).status, "FAIL")
+        self.assertEqual(cp("cost", False, ["--resolution", "1920x1080"], None).status, "FAIL")
+        self.assertEqual(cp("cost", False, ["--ssaa", "2"], "2560x1440").status, "PASS")
+        self.assertEqual(cp("cost", False, [], "big").status, "FAIL")
+        self.assertEqual(cp("cadence", False, ["--ssaa", "4"], None).status, "INFO")
+
+
+class NeighbourTest(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.exe = os.path.join(self.d, "openpete.exe")
+        open(self.exe, "wb").close()
+        os.makedirs(os.path.join(self.d, "assets", "music"))
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def _st(self, args=(), staged=(), env=None):
+        return preflight.check_neighbours(self.exe, list(args), env or {}, set(staged))
+
+    def test_clean_folder(self):
+        c = self._st()
+        self.assertEqual(c.status, "PASS")
+        self.assertIn("assets/: music", c.reading)
+
+    def test_texture_pack(self):
+        os.makedirs(os.path.join(self.d, "assets", "textures"))
+        self.assertEqual(self._st().status, "PASS", "an empty textures dir is no pack")
+        open(os.path.join(self.d, "assets", "textures", "a.png"), "wb").close()
+        self.assertEqual(self._st().status, "FAIL")
+        self.assertEqual(self._st(staged=["texpack"]).status, "PASS")
+        self.assertEqual(self._st(["--texpack-dir", "/x"]).status, "FAIL")
+
+    def test_config_and_mods(self):
+        _put(os.path.join(self.d, "openpete.toml"), "fullscreen = true\n")
+        self.assertEqual(self._st().status, "FAIL")
+        self.assertEqual(self._st(["--no-config"]).status, "PASS")
+        self.assertEqual(self._st(staged=["config"]).status, "PASS")
+        os.makedirs(os.path.join(self.d, "mods"))
+        _put(os.path.join(self.d, "mods", "enabled.txt"), "# none\n")
+        self.assertEqual(self._st(["--no-config"]).status, "PASS")
+        _put(os.path.join(self.d, "mods", "enabled.txt"), "crt-beans\n")
+        self.assertEqual(self._st(["--no-config"]).status, "FAIL")
+        self.assertEqual(self._st(["--no-config", "--mods", ""]).status, "PASS")
+        self.assertEqual(self._st(["--no-config"], staged=["mods"]).status, "PASS")
+
+    def test_declared_but_absent_and_retired(self):
+        self.assertEqual(self._st(staged=["texpack"]).status, "FAIL")
+        open(os.path.join(self.d, "openpete.opts"), "w").close()
+        c = self._st()
+        self.assertEqual(c.status, "PASS")
+        self.assertIn("openpete.opts present, not read", c.reading)
+
+
+RR = ("[render-res] why=live value=window B=2560x1440 T={t} V=0,0,2560x1440 C={c} wf=1.2444 "
+      "wf'=1.2444 crop=0.000 filter=x:copy,y:copy scene_rect=0,0,1,1 scene_grid=512,240,224,1 "
+      "composes=0 base_composes=0 rq_passes=0\n")
+
+
+def _pace(path, env, rate, seconds=12.0, not_live_s=1.0):
+    """A pace log presenting `rate` per second for `seconds`, the first
+    `not_live_s` flagged not-live."""
+    import pacelog
+    n = int(rate * seconds)
+    recs = [(pacelog.PRESENT, 64 if i / rate < not_live_s else 0, 0, i, int(i * 1e9 / rate))
+            for i in range(n)]
+    pacelog.write(path, env, recs)
+
+
+class PostTest(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.log = os.path.join(self.d, "leg.log")
+        self.pace = os.path.join(self.d, "leg.oppl")
+        sys.path.insert(0, os.path.join(preflight.ROOT, "scripts", "pacing"))
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def _post(self, decl, rate, env=None, t="2560x1440", c="2560x1440", expect=None,
+              static=False):
+        with open(self.log, "w") as f:
+            f.write("[rhi/vk] swapchain: 3 image(s), acquire budget 4.0 ms (refresh 479.990 Hz)\n")
+            f.write(RR.format(t=t, c=c))
+        e = {"present_mode": "fifo", "refresh_mhz": "479990", "fullscreen": "0",
+             "render_fps": "480"}
+        e.update(env or {})
+        _pace(self.pace, e, rate)
+        return {k.name: k for k in preflight.post_checks(self.log, decl, expect, self.pace, static)}
+
+    def test_main_exe_log_window_and_pixels(self):
+        """The main exe's own lines: [render-res] C is the window, T the
+        render target; no `present mode:` or `(swapchain WxH)` line needed."""
+        cs = self._post(preflight.Decl("cadence"), 480, expect="2560x1440")
+        self.assertEqual(cs["window-actual"].status, "PASS")
+        self.assertEqual(cs["present-mode-actual"].status, "PASS")
+        cs = self._post(preflight.Decl("cadence"), 480, c="1280x720", expect="2560x1440")
+        self.assertEqual(cs["window-actual"].status, "FAIL")
+        cs = self._post(preflight.Decl("cadence", pixels="5120x2880"), 480, t="5120x2880")
+        self.assertEqual(cs["pixels-actual"].status, "PASS")
+        cs = self._post(preflight.Decl("cadence", pixels="2560x1440"), 480, t="5120x2880")
+        self.assertEqual(cs["pixels-actual"].status, "FAIL")
+
+    def test_cadence_static_rate(self):
+        ok = self._post(preflight.Decl("cadence"), 479.99, static=True)["steady-rate"]
+        self.assertEqual(ok.status, "PASS", ok.reading)
+        low = self._post(preflight.Decl("cadence"), 458, static=True)["steady-rate"]
+        self.assertEqual(low.status, "FAIL")
+        self.assertIn("458.0 presents/s", low.reading)
+        self.assertNotIn("steady-rate", self._post(preflight.Decl("cadence"), 458))
+        mode = self._post(preflight.Decl("cadence"), 480, env={"present_mode": "immediate"})
+        self.assertEqual(mode["present-mode-actual"].status, "FAIL")
+
+    def test_cost_post(self):
+        imm = {"present_mode": "immediate", "render_fps": "10000"}
+        cs = self._post(preflight.Decl("cost"), 1500, env=imm)
+        self.assertEqual(cs["present-mode-actual"].status, "PASS")
+        self.assertEqual(cs["cap-headroom"].status, "PASS")
+        self.assertEqual(cs["pixels-actual"].status, "PASS")
+        capped = self._post(preflight.Decl("cost"), 1500, env={"present_mode": "immediate",
+                                                               "render_fps": "1600"})
+        self.assertEqual(capped["cap-headroom"].status, "FAIL")
+        ss = self._post(preflight.Decl("cost"), 1500, env=imm, t="5120x2880")
+        self.assertEqual(ss["pixels-actual"].status, "FAIL")
+        fifo = self._post(preflight.Decl("cost"), 480)
+        self.assertEqual(fifo["present-mode-actual"].status, "FAIL")
+
+    def test_missing_pace_log(self):
+        with open(self.log, "w") as f:
+            f.write(RR.format(t="640x480", c="640x480"))
+        cs = {c.name: c for c in preflight.post_checks(self.log, preflight.Decl("cadence"))}
+        self.assertTrue(cs["pace-log"].blocks())
+        cs = {c.name: c for c in preflight.post_checks(self.log, preflight.Decl("boot"))}
+        self.assertFalse(cs["pace-log"].blocks())
+
+    def test_windows_pace_path(self):
+        self.assertEqual(preflight.linux_path("C:\\Users\\a\\x.oppl"), "/mnt/c/Users/a/x.oppl")
+        self.assertEqual(preflight.linux_path("/tmp/x"), "/tmp/x")
 
 
 if __name__ == "__main__":
