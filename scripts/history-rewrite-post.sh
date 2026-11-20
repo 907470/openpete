@@ -26,7 +26,7 @@
 #              hook. The compile database comes from OPENPETE_COMPLEXITY_DB /
 #              OPENPETE_DOCS_DB or build/linux-release/compile_commands.json.
 #   tags       every tag at each of which no PNG is tracked under tests/golden;
-#              with --archive, the tag names equal the archive's.
+#              with --archive, the `v*` tag names equal the archive's.
 # Printed, not run: the planning repository's citation remap over the commit
 # map, its hand re-pins, its prose and memory text pass, the checkout swap
 # and untracked-input restore, the referrer repairs, and the fresh-clone
@@ -266,9 +266,14 @@ tags=$(git tag -l | sort)
 say "== tags: $(echo "$tags" | grep -c .) ($(echo $tags))"
 fail=0
 if [ -n "$archive" ]; then
-  want=$(git -C "$archive" tag -l | sort)
-  d=$(diff <(echo "$want") <(echo "$tags"))
-  [ -z "$d" ] && say "  names equal the archive's" || { say "  FAIL tag names differ from the archive's: $d"; fail=1; }
+  # Only the release tags (`v*`) are rewritten and published. The archive
+  # mirrors the local repository, so it also holds local-only tags (a census
+  # tag on a side commit) that the rewrite leaves behind by design; comparing
+  # those would refuse every run.
+  want=$(git -C "$archive" tag -l 'v*' | sort)
+  have=$(git tag -l 'v*' | sort)
+  d=$(diff <(echo "$want") <(echo "$have"))
+  [ -z "$d" ] && say "  v* tag names equal the archive's" || { say "  FAIL v* tag names differ from the archive's: $d"; fail=1; }
 fi
 for t in $tags; do
   n=$(git ls-tree -r --name-only "$t" -- tests/golden | grep -c '\.png$')
