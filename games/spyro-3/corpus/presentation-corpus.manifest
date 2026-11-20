@@ -426,6 +426,14 @@ country-speedway-skip-entry|2073|2||2073|--skip-to-level country_speedway
 honey-speedway-skip-entry|2073|2||2073|--skip-to-level honey_speedway
 crawdad-farm-skip-entry|2073|2||2073|--skip-to-level crawdad_farm
 spider-town-skip-entry|1773|2||1773|--skip-to-level spider_town
+# spider-town-sparx-sprint: Sparx sprints (Square) through four headings. The
+# ribbon the tracer routine trails behind him links at its bucket less two and
+# appends after the moby faces, Sparx's faces at theirs less his depth offset
+# of three, so the table paints a face over the ribbon wherever the ribbon
+# segment's view-Z is not in a nearer bucket than the face's: his body covers
+# the ribbon's head at 1877 and 1913 canonical, 1878 and 1914 on the sub-tick
+# leg, where the ribbon lies up to 110 world nearer in true depth.
+spider-town-sparx-sprint|1877|1000||1877,1878,1913,1914
 starfish-reef-skip-entry|1773|2||1773|--skip-to-level starfish_reef
 bugbot-factory-skip-entry|1773|2||1773|--skip-to-level bugbot_factory
 frozen-altars-skip-entry|2073|2||2073|--skip-to-level frozen_altars

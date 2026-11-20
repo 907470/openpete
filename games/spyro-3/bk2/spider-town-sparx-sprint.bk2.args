@@ -1,0 +1,6 @@
+# Square (Sparx's sprint) held from VBL 1800 while the d-pad turns Sparx
+# Up, Right, Down and Left for 25 VBLs each from 1830, so his sprint ribbon
+# trails him on every heading (scripts/make_bk2.py --feed-key vbl --frames 1920
+# --hold 1800:1920:Square --hold 1830:1855:Up --hold 1855:1880:Right
+# --hold 1880:1905:Down --hold 1905:1930:Left).
+--skip-to-level spider_town
