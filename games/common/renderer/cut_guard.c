@@ -14,6 +14,7 @@
 #include "spyro_overlay_table.h"    /* the resident overlay, for the props and attach markers */
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -721,6 +722,45 @@ int cut_pair_is_tick(const openpete_interp_obj_t* o) {
     const op_time_t prev_at = o->prev_seen_ns > o->prev_ns ? o->prev_seen_ns : o->prev_ns;
     return o->curr_ns > prev_at &&
            (double)(o->curr_ns - prev_at) <= 1.5 * (double)g_openpete_tick_period_ns;
+}
+
+/** @brief OPENPETE_FEEDER_PAIR_AGE (nonzero restores the roll-stamp age test) and OPENPETE_FEEDER_PAIR_CENSUS, read once.
+ * @param census Receives nonzero when the census is armed.
+ * @return Nonzero when the roll-stamp age test replaces cut_pair_is_tick. */
+static int cut_feeder_env(int* census) {
+    /* Bit 0 the age test, bit 1 the census; -1 before the first read. Every
+     * thread that reads the environment stores the same value. */
+    static _Atomic(int) s_env = -1;
+    int v = s_env;
+    if (v < 0) {
+        const char* a = getenv("OPENPETE_FEEDER_PAIR_AGE");
+        const char* c = getenv("OPENPETE_FEEDER_PAIR_CENSUS");
+        v = (a && *a && *a != '0') | ((c && *c && *c != '0') << 1);
+        s_env = v;
+    }
+    *census = (v >> 1) & 1;
+    return v & 1;
+}
+
+int cut_feeder_pair_is_tick(const char* name, uint32_t key, const openpete_interp_obj_t* o,
+                            uint32_t pos_off, uint32_t pos_len) {
+    const double T = (double)g_openpete_tick_period_ns;
+    const int by_age = (double)(o->curr_ns - o->prev_ns) <= 1.5 * T;
+    const int by_seen = cut_pair_is_tick(o);
+    int census;
+    const int use_age = cut_feeder_env(&census);
+    if (census) {
+        const int moved = pos_off + pos_len <= o->blob_len &&
+                          memcmp(o->prev + pos_off, o->curr + pos_off, pos_len) != 0;
+        const op_time_t seen = o->prev_seen_ns > o->prev_ns ? o->prev_seen_ns : o->prev_ns;
+        fprintf(stderr, "[feeder-pair vbl=%u] k=%s key=%08x roll=%.2f span=%.2f seen=%.2f "
+                        "moved=%d age=%d tick=%d\n",
+                openpete_frame, name, key,
+                (double)(openpete_interp_tick_stamp() - o->curr_ns) / T,
+                (double)(o->curr_ns - o->prev_ns) / T, (double)(o->curr_ns - seen) / T,
+                moved, by_age, by_seen);
+    }
+    return use_age ? by_age : by_seen;
 }
 
 /** @brief Whether the canonical tick drew this moby record.

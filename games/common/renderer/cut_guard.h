@@ -191,6 +191,25 @@ const char* cut_camera_reason(const openpete_interp_snapshot_t* prev2,
  * @return 1 when the pair spans one tick, else 0. */
 int cut_pair_is_tick(const openpete_interp_obj_t* o);
 
+/** @brief Whether a feeder pool record's snapshot pair spans one tick of motion, by prev's observation stamp (cut_pair_is_tick).
+ *
+ * The particle, glint, glow, zap and tracer pools are walked on every tick,
+ * so a record that holds one state on every capture keeps prev observed up to
+ * the change, and its first move after a rest pairs instead of snapping.
+ * OPENPETE_FEEDER_PAIR_AGE=1 restores the roll-stamp test (the two distinct
+ * states at most 1.5 tick periods apart) for a same-binary A/B.
+ * OPENPETE_FEEDER_PAIR_CENSUS=1 prints one line per call: the feeder, the
+ * key, the ticks since curr rolled, the roll span, the span from prev's
+ * observation stamp, whether the bytes at pos_off changed, and both verdicts.
+ * @param name The feeder's census name.
+ * @param key The record's key.
+ * @param o The record's pair, with have_prev set and curr_ns after prev_ns.
+ * @param pos_off Offset of the bytes whose change the census counts as a move.
+ * @param pos_len Their length.
+ * @return 1 when the pair qualifies, else 0. */
+int cut_feeder_pair_is_tick(const char* name, uint32_t key, const openpete_interp_obj_t* o,
+                            uint32_t pos_off, uint32_t pos_len);
+
 /* The lowest phase a sub-tick present takes past the current tick's stamp.
  * The canonical present fires a few ms before its tick's grid stamp, so its
  * phase is slightly negative; the camera bracket (cam_bracket_t) extrapolates

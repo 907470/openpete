@@ -1476,9 +1476,6 @@ static int part_feed_enabled(void) {
  * distance few particles cover in a tick. */
 #define PART_REUSE_CEILING 300.0
 
-/* A pair spanning more than this is a discontinuity rather than motion. */
-#define PART_PAIR_STALE_NS (g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2)
-
 /* The record offsets of the colour words the routine copies into the
  * primitive unchanged: every class but PART_TWO_POINT_CLASS stores the word at
  * +0xC as the primitive's colour word (Spyro 2 partsdraw.s:164,180 for the
@@ -1539,7 +1536,7 @@ enum { PART_PAIR_NONE = 0, PART_PAIR_LERP = 1, PART_PAIR_REUSE = 2, PART_PAIR_CE
  * Byte 3 of the second position word lerps along the shortest arc of the
  * 256-step circle as an angle and linearly as a height; byte 2, the size,
  * lerps linearly. A record with no previous snapshot (one that spawned this
- * tick), a pair further apart than PART_PAIR_STALE_NS, or a blob too short
+ * tick), a pair whose prev was not observed up to curr (cut_feeder_pair_is_tick), or a blob too short
  * for the position words returns PART_PAIR_NONE and the tick's own state
  * (part_state_tick); the primitive then holds the tick's pose in the world
  * with only the camera's motion rebasing it.
@@ -1582,7 +1579,7 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
      * set's draw shows curr, the state the newest capture also holds: it does
      * not move over the interval. */
     if (s_item_ref_prev && o->curr_ns <= s_item_ref_cut) return PART_PAIR_LERP;
-    if (o->curr_ns - o->prev_ns > PART_PAIR_STALE_NS) return PART_PAIR_NONE;
+    if (!cut_feeder_pair_is_tick("particle", it->rec, o, pos, 6u)) return PART_PAIR_NONE;
     uint16_t psel, csel;
     memcpy(&psel, o->prev + game_layout.particles.sel_off, 2);
     memcpy(&csel, o->curr + game_layout.particles.sel_off, 2);

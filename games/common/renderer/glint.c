@@ -901,8 +901,8 @@ static double glint_angle(const glint_rec* r) {
  * Reads the record's previous snapshot from the interp object table and
  * blends toward it by 1 - alpha. Returns 0, leaving the tick's position,
  * phase and lifetime, for a record with no previous snapshot, a snapshot
- * blob too short for the position and packed words, snapshots more than one
- * and a half tick periods apart, a reused slot, or a displacement beyond
+ * blob too short for the position and packed words, a pair whose prev was
+ * not observed up to curr (cut_feeder_pair_is_tick), a reused slot, or a displacement beyond
  * GLINT_REUSE_CEILING; the primitive then moves only with the camera.
  *
  * Every byte of the packed word but the lifetime is written once by the
@@ -924,8 +924,7 @@ static int glint_record_pair(const glint_rec* r, double alpha, double off[3],
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     if ((uint32_t)o->blob_len < GT.pos_off + 12u ||
         (uint32_t)o->blob_len < GT.packed_off + 4u) return 0;
-    if (o->curr_ns - o->prev_ns >
-        g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2) return 0;
+    if (!cut_feeder_pair_is_tick("glint", r->addr, o, GT.pos_off, 12u)) return 0;
     uint32_t pp, cp;
     memcpy(&pp, o->prev + GT.packed_off, 4);
     memcpy(&cp, o->curr + GT.packed_off, 4);

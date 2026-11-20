@@ -1128,16 +1128,14 @@ static int on_zap_draw(CPUState* cpu, uint32_t addr) {
  * inside the +/-0x5400 box the routine admits it from. */
 #define ZAP_REUSE_CEILING 8192.0
 
-/* A pair spanning more than this is a discontinuity rather than motion. */
-#define ZAP_PAIR_STALE_NS (g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2)
-
 /** @brief Computes the record's head and tail displacement between the pose the tick drew and the pose this present shows.
  *
  * The displacement is (previous - current) * (1 - alpha) in full world units,
  * read from the interpolation snapshot pair keyed by the record's address.
  * With no usable previous record (a beam that spawned this tick, a pair
- * spanning more than ZAP_PAIR_STALE_NS, a changed segment count, or an end
- * that moved more than ZAP_REUSE_CEILING) both offsets are zero, and the
+ * whose prev was not observed up to curr (cut_feeder_pair_is_tick), a changed
+ * segment count, or an end that moved more than ZAP_REUSE_CEILING) both
+ * offsets are zero, and the
  * ribbon holds its tick pose in the world with only the camera's motion
  * rebasing it.
  * @param alpha The present's sub-tick alpha.
@@ -1150,7 +1148,7 @@ static int zap_record_pair(double alpha, double off_head[3], double off_tail[3])
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     if ((uint32_t)o->blob_len < ZAP.head_off + 24u ||
         (uint32_t)o->blob_len < ZAP.packed_off + 4u) return 0;
-    if (o->curr_ns - o->prev_ns > ZAP_PAIR_STALE_NS) return 0;
+    if (!cut_feeder_pair_is_tick("zap", s_rec, o, ZAP.head_off, 24u)) return 0;
     uint32_t pp, cp;
     memcpy(&pp, o->prev + ZAP.packed_off, 4);
     memcpy(&cp, o->curr + ZAP.packed_off, 4);

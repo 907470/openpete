@@ -1507,9 +1507,9 @@ static int glow_rec_same(const glow_rec* r, const openpete_interp_obj_t* o, doub
  * its position from each snapshot of its moby (glow_part_pos), so it follows
  * the moby's animation as well as its motion. Returns 0 with a zero offset
  * and phase change for a record with no previous snapshot, a snapshot blob
- * too short for the position words, snapshots more than one and a half tick
- * periods apart, a pair glow_rec_same rejects, or a displacement beyond
- * GLOW_REUSE_CEILING.
+ * too short for the position words, a pair whose prev was not observed up
+ * to curr (cut_feeder_pair_is_tick), a pair glow_rec_same rejects, or a
+ * displacement beyond GLOW_REUSE_CEILING.
  * @param cpu The guest CPU state, read only.
  * @param r The record as the tick read it.
  * @param alpha The present's position in the tick interval, 1 at its end.
@@ -1524,8 +1524,8 @@ static int glow_record_offset(CPUState* cpu, const glow_rec* r, double alpha, do
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     const uint32_t po = glow_rec_pos_off(r);
     if ((uint32_t)o->blob_len < (r->part ? GLOW_PART_BYTES : po + 12u)) return 0;
-    if (o->curr_ns - o->prev_ns >
-        g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2) return 0;
+    if (!cut_feeder_pair_is_tick("glow", r->addr, o, r->part ? 0u : po,
+                                 r->part ? GLOW_PART_BYTES : 12u)) return 0;
     double step;
     if (!glow_rec_same(r, o, &step)) return 0;
     double pw[3], cw[3];   /* a synthesized glow steps by its moby's own pair */
@@ -1675,8 +1675,8 @@ static void glow_item_place(glow_item* it, const glow_fan* f) {
 
 /** @brief Hand one record's fed centre to the sub-tick anchor probe with the keyed store's pair.
  *
- * The previous point is the store's previous snapshot when its pair spans at
- * most one and a half tick periods, else none; the current point is the
+ * The previous point is the store's previous snapshot when its pair spans
+ * one tick (cut_pair_is_tick), else none; the current point is the
  * position the tick drew. A store current snapshot whose position differs
  * from the drawn one is printed at probe level 2.
  * @param rec The record as the tick read it.
@@ -1686,7 +1686,7 @@ static void glow_sac(const glow_rec* rec, const glow_fan* f, const ngte_view* v)
     const double cw[3] = { rec->w[0], rec->w[1], rec->w[2] };
     const openpete_interp_obj_t* o = rec->synth ? NULL : openpete_interp_objs_find(rec->addr);
     if (!o || !o->have_prev || o->curr_ns <= o->prev_ns ||
-        o->curr_ns - o->prev_ns > g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2 ||
+        !cut_pair_is_tick(o) ||
         (uint32_t)o->blob_len < GW.pos_off + 12u) {
         sac_judge(SAC_GLOW, rec->addr, NULL, cw, 0, 0, f->csx, f->csy, v);
         return;

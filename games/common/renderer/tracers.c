@@ -1248,17 +1248,14 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
  * in a tick. */
 #define TR_REUSE_CEILING 4096.0
 
-/* A pair spanning more than this is a discontinuity rather than motion. */
-#define TR_PAIR_STALE_NS (g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2)
-
 static unsigned long s_reb_stat[3][2]; /* corners per TR_SRC_*: 0 lerped, 1 held */
 static double        s_reb_worldmax;  /* the largest per-tick world step paired */
 
 /** @brief Looks up a keyed-store record that holds a usable previous and current state.
  *
  * Refuses a record with no previous state, timestamps that are not
- * increasing, a blob shorter than need, or a pair spanning more than
- * TR_PAIR_STALE_NS.
+ * increasing, a blob shorter than need, or a pair whose prev was not
+ * observed up to curr (cut_feeder_pair_is_tick).
  * @param key The record's key.
  * @param need The minimum blob length in bytes.
  * @return The record, or NULL when refused. */
@@ -1266,7 +1263,7 @@ static const openpete_interp_obj_t* tr_pair(uint32_t key, uint32_t need) {
     const openpete_interp_obj_t* o = openpete_interp_objs_find(key);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return NULL;
     if ((uint32_t)o->blob_len < need) return NULL;
-    if (o->curr_ns - o->prev_ns > TR_PAIR_STALE_NS) return NULL;
+    if (!cut_feeder_pair_is_tick("tracer", key, o, 0u, need)) return NULL;
     return o;
 }
 
@@ -1278,7 +1275,7 @@ static const openpete_interp_obj_t* tr_pair(uint32_t key, uint32_t need) {
  * @param c The corner.
  * @param w Receives the previous point.
  * @return 1 when found; 0 for a record or vertex with no previous state, a
- *         pair spanning more than TR_PAIR_STALE_NS, a ribbon slot whose
+ *         stale pair (tr_pair), a ribbon slot whose
  *         live pointer changed, or a ring that does not decode. */
 static int tr_prev_point(int src, const tr_corner* c, int32_t w[3]) {
     if (src == TR_SRC_MESH) {
@@ -1326,7 +1323,7 @@ static int tr_point_at(int src, const tr_corner* c, double alpha, double p[3], d
 /** @brief Prints why a held point found no previous state, at sub-tick anchor probe level 2.
  *
  * The reasons are the keyed store's: no entry, no previous snapshot, stamps
- * out of order, a pair spanning more than TR_PAIR_STALE_NS, or another
+ * out of order, a stale pair (cut_pair_is_tick), or another
  * refusal (a ring that does not decode, a changed live pointer, a step past
  * TR_REUSE_CEILING).
  * @param src The corner's producer.
@@ -1338,7 +1335,7 @@ static void tr_sac_held_line(int src, const tr_corner* c) {
     if (!so) why = "nokey";
     else if (!so->have_prev) why = "noprev";
     else if (so->curr_ns <= so->prev_ns) why = "order";
-    else if (so->curr_ns - so->prev_ns > TR_PAIR_STALE_NS) why = "stale";
+    else if (!cut_pair_is_tick(so)) why = "stale";
     const double T = (double)g_openpete_tick_period_ns;
     const double age = so ? (double)((int64_t)openpete_interp_present_now() - (int64_t)so->curr_ns) / T : -1.0;
     const double span = (so && so->have_prev) ? (double)(so->curr_ns - so->prev_ns) / T : -1.0;

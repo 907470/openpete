@@ -14867,27 +14867,29 @@ static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     return (double)prev_b + (double)d * t;
 }
 
+static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t);
+
 /** @brief The snapshot pair and the phase a record's euler sweep takes at this present.
  *
- * The conditions are moby_record_euler_at_present's: a sub-tick present, a
- * pair with a distinct prev, and one class in both states. A jump hold pins
- * the phase at 0; a facing reversal (moby_mirror_hold) steps instead of
- * sweeping, holding the previous tick's angles through the interval and
- * taking this tick's at alpha 1, the schedule the shape channel takes for the
- * same verdict.
+ * The pair and phase are the record's position pair (moby_record_pair) on a
+ * sub-tick present: one class in both states, prev observed up to curr, the
+ * interval capped at one tick period and the phase floored at
+ * CUT_PHASE_FLOOR, so on a present before the curr stamp the angles
+ * extrapolate back along the last turn with the position, and the jump hold
+ * pins both at 0. lerp_byte_angle takes the shorter way round at every
+ * phase, and the sine table lookup wraps an angle below 0 or past 256. A
+ * facing reversal (moby_mirror_hold) steps instead of sweeping, holding the
+ * previous tick's angles through the interval and taking this tick's at
+ * alpha 1, the schedule the shape channel takes for the same verdict.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param t_out Receives the phase, 0 at the previous tick and 1 at this one.
  * @return The pair, or NULL when the caller takes the canonical rotation. */
 static const openpete_interp_obj_t* record_euler_pair(CPUState* cpu, uint32_t moby, double* t_out) {
     if (!s_rot_now) return NULL;
-    const openpete_interp_obj_t* o = moby_interp_find(moby);
-    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return NULL;
-    uint16_t pcls, ccls;
-    memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
-    memcpy(&ccls, o->curr + game_layout.moby.class_off, 2);
-    if (pcls != ccls) return NULL;
-    double t = moby_jump_held(moby, o) ? 0.0 : moby_pair_alpha(o);
+    double t = 1.0;
+    const openpete_interp_obj_t* o = moby_record_pair(moby, &t);
+    if (!o) return NULL;
     if (t < 1.0 && moby_mirror_hold(cpu, moby)) t = moby_hold_expired(o) ? 1.0 : 0.0;
     *t_out = t;
     return o;
@@ -19534,12 +19536,19 @@ static void rex_screen_trace(CPUState* cpu, uint32_t moby, const moby_fields* f,
      * tick to tick is the class the offset exists for, and dmob is how much
      * of that tick step this present's phase carries. */
     double dmob[3]; moby_record_world_offset(moby, dmob);
-    fprintf(stderr, "[moby-world vbl=%u] m=%08x rot=%08X kf=(%08x,%08x,%02x) wpos=(%d,%d,%d) dmob=(%.2f,%.2f,%.2f)\n",
+    /* The euler angles this present composes (byte units), the word's own
+     * when the record has no pair. */
+    double ang[3];
+    if (!moby_record_angles_at_present(cpu, moby, ang))
+        ngte_word_angles(cpu->read_word(moby + game_layout.moby.angle_off + 0u), ang);
+    fprintf(stderr, "[moby-world vbl=%u] m=%08x rot=%08X kf=(%08x,%08x,%02x) wpos=(%d,%d,%d) dmob=(%.2f,%.2f,%.2f) "
+                    "ang=(%.4f,%.4f,%.4f)\n",
             openpete_feed_key_now(), moby, cpu->read_word(moby + game_layout.moby.angle_off + 0u),
             f->frameA, f->frameB, (unsigned)((f->w0 >> 8) & 0xFFu),
             (int)cpu->read_word(moby + game_layout.moby.pos_off + 0u),
             (int)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
-            (int)cpu->read_word(moby + game_layout.moby.pos_off + 8u), dmob[0], dmob[1], dmob[2]);
+            (int)cpu->read_word(moby + game_layout.moby.pos_off + 8u), dmob[0], dmob[1], dmob[2],
+            ang[0], ang[1], ang[2]);
     double ctr[3]; build_moby_record_tr(cpu, moby, ctr);
     fprintf(stderr, "[moby-screen vbl=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f) size=%.3f ctrue=%.1f\n",
             openpete_feed_key_now(), g_openpete_canon_lag_leg ? "CANON" : "inter",
