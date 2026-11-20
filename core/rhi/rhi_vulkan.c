@@ -415,7 +415,7 @@ typedef struct {
  * them. */
 typedef struct {
     rhi_pipeline_desc desc;
-    char             *vert, *frag;
+    char             *vert, *frag, *whole;
     unsigned          group;    /* rhi_pipeline_describe_group at the record */
 } described_desc;
 
@@ -458,8 +458,9 @@ struct lto_state {
     struct lto_ready *ready;    /* results waiting for their swap */
     unsigned          out;      /* links submitted and not yet returned */
     unsigned          queued, returned, swapped, stale, failed;
+    unsigned          swapped_whole; /* of the swaps, results created whole from vert_spv_whole */
     unsigned          swaps_in_frame; /* swaps made while a frame recorded */
-    _Atomic unsigned  direct;   /* pipelines a create linked with optimization at once (cached) */
+    _Atomic unsigned  direct;   /* pipelines a create made optimized at once (cached) */
     _Atomic unsigned  probe_miss; /* of the creates that tried, those a probe found uncached */
     uint64_t          serial_first, serial_last; /* frame serials of the first and last swap */
     uint64_t          t0_ns;    /* wall clock at the first queue pass */
@@ -1027,10 +1028,12 @@ uint64_t rhi_ring_gen_bumps(void) { return s_ring_gen_bumps; }
 uint64_t rhi_ring_gen_overflows(void) { return s_ring_gen_overflows; }
 
 /* Stage facts recorded when a compile job resolves its stages: the desc's
- * dedupe hash, each stage's SPIR-V content hash and declared constant ids. */
+ * dedupe hash, each stage's SPIR-V content hash and declared constant ids,
+ * and the same for the whole-create vertex stage (vert_spv_whole; wvs_hash
+ * 0 when the desc names none). */
 typedef struct {
-    uint64_t desc_hash, vs_hash, fs_hash;
-    uint32_t vs_ids, fs_ids;
+    uint64_t desc_hash, vs_hash, fs_hash, wvs_hash;
+    uint32_t vs_ids, fs_ids, wvs_ids;
 } pipe_stage_info;
 
 /* How a pipeline's objects were made: created whole from its stages, fast
@@ -1043,8 +1046,9 @@ typedef struct {
     VkPipeline         pipeline;
     VkPipelineLayout   layout;
     VkShaderStageFlags pc_stages;   /* stage visibility of the push-constant block */
-    uint64_t           key;         /* dedupe key of the create info */
+    uint64_t           key;         /* dedupe key of the create info (vert_spv's view) */
     pipe_link          link;        /* how the pipeline was made */
+    bool               whole_stage; /* created whole from the desc's vert_spv_whole */
 } pipe_compiled;
 
 /* A link-time-optimized link waiting for its swap (lto_swap_ready): the
@@ -1066,6 +1070,7 @@ struct rhi_pipeline {
      * desc.frag_spv point at the owned name copies (NULL when words given). */
     rhi_pipeline_desc desc;
     char            *vert_name, *frag_name;   /* owned filename copies      */
+    char            *whole_name;              /* owned desc.vert_spv_whole copy */
     uint32_t        *vert_words, *frag_words; /* owned SPIR-V word copies   */
     size_t           vert_n, frag_n;          /* word counts                */
     struct rhi_pipeline *prev, *next;         /* device-wide rebuild registry */
@@ -1080,6 +1085,7 @@ struct rhi_pipeline {
     uint32_t         rb_idx;       /* its entry index in that set */
     uint64_t         reg_serial;   /* its registry serial: unique, rising with registration */
     pipe_link        link;         /* how the installed objects were made */
+    bool             whole_stage;  /* they were created whole from desc.vert_spv_whole */
     bool             lto_out;      /* a link-time-optimized link of it is on the pool */
 };
 
@@ -1089,16 +1095,20 @@ struct rhi_pipeline {
 struct rhi_compile_job {
     rhi_pipeline_desc desc;          /* vert_spv / frag_spv point at the name copies */
     char            *vert_name, *frag_name;     /* owned .spv name copies (built-in stages) */
+    char            *whole_name;                /* owned desc.vert_spv_whole copy            */
     uint32_t        *vert_words, *frag_words;   /* owned SPIR-V word copies (mod stages)    */
     size_t           vert_n, frag_n;            /* word counts                               */
-    const void      *vb, *fb;        /* resolved stage bytes: the words, an embedded blob or a file read */
-    size_t           vbn, fbn;       /* their byte counts                          */
-    void            *vown, *fown;    /* OPENPETE_SHADER_DIR file bytes read at the job's making */
+    const void      *vb, *fb, *wb;   /* resolved stage bytes: the words, an embedded blob or a file
+                                      * read; wb the whole-create vertex stage's, or NULL */
+    size_t           vbn, fbn, wbn;  /* their byte counts                          */
+    void            *vown, *fown, *wown; /* OPENPETE_SHADER_DIR file bytes read at the job's making */
     pipe_stage_info  info;
     rhi_pipe_variant variant;
     VkBool32         slot_contest;   /* SLOT_CONTEST at the job's making           */
     uint32_t         generation, epoch;
-    bool             lto;            /* link from library parts with link-time optimization, no probe */
+    bool             lto;            /* the optimized form, no probe: created whole from wb when
+                                      * resolved, else linked from library parts with link-time
+                                      * optimization */
     pipe_compiled    out;            /* the result; out.pipeline VK_NULL_HANDLE until a run succeeds */
 };
 
@@ -9232,6 +9242,7 @@ static void gpl_destroy_all(rhi_device *dev)
  * @param src The source, at its final address. */
 static void gpl_src_own_names(gpl_src *src)
 {
+    src->desc.vert_spv_whole = NULL;   /* a library part never reads it */
     if (src->desc.vert_spv) {
         snprintf(src->vname, sizeof src->vname, "%s", src->desc.vert_spv);
         src->desc.vert_spv = src->vname;
@@ -9387,19 +9398,23 @@ static VkResult pipeline_create_whole(rhi_device *dev, const rhi_compile_job *jo
     return r;
 }
 
-/** @brief Return whether a create should try the link-time-optimized link of a variant first: the key manifest lists it and the create can tell a cached one.
+/** @brief Return whether a create should try a variant's optimized form first: the key manifest lists it and the create can tell a cached one.
  *
- * With pipeline cache control the try is a probe, so an uncached optimized
- * link costs a lookup; without it only a calibrated driver's manifest is
- * trusted. Any thread.
+ * The optimized form is the link-time-optimized link (PIPE_LINK_LTO) or,
+ * for a desc naming a whole-create vertex stage, the whole pipeline from
+ * that stage (PIPE_LINK_WHOLE, var being that stage's view). With pipeline
+ * cache control the try is a probe, so an uncached optimized form costs a
+ * lookup; without it only a calibrated driver's manifest is trusted. Any
+ * thread.
  * @param dev Device.
  * @param var The variant.
+ * @param link The optimized form's link kind.
  * @return true to try it. */
-static bool lto_listed(rhi_device *dev, const rhi_pc_variant *var)
+static bool pipeline_optimized_listed(rhi_device *dev, const rhi_pc_variant *var, pipe_link link)
 {
     if (!dev->has_lto || (!dev->has_cache_control && !dev->manifest_trusted)) return false;
     SDL_LockMutex(dev->pc_mx);
-    const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key_as(var, PIPE_LINK_LTO));
+    const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key_as(var, link));
     SDL_UnlockMutex(dev->pc_mx);
     return listed != 0;
 }
@@ -9408,8 +9423,10 @@ static bool lto_listed(rhi_device *dev, const rhi_pc_variant *var)
  *
  * A background optimization job (job->lto) links optimized with the
  * caller's flags. Any other create tries the optimized link first when
- * lto_listed says it is cached, as a probe where the device has cache
- * control, and links fast on a probe miss. Any thread.
+ * pipeline_optimized_listed says it is cached, as a probe where the device
+ * has cache control, and links fast on a probe miss; a job with a
+ * whole-create vertex stage (job->wb) skips that try, its optimized form
+ * being the whole pipeline (pipeline_compile_optimized). Any thread.
  * @param dev Device.
  * @param job The job.
  * @param st The pipeline's parts.
@@ -9427,7 +9444,7 @@ static int pipeline_link_choose(rhi_device *dev, const rhi_compile_job *job, con
 {
     *link = PIPE_LINK_LTO;
     if (job->lto) return pipeline_link(dev, job, st, var, layout, flags, true, out, fb);
-    if (lto_listed(dev, var)) {
+    if (!job->wb && pipeline_optimized_listed(dev, var, PIPE_LINK_LTO)) {
         const VkPipelineCreateFlags probe = dev->has_cache_control
             ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT : 0u;
         const int r = pipeline_link(dev, job, st, var, layout, flags | probe, true, out, fb);
@@ -9439,14 +9456,163 @@ static int pipeline_link_choose(rhi_device *dev, const rhi_compile_job *job, con
     return pipeline_link(dev, job, st, var, layout, flags, false, out, fb);
 }
 
+/** @brief Make the stage view a whole create of a job compiles: the job with its whole-create vertex stage (job->wb) in place of its vertex stage.
+ *
+ * The view is a shallow copy that shares the job's buffers; it is read,
+ * never freed or installed.
+ * @param job The job.
+ * @param w Receives the view.
+ * @return false when the job has no whole-create stage (w is untouched). */
+static bool job_whole_view(const rhi_compile_job *job, rhi_compile_job *w)
+{
+    if (!job->wb) return false;
+    *w = *job;
+    w->vb = job->wb;
+    w->vbn = job->wbn;
+    w->desc.vert_spv = job->desc.vert_spv_whole;
+    w->info.vs_hash = job->info.wvs_hash;
+    w->info.vs_ids = job->info.wvs_ids;
+    return true;
+}
+
+/** @brief Create the layout a pipeline's parts describe.
+ *
+ * @param dev Device.
+ * @param st The parts (pipe_state_fill).
+ * @param layout Receives the layout.
+ * @return false when the create failed (logged). */
+static bool pipe_layout_new(rhi_device *dev, const pipe_state *st, VkPipelineLayout *layout)
+{
+    *layout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(dev->device, &st->plci, NULL, layout) == VK_SUCCESS) return true;
+    RHI_LOG("vkCreatePipelineLayout failed\n");
+    return false;
+}
+
+/** @brief Store a successful create as a job's result and add its manifest key, salted per link kind, to dev->pc_keys under dev->pc_mx.
+ *
+ * @param dev Device.
+ * @param job The job; job->out receives c.
+ * @param var The view the create compiled (its manifest key).
+ * @param fb The create's feedback.
+ * @param c The result. */
+static void pipeline_compiled_keep(rhi_device *dev, rhi_compile_job *job, const rhi_pc_variant *var,
+                                   const pipe_feedback *fb, const pipe_compiled *c)
+{
+    SDL_LockMutex(dev->pc_mx);
+    const int fresh = rhi_pc_keyset_insert(&dev->pc_keys, pipe_manifest_key_as(var, c->link));
+    dev->pcache_unhit += !(fb->pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT);
+    SDL_UnlockMutex(dev->pc_mx);
+    if (!fresh) rhi_pc_known_add(pipe_phase_now());
+    job->out = *c;
+}
+
+/** @brief Create a job's pipeline whole from a stage view of it and keep the result.
+ *
+ * @param dev Device.
+ * @param job The job; job->out receives the result.
+ * @param src The stage view: the job, or its whole-create view (job_whole_view).
+ * @param flags Pipeline create flags.
+ * @param key The result's dedupe key: the job's own create-info key.
+ * @return 0 on success, 1 when a probe found it uncached, -1 on failure. */
+static int pipeline_compile_whole(rhi_device *dev, rhi_compile_job *job, const rhi_compile_job *src,
+                                  VkPipelineCreateFlags flags, uint64_t key)
+{
+    rhi_pc_variant var;
+    pipe_variant_view(dev, &src->desc, &src->info, src->variant, src->slot_contest, &var);
+    pipe_state st;
+    VkPipelineLayout layout;
+    if (!pipe_state_fill(dev, &src->desc, &src->info, &var, &st) ||
+        !pipe_layout_new(dev, &st, &layout))
+        return -1;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    pipe_feedback fb;
+    const VkResult r = pipeline_create_whole(dev, src, &st, layout, flags, &pipeline, &fb);
+    if (r != VK_SUCCESS) return pipeline_create_failed(dev, r, pipeline, layout);
+    const pipe_compiled c = { .pipeline = pipeline, .layout = layout,
+                              .pc_stages = src->desc.push_const_size ? st.pcr.stageFlags : 0,
+                              .key = key, .link = PIPE_LINK_WHOLE, .whole_stage = src != job };
+    pipeline_compiled_keep(dev, job, &var, &fb, &c);
+    return 0;
+}
+
+/** @brief Create a library-path job's optimized form whole from its whole-create stage view, when it is owed or cached.
+ *
+ * A background optimization job (job->lto) creates it unconditionally. Any
+ * other create makes it only when pipeline_optimized_listed says it is
+ * cached, as a probe where the device has cache control, so a warm start
+ * installs the optimized form at once and owes no background job.
+ * @param dev Device.
+ * @param job The job.
+ * @param whole Its whole-create view (job_whole_view).
+ * @param flags Pipeline create flags (the caller's probe).
+ * @param key The job's own create-info key.
+ * @return 0 when made, -1 on failure, 1 when the caller's probe found it
+ *         uncached on a device without cache control, 2 when not made (not
+ *         listed, or the probe found it uncached): the caller links from
+ *         libraries. */
+static int pipeline_compile_optimized(rhi_device *dev, rhi_compile_job *job,
+                                      const rhi_compile_job *whole, VkPipelineCreateFlags flags,
+                                      uint64_t key)
+{
+    if (job->lto) return pipeline_compile_whole(dev, job, whole, flags, key);
+    rhi_pc_variant wvar;
+    pipe_variant_view(dev, &whole->desc, &whole->info, whole->variant, whole->slot_contest, &wvar);
+    if (!pipeline_optimized_listed(dev, &wvar, PIPE_LINK_WHOLE)) return 2;
+    const VkPipelineCreateFlags probe = dev->has_cache_control
+        ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT : 0u;
+    const int r = pipeline_compile_whole(dev, job, whole, flags | probe, key);
+    if (r == 0) atomic_fetch_add_explicit(&dev->lto.direct, 1u, memory_order_relaxed);
+    if (r != 1 || !probe) return r;
+    atomic_fetch_add_explicit(&dev->lto.probe_miss, 1u, memory_order_relaxed);
+    return 2;
+}
+
+/** @brief Link a job's pipeline from its library parts (pipeline_link_choose) and keep the result.
+ *
+ * @param dev Device.
+ * @param job The job; job->out receives the result.
+ * @param var Its variant view.
+ * @param st Its parts.
+ * @param flags Pipeline create flags (the caller's probe).
+ * @param key The job's create-info key.
+ * @return 0 when linked, 1 when a probe found the link uncached, -1 when a
+ *         part, the link or the layout failed (the caller creates it whole). */
+static int pipeline_compile_linked(rhi_device *dev, rhi_compile_job *job, const rhi_pc_variant *var,
+                                   const pipe_state *st, VkPipelineCreateFlags flags, uint64_t key)
+{
+    VkPipelineLayout layout;
+    if (!pipe_layout_new(dev, st, &layout)) return -1;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    pipe_feedback fb;
+    pipe_link link;
+    const int r = pipeline_link_choose(dev, job, st, var, layout, flags, &pipeline, &fb, &link);
+    if (r == 1) return pipeline_create_failed(dev, VK_PIPELINE_COMPILE_REQUIRED_EXT, VK_NULL_HANDLE,
+                                              layout);
+    if (r != 0) {
+        vkDestroyPipelineLayout(dev->device, layout, NULL);
+        return -1;
+    }
+    const pipe_compiled c = { .pipeline = pipeline, .layout = layout,
+                              .pc_stages = job->desc.push_const_size ? st->pcr.stageFlags : 0,
+                              .key = key, .link = link };
+    pipeline_compiled_keep(dev, job, var, &fb, &c);
+    return 0;
+}
+
 /** @brief Compile a job's Vulkan pipeline and layout from its desc, resolved stage bytes and variant.
  *
  * Any thread: reads the job, the device fields fixed at device creation and
  * the pipeline cache (internally synchronized); writes only the job's
  * result, the library entries (under their lock) and the atomic or locked
  * instruments. A pipeline pipe_uses_library selects is linked from its
- * library parts (pipeline_link_choose), each built at most once per run; a
- * part or link failure creates it whole instead. Every create carries a
+ * library parts (pipeline_compile_linked), each built at most once per
+ * run; a part or link failure creates it whole instead. A whole create
+ * compiles the desc's whole-create vertex stage (vert_spv_whole) when it
+ * names one, and such a library-path pipeline's optimized form is that
+ * whole pipeline (pipeline_compile_optimized). The result's key is the
+ * job's own create-info key whichever stage compiled, so a whole result
+ * replaces the link it optimizes (lto_target_ok). Every create carries a
  * creation-feedback chain when the extension is enabled and is counted by
  * pipe_create_record; a successful create adds its manifest key (salted
  * per link kind) to dev->pc_keys under dev->pc_mx.
@@ -9461,41 +9627,24 @@ static int pipeline_link_choose(rhi_device *dev, const rhi_compile_job *job, con
 static int pipeline_compile(rhi_device *dev, rhi_compile_job *job, VkPipelineCreateFlags flags,
                             bool variant)
 {
-    const rhi_pipeline_desc *desc = &job->desc;
     rhi_pc_variant var;
-    pipe_variant_view(dev, desc, &job->info, job->variant, job->slot_contest, &var);
+    pipe_variant_view(dev, &job->desc, &job->info, job->variant, job->slot_contest, &var);
     pipe_state st;
-    if (!pipe_state_fill(dev, desc, &job->info, &var, &st)) return -1;
+    if (!pipe_state_fill(dev, &job->desc, &job->info, &var, &st)) return -1;
     if (!variant)
         atomic_fetch_add_explicit(&dev->pipes_by_cmp[st.dss.depthCompareOp],
-                                  (unsigned)desc->depth_test, memory_order_relaxed);
-    VkPipelineLayout layout = VK_NULL_HANDLE;
-    if (vkCreatePipelineLayout(dev->device, &st.plci, NULL, &layout) != VK_SUCCESS) {
-        RHI_LOG("vkCreatePipelineLayout failed\n");
-        return -1;
+                                  (unsigned)job->desc.depth_test, memory_order_relaxed);
+    const uint64_t key = rhi_pc_variant_key(&var);
+    rhi_compile_job wv;
+    const rhi_compile_job *whole = job_whole_view(job, &wv) ? &wv : job;
+    if (!pipe_uses_library(dev, &job->desc, job->vert_words || job->frag_words))
+        return pipeline_compile_whole(dev, job, whole, flags, key);
+    if (whole != job) {
+        const int r = pipeline_compile_optimized(dev, job, whole, flags, key);
+        if (r != 2) return r;
     }
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    pipe_feedback fb;
-    pipe_link link = PIPE_LINK_WHOLE;
-    int linked = pipe_uses_library(dev, desc, job->vert_words || job->frag_words)
-                     ? pipeline_link_choose(dev, job, &st, &var, layout, flags, &pipeline, &fb, &link)
-                     : -1;
-    if (linked == 1) return pipeline_create_failed(dev, VK_PIPELINE_COMPILE_REQUIRED_EXT,
-                                                   VK_NULL_HANDLE, layout);
-    if (linked != 0) {
-        link = PIPE_LINK_WHOLE;
-        const VkResult r = pipeline_create_whole(dev, job, &st, layout, flags, &pipeline, &fb);
-        if (r != VK_SUCCESS) return pipeline_create_failed(dev, r, pipeline, layout);
-    }
-    SDL_LockMutex(dev->pc_mx);
-    const int fresh = rhi_pc_keyset_insert(&dev->pc_keys, pipe_manifest_key_as(&var, link));
-    dev->pcache_unhit += !(fb.pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT);
-    SDL_UnlockMutex(dev->pc_mx);
-    if (!fresh) rhi_pc_known_add(pipe_phase_now());
-    job->out = (pipe_compiled){ .pipeline = pipeline, .layout = layout,
-                                .pc_stages = desc->push_const_size ? st.pcr.stageFlags : 0,
-                                .key = rhi_pc_variant_key(&var), .link = link };
-    return 0;
+    const int r = pipeline_compile_linked(dev, job, &var, &st, flags, key);
+    return r == -1 ? pipeline_compile_whole(dev, job, whole, flags, key) : r;
 }
 
 /** @brief Free a compile job's owned copies and the job; its result is left to the caller.
@@ -9504,9 +9653,9 @@ static int pipeline_compile(rhi_device *dev, rhi_compile_job *job, VkPipelineCre
 static void job_free(rhi_compile_job *job)
 {
     if (!job) return;
-    free(job->vert_name); free(job->frag_name);
+    free(job->vert_name); free(job->frag_name); free(job->whole_name);
     free(job->vert_words); free(job->frag_words);
-    free(job->vown); free(job->fown);
+    free(job->vown); free(job->fown); free(job->wown);
     free(job);
 }
 
@@ -9532,6 +9681,23 @@ static bool job_copy_stage(const uint32_t *words, size_t n, const char *name,
     if (!name) return true;
     *out_name = strdup(name);
     return *out_name != NULL;
+}
+
+/** @brief Resolve a job's whole-create vertex stage (rhi_pipeline_desc.vert_spv_whole) into an owned name copy and wb.
+ *
+ * Display owner only (stage_bytes). A vertex stage given words takes none;
+ * a name that resolves to no bytes leaves the job on its vert_spv stage.
+ * @param job The job, its vertex stage resolved.
+ * @param name The desc's vert_spv_whole, or NULL.
+ * @return false on allocation failure. */
+static bool job_whole_stage(rhi_compile_job *job, const char *name)
+{
+    if (!name || job->vert_words) return true;
+    job->whole_name = strdup(name);
+    if (!job->whole_name) return false;
+    job->wb = stage_bytes(NULL, 0, job->whole_name, &job->wbn, &job->wown);
+    if (job->wb) job->desc.vert_spv_whole = job->whole_name;
+    return true;
 }
 
 /** @brief Make a job holding copies of a desc and its stage sources, with its stage bytes resolved.
@@ -9567,9 +9733,10 @@ static rhi_compile_job *job_make(const rhi_pipeline_desc *desc,
     }
     job->desc.vert_spv = job->vert_name;
     job->desc.frag_spv = job->frag_name;
+    job->desc.vert_spv_whole = NULL;
     job->vb = stage_bytes(job->vert_words, job->vert_n, job->vert_name, &job->vbn, &job->vown);
     job->fb = stage_bytes(job->frag_words, job->frag_n, job->frag_name, &job->fbn, &job->fown);
-    if (!job->vb || !job->fb) {
+    if (!job->vb || !job->fb || !job_whole_stage(job, desc->vert_spv_whole)) {
         job_free(job);
         return NULL;
     }
@@ -9608,6 +9775,8 @@ rhi_compile_job *rhi_compile_job_new(rhi_device *dev, const rhi_pipeline_desc *d
         .fs_hash = rhi_pc_bytes_hash(job->fb, job->fbn),
         .vs_ids = rhi_pc_spec_ids(job->vb, job->vbn),
         .fs_ids = rhi_pc_spec_ids(job->fb, job->fbn),
+        .wvs_hash = job->wb ? rhi_pc_bytes_hash(job->wb, job->wbn) : 0u,
+        .wvs_ids = rhi_pc_spec_ids(job->wb, job->wbn),
     };
     return job;
 }
@@ -9723,7 +9892,7 @@ static void lto_note_install(rhi_device *dev, rhi_pipeline *p, pipe_link link)
  * @param p The pipeline, unlinked. */
 static void pipeline_free(rhi_pipeline *p)
 {
-    free(p->vert_name); free(p->frag_name);
+    free(p->vert_name); free(p->frag_name); free(p->whole_name);
     free(p->vert_words); free(p->frag_words);
     free(p);
 }
@@ -9742,15 +9911,17 @@ rhi_pipeline *rhi_compile_job_install(rhi_device *dev, rhi_compile_job *job)
     }
     p->desc = job->desc;
     p->vert_name = job->vert_name;   p->frag_name = job->frag_name;
+    p->whole_name = job->whole_name;
     p->vert_words = job->vert_words; p->frag_words = job->frag_words;
     p->vert_n = job->vert_n;         p->frag_n = job->frag_n;
-    job->vert_name = job->frag_name = NULL;
+    job->vert_name = job->frag_name = job->whole_name = NULL;
     job->vert_words = job->frag_words = NULL;
     p->info = job->info;
     p->pipeline = job->out.pipeline;
     p->layout = job->out.layout;
     p->pc_stages = job->out.pc_stages;
     p->vkey = job->out.key;
+    p->whole_stage = job->out.whole_stage;
     lto_note_install(dev, p, job->out.link);
     job_free(job);
     census_add_base(dev, p);
@@ -9850,6 +10021,7 @@ static void rebuild_swap(rhi_device *dev, rhi_pipeline *p, const pipe_compiled *
     p->layout = c->layout;
     p->pc_stages = c->pc_stages;
     p->vkey = c->key;
+    p->whole_stage = c->whole_stage;
     lto_note_install(dev, p, c->link);
     p->swap_serial = s_frame_serial;
     p->swap_idle = !dev->frame_active;
@@ -10085,7 +10257,8 @@ static pool_item *gpl_item_new(const rhi_compile_job *job, const rhi_pc_variant 
  *
  * Display owner (a pool submit). The items run before any job on the pool
  * (pool_worker), so a link that waits on a part waits only on a part some
- * worker is building. A job off the library path gets none.
+ * worker is building. A job off the library path, or an optimization job
+ * created whole from its whole-create stage, gets none.
  * @param dev Device.
  * @param job The job about to be queued.
  * @param phase The submitter's create phase.
@@ -10095,6 +10268,7 @@ static pool_item *gpl_items_for(rhi_device *dev, const rhi_compile_job *job, rhi
                                 bool rebuild)
 {
     if (!pipe_uses_library(dev, &job->desc, job->vert_words || job->frag_words)) return NULL;
+    if (job->lto && job->wb) return NULL;   /* created whole (pipeline_compile_optimized) */
     rhi_pc_variant var;
     pipe_variant_view(dev, &job->desc, &job->info, job->variant, job->slot_contest, &var);
     pipe_state st;
@@ -10862,14 +11036,18 @@ static void describe_add(rhi_device *dev, const rhi_pipeline_desc *desc, bool wo
     *d = (described_desc){ .desc = *desc,
                            .vert = desc->vert_spv ? strdup(desc->vert_spv) : NULL,
                            .frag = desc->frag_spv ? strdup(desc->frag_spv) : NULL,
+                           .whole = desc->vert_spv_whole ? strdup(desc->vert_spv_whole) : NULL,
                            .group = dev->describe_group };
-    if ((desc->vert_spv && !d->vert) || (desc->frag_spv && !d->frag)) {
+    if ((desc->vert_spv && !d->vert) || (desc->frag_spv && !d->frag) ||
+        (desc->vert_spv_whole && !d->whole)) {
         free(d->vert);
         free(d->frag);
+        free(d->whole);
         return;
     }
     d->desc.vert_spv = d->vert;
     d->desc.frag_spv = d->frag;
+    d->desc.vert_spv_whole = d->whole;
     dev->described_n++;
 }
 
@@ -10904,6 +11082,7 @@ unsigned rhi_pipeline_describe_discard(rhi_device *dev)
     for (unsigned i = dev->describe_mark_n; i < dev->described_n; i++) {
         free(dev->described[i].vert);
         free(dev->described[i].frag);
+        free(dev->described[i].whole);
     }
     dev->described_n = dev->describe_mark_n;
     dev->described_words = dev->describe_mark_words;
@@ -10918,6 +11097,7 @@ static void described_free(rhi_device *dev)
     for (unsigned i = 0; i < dev->described_n; i++) {
         free(dev->described[i].vert);
         free(dev->described[i].frag);
+        free(dev->described[i].whole);
     }
     free(dev->described);
     dev->described = NULL;
@@ -11338,7 +11518,19 @@ static void lto_arrive(rhi_device *dev, rhi_compile_job *job, int rc, void *tag)
     rhi_compile_job_discard(dev, job);
 }
 
-/** @brief Swap every parked link-time-optimized result into its pipeline (rebuild_swap: the replaced objects retire by frame serial); a result its pipeline no longer wants is destroyed.
+/** @brief Log one swapped-in optimized result under the pipe census (rhi_pc_level): the pipeline's site, how the result was made and the vertex stage it compiled.
+ *
+ * @param p The pipeline, its new objects installed. */
+static void lto_swap_log(const rhi_pipeline *p)
+{
+    if (!rhi_pc_level()) return;
+    const char *vs = p->whole_stage ? p->desc.vert_spv_whole : p->desc.vert_spv;
+    RHI_LOG("pipe-swap #%llu site=%s link=%s vs=%s\n", (unsigned long long)p->reg_serial,
+            rhi_pc_site_name(rhi_pc_site_of(&p->desc, p->vert_words || p->frag_words)),
+            p->link == PIPE_LINK_WHOLE ? "whole" : "lto", vs ? vs : "(words)");
+}
+
+/** @brief Swap every parked optimized result into its pipeline (rebuild_swap: the replaced objects retire by frame serial); a result its pipeline no longer wants is destroyed.
  *
  * @param dev Device. */
 static void lto_swap_ready(rhi_device *dev)
@@ -11349,7 +11541,9 @@ static void lto_swap_ready(rhi_device *dev)
         rhi_pipeline *p = registry_find(dev, r->serial);
         if (lto_target_ok(dev, p, r->c.key)) {
             rebuild_swap(dev, p, &r->c);
+            lto_swap_log(p);
             l->swapped++;
+            l->swapped_whole += r->c.whole_stage;
             l->swaps_in_frame += dev->frame_active;
             if (!l->serial_first) l->serial_first = s_frame_serial;
             l->serial_last = s_frame_serial;
@@ -11418,10 +11612,11 @@ static void lto_report_drained(rhi_device *dev)
     struct lto_state *l = &dev->lto;
     if (l->drained || l->out || l->ready || l->owed || !l->queued) return;
     l->drained = true;
-    RHI_LOG("pipeline lto: %u queued, %u returned, %u swapped, %u stale, %u failed; "
-            "%u linked optimized at create (%u probe misses); swaps at frame serials "
+    RHI_LOG("pipeline lto: %u queued, %u returned, %u swapped (%u created whole from "
+            "vert_spv_whole), %u stale, %u failed; "
+            "%u made optimized at create (%u probe misses); swaps at frame serials "
             "%llu..%llu, %u inside a frame; %u binds of a pipeline with no objects; %.1f ms\n",
-            l->queued, l->returned, l->swapped, l->stale, l->failed,
+            l->queued, l->returned, l->swapped, l->swapped_whole, l->stale, l->failed,
             atomic_load(&l->direct), atomic_load(&l->probe_miss),
             (unsigned long long)l->serial_first, (unsigned long long)l->serial_last,
             l->swaps_in_frame, dev->null_binds,
@@ -11486,18 +11681,29 @@ static unsigned walk_returned(const rhi_device *dev, const rhi_compile_pool_stat
 
 /** @brief Return whether a walk skips a variant because the key manifest lists it: only on a device without pipeline cache control whose manifest is trusted.
  *
+ * Off the library path the create compiles the whole-create vertex stage
+ * when the desc names one (pipeline_compile), so that stage's view is the
+ * one looked up.
  * @param dev Device.
  * @param desc The pipeline's description.
+ * @param info Its stage facts.
  * @param words Whether a stage is given as SPIR-V words.
- * @param v The variant's create-info description.
+ * @param var The variant.
+ * @param sc SLOT_CONTEST's value.
  * @return true when the manifest lists the variant. */
-static bool walk_manifest_lists(rhi_device *dev, const rhi_pipeline_desc *desc, bool words,
-                                const rhi_pc_variant *v)
+static bool walk_manifest_lists(rhi_device *dev, const rhi_pipeline_desc *desc,
+                                const pipe_stage_info *info, bool words, rhi_pipe_variant var,
+                                VkBool32 sc)
 {
     if (dev->has_cache_control || !dev->manifest_trusted) return false;
+    const bool lib = pipe_uses_library(dev, desc, words);
+    pipe_stage_info wi = *info;
+    if (!lib && info->wvs_hash) { wi.vs_hash = info->wvs_hash; wi.vs_ids = info->wvs_ids; }
+    rhi_pc_variant v;
+    pipe_variant_view(dev, desc, &wi, var, sc, &v);
+    const pipe_link link = lib ? PIPE_LINK_FAST : PIPE_LINK_WHOLE;
     SDL_LockMutex(dev->pc_mx);
-    const pipe_link link = pipe_uses_library(dev, desc, words) ? PIPE_LINK_FAST : PIPE_LINK_WHOLE;
-    const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key_as(v, link));
+    const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key_as(&v, link));
     SDL_UnlockMutex(dev->pc_mx);
     return listed != 0;
 }
@@ -11517,7 +11723,8 @@ static void walk_collect(rhi_device *dev, struct precompile_walk *w, rhi_pc_keys
     const uint64_t key = rhi_pc_variant_key(&v);
     if (!rhi_pc_keyset_insert(seen, key)) return;
     w->st.keys++;
-    if (walk_manifest_lists(dev, &p->desc, p->vert_words || p->frag_words, &v)) {
+    if (walk_manifest_lists(dev, &p->desc, &p->info, p->vert_words || p->frag_words, var,
+                            s_fs_slot_contest)) {
         w->st.manifest_skips++;
         return;
     }
@@ -11886,7 +12093,10 @@ static void walk_collect_ahead(rhi_device *dev, struct precompile_walk *w, rhi_p
         const uint64_t key = rhi_pc_variant_key(&v);
         if (!rhi_pc_keyset_insert(seen, key)) continue;
         w->st.keys++;
-        if (walk_manifest_lists(dev, d, false, &v)) { w->st.manifest_skips++; continue; }
+        if (walk_manifest_lists(dev, d, info, false, var, sc ? VK_TRUE : VK_FALSE)) {
+            w->st.manifest_skips++;
+            continue;
+        }
         w->items[w->n++] = (walk_item){ .ahead = i, .rank = rank,
                                         .slot_contest = sc ? VK_TRUE : VK_FALSE, .var = var, .key = key };
         w->rank_n[rank]++;

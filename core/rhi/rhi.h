@@ -1015,6 +1015,21 @@ typedef enum { RHI_COLOR_FORMAT_SCENE = 0, RHI_COLOR_FORMAT_RGBA32_UINT } rhi_co
 typedef struct rhi_pipeline_desc {
     const char    *vert_spv;    /* filename within RHI_SHADER_DIR */
     const char    *frag_spv;
+    const char    *vert_spv_whole; /* or NULL: the vertex stage a pipeline
+                                 * created whole takes in place of vert_spv
+                                 * (same interface). A library-linked
+                                 * pipeline shares vert_spv's pre-rasterization
+                                 * library with every desc of the same state;
+                                 * a whole create compiles its vertex stage
+                                 * for that one pipeline, so this stage may
+                                 * read a per-pipeline specialization constant
+                                 * that vert_spv reads at run time. Whole
+                                 * creates: devices without pipeline libraries,
+                                 * a failed link's fallback, and the background
+                                 * optimization of a library-linked pipeline
+                                 * (rhi_pipeline_lto_step), which then replaces
+                                 * the link with the whole pipeline. Ignored
+                                 * when the vertex stage is given as words. */
     rhi_blend_mode blend;
     bool           depth_test;  /* needs a depth attachment (added later) */
     bool           depth_write_off; /* depth_test but NO depth write (transparent: test vs opaque, don't occlude) */
@@ -2294,12 +2309,16 @@ int           rhi_rebuild_poll(rhi_device *dev, rhi_rebuild_stats *out);
  * pipeline with no link out gets one, queued on the compile pool's low
  * queue behind the library parts, the first-use and rebuild jobs and the
  * background variant walk's job; a wait for the pool does not wait for
- * them. A result whose pipeline was retired, rebuilt or switched variant
- * meanwhile is destroyed. A create of a fast-linked pipeline whose
- * optimized link the key manifest lists links it optimized at once when
- * the pipeline cache serves it (pipeline_link_choose), so a warm start
- * queues none. When every link has returned and been swapped, one line
- * "pipeline lto: ..." is logged and the cache save is armed.
+ * them. A pipeline whose desc names a whole-create vertex stage
+ * (rhi_pipeline_desc.vert_spv_whole) is created whole from that stage
+ * instead of linked. A result whose pipeline was retired, rebuilt or
+ * switched variant meanwhile is destroyed. A create of a fast-linked
+ * pipeline whose optimized form the key manifest lists makes it optimized
+ * at once when the pipeline cache serves it (pipeline_optimized_listed), so
+ * a warm start queues none. With the pipe census on (rhi_pc_level) each
+ * swap logs one "pipe-swap" line naming the swapped-in vertex stage. When every
+ * link has returned and been swapped, one line "pipeline lto: ..." is
+ * logged and the cache save is armed.
  * @param dev Device, or NULL.
  * @param sync true waits for the links queued in this call and swaps them
  *             before returning (a run whose output must not depend on

@@ -26,10 +26,12 @@
  * into an RGBA32_UINT target (rb_emit); the position chain is the shipped
  * stage's, unchanged. Diagnostic only. */
 /* TERRAIN_DEPTH_SPEC: the depth convention from specialization constant 0
- * (DEPTH_REVERSED), fixed per pipeline, in place of pc.depth_rev. A
- * comparison build for the cost of the run-time select; the shipped stages
- * read pc.depth_rev, so one compiled stage serves the forward-class
- * pre-pass and key pipelines and the reversed-class scene pipelines. */
+ * (DEPTH_REVERSED), fixed per pipeline, in place of pc.depth_rev. The
+ * stages without it read pc.depth_rev, so one pre-rasterization library
+ * serves the forward-class pre-pass and key pipelines and the
+ * reversed-class scene pipelines at bring-up; the stages with it are the
+ * whole-create stage (rhi_pipeline_desc.vert_spv_whole) of the pipelines
+ * that replace those links in the background, which carry no select. */
 
 /* Terrain sector-mesh vertex stage - the retained-terrain GPU path
  * (extraction rearchitecture, seam 2).

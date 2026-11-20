@@ -1042,37 +1042,36 @@ int openpete_tercache_faceid(void)
     return s_on;
 }
 
-/* The shipped stages compiled with TERRAIN_DEPTH_SPEC: the depth
- * convention from specialization constant 0, one stage per depth class, in
- * place of the push-constant select (k_tc_vert order). */
+/* The shipped stages compiled with TERRAIN_DEPTH_SPEC (k_tc_vert order):
+ * the depth convention from specialization constant 0, fixed per pipeline,
+ * in place of the push-constant select. A pipeline linked from libraries
+ * shares one k_tc_vert pre-rasterization library across both depth classes;
+ * its background optimization, and every whole create, compiles this stage
+ * instead (rhi_pipeline_desc.vert_spv_whole), so the optimized pipeline
+ * carries no select. */
 static const char *const k_tc_vert_dspec[OPENPETE_MATERIAL_TER_VARIANTS] = {
     "terrain_dspec.vert.spv", "terrain_anim_dspec.vert.spv", "terrain_near_dspec.vert.spv",
     "terrain_cells_anim_dspec.vert.spv", "terrain_cells_near_dspec.vert.spv",
 };
 
-/** @brief Return whether OPENPETE_TERRAIN_DEPTH_SPEC selects the specialized-depth stages.
- *
- * Set and not "0": the shipped row's stages take their depth convention
- * from specialization constant 0, the comparison build of the run-time
- * select. Read from the environment on every call, so the launcher's
- * describe, bring-up's init and every material pipeline take the same
- * stage.
- * @return 1 or 0. */
-static int tc_depth_spec(void)
-{
-    const char *e = getenv("OPENPETE_TERRAIN_DEPTH_SPEC");
-    return (e && *e && *e != '0') ? 1 : 0;
-}
-
 /** @brief Return the selected row's vertex stage of an arena family.
  *
- * Row 0 under OPENPETE_TERRAIN_DEPTH_SPEC takes k_tc_vert_dspec.
  * @param v The family, a TC_V_* value.
  * @return The stage's SPIR-V name. */
 static const char *tc_vert(int v)
 {
-    const int row = tc_stage_row();
-    return (row == 0 && tc_depth_spec()) ? k_tc_vert_dspec[v] : k_tc_vert[row][v];
+    return k_tc_vert[tc_stage_row()][v];
+}
+
+/** @brief Return the whole-create vertex stage of an arena family (rhi_pipeline_desc.vert_spv_whole).
+ *
+ * Row 0 takes k_tc_vert_dspec; the diagnostic row 1 has no specialized
+ * twin and keeps its select in every create.
+ * @param v The family, a TC_V_* value.
+ * @return The stage's SPIR-V name, or NULL. */
+static const char *tc_vert_whole(int v)
+{
+    return tc_stage_row() == 0 ? k_tc_vert_dspec[v] : NULL;
 }
 
 /** @brief Build one cell-record pipeline set, one pipeline per TC_CP_* slot.
@@ -1084,14 +1083,13 @@ static const char *tc_vert(int v)
  * made now, or at the end of the open pipeline batch (tc_cell_pipes_ok
  * then reads the set).
  * @param dev Device.
- * @param vert Vertex stage SPIR-V name (the near or anim cell stage).
- * @param anim Nonzero for the anim record layout, 0 for the near layout.
+ * @param anim Nonzero for the anim record layout and stage, 0 for the near ones.
  * @param out Receives the pipelines; a failed slot is NULL. */
-static void tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
-                               rhi_pipeline *out[TC_CP_N])
+static void tc_make_cell_pipes(rhi_device *dev, int anim, rhi_pipeline *out[TC_CP_N])
 {
+    const int v = anim ? TC_V_CELLS_ANIM : TC_V_CELLS_NEAR;
     const rhi_pipeline_desc base = {
-        .vert_spv = vert, .frag_spv = "terrain.frag.spv",
+        .vert_spv = tc_vert(v), .vert_spv_whole = tc_vert_whole(v), .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .terrain_pipeline = true, .terrain_cells = true, .tex_ssbo_set2 = true,
         .terrain_anim = anim != 0, .terrain_near = anim == 0,
@@ -1132,7 +1130,8 @@ static int tc_cell_pipes_ok(rhi_pipeline *const set[TC_CP_N])
 static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
 {
     const rhi_pipeline_desc world_desc = {
-        .vert_spv = tc_vert(TC_V_PLAIN), .frag_spv = "terrain.frag.spv",
+        .vert_spv = tc_vert(TC_V_PLAIN), .vert_spv_whole = tc_vert_whole(TC_V_PLAIN),
+        .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .terrain_pipeline = true, .pair_set7 = true, .tex_ssbo_set2 = true,
         .push_const_size = sizeof(tc_pc),
@@ -1168,7 +1167,8 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
      * sectors' LP hole-fill backing; a poly-anim sector never publishes
      * SF_FILLLP, so the vertex stage kills its LP in that pass. */
     const rhi_pipeline_desc anim_desc = {
-        .vert_spv = tc_vert(TC_V_ANIM), .frag_spv = "terrain.frag.spv",
+        .vert_spv = tc_vert(TC_V_ANIM), .vert_spv_whole = tc_vert_whole(TC_V_ANIM),
+        .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .terrain_pipeline = true, .terrain_anim = true, .pair_set7 = true,
         .tex_ssbo_set2 = true,
@@ -1199,7 +1199,8 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
      * binding-1 member-context twin. Includes FILL - near sectors keep the
      * LP hole-fill backing (unlike poly-anim, which is excluded from it). */
     const rhi_pipeline_desc near_desc = {
-        .vert_spv = tc_vert(TC_V_NEAR), .frag_spv = "terrain.frag.spv",
+        .vert_spv = tc_vert(TC_V_NEAR), .vert_spv_whole = tc_vert_whole(TC_V_NEAR),
+        .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .terrain_pipeline = true, .terrain_near = true, .pair_set7 = true,
         .tex_ssbo_set2 = true,
@@ -1228,8 +1229,8 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
     tc_pipe(dev, &d, &ps->pipe_n_key);
 
     /* Cell-record variants: the same states over the instanced cell stages. */
-    tc_make_cell_pipes(dev, tc_vert(TC_V_CELLS_NEAR), 0, ps->pipe_cn);
-    tc_make_cell_pipes(dev, tc_vert(TC_V_CELLS_ANIM), 1, ps->pipe_ca);
+    tc_make_cell_pipes(dev, 0, ps->pipe_cn);
+    tc_make_cell_pipes(dev, 1, ps->pipe_ca);
 }
 
 void openpete_tercache_describe(rhi_device *dev)
@@ -3941,6 +3942,7 @@ void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
     rhi_pipeline_desc d;
     memset(&d, 0, sizeof(d));
     d.vert_spv = tc_vert(variant);
+    d.vert_spv_whole = tc_vert_whole(variant);
     d.blend = RHI_BLEND_NONE;
     d.depth_test = true;
     d.terrain_pipeline = true;
@@ -4869,7 +4871,8 @@ static void tc_preview_descs(rhi_pipeline_desc d[OPTC_PREVIEW_PIPES])
     for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) {
         const int st = i / 4, c = i % 4;
         d[i] = (rhi_pipeline_desc){
-            .vert_spv = tc_vert(k_stage[st].v), .frag_spv = "terrain.frag.spv",
+            .vert_spv = tc_vert(k_stage[st].v), .vert_spv_whole = tc_vert_whole(k_stage[st].v),
+            .frag_spv = "terrain.frag.spv",
             .blend = k_blend[c], .depth_write_off = c != 0, .depth_test = true,
             .terrain_pipeline = true, .terrain_near = k_stage[st].near,
             .terrain_cells = k_stage[st].cells, .terrain_anim = k_stage[st].anim,
