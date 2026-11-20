@@ -2024,10 +2024,13 @@ void          rhi_pcache_autosave_stats_get(const rhi_device *dev, rhi_pcache_au
  * driver cache, workers compiling variants
  * that share a stage each compile that stage where one worker would reuse
  * it from the pipeline cache, so the compile work grows with the worker
- * count. Measured driver-cold: NVIDIA on 8 cores and 16 threads falls
- * from 52.9 s at four workers to 48.9 s at eight; RADV on 6 cores and 12
- * threads is flat from one to four workers and takes about 18% longer at
- * six. */
+ * count, and each create slows as workers are added. Measured driver-cold
+ * on the pipeline-library bring-up: ANV on 8 threads finishes the compile
+ * stage in 40.4 s at four workers and 29-30.5 s at eight; RADV on 6 cores
+ * and 12 threads takes 4.2-4.3 s at four workers and 3.9-4.05 s at six,
+ * eight or twelve, its creates 33% slower at six than at four and 11% more
+ * at twelve. A fixed pool of twelve after the first tick raises RADV's
+ * present p99 at 60 Hz from 16.8 to 20-22 ms, which the step-down avoids. */
 
 /* The rc an install callback receives for a job the pool's stop dropped:
  * the callback discards the job and releases its tag. */
