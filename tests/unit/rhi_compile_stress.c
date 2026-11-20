@@ -58,11 +58,14 @@
  * accounted every job as run or cancelled (the stop control);
  * 1 otherwise; 77 when no Vulkan device can be created.
  *
- * Usage: rhi_compile_stress [workers] [seconds] [shader_dir|-] [pool]
+ * Usage: rhi_compile_stress [workers] [seconds] [shader_dir|-] [pool|boot]
  * workers is the harness worker count and the pool size
  * (OPENPETE_COMPILE_POOL). shader_dir, when given, is a directory of built
  * .spv files the display owner points OPENPETE_SHADER_DIR at on alternate
- * cycles. "pool" skips the harness-worker leg. Under ThreadSanitizer
+ * cycles. "pool" skips the harness-worker leg. "boot" runs only the boot
+ * control (boot_control) on a pool sized without OPENPETE_COMPILE_POOL:
+ * one worker per logical core until rhi_compile_pool_first_tick, then at
+ * most the steady count running at once, every queued task completing. Under ThreadSanitizer
  * (target rhi_compile_stress_tsan) a Linux kernel with high mmap
  * randomization needs `setarch "$(uname -m)" -R`. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
@@ -1245,6 +1248,102 @@ static int stop_control(void)
     return !(whole && cancelled);
 }
 
+/* The boot control's host tasks: how many run now, the most seen at a
+ * task's start before the first tick and inside the measured window after
+ * it, and how many started and finished. */
+static struct {
+    atomic_uint active, started, finished, post_starts;
+    atomic_uint pre_max, post_max;
+    atomic_bool measuring;   /* the window after the first tick and its settle */
+} s_boot;
+
+/** @brief Raise an atomic maximum to a value.
+ *
+ * @param m The maximum.
+ * @param v The value. */
+static void atomic_max_u(atomic_uint *m, unsigned v)
+{
+    unsigned cur = atomic_load(m);
+    while (v > cur && !atomic_compare_exchange_weak(m, &cur, v)) {}
+}
+
+/** @brief One boot-control task: count itself running, note the running count at its start in the current window, hold for 15 ms, and count itself finished.
+ *
+ * @param tag Unused. */
+static void boot_task(void *tag)
+{
+    (void)tag;
+    const unsigned a = atomic_fetch_add(&s_boot.active, 1u) + 1u;
+    atomic_fetch_add(&s_boot.started, 1u);
+    if (atomic_load(&s_boot.measuring)) {
+        atomic_max_u(&s_boot.post_max, a);
+        atomic_fetch_add(&s_boot.post_starts, 1u);
+    } else {
+        atomic_max_u(&s_boot.pre_max, a);
+    }
+    SDL_DelayNS(15000000);
+    atomic_fetch_sub(&s_boot.active, 1u);
+    atomic_fetch_add(&s_boot.finished, 1u);
+}
+
+/** @brief The pool's step-down at the first tick: without OPENPETE_COMPILE_POOL it starts one worker per logical core and runs that many tasks at once, and after rhi_compile_pool_first_tick, with tasks still queued, no more than its steady count run at once, the tasks running at the call finish, and every queued task completes.
+ *
+ * Tasks starting in the 120 ms after the call (8 task lengths) are not
+ * measured: a task taken before the call may start its body just after it.
+ * The verdict counts the tasks running at each measured task's start.
+ * Runs in a process whose first tick has not been marked, on a pool not yet
+ * started.
+ * @return 0 pass, 1 fail, 77 on a host with one logical core (no step-down exists). */
+static int boot_control(void)
+{
+    const int cores = SDL_GetNumLogicalCPUCores();
+    const unsigned full = (unsigned)(cores > 32 ? 32 : cores);
+    const unsigned steady = (unsigned)(cores / 2 > 0 ? cores / 2 : 1);
+    if (full <= steady) {
+        printf("boot_control: %d logical core(s): no step-down to test - SKIP\n", cores);
+        return 77;
+    }
+    const unsigned n = 12u * full;
+    for (unsigned i = 0; i < n; i++) rhi_compile_pool_submit_task(s_dev, boot_task, NULL);
+    for (int i = 0; i < 200 && atomic_load(&s_boot.pre_max) < full; i++) SDL_Delay(10);
+    rhi_compile_pool_first_tick();
+    const unsigned queued_at_tick = n - atomic_load(&s_boot.started);
+    const unsigned running_at_tick = atomic_load(&s_boot.active);
+    SDL_Delay(120);
+    atomic_store(&s_boot.measuring, true);
+    rhi_compile_pool_wait(s_dev, NULL, NULL);
+    rhi_compile_pool_stats st;
+    rhi_compile_pool_stats_get(s_dev, &st);
+    const unsigned pre = atomic_load(&s_boot.pre_max), post = atomic_load(&s_boot.post_max);
+    const unsigned post_starts = atomic_load(&s_boot.post_starts);
+    const unsigned fin = atomic_load(&s_boot.finished);
+    const bool engaged = pre > steady && queued_at_tick > 0 && post_starts > steady && post == steady;
+    const bool held = post <= steady && fin == n && st.tasks_run == n &&
+                      st.workers == full && st.workers_steady == steady;
+    printf("boot_control: workers %u (want %u), steady %u (want %u); before the first tick at most "
+           "%u running; at it %u running, %u queued; after it %u measured starts, at most %u running; "
+           "%u of %u tasks finished (pool counted %u): %s\n",
+           st.workers, full, st.workers_steady, steady, pre, running_at_tick, queued_at_tick,
+           post_starts, post, fin, n, st.tasks_run,
+           !held ? "FAIL" : engaged ? "engaged" : "NOT ENGAGED");
+    return held && engaged ? 0 : 1;
+}
+
+/** @brief Run the boot control alone on a fresh device whose pool is sized without OPENPETE_COMPILE_POOL, and print the verdict.
+ *
+ * @return 0 pass, 1 fail, 77 no Vulkan device or one logical core. */
+static int boot_main(void)
+{
+    SDL_unsetenv_unsafe("OPENPETE_COMPILE_POOL");
+    s_dev = rhi_create_headless("rhi_compile_stress", 64, 64, NULL);
+    if (!s_dev) { fprintf(stderr, "rhi_compile_stress: no Vulkan device - SKIP\n"); return 77; }
+    const int rc = boot_control();
+    rhi_destroy(s_dev);
+    static const char *const k_verdict[] = { "PASS", "FAIL" };
+    printf("verdict: %s\n", rc == 77 ? "SKIP" : k_verdict[rc != 0]);
+    return rc;
+}
+
 /** @brief Copy the embedded raster-quantize fragment's SPIR-V as the words every stress mod shader compiles to.
  *
  * @return true when the blob was found. */
@@ -1289,6 +1388,7 @@ int main(int argc, char **argv)
     const int seconds = argc > 2 ? atoi(argv[2]) : 5;
     const char *shader_dir = argc > 3 && strcmp(argv[3], "-") != 0 ? argv[3] : NULL;
     const char *legs = argc > 4 ? argv[4] : NULL;
+    if (legs && strcmp(legs, "boot") == 0) return boot_main();
     SDL_setenv_unsafe("MESA_SHADER_CACHE_DISABLE", "true", 1);   /* no driver file IO on workers */
     op_atomic_file_set_env_guard(rhi_env_read_guard);   /* the guest's file commits read the environment */
     /* Beside the executable (the build tree), so a run from any working

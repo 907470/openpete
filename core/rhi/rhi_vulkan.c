@@ -9985,6 +9985,9 @@ struct compile_pool {
     SDL_Condition *done;           /* broadcast when a run returns */
     SDL_Thread    *thr[POOL_MAX_WORKERS];   /* worker-line: written at pool start only */
     int            n;              /* worker threads; 0 runs jobs at submit */
+    int            n_steady;       /* of them, the most that run an item at once from the first tick on (pool_cap_locked) */
+    unsigned       own_running;    /* items running on the pool's own workers, under mx */
+    bool           stepped;        /* a worker has applied the first tick's cap, under mx */
     SDL_Thread    *lo_thr[POOL_MAX_WORKERS]; /* low-priority workers (rhi_compile_pool_low); worker-line: written at start only */
     int            lo_n;           /* low-priority worker threads started */
     pool_item     *q_head, *q_tail;   /* queued */
@@ -10005,6 +10008,13 @@ struct compile_pool {
     unsigned       ahead_back[AHEAD_RANKS]; /* ahead jobs returned per rank, under mx */
     void         (*ahead_wake)(void);       /* rhi_precompile_ahead_start's wake, under mx */
 };
+
+/* Set once, at the process's first tick (rhi_compile_pool_first_tick), from
+ * any thread; a pool's workers read it each time they take an item. */
+static _Atomic int s_pool_first_tick;
+/* The steady worker count of the last pool started, for the first tick's
+ * log line; 0 before any pool starts. */
+static _Atomic int s_pool_steady_n;
 
 /** @brief Free a library part item and its source.
  *
@@ -10239,7 +10249,37 @@ static void pool_wake_locked(struct compile_pool *pl, bool all)
     if (all) SDL_BroadcastCondition(c); else SDL_SignalCondition(c);
 }
 
-/** @brief Run queued items until the pool stops: while it is paused take none, and take one only while the pool's low flag equals the worker's.
+/** @brief Return how many of the pool's own workers may run an item at once: every worker before the first tick, the steady count from it on.
+ *
+ * At the first observation of the first tick the pool logs the step-down
+ * with its running and queued counts. Items already running when the cap
+ * falls finish; the cap only withholds new takes.
+ * @param pl The pool, locked.
+ * @return The cap. */
+static unsigned pool_cap_locked(struct compile_pool *pl)
+{
+    if (!atomic_load_explicit(&s_pool_first_tick, memory_order_relaxed)) return (unsigned)pl->n;
+    if (!pl->stepped) {
+        pl->stepped = true;
+        if (pl->n_steady < pl->n)
+            RHI_LOG("compile pool: stepped down from %d to %d worker(s) taking items; %u running, %u queued\n",
+                    pl->n, pl->n_steady, pl->own_running, pl->queued);
+    }
+    return (unsigned)pl->n_steady;
+}
+
+/** @brief Return whether a worker waits instead of taking an item: the pool is paused, in the other mode, empty, or (a pool's own worker) at its cap.
+ *
+ * @param pl The pool, locked.
+ * @param low true on a low-priority worker.
+ * @return true to wait. */
+static bool pool_worker_waits_locked(struct compile_pool *pl, bool low)
+{
+    if (pl->paused || pl->low != low || (!pl->q_head && !pl->l_head && !pl->lo_head)) return true;
+    return !low && pl->own_running >= pool_cap_locked(pl);
+}
+
+/** @brief Run queued items until the pool stops: while it is paused take none, take one only while the pool's low flag equals the worker's, and on a pool's own worker only while fewer than the cap (pool_cap_locked) run.
  *
  * @param dev The device.
  * @param low true on a low-priority worker (pool_worker_low). */
@@ -10248,11 +10288,12 @@ static void pool_worker_loop(rhi_device *dev, bool low)
     struct compile_pool *pl = dev->cpool;
     SDL_LockMutex(pl->mx);
     for (;;) {
-        while ((pl->paused || pl->low != low || (!pl->q_head && !pl->l_head && !pl->lo_head)) && !pl->stop)
+        while (!pl->stop && pool_worker_waits_locked(pl, low))
             SDL_WaitCondition(low ? pl->lo_work : pl->work, pl->mx);
         if (pl->stop) break;
         pool_item *it = pool_take_locked(pl);
         pl->running++;
+        pl->own_running += !low;
         pl->lo_running += it->low;
         pool_key_take(pl, it);
         SDL_UnlockMutex(pl->mx);
@@ -10260,6 +10301,7 @@ static void pool_worker_loop(rhi_device *dev, bool low)
         SDL_LockMutex(pl->mx);
         pool_key_drop(pl, it);
         pl->running--;
+        pl->own_running -= !low;
         pl->lo_running -= it->low;
         void (*wake)(void) = it->ahead ? pl->ahead_wake : NULL;
         pool_finish_locked(pl, it);
@@ -10300,7 +10342,7 @@ static int SDLCALL pool_worker_low(void *arg)
     return 0;
 }
 
-/** @brief Return the worker count the pool starts with: OPENPETE_COMPILE_POOL when set, else half the logical cores, at least 1.
+/** @brief Return the pool's steady worker count, the most that run an item at once from the first tick on: OPENPETE_COMPILE_POOL when set, else half the logical cores, at least 1.
  *
  * Display owner only (reads the environment).
  * @return The count, 0 to POOL_MAX_WORKERS. */
@@ -10317,6 +10359,19 @@ static int pool_size_wanted(void)
     return n < 0 ? 0 : n > POOL_MAX_WORKERS ? POOL_MAX_WORKERS : n;
 }
 
+/** @brief Return the worker threads the pool starts: OPENPETE_COMPILE_POOL when set, else every logical core before the first tick, else the steady count.
+ *
+ * Display owner only (reads the environment).
+ * @param steady The steady count (pool_size_wanted).
+ * @return The count, @p steady to POOL_MAX_WORKERS. */
+static int pool_size_boot(int steady)
+{
+    const char *e = getenv("OPENPETE_COMPILE_POOL");
+    if ((e && *e) || atomic_load(&s_pool_first_tick)) return steady;
+    const int n = SDL_GetNumLogicalCPUCores();
+    return n < steady ? steady : n > POOL_MAX_WORKERS ? POOL_MAX_WORKERS : n;
+}
+
 /** @brief Free a pool's lock objects and the pool.
  *
  * @param pl The pool, with no thread running. */
@@ -10331,7 +10386,7 @@ static void pool_free(struct compile_pool *pl)
 
 /** @brief Enter or leave the pool's low mode, starting its low-priority workers on the first entry.
  *
- * Half the pool's worker count (at least 1) run at low priority: where the
+ * Half the pool's steady worker count (at least 1) run at low priority: where the
  * OS priority ties with the work that runs beside it (Windows' lowest thread
  * priority of a normal-class process equals a below-normal-class process's
  * normal thread), the count bounds the pool's share. A pool with no worker
@@ -10343,7 +10398,7 @@ static void pool_free(struct compile_pool *pl)
 static void pool_low_set(rhi_device *dev, struct compile_pool *pl, bool on)
 {
     if (on && pl->n > 0 && pl->lo_n == 0) {
-        const int want = pl->n / 2 > 0 ? pl->n / 2 : 1;
+        const int want = pl->n_steady / 2 > 0 ? pl->n_steady / 2 : 1;
         for (int i = 0; i < want; i++) {
             pl->lo_thr[pl->lo_n] = SDL_CreateThread(pool_worker_low, "openpete-compile-low", dev);
             if (!pl->lo_thr[pl->lo_n]) break;
@@ -10380,14 +10435,19 @@ static struct compile_pool *pool_get(rhi_device *dev)
     (void)env_guard_ready();   /* created here, before any worker runs */
     pl->paused = dev->cpool_paused;
     dev->cpool = pl;
-    const int want = pool_size_wanted();
+    const int steady = pool_size_wanted();
+    const int want = pool_size_boot(steady);
     for (int i = 0; i < want; i++) {
         pl->thr[pl->n] = SDL_CreateThread(pool_worker, "openpete-compile", dev);
         if (!pl->thr[pl->n]) break;
         pl->n++;
     }
+    pl->n_steady = steady < pl->n ? steady : pl->n;
     pl->st.workers = (unsigned)pl->n;
-    RHI_LOG("compile pool: %d worker(s)%s\n", pl->n, pl->n ? "" : " (jobs run at submit)");
+    pl->st.workers_steady = (unsigned)pl->n_steady;
+    atomic_store(&s_pool_steady_n, pl->n_steady);
+    RHI_LOG("compile pool: %d worker(s), %d of them taking items from the first tick%s\n", pl->n,
+            pl->n_steady, pl->n ? "" : " (jobs run at submit)");
     if (dev->cpool_low) pool_low_set(dev, pl, true);
     return pl;
 }
@@ -10581,10 +10641,10 @@ void rhi_compile_pool_stop(rhi_device *dev)
         }
         pl->q_head = pl->q_tail = pl->s_head = pl->s_tail = pl->l_head = pl->l_tail = NULL;
         pl->lo_head = pl->lo_tail = NULL;
-        RHI_LOG("compile pool: stopped; %u workers, %u submitted, %u run (%.1f ms), %u staged, "
-                "variants %u created %u probe hits %u failed, %u cancelled, queue max %u, "
-                "%u library parts run (%.1f ms), %u same-key waits\n",
-                pl->st.workers, pl->st.submitted, pl->st.run, (double)pl->run_ns / 1e6,
+        RHI_LOG("compile pool: stopped; %u workers (%u from the first tick), %u submitted, %u run "
+                "(%.1f ms), %u staged, variants %u created %u probe hits %u failed, %u cancelled, "
+                "queue max %u, %u library parts run (%.1f ms), %u same-key waits\n",
+                pl->st.workers, pl->st.workers_steady, pl->st.submitted, pl->st.run, (double)pl->run_ns / 1e6,
                 pl->st.staged, pl->st.variant_created, pl->st.variant_probe_hits,
                 pl->st.variant_failed, pl->st.cancelled, pl->st.max_queued, pl->libs_run,
                 (double)pl->libs_ns / 1e6, pl->st.same_key_waits);
@@ -10614,6 +10674,17 @@ void rhi_compile_pool_pause(rhi_device *dev, bool on)
     SDL_UnlockMutex(pl->mx);
     RHI_LOG("compile pool: %s; %u running, %u queued\n",
             on ? "paused (the running items finish, no other starts)" : "resumed", running, queued);
+}
+
+void rhi_compile_pool_first_tick(void)
+{
+    if (atomic_load_explicit(&s_pool_first_tick, memory_order_relaxed)) return;
+    if (atomic_exchange(&s_pool_first_tick, 1)) return;
+    const int steady = atomic_load(&s_pool_steady_n);
+    if (steady > 0)
+        RHI_LOG("compile pool: first tick; from here at most %d worker(s) take items at once\n", steady);
+    else
+        RHI_LOG("compile pool: first tick before the pool started; it starts at its steady count\n");
 }
 
 void rhi_compile_pool_low(rhi_device *dev, bool on)

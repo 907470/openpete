@@ -1295,6 +1295,10 @@ target_link_libraries(rhi_compile_stress PRIVATE openpete_rhi SDL3::SDL3-static 
 set_target_properties(rhi_compile_stress PROPERTIES C_STANDARD 11)
 add_test(NAME rhi_compile_stress COMMAND rhi_compile_stress 4 3)
 set_tests_properties(rhi_compile_stress PROPERTIES SKIP_RETURN_CODE 77 LABELS "vulkan")
+# The compile pool's step-down at the first tick, on host tasks: one worker
+# per logical core before it, at most half of them running after it.
+add_test(NAME rhi_compile_pool_boot COMMAND rhi_compile_stress 0 0 - boot)
+set_tests_properties(rhi_compile_pool_boot PROPERTIES SKIP_RETURN_CODE 77 LABELS "vulkan")
 
 # The same harness with the RHI compiled in under ThreadSanitizer. Built on
 # request only (cmake --build --preset linux-release --target

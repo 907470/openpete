@@ -714,6 +714,7 @@ static void host_pace_tail(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
                           it->vbl.exec_start_ns, it->vbl.exec_end_ns,
                           it->vbl.latch_seq, it->vbl.latch_bits);
         openpete_boot_tick();
+        rhi_compile_pool_first_tick();
         openpete_live_switch_poll(openpete_frame);
     }
 

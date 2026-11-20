@@ -2011,10 +2011,17 @@ void          rhi_pcache_autosave_stats_get(const rhi_device *dev, rhi_pcache_au
  * precompile variant: the worker runs it (a probe first with
  * RHI_COMPILE_PROBE), destroys the result and counts the outcome, so its
  * objects never leave the worker. Each run holds off environment writes
- * (rhi_env_write_guard). The worker count is OPENPETE_COMPILE_POOL when
- * set (0 runs every job on the display owner at submit), else half the
+ * (rhi_env_write_guard). The steady worker count is OPENPETE_COMPILE_POOL
+ * when set (0 runs every job on the display owner at submit), else half the
  * logical core count, at least one; it is read when the pool starts, at
- * the first submit. With an empty driver cache, workers compiling variants
+ * the first submit. Without OPENPETE_COMPILE_POOL a pool started before the
+ * process's first tick (rhi_compile_pool_first_tick) starts one worker per
+ * logical core, all taking items while the boot waits on its compiles and
+ * nothing is played; from the first tick on a worker takes an item only
+ * while fewer than the steady count of the pool's own workers run one, so
+ * the extra workers park and an item running at the step-down finishes.
+ * OPENPETE_COMPILE_POOL is one fixed count for both phases. With an empty
+ * driver cache, workers compiling variants
  * that share a stage each compile that stage where one worker would reuse
  * it from the pipeline cache, so the compile work grows with the worker
  * count. Measured driver-cold: NVIDIA on 8 cores and 16 threads falls
@@ -2033,6 +2040,7 @@ typedef void (*rhi_pool_install_fn)(rhi_device *dev, rhi_compile_job *job, int r
 /* What the compile pool did since it started. */
 typedef struct {
     unsigned workers;        /* worker threads (0: jobs run at submit)           */
+    unsigned workers_steady; /* of them, the most running an item at once from the first tick */
     unsigned submitted;      /* jobs submitted                                   */
     unsigned run;            /* jobs run                                         */
     unsigned staged;         /* results handed to the display owner              */
@@ -2120,9 +2128,18 @@ void          rhi_compile_pool_stop(rhi_device *dev);
  * @param on true to pause, false to resume. */
 void          rhi_compile_pool_pause(rhi_device *dev, bool on);
 
+/** @brief Mark the process's first tick: from here each compile pool runs at most its steady worker count of items at once.
+ *
+ * Any thread; process-wide; only the first call acts. Workers read the
+ * mark when they take an item, so an item running at the call finishes and
+ * a worker over the steady count takes no other; a pool started after the
+ * call starts its steady count of workers. Logs the step-down once.
+ */
+void          rhi_compile_pool_first_tick(void);
+
 /** @brief Enter or leave the compile pool's low mode: in it the pool's own workers take no item and a separate set of low-priority workers runs the queue.
  *
- * Display owner only. The low workers (half the pool's count, at least 1)
+ * Display owner only. The low workers (half the pool's steady count, at least 1)
  * start on the first entry and lower their own priority once; the pool's
  * workers keep theirs. A pause overrides the mode: paused, no worker of
  * either set takes an item. A pool not started yet starts in the mode. A
