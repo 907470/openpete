@@ -1908,6 +1908,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         LABELS "pacing"
         TIMEOUT 300
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # The level-entry anchor on a recorded Spyro 1 portal pace log (the load
+    # tick, not a present interval) and on a synthetic flagged entry.
+    add_test(NAME pacing_entry
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/pacing/test_entry.py)
+    set_tests_properties(pacing_entry PROPERTIES LABELS "pacing" TIMEOUT 60)
 
     # The standing pacing gate: does the sim clock hold its grid, does it
     # hold BECAUSE presents shed (proved by fault injection, not by a machine

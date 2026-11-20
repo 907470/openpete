@@ -404,6 +404,20 @@ def read(path: Path) -> Log:
     return Log(env, epoch_ns, created_unix_ns, vbl_num, vbl_den, tick_vbls, recs)
 
 
+def write(path, env, records, vbl_num=2250000, vbl_den=37609, tick_vbls=2,
+          epoch_ns=0, created_unix_ns=0):
+    """Write a version-2 log that read() parses back: `env` a dict for the
+    header, `records` tuples (type, flags, aux, index, t_ns, a, b, c, d, e, f).
+    For test fixtures; the runtime's writer is core/diag/pace_log.c."""
+    env_b = "".join("%s=%s\n" % kv for kv in env.items()).encode()
+    head = struct.pack("<IIIIIIqqqqq", MAGIC, VERSION, HEADER_FIXED + len(env_b),
+                       RECORD_BYTES, len(env_b), 0, created_unix_ns, epoch_ns,
+                       vbl_num, vbl_den, tick_vbls)
+    fmt = RECORD_LAYOUT[RECORD_BYTES][0]
+    body = b"".join(struct.pack(fmt, *(tuple(r) + (0,) * (11 - len(r)))) for r in records)
+    Path(path).write_bytes(head + env_b + body)
+
+
 def fmt_record(r, epoch_ns):
     t = (r.t_ns - epoch_ns) / 1e9
     if r.type == VBL:
