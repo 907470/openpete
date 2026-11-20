@@ -38,7 +38,7 @@
 # two games at a time (OPENPETE_ORACLE_JOBS default 2). It catches a
 # Windows-only divergence (host input, CRT or compiler differences) that the
 # Linux gate cannot see; it is not the full gate. It exits 64 before starting anything while
-# ~/.local/share/openpete/bench/TIMING-WINDOW exists, when an exe is
+# another job holds the timing window (scripts/bench/timing_lock.py), when an exe is
 # missing, or when an openpete exe already runs on Windows (or tasklist.exe
 # cannot tell). This script starts no exe itself: each row's
 # tests/harness/check_psx_oracle.sh forwards every OPENPETE_* variable
@@ -68,9 +68,8 @@ for c in games/*/oracle.conf; do GAMES+=("$(basename "$(dirname "$c")")"); done
 # built, and no openpete process already on the Windows side.
 declare -A WIN_BIN=()
 if (( WIN_SMOKE )); then
-    _timing="$HOME/.local/share/openpete/bench/TIMING-WINDOW"
-    if [[ -e "$_timing" ]]; then
-        echo "[psx-oracle-all] SKIP: $_timing exists (a timing run owns the machine)" >&2
+    if ! _timing="$(python3 scripts/bench/timing_lock.py status)"; then
+        echo "[psx-oracle-all] SKIP: $_timing (a timing run owns the machine)" >&2
         exit 64
     fi
     # shellcheck source=scripts/lib/wslenv.sh

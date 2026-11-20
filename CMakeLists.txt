@@ -958,6 +958,15 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME wslenv_guard_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_wslenv_guard.py)
     set_tests_properties(wslenv_guard_selftest PROPERTIES LABELS "fence")
+    # The timing window and the benchmark preflight: one winner between two
+    # contenders, stale-lock recovery after SIGKILL, a hand-written marker
+    # holding the window, the shell gate, and every unreadable precondition
+    # reported UNCHECKED and refused. Private bench directory; no game runs.
+    add_test(NAME timing_lock_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/bench/tests/test_timing_lock.py)
+    add_test(NAME bench_preflight_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/bench/tests/test_preflight.py)
+    set_tests_properties(timing_lock_selftest bench_preflight_selftest PROPERTIES LABELS "fence")
     # The sandbox fence's own tests: a launch without the sandbox library or
     # OPENPETE_SANDBOX refused in shell and Python, the providers, helpers and
     # markers passing, the provider closure, and the checkout clean.

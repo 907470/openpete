@@ -69,8 +69,30 @@ def sandbox_link_cache(root):
         os.symlink(sandbox_cache_dir(), cache)
 
 
+def timing_gate(label=None):
+    """Block while another job holds the timing window (scripts/bench/timing_lock.py).
+
+    Returns when the window is free or this process runs inside it (its
+    OPENPETE_TIMING_TOKEN is the holder's). Never returns while another
+    job's window is open: with OPENPETE_TIMING_GATE_TIMEOUT=<seconds> it
+    exits 75 at the limit.
+    """
+    import sys
+    bench = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bench")
+    if bench not in sys.path:
+        sys.path.insert(0, bench)
+    import timing_lock
+    t = os.environ.get("OPENPETE_TIMING_GATE_TIMEOUT")
+    if not timing_lock.wait_free(label=label or os.path.basename(sys.argv[0]),
+                                 timeout=float(t) if t else None):
+        sys.exit(timing_lock.EXIT_TIMEOUT)
+
+
 def sandbox():
     """Export OPENPETE_SANDBOX as a fresh root owned by this process; returns it.
+
+    Each call first waits out another job's timing window (timing_gate), so
+    sandbox_run_root() gates every launch that takes a run root.
 
     The Python side of scripts/lib/sandbox.sh, same parent and naming
     (<pid>.<random> under $OPENPETE_SANDBOX_PARENT, else
@@ -83,6 +105,7 @@ def sandbox():
     owning process is gone are removed on each call. A Windows exe launched
     from WSL receives it through child_env.
     """
+    timing_gate()
     parent = os.environ.get("OPENPETE_SANDBOX_PARENT") or os.path.join(
         os.environ.get("TMPDIR") or "/tmp", "openpete-harness-sandbox")
     cur = os.environ.get("OPENPETE_SANDBOX", "")

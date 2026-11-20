@@ -510,6 +510,10 @@ def main():
                               os.path.join(out, stem + ".txt")):
                     if os.path.exists(stale):
                         os.remove(stale)
+                # Every leg re-reads the preconditions: a process started or
+                # a display that slept since the last movie moves this one.
+                bench_guard.check(exe, allow_untuned=args.allow_untuned,
+                                  functional=args.functional)
                 print("[bench] %s ..." % stem, file=sys.stderr, flush=True)
                 run = run_movie(exe, game, mp, opp, args, log)
                 summ = None

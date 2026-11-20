@@ -9,15 +9,14 @@ the wrong thing:
      build, or a configure that named no preset), whose C/C++ flags carry
      -fsanitize, or that lives outside a linux-release / windows-mingw
      build tree. A dev-build fps figure is not a result.
-  2. Contention: another openpete process already running (every game's
-     executable and the one `openpete` executable, by exact process name),
-     and for a Windows target also an openpete process on the Windows side
-     (tasklist) or a Windows CPU load above FOREIGN_LOAD_PCT (typeperf; the
-     WSL VM's own load counts there). Machine load has produced 10-20x
-     phantom "regressions" before.
+  2. Every other precondition of scripts/bench/preflight.py for the exe's
+     target (`windows` for a .exe, else `local`): the timing window held by
+     this job, idle by process name on both sides, Linux and Windows load,
+     the local fleet golden lock, and on Windows the display awake. Machine
+     load has produced 10-20x phantom "regressions" before.
 
 `--allow-untuned` (the caller passes allow=True) skips check 1 only.
-`--functional` (functional=True) reports contention without refusing: the
+`--functional` (functional=True) reports check 2 without refusing: the
 caller produces no timing verdict (bench-corpus.py --functional marks its
 rollup, and every compare refuses such a rollup against a timed one).
 Always PRINTS the resolved mod/texpack/opts surface next to the exe, so
@@ -28,7 +27,8 @@ basename of the cache's CMAKE_PROJECT_openpete_INCLUDE file, identical in a
 tree and in a worktree's tree), the arm (the linkage the configure wrote to
 ARM_FILE at the tree root) and the source commit.
 
-Shell callers run it as a command:
+Shell callers run it as a command from inside the timing window
+(scripts/bench/timing_lock.py run), since the command cannot hold it:
 
     python3 scripts/fences/bench_guard.py --exe "$EXE" || exit 65
 """
@@ -37,20 +37,12 @@ import csv
 import fnmatch
 import io
 import os
-import re
 import subprocess
 import sys
 
 # Written by the top-level CMakeLists.txt on every configure: the resolved
 # OPENPETE_RECOMP_LINKAGE, one word.
 ARM_FILE = "openpete-recomp-linkage.txt"
-
-# Exact process names of an openpete game process: the one executable, each
-# game's own executable (static trees, packaged copies) and the Windows
-# spellings.
-# Linux truncates a process name to 15 characters, which every Linux
-# spelling fits and which cuts "openpete-spyroN.exe" to "openpete-spyroN".
-OPENPETE_PROC_RE = r"openpete|openpete-spyro[0-9]|openpete(-spyro[0-9])?\.exe"
 
 # Windows-side CPU load, percent of all cores, above which a Windows-target
 # run is refused; the mean of WIN_LOAD_SAMPLES one-second typeperf samples.
@@ -160,29 +152,6 @@ def build_identity(exe):
             "dirty": bool(status)}
 
 
-def _linux_openpete_procs():
-    try:
-        # -x (exact comm match) - a -f full-argv match would catch our own
-        # wrapper shell, whose command line contains the exe path as text.
-        return subprocess.run(["pgrep", "-ax", OPENPETE_PROC_RE],
-                              capture_output=True, text=True).stdout.strip()
-    except OSError:
-        return ""
-
-
-def _windows_openpete_procs():
-    """Openpete image names running on the Windows side, or None when
-    tasklist.exe cannot run."""
-    try:
-        out = subprocess.run(["tasklist.exe", "/FO", "CSV", "/NH"],
-                             capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    names = [row[0] for row in csv.reader(io.StringIO(out)) if row]
-    return [n for n in names
-            if re.fullmatch(r"openpete(-spyro[0-9])?\.exe", n, re.I)]
-
-
 def _windows_cpu_load():
     """Mean total CPU load on the Windows side, or None when typeperf.exe
     cannot run or prints no sample."""
@@ -202,60 +171,72 @@ def _windows_cpu_load():
     return sum(vals) / len(vals) if vals else None
 
 
-def contention(exe):
-    """Every contention finding for a run of `exe` ([] = none). A Windows
-    target is also checked on the Windows side; a Windows tool that cannot
-    run is itself a finding, since the check did not happen."""
-    found = []
-    procs = _linux_openpete_procs()
-    if procs:
-        found.append("another openpete process is running:\n%s" % procs)
-    if exe.lower().endswith(".exe"):
-        win = _windows_openpete_procs()
-        if win is None:
-            found.append("tasklist.exe did not run: Windows-side openpete "
-                         "processes unchecked")
-        elif win:
-            found.append("openpete running on the Windows side: %s" % ", ".join(win))
-        load = _windows_cpu_load()
-        if load is None:
-            found.append("typeperf.exe printed no sample: Windows CPU load unchecked")
-        elif load > FOREIGN_LOAD_PCT:
-            found.append("Windows CPU load %.1f%% > %.0f%% before the run "
-                         "(the WSL VM's load counts)" % (load, FOREIGN_LOAD_PCT))
-    return found
+def _refuse_untuned(exe):
+    """Die when `exe` is not a tuned benchmark binary (check 1)."""
+    cache = _build_cache(exe)
+    if cache:
+        include, flags = _cache_entries(cache)
+        base = os.path.basename(include or "")
+        if not (fnmatch.fnmatch(base, "linux-release*.cmake")
+                or fnmatch.fnmatch(base, "windows-mingw*.cmake")):
+            _die("exe's build cache names preset include %r, not "
+                 "linux-release*.cmake or windows-mingw*.cmake - not a "
+                 "benchmark binary. Use build/linux-release or "
+                 "windows-mingw, or pass --allow-untuned. cache: %s"
+                 % (base or "(none)", cache))
+        if any("-fsanitize" in f for f in flags):
+            _die("exe's build cache compiles with -fsanitize - not a "
+                 "benchmark binary. Pass --allow-untuned to override. "
+                 "cache: %s" % cache)
+    if not ("linux-release" in exe or "windows-mingw" in exe):
+        _die("exe is outside a linux-release/windows-mingw tree (%s); "
+             "numbers from other builds are not comparable. Pass "
+             "--allow-untuned to override." % exe)
 
 
-def check(exe, allow_untuned=False, functional=False):
+# Held for the life of a Python caller: the Windows display holder.
+_DISPLAY = None
+
+# The harnesses behind this fence run the exe from its build tree and
+# measure steady-state presents after boot, where a 9P exe path costs
+# nothing measured; a boot-time leg goes through scripts/bench/preflight.py
+# without this acceptance.
+HARNESS_ACCEPTS = ("windows-local",)
+
+
+def check(exe, allow_untuned=False, functional=False, hold=True):
+    """Refuse (exit 65) unless every benchmark precondition holds.
+
+    The checks are scripts/bench/preflight.py's for the exe's target
+    (`windows` for a .exe, else `local`), printed one per line. With `hold`
+    (a Python caller) this process takes the timing window for the rest of
+    its life unless it already runs inside it, and on a Windows target
+    wakes the display and holds it awake until exit; the CLI (hold=False)
+    requires its caller to run inside the window. `functional` prints the
+    checks without refusing on them and takes no window."""
+    global _DISPLAY
     _wslenv_scan()
     exe = os.path.abspath(exe)
     if not allow_untuned:
-        cache = _build_cache(exe)
-        if cache:
-            include, flags = _cache_entries(cache)
-            base = os.path.basename(include or "")
-            if not (fnmatch.fnmatch(base, "linux-release*.cmake")
-                    or fnmatch.fnmatch(base, "windows-mingw*.cmake")):
-                _die("exe's build cache names preset include %r, not "
-                     "linux-release*.cmake or windows-mingw*.cmake - not a "
-                     "benchmark binary. Use build/linux-release or "
-                     "windows-mingw, or pass --allow-untuned. cache: %s"
-                     % (base or "(none)", cache))
-            if any("-fsanitize" in f for f in flags):
-                _die("exe's build cache compiles with -fsanitize - not a "
-                     "benchmark binary. Pass --allow-untuned to override. "
-                     "cache: %s" % cache)
-        if not ("linux-release" in exe or "windows-mingw" in exe):
-            _die("exe is outside a linux-release/windows-mingw tree (%s); "
-                 "numbers from other builds are not comparable. Pass "
-                 "--allow-untuned to override." % exe)
-    found = contention(exe)
-    if found and functional:
-        for f in found:
-            sys.stderr.write("bench_guard: contention (functional run, not "
-                             "refused): %s\n" % f)
-    elif found:
-        _die("contention invalidates the run: " + "; ".join(found))
+        _refuse_untuned(exe)
+    bench = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bench")
+    sys.path.insert(0, os.path.normpath(bench))
+    import preflight
+    import timing_lock
+    target = "windows" if exe.lower().endswith(".exe") else "local"
+    if hold and not functional:
+        timing_lock.ensure_held("bench_guard " + os.path.basename(sys.argv[0]))
+        if target == "windows" and _DISPLAY is None:
+            _DISPLAY = timing_lock.hold_display()
+    accepts = set(HARNESS_ACCEPTS) | ({"tuned"} if allow_untuned else set())
+    checks = preflight.apply_accepts(
+        preflight.run_checks(target, exe, (), {}), accepts)
+    checks = [c for c in checks if c.name not in ("window", "present-mode")]
+    bad = preflight.report(target, checks, sys.stderr)
+    if bad and functional:
+        sys.stderr.write("bench_guard: functional run, not refused: %s\n" % ", ".join(bad))
+    elif bad:
+        _die("preconditions failed: " + ", ".join(bad))
 
 
 def print_surface(exe, mods_dir=None, texpack_dir=None):
@@ -277,7 +258,7 @@ def main(argv=None):
     ap.add_argument("--functional", action="store_true",
                     help="report contention without refusing (no timing verdict)")
     a = ap.parse_args(argv)
-    check(a.exe, allow_untuned=a.allow_untuned, functional=a.functional)
+    check(a.exe, allow_untuned=a.allow_untuned, functional=a.functional, hold=False)
     print_surface(a.exe)
     return 0
 

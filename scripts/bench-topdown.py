@@ -206,7 +206,10 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     rows, failed = [], 0
-    for lv in levels:
+    for i, lv in enumerate(levels):
+        if i:
+            # Every leg re-reads the preconditions (the first was read above).
+            bench_guard.check(args.exe, allow_untuned=args.allow_untuned)
         run = run_level(args.exe, game, lv, args, out_dir)
         s = summarize(run["opp"], args.skip_ticks, lv)
         row = {"level": lv, "pose": run["pose"], "rc": run["returncode"]}

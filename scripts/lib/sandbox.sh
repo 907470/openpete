@@ -36,6 +36,15 @@
 # A Windows exe receives the variable through scripts/lib/wslenv.sh (as a
 # Windows path). scripts/fences/sandbox_guard.py refuses a launcher that does
 # not source this file (directly or through a library that does).
+#
+# Timing window: sourcing this file and each op_sandbox_run_root call wait
+# while another job holds the timing window (scripts/lib/timing_gate.sh), so
+# a sandboxed launch never starts beside a timing leg; a harness that takes a
+# run root per launch is gated per launch, one that launches from the shared
+# root only when it starts.
+
+# shellcheck source=scripts/lib/timing_gate.sh
+source "$(dirname "${BASH_SOURCE[0]}")/timing_gate.sh"
 
 # op_sandbox_cache_dir: the shared pipeline-cache directory, created.
 op_sandbox_cache_dir() {
@@ -89,6 +98,7 @@ op_sandbox() {
 # with the shared cache linked in and an empty cards directory.
 op_sandbox_run_root() {
     local r
+    op_timing_gate >&2 || return 1
     r="$(mktemp -d "${OPENPETE_SANDBOX:?}/run.XXXXXX")" || return 1
     op_sandbox_link_cache "$r" || return 1
     mkdir -p "$r/cards" || return 1
@@ -102,6 +112,10 @@ op_sandbox_cleanup() {
     return 0
 }
 
+op_timing_gate || {
+    echo "sandbox: a timing window is open; not launching" >&2
+    exit 75
+}
 op_sandbox || {
     echo "sandbox: cannot make a sandbox root under ${OPENPETE_SANDBOX_PARENT:-${TMPDIR:-/tmp}/openpete-harness-sandbox}" >&2
     exit 1

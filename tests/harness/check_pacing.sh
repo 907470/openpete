@@ -41,6 +41,14 @@ for a in "$@"; do
   fi
 done
 
+# Every leg is a timing: the whole run holds the timing window, so no other
+# launch or build on the machine starts beside it (scripts/bench/timing_lock.py).
+if [ -z "${OPENPETE_TIMING_TOKEN:-}" ]; then
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  exec python3 "$(dirname "$self")/../../scripts/bench/timing_lock.py" run \
+    --purpose check_pacing -- "$self" "$@"
+fi
+
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
