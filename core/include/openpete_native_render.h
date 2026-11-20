@@ -1587,6 +1587,29 @@ typedef struct {
  * constant; a float expression casts it to float. */
 #define OPENPETE_OT_SLOT_WORLD 128.0
 
+/** @brief Stamps a world triangle with the ordering-table bucket the game links it at and, when asked, the aura contest by that bucket.
+ *
+ * A bucket of 0 or more is carried in ot_slot1. With `contest` and a bucket
+ * above 0 the triangle also carries the aura rank and a koff whose slot is
+ * the bucket less one: a routine that appends its primitive at the tail of
+ * the bucket, after the moby faces the moby draw spliced there, paints over
+ * the faces of its own bucket, so the triangle loses a pixel only to an
+ * actor or player key in the next nearer slot or nearer (psx_key_contest.glsl
+ * op_aura_loses). The contest runs on additive triangles alone (blend 2,
+ * scene_aura_boxes). Bucket 0 is drawn after every moby face and contests
+ * nothing. The stored depth is left alone, so terrain still orders the
+ * triangle by true depth.
+ * @param st The triangle.
+ * @param bucket The bucket, or -1 when unknown (nothing is stamped).
+ * @param contest Nonzero to run the aura contest by the bucket. */
+static inline void openpete_scene_tri_set_bucket(openpete_scene_tri* st, int bucket, int contest) {
+    if (bucket >= 0) st->ot_slot1 = bucket + 1;
+    if (contest && bucket > 0) {
+        st->koff = (float)((double)(bucket - 1) * OPENPETE_OT_SLOT_WORLD + 0.5);
+        st->rank = OPENPETE_SCENE_RANK_AURA;
+    }
+}
+
 /* ---- scene view-Z: the ONE named point ------------------------------------
  *
  * The scene vertex stream carries depth as FULL-WORLD view-space Z (the GTE

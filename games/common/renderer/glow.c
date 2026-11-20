@@ -1386,11 +1386,7 @@ static void glow_feed_tri(const glow_item* it, int key) {
         st.v[k].rgba = (p->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
     }
     st.blend = it->blend;
-    if (it->src.key >= 0) st.ot_slot1 = it->src.key + 1;
-    if (key && it->src.key > 0) {
-        st.koff = (float)((double)(it->src.key - 1) * OPENPETE_OT_SLOT_WORLD + 0.5);
-        st.rank = OPENPETE_SCENE_RANK_AURA;
-    }
+    openpete_scene_tri_set_bucket(&st, it->src.key, key);
     openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     s_fed_tris++;
 }

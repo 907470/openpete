@@ -482,12 +482,12 @@ int ngte_prim_tpage_blend(const ngte_prim* p, ngte_tpage* tp) {
 int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
                         const float v[4], const uint32_t rgb[4], float depth,
                         const ngte_tpage* tp, int blend, int nv) {
-    return ngte_feed_flat_quad_q(x, y, u, v, rgb, NULL, depth, tp, blend, nv);
+    return ngte_feed_flat_quad_q(x, y, u, v, rgb, NULL, depth, tp, blend, nv, -1);
 }
 
 int ngte_feed_flat_quad_q(const float x[4], const float y[4], const float u[4],
                           const float v[4], const uint32_t rgb[4], const uint32_t rgbq[4],
-                          float depth, const ngte_tpage* tp, int blend, int nv) {
+                          float depth, const ngte_tpage* tp, int blend, int nv, int bucket) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
     const int ntri = (nv == 4) ? 2 : 1;
     int fed = 0;
@@ -507,6 +507,7 @@ int ngte_feed_flat_quad_q(const float x[4], const float y[4], const float u[4],
             st.clut_x  = tp->clx; st.clut_y  = tp->cly; st.bpp = tp->bpp;
         }
         st.blend = blend;
+        openpete_scene_tri_set_bucket(&st, bucket, blend == 2);
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
         fed++;
     }

@@ -58,6 +58,14 @@
 //   * a mesh primitive past the replay's last paired entry takes the mean
 //     depth of the call's paired ones.
 //
+// Both routines append each primitive at the tail of its bucket (ribbon
+// mobyfunc.s:3151-3165, mesh :3380-3385), after the moby faces the moby draw
+// spliced there. A paired item carries the bucket the replay computes, and an
+// additive one contests the actor key image by it as the glow fan does: it
+// loses a pixel to a moby face keyed into a nearer bucket, which the face's
+// depth offset can put in front of a ribbon nearer in true depth. Against
+// terrain the item keeps its true depth.
+//
 // Spyro 1's tracer.c is not made a client of this: its beam is re-derived in
 // float from tracer-point gamestate with its own ribbon-width and colour laws,
 // and these routines' records, width law and scratchpad tables differ from it.
@@ -156,6 +164,7 @@ typedef struct {
 typedef struct {
     ngte_prim p;
     float     depth;
+    int       key;             /* the ordering-table bucket the routine links it at, -1 unknown */
     int       paired;
     int       src;             /* TR_SRC_*: which producer's point each corner holds */
     uint32_t  ident;           /* OPENPETE_TAG_TRACER_RIBBON or _MESH: the producer */
@@ -220,6 +229,7 @@ static int tr_prim_sink(void* ctx, const ngte_prim* s) {
     if (s_item_n >= TR_MAX_PRIMS) return 0;
     s_item[s_item_n].p = *s;
     s_item[s_item_n].depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
+    s_item[s_item_n].key = -1;
     s_item[s_item_n].paired = 0;
     s_item[s_item_n].src = TR_SRC_NONE;
     s_item[s_item_n].built = 0;
@@ -311,6 +321,7 @@ typedef struct { int32_t oc; int32_t sz3; int isx, isy; double m3; tr_corner c; 
  * set every point's half-width. */
 typedef struct {
     float     depth;
+    int       key;              /* the bucket the routine links it at (:3151-3153) */
     tr_corner a, b, head;
     int       wb, count;
     int       ax, ay, bx, by;   /* the two points' integer screen positions (SXY2) */
@@ -472,7 +483,7 @@ static int rib_predict_record(CPUState* cpu, const ngte_view* v, uint32_t rec,
             openpete_worldvz_scaled((float)((pt[k].m3 + pt[k + 1].m3) * 0.5), 2.0f));
         sum += d;
         if (n < cap) {
-            out[n] = (rib_seg){ .depth = d, .a = pt[k].c, .b = pt[k + 1].c, .head = pt[0].c,
+            out[n] = (rib_seg){ .depth = d, .key = key, .a = pt[k].c, .b = pt[k + 1].c, .head = pt[0].c,
                                 .wb = wb, .count = count, .ax = pt[k].isx, .ay = pt[k].isy,
                                 .bx = pt[k + 1].isx, .by = pt[k + 1].isy };
         }
@@ -516,6 +527,7 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, rib_seg* out, int cap)
  * @param g The segment. */
 static void rib_bind(tr_item* it, const rib_seg* g) {
     it->depth = g->depth;
+    it->key = g->key;
     it->paired = 1;
     it->src = TR_SRC_RIBBON;
     it->c[0] = it->c[2] = g->a;
@@ -684,6 +696,103 @@ static int msh_entry_in_table(uint32_t w0) {
 
 static unsigned long s_msh_order, s_msh_meaned, s_msh_depth1;
 
+/** @brief Replays the routine's projection of one mesh vertex into the word it stores at the vertex's scratchpad slot + 4.
+ *
+ * The vertex's offset from the camera, shifted right by the descriptor's
+ * shift (`srav`), loads VX0 = camera Y - Y, VY0 = camera Z - Z, VZ0 = X -
+ * camera X and is RTPSed under the camera matrix with a zero translation
+ * (Spyro 3 mobyfunc.s:3227-3243). The word is MAC3 << 16 or'd with the
+ * routine's edge bits, computed from SXY2 as the routine branches
+ * (:3244-3263), delay slots included: +1 when SXY2 - 0xD0000 is not above 0;
+ * the comparand is then SXY2 << 16 when SXY2 is below 0xE40000, else the
+ * bits + 2 (the routine writes the sum to the comparand, not to the bits);
+ * +4 when the comparand is not above 0, +8 when the comparand - 0x2000000 is
+ * not below 0. The subtractions wrap as 32-bit words.
+ * @param v The tick's view.
+ * @param cam The camera position the routine reads.
+ * @param w The vertex's world XYZ.
+ * @param sh The descriptor's shift, low five bits.
+ * @return The replayed slot word. */
+static int32_t msh_vertex_word(const ngte_view* v, const int32_t cam[3], const int32_t w[3], int sh) {
+    static const int k_tr0[3] = { 0, 0, 0 };
+    ngte_rtps_out o;
+    ngte_rtps_int(v->cam_M, k_tr0, (int16_t)((cam[1] - w[1]) >> sh), (int16_t)((cam[2] - w[2]) >> sh),
+                  (int16_t)((w[0] - cam[0]) >> sh), v->ofx, v->ofy, (int)v->H_canon, &o);
+    const int32_t sxy = (int32_t)(((uint32_t)(uint16_t)o.sy << 16) | (uint16_t)o.sx);
+    int32_t bits = 0;
+    if (!((int32_t)((uint32_t)sxy - 0xD0000u) > 0)) bits += 1;
+    const int32_t t = (int32_t)((uint32_t)sxy - 0xE40000u) < 0 ? (int32_t)((uint32_t)sxy << 16) : bits + 2;
+    if (!(t > 0)) bits += 4;
+    if (!((int32_t)((uint32_t)t - 0x2000000u) < 0)) bits += 8;
+    return (int32_t)(((uint32_t)o.mac[2] << 16) | (uint32_t)bits);
+}
+
+/** @brief The ordering-table bucket the routine links a mesh entry at, replayed from the vertex list and the camera.
+ *
+ * The four vertices' replayed MAC3 halves (msh_vertex_word) are summed,
+ * shifted right 9 and left by the descriptor's shift (:3336-3341). Reads the
+ * vertex list, the camera and the descriptor only, never the routine's
+ * scratchpad table.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view.
+ * @param vlist The vertex list's guest address.
+ * @param off The four slot offsets (index * 8) of the entry.
+ * @param shift The descriptor's shift.
+ * @param words Receives the four replayed slot words.
+ * @return The bucket, or -1 when the replay puts it outside 0..0x7FF. */
+static int msh_replay_key(CPUState* cpu, const ngte_view* v, uint32_t vlist, const uint32_t off[4],
+                          int shift, int32_t words[4]) {
+    int32_t cam[3];
+    for (int k = 0; k < 3; k++) cam[k] = (int32_t)cpu->read_word(game_layout.cam.position + 4u * (uint32_t)k);
+    int32_t zsum = 0;
+    for (int k = 0; k < 4; k++) {
+        const uint32_t va = vlist + (off[k] >> 3) * 12u;
+        const int32_t w[3] = { (int32_t)cpu->read_word(va), (int32_t)cpu->read_word(va + 4u),
+                               (int32_t)cpu->read_word(va + 8u) };
+        words[k] = msh_vertex_word(v, cam, w, shift & 31);
+        zsum += words[k] >> 16;
+    }
+    const int32_t key = (int32_t)((uint32_t)(zsum >> 9) << (unsigned)(shift & 31));
+    return (key < 0 || key - 0x7FF > 0) ? -1 : key;
+}
+
+/* OPENPETE_TRACER_MESH_KEYCHK: entries the routine emitted, compared against the replay. */
+static unsigned long s_mk_entries OP_GUARDED_BY(sim), s_mk_match OP_GUARDED_BY(sim), s_mk_miss OP_GUARDED_BY(sim),
+                     s_mk_words OP_GUARDED_BY(sim), s_mk_wmatch OP_GUARDED_BY(sim);   /* thread-roles: the mesh hook, on sim */
+
+/** @brief Whether OPENPETE_TRACER_MESH_KEYCHK asks for the replay check, latched on first use.
+ * @return 1 when set to a value not starting with '0', else 0. */
+static int msh_keychk_on(void) OP_REQUIRES(sim) {
+    static int v OP_GUARDED_BY(sim) = -1;   /* thread-roles: the mesh hook, on sim */
+    if (v < 0) { const char* e = getenv("OPENPETE_TRACER_MESH_KEYCHK"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/** @brief Prints the replayed-bucket check's running totals to stderr, one line per mesh call. */
+static void msh_keychk_line(void) OP_REQUIRES_SHARED(sim) {
+    fprintf(stderr, "[tracer-meshkey f=%u] entries=%lu key_match=%lu key_mismatch=%lu slot_words=%lu word_match=%lu\n",
+            openpete_frame, s_mk_entries, s_mk_match, s_mk_miss, s_mk_words, s_mk_wmatch);
+}
+
+/** @brief Instrument: compares an emitted entry's replayed bucket and slot words with the routine's own scratchpad table.
+ * @param cpu The guest CPU state.
+ * @param off The four slot offsets of the entry.
+ * @param words The replayed slot words.
+ * @param key The replayed bucket.
+ * @param guest_key The bucket the routine computed from its table. */
+static void msh_keychk(CPUState* cpu, const uint32_t off[4], const int32_t words[4], int key, int guest_key) OP_REQUIRES(sim) {
+    s_mk_entries++;
+    if (key == guest_key) s_mk_match++;
+    else {
+        s_mk_miss++;
+        fprintf(stderr, "[tracer-meshkey f=%u] key replay=%d routine=%d\n", openpete_frame, key, guest_key);
+    }
+    for (int k = 0; k < 4; k++) {
+        s_mk_words++;
+        if ((int32_t)cpu->read_word(TR.spad + off[k] + 4u) == words[k]) s_mk_wmatch++;
+    }
+}
+
 /** @brief Gives the mesh primitives the replay could not reach the mean depth of those it paired.
  *
  * The replay stops at the index list's terminator, or at an entry naming a
@@ -710,7 +819,9 @@ static void msh_mean_rest(int paired) {
  * or a key outside 0..0x7FF, otherwise the next item takes the depth from
  * the entry's summed SZ and the descriptor's shift and is marked paired. When
  * the vertex list is a valid KSEG0 RAM address the list is noted and each
- * paired item gets its four vertex corners. The walk ends at the -1
+ * paired item gets its four vertex corners and the bucket the routine links
+ * it at, replayed from the vertex list and the camera (msh_replay_key); an
+ * item without a vertex list keeps bucket -1. The walk ends at the -1
  * terminator, at an entry with an index outside the scratchpad table, or
  * when every item is paired; msh_mean_rest then places the items left. An
  * index list outside KSEG0 RAM leaves every item unpaired at the near-guard
@@ -718,7 +829,7 @@ static void msh_mean_rest(int paired) {
  * @param cpu The guest CPU state.
  * @param v The tick's view.
  * @param desc The mesh descriptor's guest address. */
-static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
+static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) OP_REQUIRES(sim) {
     const uint32_t ilist = cpu->read_word(desc + MSH_INDICES);
     if (ilist < 0x80000000u || ilist >= 0x80800000u) { s_msh_depth1 += (unsigned long)s_item_n; return; }
     const uint32_t vlist = cpu->read_word(desc + MSH_VERTS);
@@ -750,11 +861,17 @@ static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
         if (key < 0 || key - 0x7FF > 0) continue;        /* :3262-3264 */
         s_item[i].depth = openpete_native_scene_viewz(
             openpete_worldvz_scaled((float)zsum * 0.25f, mul));
+        if (have_verts) {
+            int32_t words[4];
+            s_item[i].key = msh_replay_key(cpu, v, vlist, off, shift, words);
+            if (msh_keychk_on()) msh_keychk(cpu, off, words, s_item[i].key, key);
+        }
         s_item[i].paired = 1;
         if (have_verts) msh_set_corners(cpu, v, &s_item[i], vlist, off, shift);
         i++;
     }
     msh_mean_rest(i);
+    if (msh_keychk_on()) msh_keychk_line();
 }
 
 /* ---- feed ---------------------------------------------------------------- */
@@ -863,8 +980,10 @@ static float tr_item_depth(const tr_item* it, const tr_poly* q) {
  * @param depth The scene depth.
  * @param tpp The texture page, or NULL for untextured.
  * @param blend The native blend code.
+ * @param key The bucket the routine links the item at, or -1.
  * @return The number of triangles fed. */
-static int tr_feed_fan(const tr_poly* q, int b, int e, float depth, const ngte_tpage* tpp, int blend) {
+static int tr_feed_fan(const tr_poly* q, int b, int e, float depth, const ngte_tpage* tpp, int blend,
+                       int key) {
     int fed = 0;
     for (int i = b + 1; i + 1 < e; i++) {
         const int idx[4] = { b, i, i + 1, i + 1 };
@@ -875,7 +994,7 @@ static int tr_feed_fan(const tr_poly* q, int b, int e, float depth, const ngte_t
             x[k] = q->x[j]; y[k] = q->y[j]; u[k] = q->u[j]; v[k] = q->v[j];
             rgb[k] = q->rgb[j]; rgbq[k] = q->rgbq[j];
         }
-        fed += ngte_feed_flat_quad_q(x, y, u, v, rgb, rgbq, depth, tpp, blend, 3);
+        fed += ngte_feed_flat_quad_q(x, y, u, v, rgb, rgbq, depth, tpp, blend, 3, key);
     }
     return fed;
 }
@@ -889,21 +1008,26 @@ static int tr_feed_fan(const tr_poly* q, int b, int e, float depth, const ngte_t
  * item's single depth (tr_item_depth). A built item's corners, texture coordinates and
  * colours are its float build, the sub-tick one while the rebase is active
  * and the capture's otherwise; an unbuilt item feeds the routine's corners.
- * Only 3 and 4 vertex primitives are fed. Counts the triangles fed.
+ * While the key pass runs (openpete_native_key_resolve_on) each triangle
+ * carries the bucket the routine linked the item at (ngte_feed_flat_quad_q),
+ * so an additive item loses a pixel to a moby face keyed into a nearer
+ * bucket and keeps true depth against terrain. Only 3 and 4 vertex
+ * primitives are fed. Counts the triangles fed.
  * @param it The item. */
 static void tr_add_prim(const tr_item* it) {
     const ngte_prim* p = &it->p;
     if (p->nv != 3 && p->nv != 4) return;
     ngte_tpage tp;
     const int blend = ngte_prim_tpage_blend(p, &tp);
+    const int key = openpete_native_key_resolve_on() ? it->key : -1;
     const ngte_tpage* tpp = p->textured ? &tp : NULL;
     float x[4], y[4], u[4], v[4];
     uint32_t rgb[4], rgbq[4];
     const tr_poly* q = it->built ? (s_reb_active ? &it->pp : &it->b) : NULL;
     const float depth = tr_item_depth(it, q);
     if (q && q->fan) {
-        s_fed_tris += (uint32_t)(tr_feed_fan(q, 0, q->n0, depth, tpp, blend) +
-                                 tr_feed_fan(q, q->n0, q->n, depth, tpp, blend));
+        s_fed_tris += (uint32_t)(tr_feed_fan(q, 0, q->n0, depth, tpp, blend, key) +
+                                 tr_feed_fan(q, q->n0, q->n, depth, tpp, blend, key));
         return;
     }
     if (q && q->n < 3) return;
@@ -914,7 +1038,7 @@ static void tr_add_prim(const tr_item* it) {
         if (q) { x[k] = q->x[j]; y[k] = q->y[j]; u[k] = q->u[j]; v[k] = q->v[j]; rgb[k] = q->rgb[j]; rgbq[k] = q->rgbq[j]; }
         else   { x[k] = p->x[j]; y[k] = p->y[j]; u[k] = (float)p->u[j]; v[k] = (float)p->v[j]; rgb[k] = p->rgb[j]; rgbq[k] = 0u; }
     }
-    s_fed_tris += (uint32_t)ngte_feed_flat_quad_q(x, y, u, v, rgb, rgbq, depth, tpp, blend, p->nv);
+    s_fed_tris += (uint32_t)ngte_feed_flat_quad_q(x, y, u, v, rgb, rgbq, depth, tpp, blend, p->nv, key);
 }
 
 /** @brief Feeds a set of items to the native scene under the tracer tag.
