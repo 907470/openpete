@@ -43,6 +43,14 @@ sunrise-spring-surface-swim@heldfade|1554|100|freeze|1556
 # game keeps its picture in VRAM (isbg=0) and draws only the progress strip.
 # No freeze field: the headless capture keeps the retained backdrop on its own.
 sunrise-spring-surface-swim@entry|1500|100||1500
+# sunrise-spring-surface-swim@simplebase: the camera follows the swim past the
+# simple-moby gems (class 0x0C8) at the right of the frame. A simple moby's cull
+# record holds its camera-relative position truncated to 4 world units
+# (mobydraw.s:81,87,94), and the residue the truncation drops changes every
+# tick the camera moves. Over VBLs 2473-2591 the gem at 0x8018DD0C has the
+# largest step between the end of one tick's sub-tick run and the start of the
+# next, 0.42 px, at this VBL; the sub-tick tile shows the gem half a tick in.
+sunrise-spring-surface-swim@simplebase|2541|100||2541
 
 # icy-peak-reflective-mirror arms the player draw's mirrored copy.
 # g_Spyro+0x2C is the avatar's height above a material-class-4 surface; of the
