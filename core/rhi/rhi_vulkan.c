@@ -9947,6 +9947,12 @@ void rhi_env_write_guard(int begin)
  * wait for the pool (pool_wait_below) does not wait for it. */
 #define POOL_LOW (1u << 9)
 
+/* A submit flag above the RHI_COMPILE_* bits: no wait of the boot is on the
+ * job (the background variant walk). It and its library parts are background
+ * items, as are POOL_AHEAD and POOL_LOW jobs: at most the pool's steady count
+ * of its own workers run background items at once (pool_worker_pick_locked). */
+#define POOL_BG (1u << 10)
+
 /* Submit flag bits above POOL_LOW: an ahead job's rank (walk_item.rank). */
 #define POOL_RANK_SHIFT 12u
 #define POOL_RANK_MASK  (0xFu << POOL_RANK_SHIFT)
@@ -9972,6 +9978,7 @@ typedef struct pool_item {
     bool                ahead;     /* a job of the ahead walk (rhi_precompile_ahead_stop drops it) */
     unsigned            rank;      /* with ahead: its rank (POOL_RANK_MASK) */
     bool                low;       /* a job of the low queue (POOL_LOW) */
+    bool                bg;        /* a background item (POOL_BG): no wait of the boot is on it */
     bool                key_held;  /* key is in the pool's run_keys while the item runs */
     bool                probe_hit; /* a probe found the create info cached */
     int                 rc;        /* the run's result */
@@ -9987,6 +9994,7 @@ struct compile_pool {
     int            n;              /* worker threads; 0 runs jobs at submit */
     int            n_steady;       /* of them, the most that run an item at once from the first tick on (pool_cap_locked) */
     unsigned       own_running;    /* items running on the pool's own workers, under mx */
+    unsigned       own_bg_running; /* of them, background items (pool_item.bg), under mx */
     bool           stepped;        /* a worker has applied the first tick's cap, under mx */
     SDL_Thread    *lo_thr[POOL_MAX_WORKERS]; /* low-priority workers (rhi_compile_pool_low); worker-line: written at start only */
     int            lo_n;           /* low-priority worker threads started */
@@ -10221,17 +10229,54 @@ static void pool_key_drop(struct compile_pool *pl, const pool_item *it)
     if (i >= 0) pl->run_keys[i] = pl->run_keys[--pl->run_keys_n];
 }
 
-/** @brief Unlink the next item a worker runs: a library part first (a link waits only on parts already taken), then a job, then a low-queue job.
+/* A queued item a worker may take, with its place in its list. */
+typedef struct {
+    pool_item **head, **tail;   /* its list */
+    pool_item  *prev;           /* the item before it, or NULL at the head */
+    pool_item  *it;
+} pool_pick;
+
+/** @brief Find the first item of one queue a worker may take: any item, or with @p bg_ok false only an item that is not background.
  *
- * @param pl The pool, locked, with an item queued.
- * @return The item. */
-static pool_item *pool_take_locked(struct compile_pool *pl)
+ * @param head The queue's head.
+ * @param tail The queue's tail.
+ * @param bg_ok Whether a background item may be taken.
+ * @param out Receives the item and its place.
+ * @return true when one was found. */
+static bool pool_pick_in(pool_item **head, pool_item **tail, bool bg_ok, pool_pick *out)
 {
-    pool_item **head = pl->l_head ? &pl->l_head : pl->q_head ? &pl->q_head : &pl->lo_head;
-    pool_item **tail = pl->l_head ? &pl->l_tail : pl->q_head ? &pl->q_tail : &pl->lo_tail;
-    pool_item *it = *head;
-    *head = it->next;
-    if (!*head) *tail = NULL;
+    pool_item *prev = NULL;
+    for (pool_item *it = *head; it; prev = it, it = it->next) {
+        if (it->bg && !bg_ok) continue;
+        *out = (pool_pick){ head, tail, prev, it };
+        return true;
+    }
+    return false;
+}
+
+/** @brief Find the next item a worker may take: a library part first (a link waits only on parts already taken, or on a background part a background worker takes next), then a job, then a low-queue job.
+ *
+ * @param pl The pool, locked.
+ * @param bg_ok Whether a background item may be taken.
+ * @param out Receives the item and its place.
+ * @return true when one was found. */
+static bool pool_pick_locked(struct compile_pool *pl, bool bg_ok, pool_pick *out)
+{
+    return pool_pick_in(&pl->l_head, &pl->l_tail, bg_ok, out) ||
+           pool_pick_in(&pl->q_head, &pl->q_tail, bg_ok, out) ||
+           pool_pick_in(&pl->lo_head, &pl->lo_tail, bg_ok, out);
+}
+
+/** @brief Unlink a picked item from its queue and count it out of the queued counts.
+ *
+ * @param pl The pool, locked.
+ * @param pk The pick (pool_pick_locked).
+ * @return The item. */
+static pool_item *pool_take_locked(struct compile_pool *pl, const pool_pick *pk)
+{
+    pool_item *it = pk->it;
+    if (pk->prev) pk->prev->next = it->next; else *pk->head = it->next;
+    if (*pk->tail == it) *pk->tail = pk->prev;
     pl->queued--;
     pl->lo_queued -= it->low;
     return it;
@@ -10262,24 +10307,31 @@ static unsigned pool_cap_locked(struct compile_pool *pl)
     if (!pl->stepped) {
         pl->stepped = true;
         if (pl->n_steady < pl->n)
-            RHI_LOG("compile pool: stepped down from %d to %d worker(s) taking items; %u running, %u queued\n",
-                    pl->n, pl->n_steady, pl->own_running, pl->queued);
+            RHI_LOG("compile pool: stepped down from %d to %d worker(s) taking items; %u running "
+                    "(%u background), %u queued\n",
+                    pl->n, pl->n_steady, pl->own_running, pl->own_bg_running, pl->queued);
     }
     return (unsigned)pl->n_steady;
 }
 
-/** @brief Return whether a worker waits instead of taking an item: the pool is paused, in the other mode, empty, or (a pool's own worker) at its cap.
+/** @brief Find the item a worker takes next, if it may take one: none while the pool is paused or in the other mode; on a pool's own worker none at its cap (pool_cap_locked), and a background item only while fewer than the steady count of background items run.
  *
+ * The workers beyond the steady count therefore run only items a wait of
+ * the boot is on, and at the first tick at most the steady count of
+ * background items are in flight.
  * @param pl The pool, locked.
  * @param low true on a low-priority worker.
- * @return true to wait. */
-static bool pool_worker_waits_locked(struct compile_pool *pl, bool low)
+ * @param out Receives the item and its place.
+ * @return true to take it, false to wait. */
+static bool pool_worker_pick_locked(struct compile_pool *pl, bool low, pool_pick *out)
 {
-    if (pl->paused || pl->low != low || (!pl->q_head && !pl->l_head && !pl->lo_head)) return true;
-    return !low && pl->own_running >= pool_cap_locked(pl);
+    if (pl->paused || pl->low != low) return false;
+    if (low) return pool_pick_locked(pl, true, out);
+    if (pl->own_running >= pool_cap_locked(pl)) return false;
+    return pool_pick_locked(pl, pl->own_bg_running < (unsigned)pl->n_steady, out);
 }
 
-/** @brief Run queued items until the pool stops: while it is paused take none, take one only while the pool's low flag equals the worker's, and on a pool's own worker only while fewer than the cap (pool_cap_locked) run.
+/** @brief Run queued items until the pool stops, each the one pool_worker_pick_locked lets this worker take.
  *
  * @param dev The device.
  * @param low true on a low-priority worker (pool_worker_low). */
@@ -10288,12 +10340,15 @@ static void pool_worker_loop(rhi_device *dev, bool low)
     struct compile_pool *pl = dev->cpool;
     SDL_LockMutex(pl->mx);
     for (;;) {
-        while (!pl->stop && pool_worker_waits_locked(pl, low))
+        pool_pick pk;
+        while (!pl->stop && !pool_worker_pick_locked(pl, low, &pk))
             SDL_WaitCondition(low ? pl->lo_work : pl->work, pl->mx);
         if (pl->stop) break;
-        pool_item *it = pool_take_locked(pl);
+        pool_item *it = pool_take_locked(pl, &pk);
+        const bool own_bg = !low && it->bg;
         pl->running++;
         pl->own_running += !low;
+        pl->own_bg_running += own_bg;
         pl->lo_running += it->low;
         pool_key_take(pl, it);
         SDL_UnlockMutex(pl->mx);
@@ -10302,6 +10357,7 @@ static void pool_worker_loop(rhi_device *dev, bool low)
         pool_key_drop(pl, it);
         pl->running--;
         pl->own_running -= !low;
+        pl->own_bg_running -= own_bg;
         pl->lo_running -= it->low;
         void (*wake)(void) = it->ahead ? pl->ahead_wake : NULL;
         pool_finish_locked(pl, it);
@@ -10455,12 +10511,14 @@ static struct compile_pool *pool_get(rhi_device *dev)
 /** @brief Append library part items to the pool's part queue, each counted as queued.
  *
  * @param pl The pool, locked.
- * @param libs Items linked by next (gpl_items_for), or NULL. */
-static void pool_queue_parts_locked(struct compile_pool *pl, pool_item *libs)
+ * @param libs Items linked by next (gpl_items_for), or NULL.
+ * @param bg Whether they are background items (parts of a background job). */
+static void pool_queue_parts_locked(struct compile_pool *pl, pool_item *libs, bool bg)
 {
     for (pool_item *l = libs, *next; l; l = next) {
         next = l->next;
         l->next = NULL;
+        l->bg = bg;
         if (pl->l_tail) pl->l_tail->next = l; else pl->l_head = l;
         pl->l_tail = l;
         pl->queued++;
@@ -10477,12 +10535,14 @@ int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flag
     pool_item local;
     if (!it) { memset(&local, 0, sizeof local); it = &local; }
     *it = (pool_item){ .job = job,
-                       .flags = flags & ~(unsigned)(POOL_AHEAD | POOL_LOW | POOL_RANK_MASK), .fn = fn,
+                       .flags = flags & ~(unsigned)(POOL_AHEAD | POOL_LOW | POOL_BG | POOL_RANK_MASK),
+                       .fn = fn,
                        .tag = tag, .phase = t_pipe_phase,
                        .key = job_variant_key(dev, job) ^ (job->lto ? LTO_MANIFEST_SALT : 0u),
                        .rebuild = t_in_rebuild, .ahead = (flags & POOL_AHEAD) != 0,
                        .rank = (flags & POOL_RANK_MASK) >> POOL_RANK_SHIFT,
-                       .low = (flags & POOL_LOW) != 0 };
+                       .low = (flags & POOL_LOW) != 0,
+                       .bg = (flags & (POOL_BG | POOL_AHEAD | POOL_LOW)) != 0 };
     if (!pl || it == &local) {   /* no pool: run now, install now */
         pool_run_item(dev, it);
         if (it->fn) it->fn(dev, it->job, it->rc, it->tag);
@@ -10499,7 +10559,7 @@ int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flag
     }
     pool_item *libs = gpl_items_for(dev, job, it->phase, it->rebuild);
     SDL_LockMutex(pl->mx);
-    pool_queue_parts_locked(pl, libs);
+    pool_queue_parts_locked(pl, libs, it->bg);
     pool_item **head = it->low ? &pl->lo_head : &pl->q_head;
     pool_item **tail = it->low ? &pl->lo_tail : &pl->q_tail;
     if (*tail) (*tail)->next = it; else *head = it;
@@ -10513,7 +10573,15 @@ int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flag
     return 0;
 }
 
-int rhi_compile_pool_submit_task(rhi_device *dev, rhi_pool_task_fn run, void *tag)
+/** @brief Queue a host task behind the jobs already queued, as a background item or not; run it at once without a worker.
+ *
+ * Display owner only.
+ * @param dev Device.
+ * @param run The task.
+ * @param tag Passed to @p run.
+ * @param bg Whether the task is a background item.
+ * @return 0, or -1 for a NULL device or task. */
+static int pool_submit_task(rhi_device *dev, rhi_pool_task_fn run, void *tag, bool bg)
 {
     if (!dev || !run) return -1;
     seam_check("compile_pool_submit");
@@ -10524,7 +10592,7 @@ int rhi_compile_pool_submit_task(rhi_device *dev, rhi_pool_task_fn run, void *ta
         run(tag);
         return 0;
     }
-    *it = (pool_item){ .task = run, .tag = tag, .phase = t_pipe_phase };
+    *it = (pool_item){ .task = run, .tag = tag, .phase = t_pipe_phase, .bg = bg };
     SDL_LockMutex(pl->mx);
     if (pl->q_tail) pl->q_tail->next = it; else pl->q_head = it;
     pl->q_tail = it;
@@ -10534,6 +10602,16 @@ int rhi_compile_pool_submit_task(rhi_device *dev, rhi_pool_task_fn run, void *ta
     pool_wake_locked(pl, false);
     SDL_UnlockMutex(pl->mx);
     return 0;
+}
+
+int rhi_compile_pool_submit_task(rhi_device *dev, rhi_pool_task_fn run, void *tag)
+{
+    return pool_submit_task(dev, run, tag, false);
+}
+
+int rhi_compile_pool_submit_background_task(rhi_device *dev, rhi_pool_task_fn run, void *tag)
+{
+    return pool_submit_task(dev, run, tag, true);
 }
 
 unsigned rhi_compile_pool_drain(rhi_device *dev)
@@ -11541,7 +11619,8 @@ static bool walk_submit_next(rhi_device *dev, struct precompile_walk *w)
         t_pipe_phase = w->ahead ? RHI_PIPE_PHASE_LAUNCHER : RHI_PIPE_PHASE_PRECOMPILE;
         rhi_compile_pool_submit(dev, job,
                                 RHI_COMPILE_VARIANT | (dev->has_cache_control ? RHI_COMPILE_PROBE : 0u) |
-                                    (w->ahead ? POOL_AHEAD | (it->rank << POOL_RANK_SHIFT) : 0u),
+                                    (w->ahead ? POOL_AHEAD | (it->rank << POOL_RANK_SHIFT) : 0u) |
+                                    (w->background ? POOL_BG : 0u),
                                 NULL, NULL);
         t_pipe_phase = ph;
         w->submitted++;
@@ -11659,7 +11738,7 @@ static unsigned walk_queue_rank_parts(rhi_device *dev, struct precompile_walk *w
     }
     if (!head) return 0;
     SDL_LockMutex(pl->mx);
-    pool_queue_parts_locked(pl, head);
+    pool_queue_parts_locked(pl, head, true);
     if (pl->queued > pl->st.max_queued) pl->st.max_queued = pl->queued;
     pool_wake_locked(pl, true);
     SDL_UnlockMutex(pl->mx);

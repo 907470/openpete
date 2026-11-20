@@ -2016,10 +2016,16 @@ void          rhi_pcache_autosave_stats_get(const rhi_device *dev, rhi_pcache_au
  * logical core count, at least one; it is read when the pool starts, at
  * the first submit. Without OPENPETE_COMPILE_POOL a pool started before the
  * process's first tick (rhi_compile_pool_first_tick) starts one worker per
- * logical core, all taking items while the boot waits on its compiles and
- * nothing is played; from the first tick on a worker takes an item only
- * while fewer than the steady count of the pool's own workers run one, so
- * the extra workers park and an item running at the step-down finishes.
+ * logical core. Items no wait of the boot is on are background items: the
+ * background variant walk, the launcher's ahead walk, the link-time
+ * optimized links and their library parts, and host tasks submitted with
+ * rhi_compile_pool_submit_background_task. At most the steady count of the
+ * pool's own workers run background items at once, in either phase, so the
+ * workers beyond it run only the bring-up compiles the boot waits on, and
+ * at the first tick at most the steady count of background items are in
+ * flight. From the first tick on a worker takes any item only while fewer
+ * than the steady count of the pool's own workers run one, so the extra
+ * workers park and an item running at the step-down finishes.
  * OPENPETE_COMPILE_POOL is one fixed count for both phases. With an empty
  * driver cache, workers compiling variants
  * that share a stage each compile that stage where one worker would reuse
@@ -2090,6 +2096,15 @@ int           rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, uns
  * @param tag Passed to @p run.
  * @return 0, or -1 for a NULL device or task. */
 int           rhi_compile_pool_submit_task(rhi_device *dev, rhi_pool_task_fn run, void *tag);
+
+/** @brief Queue a host task as rhi_compile_pool_submit_task does, as a background item: no wait of the boot is on it, so at most the pool's steady worker count run background items at once.
+ *
+ * Display owner only.
+ * @param dev Device.
+ * @param run The task.
+ * @param tag Passed to @p run.
+ * @return 0, or -1 for a NULL device or task. */
+int           rhi_compile_pool_submit_background_task(rhi_device *dev, rhi_pool_task_fn run, void *tag);
 
 /** @brief Call the install callback of every staged result.
  *

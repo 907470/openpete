@@ -64,8 +64,9 @@
  * .spv files the display owner points OPENPETE_SHADER_DIR at on alternate
  * cycles. "pool" skips the harness-worker leg. "boot" runs only the boot
  * control (boot_control) on a pool sized without OPENPETE_COMPILE_POOL:
- * one worker per logical core until rhi_compile_pool_first_tick, then at
- * most the steady count running at once, every queued task completing. Under ThreadSanitizer
+ * one worker per logical core until rhi_compile_pool_first_tick, background
+ * tasks never above the steady count, then at most the steady count of any
+ * task running at once, every queued task completing. Under ThreadSanitizer
  * (target rhi_compile_stress_tsan) a Linux kernel with high mmap
  * randomization needs `setarch "$(uname -m)" -R`. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
@@ -1248,12 +1249,12 @@ static int stop_control(void)
     return !(whole && cancelled);
 }
 
-/* The boot control's host tasks: how many run now, the most seen at a
- * task's start before the first tick and inside the measured window after
- * it, and how many started and finished. */
+/* The boot control's host tasks: how many run now (all, and background
+ * ones), the most seen at a task's start before the first tick and inside
+ * the measured window after it, and how many started and finished. */
 static struct {
-    atomic_uint active, started, finished, post_starts;
-    atomic_uint pre_max, post_max;
+    atomic_uint active, bg_active, started, bg_started, finished, post_starts;
+    atomic_uint pre_max, bg_pre_max, post_max;
     atomic_bool measuring;   /* the window after the first tick and its settle */
 } s_boot;
 
@@ -1267,32 +1268,39 @@ static void atomic_max_u(atomic_uint *m, unsigned v)
     while (v > cur && !atomic_compare_exchange_weak(m, &cur, v)) {}
 }
 
-/** @brief One boot-control task: count itself running, note the running count at its start in the current window, hold for 15 ms, and count itself finished.
+/** @brief One boot-control task: count itself running, note the running counts at its start in the current window, hold for 15 ms, and count itself finished.
  *
- * @param tag Unused. */
+ * @param tag Non-NULL for a background task. */
 static void boot_task(void *tag)
 {
-    (void)tag;
+    const bool bg = tag != NULL;
     const unsigned a = atomic_fetch_add(&s_boot.active, 1u) + 1u;
+    const unsigned g = bg ? atomic_fetch_add(&s_boot.bg_active, 1u) + 1u : 0u;
     atomic_fetch_add(&s_boot.started, 1u);
+    atomic_fetch_add(&s_boot.bg_started, bg);
     if (atomic_load(&s_boot.measuring)) {
         atomic_max_u(&s_boot.post_max, a);
         atomic_fetch_add(&s_boot.post_starts, 1u);
     } else {
         atomic_max_u(&s_boot.pre_max, a);
+        atomic_max_u(&s_boot.bg_pre_max, g);
     }
     SDL_DelayNS(15000000);
+    atomic_fetch_sub(&s_boot.bg_active, bg);
     atomic_fetch_sub(&s_boot.active, 1u);
     atomic_fetch_add(&s_boot.finished, 1u);
 }
 
-/** @brief The pool's step-down at the first tick: without OPENPETE_COMPILE_POOL it starts one worker per logical core and runs that many tasks at once, and after rhi_compile_pool_first_tick, with tasks still queued, no more than its steady count run at once, the tasks running at the call finish, and every queued task completes.
+/** @brief The pool's two phases: without OPENPETE_COMPILE_POOL it starts one worker per logical core, the workers beyond the steady count run only tasks that are not background, so before and at the first tick no more than the steady count of background tasks run; after rhi_compile_pool_first_tick no more than the steady count of any task run, and every task completes.
  *
- * Tasks starting in the 120 ms after the call (8 task lengths) are not
- * measured: a task taken before the call may start its body just after it.
- * The verdict counts the tasks running at each measured task's start.
- * Runs in a process whose first tick has not been marked, on a pool not yet
- * started.
+ * Background tasks (rhi_compile_pool_submit_background_task) are queued
+ * first, then boot tasks, as the background walk runs ahead of a late
+ * bring-up batch. The first tick is marked once the pool has run every
+ * worker at once, with background tasks still queued. Tasks starting in the
+ * 120 ms after the mark (8 task lengths) are not measured: a task taken
+ * before the mark may start its body just after it. The verdict counts the
+ * tasks running at each measured task's start. Runs in a process whose
+ * first tick has not been marked, on a pool not yet started.
  * @return 0 pass, 1 fail, 77 on a host with one logical core (no step-down exists). */
 static int boot_control(void)
 {
@@ -1303,28 +1311,31 @@ static int boot_control(void)
         printf("boot_control: %d logical core(s): no step-down to test - SKIP\n", cores);
         return 77;
     }
-    const unsigned n = 12u * full;
-    for (unsigned i = 0; i < n; i++) rhi_compile_pool_submit_task(s_dev, boot_task, NULL);
+    const unsigned nbg = 12u * full, nboot = 4u * full, n = nbg + nboot;
+    for (unsigned i = 0; i < nbg; i++) rhi_compile_pool_submit_background_task(s_dev, boot_task, &s_boot);
+    for (unsigned i = 0; i < nboot; i++) rhi_compile_pool_submit_task(s_dev, boot_task, NULL);
     for (int i = 0; i < 200 && atomic_load(&s_boot.pre_max) < full; i++) SDL_Delay(10);
     rhi_compile_pool_first_tick();
-    const unsigned queued_at_tick = n - atomic_load(&s_boot.started);
-    const unsigned running_at_tick = atomic_load(&s_boot.active);
+    const unsigned bg_queued_at_tick = nbg - atomic_load(&s_boot.bg_started);
+    const unsigned bg_running_at_tick = atomic_load(&s_boot.bg_active);
     SDL_Delay(120);
     atomic_store(&s_boot.measuring, true);
     rhi_compile_pool_wait(s_dev, NULL, NULL);
     rhi_compile_pool_stats st;
     rhi_compile_pool_stats_get(s_dev, &st);
-    const unsigned pre = atomic_load(&s_boot.pre_max), post = atomic_load(&s_boot.post_max);
-    const unsigned post_starts = atomic_load(&s_boot.post_starts);
+    const unsigned pre = atomic_load(&s_boot.pre_max), bg_pre = atomic_load(&s_boot.bg_pre_max);
+    const unsigned post = atomic_load(&s_boot.post_max), post_starts = atomic_load(&s_boot.post_starts);
     const unsigned fin = atomic_load(&s_boot.finished);
-    const bool engaged = pre > steady && queued_at_tick > 0 && post_starts > steady && post == steady;
-    const bool held = post <= steady && fin == n && st.tasks_run == n &&
-                      st.workers == full && st.workers_steady == steady;
+    const bool engaged = pre == full && bg_pre == steady && bg_queued_at_tick > 0 &&
+                         post_starts > steady && post == steady;
+    const bool held = bg_pre <= steady && bg_running_at_tick <= steady && post <= steady &&
+                      fin == n && st.tasks_run == n && st.workers == full && st.workers_steady == steady;
     printf("boot_control: workers %u (want %u), steady %u (want %u); before the first tick at most "
-           "%u running; at it %u running, %u queued; after it %u measured starts, at most %u running; "
-           "%u of %u tasks finished (pool counted %u): %s\n",
-           st.workers, full, st.workers_steady, steady, pre, running_at_tick, queued_at_tick,
-           post_starts, post, fin, n, st.tasks_run,
+           "%u running, %u of them background; at it %u background running, %u background queued; "
+           "after it %u measured starts, at most %u running; %u of %u tasks finished (pool counted "
+           "%u): %s\n",
+           st.workers, full, st.workers_steady, steady, pre, bg_pre, bg_running_at_tick,
+           bg_queued_at_tick, post_starts, post, fin, n, st.tasks_run,
            !held ? "FAIL" : engaged ? "engaged" : "NOT ENGAGED");
     return held && engaged ? 0 : 1;
 }
