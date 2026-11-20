@@ -78,7 +78,7 @@ layout(constant_id = 0) const bool DEPTH_REVERSED = false;
  * `snap` are the vertex stage's; `cover` turns on the blended cover discard
  * and `fc` maps gl_FragCoord to PSX screen space for both portal discards.
  * The vertex stage's block continues past `fc` with the material pass's
- * class mask. */
+ * class mask and the depth convention word. */
 layout(push_constant) uniform TerrainPC {
     vec4 cbase;
     vec4 cdims;

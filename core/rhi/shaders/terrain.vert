@@ -25,6 +25,11 @@
 /* TERRAIN_READBACK: the shared-vertex position readback, drawn as points
  * into an RGBA32_UINT target (rb_emit); the position chain is the shipped
  * stage's, unchanged. Diagnostic only. */
+/* TERRAIN_DEPTH_SPEC: the depth convention from specialization constant 0
+ * (DEPTH_REVERSED), fixed per pipeline, in place of pc.depth_rev. A
+ * comparison build for the cost of the run-time select; the shipped stages
+ * read pc.depth_rev, so one compiled stage serves the forward-class
+ * pre-pass and key pipelines and the reversed-class scene pipelines. */
 
 /* Terrain sector-mesh vertex stage - the retained-terrain GPU path
  * (extraction rearchitecture, seam 2).
@@ -189,6 +194,11 @@ layout(push_constant) uniform TerrainPC {
     vec4 fc;
     /* The resolution classes this material pass keeps: bit c of word c/32. */
     uvec4 cls_mask[2];
+    /* The bound pipeline's depth convention (op_scene_clip): nonzero =
+     * reversed, z_ndc = 1/vz; 0 = forward, z_ndc = 1 - 1/vz. The value
+     * specialization constant 0 gives the scene stages for the same
+     * pipeline (rhi_bound_depth_reversed). */
+    int  depth_rev;
 } pc;
 
 /* scene_to_clip mirror, term for term in float - a fitted affine loses ~5
@@ -348,11 +358,14 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
                                     * (terrain.c tn_face_water) */
 /* admit (LP): bits 19-23; otbias: bits 24-28 */
 
-/* Depth convention + PSX-affine interpolation - the scene stages' spec
- * constants (psx_scene.vert), captured at pipeline creation. The cache's
- * pre-pass pipelines are FORWARD-class, so DEPTH_REVERSED is false there and
- * they write the pre-pass image's 1 - 1/vz beside prepass.vert. */
+/* PSX-affine interpolation - the scene stages' spec constant 1
+ * (psx_scene.vert), captured at pipeline creation. The depth convention is
+ * pc.depth_rev: the cache's pre-pass and key pipelines are FORWARD-class and
+ * write the pre-pass image's 1 - 1/vz beside prepass.vert, its scene
+ * pipelines the scene class's convention, through one compiled stage. */
+#ifdef TERRAIN_DEPTH_SPEC
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
+#endif
 layout(constant_id = 1) const bool AFFINE_UV = false;
 /* Spec-constant 4, as terrain_shade.glsl: the scene is submitted through one
  * ordering table, so a terrain key is stored in its bucket's tier order
@@ -3251,7 +3264,12 @@ void main()
     float vzo = op_scene_vz(vzs);
     float Wu  = vzs;                       /* inW = pvz = the same view-Z */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
-    gl_Position = op_scene_clip(clip_of(sscr), vzo, AFFINE_UV, DEPTH_REVERSED);
+#ifdef TERRAIN_DEPTH_SPEC
+    const bool depthRev = DEPTH_REVERSED;
+#else
+    const bool depthRev = pc.depth_rev != 0;
+#endif
+    gl_Position = op_scene_clip(clip_of(sscr), vzo, AFFINE_UV, depthRev);
     vUV    = uv * q;
     vColor = col * q;
     vQ     = q;

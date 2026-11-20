@@ -848,8 +848,28 @@ typedef struct {
                             * kflags); terrain_faceid.frag reads all three as its words */
     float   fc[4];         /* gl_FragCoord -> PSX screen affine, read by the portal discards */
     uint32_t cls_mask[8];  /* mat_pass >= 0: bit c keeps the faces of resolution class c */
+    int32_t depth_rev;     /* the bound pipeline's depth convention, set at push (tc_push) */
 } tc_pc;
-_Static_assert(sizeof(tc_pc) == 112, "tc_pc mirrors terrain.vert TerrainPC");
+_Static_assert(sizeof(tc_pc) == 116, "tc_pc mirrors terrain.vert TerrainPC");
+_Static_assert(offsetof(tc_pc, depth_rev) == 112, "tc_pc mirrors terrain.vert TerrainPC");
+_Static_assert(sizeof(tc_pc) <= 128, "within the 128-byte push-constant minimum");
+
+/** @brief Push a terrain block with depth_rev set to the bound pipeline's depth convention.
+ *
+ * terrain.vert selects its clip-space z from depth_rev (op_scene_clip), so
+ * one compiled vertex stage serves the forward-class pre-pass and key
+ * pipelines and the scene-class pipelines; the value is the one
+ * specialization constant 0 gives the bound pipeline
+ * (rhi_bound_depth_reversed). Every push of a terrain block goes through
+ * here.
+ * @param dev Device.
+ * @param pc The block; depth_rev is overwritten in the pushed copy. */
+static void tc_push(rhi_device *dev, const tc_pc *pc)
+{
+    tc_pc q = *pc;
+    q.depth_rev = rhi_bound_depth_reversed(dev) ? 1 : 0;
+    rhi_push_constants(dev, &q, sizeof q);
+}
 
 /* --vertex-precision integer, latched once per RHI frame (below) so every
  * arena draw of one present agrees. The renderer's snap state is live: a
@@ -1022,13 +1042,37 @@ int openpete_tercache_faceid(void)
     return s_on;
 }
 
+/* The shipped stages compiled with TERRAIN_DEPTH_SPEC: the depth
+ * convention from specialization constant 0, one stage per depth class, in
+ * place of the push-constant select (k_tc_vert order). */
+static const char *const k_tc_vert_dspec[OPENPETE_MATERIAL_TER_VARIANTS] = {
+    "terrain_dspec.vert.spv", "terrain_anim_dspec.vert.spv", "terrain_near_dspec.vert.spv",
+    "terrain_cells_anim_dspec.vert.spv", "terrain_cells_near_dspec.vert.spv",
+};
+
+/** @brief Return whether OPENPETE_TERRAIN_DEPTH_SPEC selects the specialized-depth stages.
+ *
+ * Set and not "0": the shipped row's stages take their depth convention
+ * from specialization constant 0, the comparison build of the run-time
+ * select. Read from the environment on every call, so the launcher's
+ * describe, bring-up's init and every material pipeline take the same
+ * stage.
+ * @return 1 or 0. */
+static int tc_depth_spec(void)
+{
+    const char *e = getenv("OPENPETE_TERRAIN_DEPTH_SPEC");
+    return (e && *e && *e != '0') ? 1 : 0;
+}
+
 /** @brief Return the selected row's vertex stage of an arena family.
  *
+ * Row 0 under OPENPETE_TERRAIN_DEPTH_SPEC takes k_tc_vert_dspec.
  * @param v The family, a TC_V_* value.
  * @return The stage's SPIR-V name. */
 static const char *tc_vert(int v)
 {
-    return k_tc_vert[tc_stage_row()][v];
+    const int row = tc_stage_row();
+    return (row == 0 && tc_depth_spec()) ? k_tc_vert_dspec[v] : k_tc_vert[row][v];
 }
 
 /** @brief Build one cell-record pipeline set, one pipeline per TC_CP_* slot.
@@ -3698,14 +3742,14 @@ static void tc_faceid_issue(const tc_pc *pc, int arena, int bi, int cells, uint3
     if (!cells) {
         f.pad_[1] = (int32_t)first;
         f.pad_[2] = 3;
-        rhi_push_constants(s_tc.dev, &f, sizeof(f));
+        tc_push(s_tc.dev, &f);
         rhi_draw(s_tc.dev, n, first);
         return;
     }
     f.pad_[2] = 1;
     for (uint32_t i = 0; i < n; i++) {
         f.pad_[1] = (int32_t)((first + i) * per);
-        rhi_push_constants(s_tc.dev, &f, sizeof(f));
+        tc_push(s_tc.dev, &f);
         rhi_draw_instanced(s_tc.dev, per, 1, 0, first + i);
     }
 }
@@ -3782,7 +3826,7 @@ static void tc_draw_buf(int arena, int bi, const tc_buf *b, const tc_pc *pc)
         return;                           /* nothing selected in this buffer */
     }
     tc_draw_census(arena, b, pr);
-    rhi_push_constants(s_tc.dev, pc, sizeof(*pc));
+    tc_push(s_tc.dev, pc);
     if (pr->pv) rhi_bind_vertex_buffer2(s_tc.dev, pr->vb, pr->pv);
     else        rhi_bind_vertex_buffer(s_tc.dev, pr->vb);
     s_tc.cen_verts_whole += (uint64_t)nverts * (cells ? per : 1u);
@@ -4822,11 +4866,10 @@ static void tc_preview_descs(rhi_pipeline_desc d[OPTC_PREVIEW_PIPES])
     };
     static const rhi_blend_mode k_blend[4] = { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD,
                                                RHI_BLEND_SUBTRACT };
-    const int row = tc_stage_row();
     for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) {
         const int st = i / 4, c = i % 4;
         d[i] = (rhi_pipeline_desc){
-            .vert_spv = k_tc_vert[row][k_stage[st].v], .frag_spv = "terrain.frag.spv",
+            .vert_spv = tc_vert(k_stage[st].v), .frag_spv = "terrain.frag.spv",
             .blend = k_blend[c], .depth_write_off = c != 0, .depth_test = true,
             .terrain_pipeline = true, .terrain_near = k_stage[st].near,
             .terrain_cells = k_stage[st].cells, .terrain_anim = k_stage[st].anim,
@@ -5018,7 +5061,7 @@ static int tc_preview_bind(openpete_tercache_preview_gpu *g, int pipe, int i, co
     rhi_bind_texture_set(g->dev, g->dummy, 4);
     rhi_ubo_bind_at(g->dev, g->b[i].ubo, 5, 0);
     rhi_ubo_bind_at(g->dev, g->b[i].ubo, 6, 1);
-    rhi_push_constants(g->dev, pc, sizeof(*pc));
+    tc_push(g->dev, pc);
     return 0;
 }
 

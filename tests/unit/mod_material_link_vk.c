@@ -22,9 +22,9 @@ static const char* const k_capture = "mod_material_link_vk.stderr";
 #endif
 
 /* Push block sizes of the engine's material pipelines: psx_material_hd
- * (native_render.c, 80 B), tc_pc (native_terrain_cache.c, 112 B) and
+ * (native_render.c, 80 B), tc_pc (native_terrain_cache.c, 116 B) and
  * shadow_decal_tex_pc (native_render.c, 128 B). */
-enum { PC_MATERIAL = 80, PC_TERRAIN = 112, PC_DECAL = 128 };
+enum { PC_MATERIAL = 80, PC_TERRAIN = 116, PC_DECAL = 128 };
 
 /** @brief Redirect stderr to the capture file. */
 static void capture_begin(void) {

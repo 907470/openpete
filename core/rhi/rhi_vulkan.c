@@ -748,6 +748,7 @@ struct rhi_device {
     int                   desc_pool_n;
     VkPipelineLayout      cur_layout;  /* layout of the bound pipeline */
     VkShaderStageFlags    cur_pc_stages; /* its push-constant stage flags */
+    bool                  cur_depth_rev; /* its depth class's convention (rhi_bound_depth_reversed) */
 
     /* Reusable host-visible staging buffer for rhi_read_offscreen (the blocking
      * screenshot path). Persistent so it doesn't vkAllocateMemory/free each call;
@@ -7799,7 +7800,8 @@ static const void *stage_bytes(const uint32_t *words, size_t nw, const char *nam
  * convention on this device (depth_convention_init): true = reversed
  * z_ndc = 1/vz, false = forward z_ndc = 1 - 1/vz (psx_viewz.glsl
  * op_scene_clip). Declared by the stages that emit scene depth
- * (psx_scene.vert, quad.vert, terrain.vert, shadow_decal_tex.vert) and by
+ * (psx_scene.vert, quad.vert, shadow_decal_tex.vert; terrain.vert reads it
+ * from its push constants, rhi_bound_depth_reversed) and by
  * every stage that decodes gl_FragCoord.z back to view-Z (hd_tex_cutout.frag,
  * quad_key.frag, psx_scene_key.frag, terrain_shade.glsl, shadow_decal.frag,
  * shadow_decal_tex.frag, openpete_psx_material.glsl, openpete_psx_decal.glsl)
@@ -7808,6 +7810,11 @@ static const void *stage_bytes(const uint32_t *words, size_t nw, const char *nam
 bool rhi_depth_reversed(const rhi_device *dev)
 {
     return dev && dev->depth_rev[RHI_DEPTH_SCENE];
+}
+
+bool rhi_bound_depth_reversed(const rhi_device *dev)
+{
+    return dev->cur_depth_rev;
 }
 
 /* Vertex-stage specialization constant 1 (`AFFINE_UV`): PSX-affine UV/colour
@@ -13121,6 +13128,7 @@ void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe)
     dev->null_binds += pipe->pipeline == VK_NULL_HANDLE;
     dev->cur_layout = pipe->layout; /* for bind_vram / push_constants */
     dev->cur_pc_stages = pipe->pc_stages;
+    dev->cur_depth_rev = dev->depth_rev[pipe->desc.depth_class];
     vkCmdBindPipeline(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipe->pipeline);
     /* A pipeline holding depth bias static invalidates the dynamic value, so
      * the next depth_bias pipeline records the last factors again. */

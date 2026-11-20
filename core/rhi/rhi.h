@@ -1395,6 +1395,18 @@ void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
  * @return true when reversed; false when forward or for NULL. */
 bool          rhi_depth_reversed(const rhi_device *dev);
 
+/** @brief Return the depth convention of the pipeline last bound in the open frame: true when reversed.
+ *
+ * The value specialization constant 0 (DEPTH_REVERSED) takes for that
+ * pipeline: the device's convention for the pipeline's depth class
+ * (rhi_pipeline_desc.depth_class). A stage that reads the convention from a
+ * push constant instead of the specialization constant (terrain.vert) is
+ * pushed this value, so one compiled stage serves both classes and writes
+ * the depth the specialized stage would. False before any bind.
+ * @param dev Device.
+ * @return true when the bound pipeline's depth class is reversed. */
+bool          rhi_bound_depth_reversed(const rhi_device *dev);
+
 /* rhi_depth_format and rhi_depth_pipelines_by_compare are the depth
  * convention's engagement counters; rhi_depth_report logs both. */
 /** @brief Return the chosen depth attachment format as a VkFormat value.

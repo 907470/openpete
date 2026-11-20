@@ -229,12 +229,16 @@ endforeach()
 # rounded per sector, so a vertex shared by two sectors can round apart.
 # <variant>_rb.vert / <variant>_ctlrb.vert: the stock and control stages
 # with TERRAIN_READBACK, the shared-vertex position readback
-# (OPENPETE_TERRAIN_READBACK). Diagnostic only; no shipped configuration
-# selects them. They go through the same SSA passes: the NVIDIA memory-form
+# (OPENPETE_TERRAIN_READBACK). <variant>_dspec.vert: the stock stages with
+# TERRAIN_DEPTH_SPEC, the depth convention from specialization constant 0
+# instead of the push constant (OPENPETE_TERRAIN_DEPTH_SPEC=1), the
+# comparison for the run-time select's cost. Diagnostic only; no shipped
+# configuration selects them. They go through the same SSA passes: the NVIDIA memory-form
 # fault is a property of the stage's form.
 foreach(vv plain:ctl anim:ctl near:ctl cells_near:ctl cells_anim:ctl
            plain:rb anim:rb near:rb cells_near:rb cells_anim:rb
-           plain:ctl:rb anim:ctl:rb near:ctl:rb cells_near:ctl:rb cells_anim:ctl:rb)
+           plain:ctl:rb anim:ctl:rb near:ctl:rb cells_near:ctl:rb cells_anim:ctl:rb
+           plain:dspec anim:dspec near:dspec cells_near:dspec cells_anim:dspec)
     string(REPLACE ":" ";" vp "${vv}")
     list(GET vp 0 v)
     set(defs "")
@@ -246,6 +250,10 @@ foreach(vv plain:ctl anim:ctl near:ctl cells_near:ctl cells_anim:ctl
     if(vv MATCHES ":rb$")
         list(APPEND defs --define-macro TERRAIN_READBACK=1)
         set(sfx ${sfx}rb)
+    endif()
+    if(vv MATCHES ":dspec$")
+        list(APPEND defs --define-macro TERRAIN_DEPTH_SPEC=1)
+        set(sfx dspec)
     endif()
     if(v STREQUAL "plain")
         set(name terrain_${sfx})
