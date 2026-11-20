@@ -44,7 +44,8 @@ A blob is verified on read by decoding and re-digesting; a blob whose pixels
 do not hash to its name is deleted. The state file golden-ref.state sits in
 the parent directory of the resolved store (never inside it, since gc frees
 every store entry no manifest names) and holds `key=value` lines:
-`archive=<mirror clone path>` and
+`archive=<mirror clone path>` (one line per history rewrite, oldest
+first) and
 `decomp-reproducibility=pass|fail <details>`.
 
 Subcommands:
@@ -902,6 +903,20 @@ def read_state():
     return out
 
 
+def read_state_list(key):
+    """Every value of key in the state file, in file order."""
+    out = []
+    try:
+        with open(state_path()) as fh:
+            for line in fh:
+                k, sep, v = line.strip().partition("=")
+                if sep and k.strip() == key:
+                    out.append(v.strip())
+    except OSError:
+        pass
+    return out
+
+
 def blob_path(digest):
     """Store path of a verdict digest."""
     return os.path.join(store_dir(), digest + ".png")
@@ -1273,25 +1288,53 @@ def price(nrows):
 
 
 class Archive:
-    """The archive named by golden-ref.state and its commit map."""
+    """The archives named by golden-ref.state, one `archive=` line per
+    history rewrite, oldest first, each a mirror of the history before that
+    rewrite with the rewrite's commit-map.txt beside its objects.
+
+    A sha is looked up newest archive first: it goes through that archive's
+    map (rewritten -> pre-rewrite) and is resolved there; the mapped id then
+    continues to the next older archive, so a revision rewritten twice
+    reaches the archive that holds its tracked files. `path` and `cf` name
+    the archive the last rev() resolved in; read() tries every archive."""
 
     def __init__(self):
-        self.path = read_state().get("archive") or None
-        if self.path and not os.path.isdir(self.path):
-            self.path = None
-        self.map = load_commit_map(self.path) if self.path else {}
-        self.cf = CatFile(self.path) if self.path else None
+        paths = [p for p in read_state_list("archive") if os.path.isdir(p)]
+        self.passes = [(p, load_commit_map(p), CatFile(p)) for p in reversed(paths)]
+        self.path = self.passes[0][0] if self.passes else None
+        self.cf = self if self.passes else None
+
+    def chain(self, sha):
+        """(archive path, commit) pairs along the rewrites, newest first,
+        for each archive where the mapped id resolves."""
+        out, s = [], sha
+        for path, cmap, _ in self.passes:
+            s = cmap.get(s, s)
+            got = resolve(path, s)
+            if got:
+                out.append((path, got))
+        return out
 
     def rev(self, sha):
-        """The archive commit for a sha: mapped when rewritten."""
-        if not self.path:
+        """The first archive commit for a sha along the chain."""
+        c = self.chain(sha)
+        if not c:
             return None
-        return resolve(self.path, self.map.get(sha, sha))
+        self.path = c[0][0]
+        return c[0][1]
+
+    def read(self, spec):
+        """An object spec's bytes from the first archive that holds it."""
+        for _, _, cf in self.passes:
+            data = cf.read(spec)
+            if data is not None:
+                return data
+        return None
 
     def close(self):
-        """End the archive reader."""
-        if self.cf:
-            self.cf.close()
+        """End the archive readers."""
+        for _, _, cf in self.passes:
+            cf.close()
 
 
 def golden_at_rows(a, arch, src_repo, src_sha, local_cf):
@@ -1330,19 +1373,19 @@ def golden_at_rows(a, arch, src_repo, src_sha, local_cf):
 
 def archive_tile(arch, row, tdir):
     """Archive object spec of a row's tile whose decoded digest equals
-    the row's, or None. Read at the row's revision (through the commit map)
-    and the tile's tracked path."""
+    the row's, or None. Read at the row's revision in each archive along the
+    rewrite chain and the tile's tracked path."""
     if not arch.path:
         return None
-    sha = arch.rev(row["revision"])
-    if not sha:
-        return None
-    spec = "%s:%s/%s" % (sha, tdir, row["tile"])
-    data = arch.cf.read(spec)
-    if data is None:
-        return None
-    got = digest_bytes(data)
-    return spec if got and got[0] == row["digest"] else None
+    for _, sha in arch.chain(row["revision"]):
+        spec = "%s:%s/%s" % (sha, tdir, row["tile"])
+        data = arch.read(spec)
+        if data is None:
+            continue
+        got = digest_bytes(data)
+        if got and got[0] == row["digest"]:
+            return spec
+    return None
 
 
 def materialize_supported():
@@ -1386,8 +1429,8 @@ def cmd_golden_at(a):
         # A revision before the cutover carries no manifest: its tracked PNGs
         # are the reference, read from the archive where it holds the
         # revision, else from this repository; nothing verifies them.
-        repo, sha = (arch.path, arch.rev(src_sha)) if arch.path else (None,
-                                                                      None)
+        sha = arch.rev(src_sha) if arch.path else None
+        repo = arch.path if sha else None
         if not sha:
             repo, sha = src_repo, src_sha
         ls = git("ls-tree", "-r", "--name-only", sha, "--",

@@ -1,5 +1,5 @@
 # mutable globals whose demand cascades, each row with its annotator chain
 # key-columns: 3
 # written-by: census
-# head: 04f95ff2d9872d7cabdfc99a079f2c98c46aaa0d
+# head: 61cff6051abea188d9f8d8842819ec9a0e8fb31e
 file	function	name	kind	form	note
