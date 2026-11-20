@@ -1,9 +1,6 @@
 # linux-release-launcher: linux-release (shared recomp module) + the
 # first-boot module build, no --record (drops libav deps).
 include(${CMAKE_CURRENT_LIST_DIR}/linux-release.cmake)
-# Dist hygiene - same rationale as windows-mingw-launcher.cmake.
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=openpete -ffile-prefix-map=${CMAKE_BINARY_DIR}=openpete-build")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=openpete -ffile-prefix-map=${CMAKE_BINARY_DIR}=openpete-build")
 openpete_preset_default(OPENPETE_RECOMP_FIRST_BOOT ON)
 openpete_preset_default(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 openpete_preset_default(OPENPETE_ENABLE_RECORD OFF)

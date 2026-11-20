@@ -67,7 +67,9 @@ Compiler: Windows archive and Linux AppImage bundle one; Linux tar uses
 `cc` on PATH or `OPENPETE_CC`. `OPENPETE_MOD_CC` overrides first. Flags:
 `-shared -fPIC -O2 -g -fno-strict-aliasing -Wall -Wundef
 -I sdk/games/<game>/ -I sdk/ src/*.c sdk/openpete_mod_abi.c`, output
-`.build/<game>/<id>.so|.dll`; Windows adds `-Wl,--export-all-symbols`, so
+`.build/<game>/<id>.so|.dll`, plus `-ffile-prefix-map` remaps (cwd `.`,
+compiler tree `toolchain`, SDK `sdk`, mod dir `mods/<id>`) so the object
+holds no machine path; Windows adds `-Wl,--export-all-symbols`, so
 a `dllexport` in a source does not drop the unmarked entry point and
 descriptors from the DLL. `sdk/games/<game>/` holds the game's
 symbols, wrappers, structs and `openpete_game.h` (`OPENPETE_GAME_ID`,

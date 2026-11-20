@@ -92,9 +92,17 @@ Linux:
 
 ``` sh
 cc -shared -fPIC -D_GNU_SOURCE -O2 -fno-strict-aliasing -Wall -Wundef \
+   -ffile-prefix-map=<sdk>=sdk -ffile-prefix-map="$PWD"=mods/<id> \
    -I <sdk>/games/<game> -I <sdk> \
    -o .build/<game>/<id>.so src/*.c <sdk>/openpete_mod_abi.c
 ```
+
+Run from the mod's directory. The two `-ffile-prefix-map` options replace
+the SDK and mod directories with `sdk` and `mods/<id>` in every path the
+object records (debug information, `__FILE__`), so a prebuilt object you
+publish names no folder of your machine. The engine adds the same remaps,
+plus its working directory as `.` and the compiler's install directory as
+`toolchain`.
 
 With the bundled Linux compiler (`recomp/tools/clang/bin/clang`, which the
 AppImage always carries and the engine prefers to `OPENPETE_CC`, `CC` and
@@ -114,6 +122,7 @@ Windows, with the bundled llvm-mingw or any x86_64 MinGW compiler:
 ``` sh
 x86_64-w64-mingw32-gcc -shared -Wl,--export-all-symbols -O2 \
    -fno-strict-aliasing -Wall -Wundef -static-libgcc \
+   -ffile-prefix-map=<sdk>=sdk -ffile-prefix-map="$PWD"=mods/<id> \
    -I <sdk>/games/<game> -I <sdk> \
    -o .build/<game>/<id>.dll src/*.c <sdk>/openpete_mod_abi.c
 ```
@@ -140,6 +149,7 @@ defines `OPENPETE_MOD_ANY_GAME`:
 
 ``` sh
 cc -shared -fPIC -D_GNU_SOURCE -O2 -fno-strict-aliasing -Wall -Wundef \
+   -ffile-prefix-map=<sdk>=sdk -ffile-prefix-map="$PWD"=mods/<id> \
    -DOPENPETE_MOD_ANY_GAME -I <sdk> \
    -o .build/any/<id>.so src/*.c <sdk>/openpete_mod_abi.c
 ```

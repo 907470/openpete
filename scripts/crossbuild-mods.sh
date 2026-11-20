@@ -15,6 +15,8 @@
 #
 #   <cc> -shared -Wl,--export-all-symbols -O2 -g -fno-strict-aliasing \
 #        -Wall -Wundef -static-libgcc \
+#        -ffile-prefix-map=<cwd>=. -ffile-prefix-map=<toolchain>=toolchain \
+#        -ffile-prefix-map=<sdk>=sdk -ffile-prefix-map=<mod>=mods/<id> \
 #        -I<sdk>/games/<game> -I<sdk> \
 #        -o <out>/<id>/.build/<game>/<id>.dll <mod>/src/*.c \
 #        <sdk>/openpete_mod_abi.c
@@ -204,8 +206,16 @@ else
 fi
 [[ ${#CANDIDATES[@]} -gt 0 ]] || die "no mod.toml under $MODS_DIR" 64
 
+# Path remaps in mod_compile's order (mod_cc_map_templates, most specific
+# last): the working directory, the compiler's install tree (the parent of
+# its bin/), the SDK and, per mod below, the mod directory, so the DLL
+# names no directory of this machine.
+CC_PATH=$(command -v -- "$CC")
+CC_TREE=$(dirname -- "$(dirname -- "$CC_PATH")")
 FLAGS=(-shared -Wl,--export-all-symbols -O2 -g -fno-strict-aliasing -Wall
        -Wundef -static-libgcc
+       "-ffile-prefix-map=$PWD=." "-ffile-prefix-map=$CC_TREE=toolchain"
+       "-ffile-prefix-map=$SDK_DIR=sdk"
        -I"$SDK_DIR/games/$GAME" -I"$SDK_DIR")
 
 built=0; skipped=0; failed=0
@@ -237,7 +247,7 @@ for dir in "${CANDIDATES[@]}"; do
     # before the compile, and the DLL is asserted to exist after it.
     rm -f -- "$dll" "$log"
 
-    if "$CC" "${FLAGS[@]}" -o "$dll" "${srcs[@]}" \
+    if "$CC" "${FLAGS[@]}" "-ffile-prefix-map=$mod_dir=mods/$id" -o "$dll" "${srcs[@]}" \
             "$SDK_DIR/openpete_mod_abi.c" >"$log" 2>&1 && [[ -f "$dll" ]]; then
         # The stamp would mark the DLL as built from a known source+SDK
         # key; a cross-built DLL carries none, so a Windows host with a

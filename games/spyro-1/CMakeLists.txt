@@ -246,6 +246,9 @@ if(OPENPETE_COMPILE_MODS)
             VERBATIM)
         set(_staged_mod_dlls "")
         if(OPENPETE_STAGE_MOD_DLLS)
+        # The compiler's install tree: the parent of its bin/ directory.
+        get_filename_component(_mod_cc_tree ${CMAKE_C_COMPILER} DIRECTORY)
+        get_filename_component(_mod_cc_tree ${_mod_cc_tree} DIRECTORY)
         file(GLOB _mod_manifests CONFIGURE_DEPENDS
              ${OPENPETE_COMPILE_MODS_DIR}/*/mod.toml)
         foreach(_manifest IN LISTS _mod_manifests)
@@ -280,8 +283,15 @@ if(OPENPETE_COMPILE_MODS)
                     # uses on Windows - keep in sync - plus -static-libgcc:
                     # the exe ships no mingw runtime DLLs (mingw-w64.cmake
                     # links -static), so the mod DLL must be self-contained.
+                    # The path remaps are mod_compile's mod_cc_map_templates
+                    # in its order (most specific last): the DLL names no
+                    # directory of the build machine.
                     COMMAND ${CMAKE_C_COMPILER} -shared -Wl,--export-all-symbols
                             -O2 -g -fno-strict-aliasing -Wall -Wundef -static-libgcc
+                            -ffile-prefix-map=${CMAKE_CURRENT_BINARY_DIR}=.
+                            -ffile-prefix-map=${_mod_cc_tree}=toolchain
+                            -ffile-prefix-map=${OPENPETE_GAME_EXE_DIR}/sdk=sdk
+                            -ffile-prefix-map=${_src_mod_dir}=mods/${_mod_id}
                             -I${OPENPETE_GAME_EXE_DIR}/sdk/games/${_g}
                             -I${OPENPETE_GAME_EXE_DIR}/sdk
                             -o ${_dll} ${_mod_srcs}

@@ -7,6 +7,22 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Path remaps for every preset: the source tree reads as `openpete` and the
+# build tree as `openpete-build` in every path an object carries (__FILE__,
+# assert strings, DWARF names and DW_AT_comp_dir), so a binary a bug report
+# ships (the recompiled module, the executable) names no directory of the
+# build machine. The build tree comes last because it sits inside the
+# source tree in every preset and GCC applies the last remap that matches.
+# Set on the flags variables (after project(), where the preset file ran),
+# so the PSXRecomp external project that forwards CMAKE_C_FLAGS takes them.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+    set(_op_prefix_map
+        "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=openpete -ffile-prefix-map=${CMAKE_BINARY_DIR}=openpete-build")
+    string(APPEND CMAKE_C_FLAGS " ${_op_prefix_map}")
+    string(APPEND CMAKE_CXX_FLAGS " ${_op_prefix_map}")
+    unset(_op_prefix_map)
+endif()
+
 # OpenAL has no Config-mode package file in the openal-soft prebuilt, so
 # when cross-compiling with MinGW seed the cache vars FindOpenAL.cmake reads.
 # Native Linux uses the system OpenAL via FindOpenAL's default search.
