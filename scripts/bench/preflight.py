@@ -24,7 +24,8 @@ Checks:
                 must be byte-identical to it)
   idle-linux    no game, emulator, compiler, linker or profiler by process name
   idle-windows  no openpete / duckstation exe on the Windows side (tasklist)
-  load-linux    CPU busy over 2 s (/proc/stat) at most 10% of all cores
+  load-linux    CPU busy over 2 s (/proc/stat) at most 10% of all cores, and no
+                single process above 50% of one core (/proc/<pid>/stat)
   load-windows  Windows CPU load, 3 s typeperf mean, at most 20%
   golden-lock   the fleet golden lock of the target host is free
   display       Windows display awake: last input more recent than the
@@ -75,6 +76,10 @@ import timing_lock                                          # noqa: E402
 
 EXIT_REFUSED = 65
 LOAD_PCT = 10.0
+# A single process above this share of one core fails the load check even
+# when the machine-wide share is under LOAD_PCT (one busy thread on 16 cores
+# is 6%).
+HOT_PROC_PCT = 50.0
 LOAD_SAMPLE_S = 2.0
 WIN_LOAD_PCT = 20.0
 PTAH_MEM_MIN_KB = 8 * 1024 * 1024
@@ -308,7 +313,36 @@ def busy_pct(before, after):
     return 100.0 * (b1 - b0) / max(1, t1 - t0)
 
 
-def load_check(name, before, after, load1, cores):
+def proc_ticks(text):
+    """{pid: (comm, utime+stime ticks)} from concatenated /proc/<pid>/stat lines."""
+    out = {}
+    for line in text.splitlines():
+        head, sep, tail = line.rpartition(") ")
+        if not sep or " (" not in head:
+            continue
+        pid, comm = head.split(" (", 1)
+        f = tail.split()
+        try:
+            out[pid.strip()] = (comm, int(f[11]) + int(f[12]))
+        except (IndexError, ValueError):
+            pass
+    return out
+
+
+def hot_processes(before, after, seconds, exclude=(), hz=100):
+    """[(pct of one core, pid, comm)] above HOT_PROC_PCT between two
+    proc_ticks maps, hottest first."""
+    hot = []
+    for pid, (comm, t1) in after.items():
+        if pid in exclude or pid not in before:
+            continue
+        pct = 100.0 * (t1 - before[pid][1]) / hz / seconds
+        if pct > HOT_PROC_PCT:
+            hot.append((pct, pid, comm))
+    return sorted(hot, reverse=True)
+
+
+def load_check(name, before, after, load1, cores, hot=()):
     """The load check from two /proc/stat readings LOAD_SAMPLE_S apart; the
     1-minute load average is recorded but not judged, since it still holds
     the previous leg's process for a minute after it exits."""
@@ -316,20 +350,36 @@ def load_check(name, before, after, load1, cores):
         pct = busy_pct(before, after)
     except (ValueError, IndexError):
         return Check(name, "UNCHECKED", "/proc/stat unreadable")
-    st = "PASS" if pct <= LOAD_PCT else "FAIL"
-    return Check(name, st, "%.1f%% busy over %.0f s on %s cores (bound %.0f%%); load1 %s"
-                 % (pct, LOAD_SAMPLE_S, cores, LOAD_PCT, load1))
+    st = "PASS" if pct <= LOAD_PCT and not hot else "FAIL"
+    hot_s = "; above %.0f%% of a core: %s" % (HOT_PROC_PCT, ", ".join(
+        "%s[%s] %.0f%%" % (c, p, v) for v, p, c in hot[:4])) if hot else ""
+    return Check(name, st, "%.1f%% busy over %.0f s on %s cores (bound %.0f%%); load1 %s%s"
+                 % (pct, LOAD_SAMPLE_S, cores, LOAD_PCT, load1, hot_s))
+
+
+def _local_proc_stats():
+    lines = []
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            try:
+                with open("/proc/%s/stat" % d) as f:
+                    lines.append(f.read())
+            except OSError:
+                pass
+    return "".join(lines)
 
 
 def check_load_linux():
     try:
-        before = open("/proc/stat").read()
+        before, pb = open("/proc/stat").read(), proc_ticks(_local_proc_stats())
         time.sleep(LOAD_SAMPLE_S)
-        after = open("/proc/stat").read()
+        after, pa = open("/proc/stat").read(), proc_ticks(_local_proc_stats())
         load1 = open("/proc/loadavg").read().split()[0]
     except OSError:
         return Check("load-linux", "UNCHECKED", "/proc/stat unreadable")
-    return load_check("load-linux", before, after, load1, os.cpu_count())
+    hot = hot_processes(pb, pa, LOAD_SAMPLE_S,
+                        _token_pids() | {str(os.getpid())}, os.sysconf("SC_CLK_TCK"))
+    return load_check("load-linux", before, after, load1, os.cpu_count(), hot)
 
 
 def check_idle_windows():
@@ -467,7 +517,10 @@ def check_windows_local(exe, args):
 REMOTE_SH = r"""
 echo "nproc=$(nproc)"
 echo "loadavg=$(cut -d' ' -f1 /proc/loadavg)"
-echo "stat0=$(grep '^cpu ' /proc/stat)"; sleep 2; echo "stat1=$(grep '^cpu ' /proc/stat)"
+echo "stat0=$(grep '^cpu ' /proc/stat)"; cat /proc/[0-9]*/stat 2>/dev/null | sed 's/^/pstat0=/'
+sleep 2
+echo "stat1=$(grep '^cpu ' /proc/stat)"; cat /proc/[0-9]*/stat 2>/dev/null | sed 's/^/pstat1=/'
+echo "clk_tck=$(getconf CLK_TCK)"
 grep -E '^(MemAvailable|GPUActive):' /proc/meminfo | sed -E 's/: +/=/; s/ kB$//'
 lk="$FLEET_ROOT/golden.lock"
 if [ ! -e "$lk" ] || flock -n "$lk" true; then echo golden=free
@@ -530,8 +583,14 @@ def remote_checks(host, cfg, exe):
     out.append(Check("idle", "FAIL" if procs else "PASS",
                      "%d busy: %s" % (len(procs), "; ".join(p[:80] for p in procs[:4]))
                      if procs else "no game, emulator, compiler or profiler process"))
+    try:
+        hz = int(_one(d, "clk_tck"))
+    except ValueError:
+        hz = 100
+    hot = hot_processes(proc_ticks("\n".join(d.get("pstat0", []))),
+                        proc_ticks("\n".join(d.get("pstat1", []))), LOAD_SAMPLE_S, (), hz)
     out.append(load_check("load", _one(d, "stat0"), _one(d, "stat1"),
-                          _one(d, "loadavg"), _one(d, "nproc")))
+                          _one(d, "loadavg"), _one(d, "nproc"), hot))
     try:
         avail = int(_one(d, "MemAvailable"))
         gpua = _one(d, "GPUActive")

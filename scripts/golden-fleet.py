@@ -2930,6 +2930,11 @@ class Coordinator:
         self.span.start_marker()
         try:
             if local_build:
+                # The build loads every local core: wait out a timing window.
+                sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                "bench"))
+                import timing_lock
+                timing_lock.wait_free(label="golden-fleet local build")
                 self.local_build()
             self.span.take_build_lock()
             segs = [("source", self.tree, source_set(self.tree, self.pb, self.run_games()))]
@@ -3144,8 +3149,33 @@ class Coordinator:
         hs.dropped = why
         print(f"[fleet] {hs.name}: dropped for the rest of the run: {why}")
 
+    def local_paused(self, hs):
+        """True when `hs` is this machine and another job holds the timing window.
+
+        The local host takes no new unit while a timing leg runs here
+        (scripts/bench/timing_lock.py): a unit's captures load every core the
+        leg is measured on. Its running unit finishes; the timing job's
+        preflight waits for it. The other hosts keep taking units, and the
+        local host resumes when the window closes."""
+        if not hs.host.local:
+            return False
+        bench = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench")
+        if bench not in sys.path:
+            sys.path.insert(0, bench)
+        import timing_lock
+        st = timing_lock.state()
+        paused = st["held"] and not st["mine"]
+        if paused != getattr(hs, "timing_paused", False):
+            print(f"[fleet] {hs.name}: " + (f"takes no new unit: timing window "
+                                            f"{timing_lock.describe(st)}" if paused
+                                            else "timing window closed; taking units"))
+            hs.timing_paused = paused
+        return paused
+
     def next_job(self, pending, hs):
         """Return the first pending job this host may take, or None."""
+        if self.local_paused(hs):
+            return None
         for job in pending:
             if job.pinned in (None, hs.name):
                 return job
@@ -3164,6 +3194,10 @@ class Coordinator:
                 self.place(pending, deadline)
                 running = [hs for hs in self.hosts if hs.current]
                 if not running:
+                    if pending and any(self.local_paused(hs) for hs in self.hosts
+                                       if not hs.dropped):
+                        time.sleep(POLL_S)      # the local host waits out a timing window
+                        continue
                     break
                 time.sleep(POLL_S)
                 for hs in running:
@@ -3575,7 +3609,8 @@ class Coordinator:
         if not self.takeover_enabled():
             return
         for hs in sorted(self.hosts, key=lambda h: -h.speed):
-            if hs.current or hs.dropped or not hs.touched or self.next_job(pending, hs):
+            if (hs.current or hs.dropped or not hs.touched or self.local_paused(hs)
+                    or self.next_job(pending, hs)):
                 continue
             running = [h.current for h in self.hosts
                        if h is not hs and h.current and h.current.job.kind == "unit"

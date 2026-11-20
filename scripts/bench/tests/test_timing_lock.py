@@ -141,6 +141,36 @@ class TimingLockTest(unittest.TestCase):
         self.assertEqual(ok.returncode, 0, ok.stderr)
         self.assertFalse(timing_lock.state()["held"])
 
+    def test_fleet_local_host_paused(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "golden_fleet", os.path.join(ROOT, "scripts", "golden-fleet.py"))
+        gf = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gf)
+        owner = next(v for v in vars(gf).values()
+                     if isinstance(v, type) and "local_paused" in vars(v))
+
+        class Host:
+            def __init__(self, local):
+                self.local = local
+
+        class HS:
+            def __init__(self, local):
+                self.host, self.name = Host(local), "local" if local else "ptah"
+        fleet = owner.__new__(owner)
+        local, remote = HS(True), HS(False)
+        jobs = [type("J", (), {"pinned": None})()]
+        self.assertIs(owner.next_job(fleet, jobs, local), jobs[0])
+        h = timing_lock.try_acquire("windows leg")
+        try:
+            self.assertIsNone(owner.next_job(fleet, jobs, local))
+            self.assertIs(owner.next_job(fleet, jobs, remote), jobs[0])
+            os.environ[timing_lock.TOKEN_ENV] = h.token
+            self.assertIs(owner.next_job(fleet, jobs, local), jobs[0])
+        finally:
+            os.environ.pop(timing_lock.TOKEN_ENV, None)
+            h.release()
+
     def test_bash_gate(self):
         gate = os.path.join(ROOT, "scripts", "lib", "timing_gate.sh")
         sh = 'source %s; op_timing_gate unit-test; echo rc=$?' % gate

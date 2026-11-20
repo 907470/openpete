@@ -105,6 +105,19 @@ class ReadingsTest(unittest.TestCase):
         b2 = "cpu  300 0 100 1600 0 0 0 0 0 0\n"    # 200 busy of 1000
         self.assertEqual(preflight.load_check("load", a, b2, "0.5", 8).status, "FAIL")
 
+    def test_hot_process_fails_a_quiet_machine(self):
+        a = "cpu  100 0 100 800 0 0 0 0 0 0\n"
+        b = "cpu  130 0 130 1740 0 0 0 0 0 0\n"     # 6% busy machine-wide
+        st0 = "41 (python3) R 1 1 1 0 -1 0 0 0 0 0 100 50 0 0\n7 (my job) S 1 1 1 0 -1 0 0 0 0 0 1 1\n"
+        st1 = "41 (python3) R 1 1 1 0 -1 0 0 0 0 0 290 54 0 0\n7 (my job) S 1 1 1 0 -1 0 0 0 0 0 400 1\n"
+        hot = preflight.hot_processes(preflight.proc_ticks(st0), preflight.proc_ticks(st1),
+                                      2.0, exclude={"7"}, hz=100)
+        self.assertEqual([(round(v), p, c) for v, p, c in hot], [(97, "41", "python3")])
+        c = preflight.load_check("load-linux", a, b, "0.9", 16, hot)
+        self.assertEqual(c.status, "FAIL")
+        self.assertIn("python3[41] 97%", c.reading)
+        self.assertEqual(preflight.load_check("load-linux", a, b, "0.9", 16, []).status, "PASS")
+
     def test_display_states(self):
         awake = preflight.check_display({"idle_ms": 10000, "videoidle_ac": 900, "refresh": []}, True)
         asleep = preflight.check_display({"idle_ms": 7200000, "videoidle_ac": 900, "refresh": []},
