@@ -52,10 +52,14 @@ line. The savestates' card paths are replaced by `card1.mcd` and
 
 Files that are not text (the savestates and memory cards, a mod's saved
 data, files and compiled code, the screenshots, the recordings of timing
-and sound, the crash dump) are not changed. When one of them holds your
-home folder, user name or computer name, it is kept in the zip and the log
-names it on a `shipped ... unchanged with identity matches` line; read
-those lines before you send the zip.
+and sound) are not changed. When one of them holds your home folder, user
+name or computer name, it is kept in the zip, a second notification beside
+**BUG REPORT: SAVED** reads **Some files in this report contain your user
+folder or computer name:** with their names, and the log names each on a
+`shipped ... unchanged with identity matches` line; check those files
+before you send the zip. The crash dump the previous run left is left out
+when it holds any of them. The game code and mods compiled by openpete
+hold no folder of your computer.
 
 Other things that identify you, such as your real name or an e-mail
 address, are not replaced: leave them out of the note. A mod setting

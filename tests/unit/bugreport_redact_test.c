@@ -12,9 +12,13 @@
  * Pass: a text member whose redaction runs out of memory, a bk2 that does
  * not parse, a text member whose redacted text still holds the home
  * directory, a state image that does not parse and a member whose name holds
- * an identity are dropped and listed with a reason; a bk2's entries are
- * redacted; a binary member holding the home directory ships flagged with
- * its counts.
+ * an identity are dropped and listed with a reason; a crash dump holding
+ * the home directory is dropped with a reason and a clean one ships; a bk2's
+ * entries are redacted; a binary member holding the home directory ships
+ * flagged with its counts.
+ *
+ * Flag line: no flagged member writes ""; one names it after the fixed lead;
+ * more names than fit end with ", and N more" inside the capacity.
  *
  * The state-image functions are stubbed: an image starting "BADSTATE" does
  * not parse.
@@ -179,6 +183,8 @@ static void test_pass(void)
     add_text(&m, "press.state", "BADSTATE /home/zqxu/cards/card1.mcd", BRM_STATE);
     add_text(&m, "host-trace.bin", "\x01\x02/home/zqxu/\x03", BRM_BINARY);
     add_text(&m, "mods/x/zqxu.txt", "plain", BRM_AUTHOR);
+    add_text(&m, "crash/prev-openpete-crash.dmp", "MDMP\x01 C:/x /home/zqxu/AppData\x02", BRM_DUMP);
+    add_text(&m, "crash/clean.dmp", "MDMP\x01 C:/x\x02", BRM_DUMP);
     br_redact_members(&r, &m, s);
 
     mb = member(&m, "bad.bk2");
@@ -218,11 +224,46 @@ static void test_pass(void)
     for (size_t i = 0; i < s->nflag; i++)
         if (!strcmp(s->flag[i].member, "host-trace.bin") && s->flag[i].hits[BRF_HOME] == 1) flagged = 1;
     CHECK(flagged, "host-trace.bin not flagged with one home finding");
-    CHECK(s->drop_total == 4, "drop_total %zu, want 4", s->drop_total);
+    CHECK(!member(&m, "crash/prev-openpete-crash.dmp"), "crash dump holding the home directory shipped");
+    CHECK(dropped(s, "crash/prev-openpete-crash.dmp"), "crash dump not listed as dropped");
+    CHECK(member(&m, "crash/clean.dmp") != NULL, "crash dump without an identity dropped");
+    CHECK(s->drop_total == 5, "drop_total %zu, want 5", s->drop_total);
+
+    char line[BR_FLAG_LINE_MAX];
+    br_flag_line(s, line, sizeof line);
+    CHECK(!strcmp(line, "Some files in this report contain your user folder or computer name: "
+                        "host-trace.bin"),
+          "flag line: \"%s\"", line);
 
     br_members_free(&m);
     free(s);
     br_redactor_free(&r);
+}
+
+/** @brief The flag line rows: none flagged, and more names than fit. */
+static void test_flag_line(void)
+{
+    br_pass_t* s = (br_pass_t*)calloc(1, sizeof *s);
+    char line[BR_FLAG_LINE_MAX];
+    CHECK(br_flag_line(s, line, sizeof line) == 0 && line[0] == '\0', "flag line with none flagged: \"%s\"",
+          line);
+    s->flag_total = 70;
+    s->nflag = BR_FLAGS_MAX;
+    for (size_t i = 0; i < s->nflag; i++)
+        snprintf(s->flag[i].member, sizeof s->flag[i].member, "savestates/slot%02zu.state", i);
+    const size_t n = br_flag_line(s, line, sizeof line);
+    CHECK(n == strlen(line) && n < sizeof line, "flag line length %zu", n);
+    const char* tail = strstr(line, ", and ");
+    unsigned more = 0;
+    CHECK(tail && sscanf(tail, ", and %u more", &more) == 1 && more > 6 && more < 70,
+          "flag line tail: \"%s\"", line);
+    CHECK(strstr(line, "savestates/slot00.state, savestates/slot01.state") != NULL,
+          "flag line names: \"%s\"", line);
+    /* The names shown plus the count left equal the flagged total. */
+    unsigned shown = 0;
+    for (const char* p = line; (p = strstr(p, "savestates/")) != NULL; p++) shown++;
+    CHECK(shown + more == 70, "flag line shows %u and %u more, want 70 in all", shown, more);
+    free(s);
 }
 
 /** @brief Run every row. */
@@ -230,6 +271,7 @@ int main(void)
 {
     test_text();
     test_pass();
+    test_flag_line();
     if (s_fail) {
         printf("bugreport_redact_test: %d failure(s)\n", s_fail);
         return 1;

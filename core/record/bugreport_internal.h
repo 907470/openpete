@@ -26,7 +26,8 @@ typedef enum {
     BRM_MODULE,    /* a compiled module: shipped unredacted, scanned */
     BRM_BK2,       /* a bk2 zip: its text entries redacted, the archive rebuilt */
     BRM_AUTHOR,    /* a file of a mod's directory as its author wrote it: scanned */
-    BRM_PNG        /* an image: scanned, stored uncompressed */
+    BRM_PNG,       /* an image: scanned, stored uncompressed */
+    BRM_DUMP       /* a crash dump (process memory): scanned, dropped on any identity match */
 } br_kind_t;
 
 typedef struct {
@@ -51,6 +52,9 @@ typedef struct {
     br_needle_kind_t what;
 } br_finding_t;
 
+
+/* The tester's line naming the flagged members, NUL included; fits one OSD toast. */
+#define BR_FLAG_LINE_MAX 200
 
 /* One loaded mod as the press saw it. */
 typedef struct {
@@ -146,6 +150,7 @@ typedef struct br_job {
     size_t   findings;
     size_t   dropped;           /* members left out because they could not be redacted */
     size_t   flagged;           /* scanned members shipped with identity matches */
+    char     flag_line[BR_FLAG_LINE_MAX];  /* br_flag_line's text for the tester, "" when none */
     uint64_t write_ms;
     char     mods_line[256];    /* the enabled mods' ids, comma-separated */
 } br_job_t;
@@ -310,13 +315,24 @@ typedef struct {
  * whose redaction fails or whose redacted text still holds an identity is
  * dropped. A bk2 has its entries redacted and scanned the same way; one that
  * does not parse is dropped. A state file has its card paths rewritten; one
- * that does not parse is dropped. Every other member is scanned and shipped
- * as it is; one with findings is flagged. A member whose name holds an
- * identity is dropped.
+ * that does not parse is dropped. A crash dump (BRM_DUMP) with any identity
+ * match is dropped, since it cannot be rewritten and the bundle replays
+ * without it. Every other member is scanned and shipped as it is; one with
+ * findings is flagged. A member whose name holds an identity is dropped.
  * @param R The redactor; its replacement count grows.
  * @param m The members; dropped ones are removed and freed.
  * @param s The results, zeroed by the caller. */
 void br_redact_members(br_redactor_t* R, br_members_t* m, br_pass_t* s);
+
+/** @brief Write the one line the tester sees when members shipped flagged: a fixed lead and the flagged members' names.
+ *
+ * The names are comma-separated in pass order; when they do not all fit in
+ * @p cap, the line ends with ", and N more". No flagged member writes "".
+ * @param s The pass's results.
+ * @param out Receives the line, NUL-terminated.
+ * @param cap Capacity of @p out; under 128 writes "".
+ * @return The line's length; 0 when no member was flagged. */
+size_t br_flag_line(const br_pass_t* s, char* out, size_t cap);
 
 /** @brief Append a member, taking ownership of @p data.
  * @param m The list.

@@ -289,7 +289,8 @@ static const char* last_line_with(const char* txt, const char* needle)
  * ram=<path>"), which OPENPETE_HANG_TRACE / OPENPETE_HANG_RAM may have
  * moved; the crash report names its minidump ("minidump: <path>"). The
  * last such line of the previous log decides; a hang line without paths
- * falls back to the default dump paths.
+ * falls back to the default dump paths. The minidump holds process memory,
+ * so the redaction pass leaves it out when it holds an identity.
  * @param m The members.
  * @param prev The previous run's log tail. */
 static void add_prev_fatal(br_members_t* m, const char* prev)
@@ -308,7 +309,7 @@ static void add_prev_fatal(br_members_t* m, const char* prev)
     }
     const char* dmp = last_line_with(prev, "minidump: ");
     if (dmp && value_after(dmp, "minidump: ", NULL, path, sizeof path))
-        add_file(m, path, "crash/prev-openpete-crash.dmp", BRM_BINARY);
+        add_file(m, path, "crash/prev-openpete-crash.dmp", BRM_DUMP);
 }
 
 /** @brief Add the logs: the current log's tail (after a barrier, so the press's lines are in it), the previous run's with the fatal-exit files it names, and at a fatal exit this run's hang dump.
@@ -1086,6 +1087,7 @@ void br_job_write(br_job_t* j)
     j->replacements = R.replacements;
     j->dropped = s->drop_total;
     j->flagged = s->flag_total;
+    (void)br_flag_line(s, j->flag_line, sizeof j->flag_line);
     uint64_t bytes = 0;
     j->rc = (!red || man_hits) ? -1 : write_zip(j, &m, &man, &bytes);
     j->members = m.n + 1;

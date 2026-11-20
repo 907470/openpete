@@ -78,23 +78,42 @@ of 3 bytes or more. A member is left out of the bundle, listed in
 and logged as `bugreport: left out`, when its redaction runs out of
 memory, an identity survives it (a home form inside a longer token), its
 bk2 does not parse, its state image does not parse (the card paths cannot
-be rewritten), or its name holds an identity. A bundle missing one member
+be rewritten), its name holds an identity, or it is the Windows minidump
+(`crash/prev-openpete-crash.dmp`) and the scan finds any identity in it.
+A minidump holds process memory (module paths, the environment), so it
+holds the home directory whenever the program runs from inside it; the
+replay does not read it. A bundle missing one member
 is still a usable report, so a member is dropped rather than the bundle
 refused; `manifest.json` cannot be dropped, so a manifest whose redaction
 fails or whose scan matches refuses the bundle (`BUG REPORT FAILED`).
 
 Members never rewritten are scanned: the state files beyond their card
 paths, card images, `.modsave` records, `hashes.csv`, `host-trace.bin`,
-`pace.oppl`, `pace-coarse.bin`, `subtick.bin`, `hang/`, `crash/`, the
-PNGs, the recomp module and every file of an enabled mod. Each match is a
+`pace.oppl`, `pace-coarse.bin`, `subtick.bin`, `hang/`, the PNGs, the
+recomp module and every file of an enabled mod. Each match is a
 finding in `redaction.list` (the first 256; `findings` is the exact count)
 logged as `bugreport: finding:`. A member with a match ships unchanged,
 listed in `redaction.flagged` with its counts by kind (`flagged_total` is
 the exact count) and logged as `bugreport: shipped <member> unchanged
 with identity matches`. A name match in binary data can be a coincidence
-of bytes; a home match is a path. A Windows minidump holds the module
-paths and so the home directory whenever the program runs from inside
-it.
+of bytes; a home match is a path. The state files, card images and host
+records ship flagged rather than dropped, since the replay needs them.
+When any member ships flagged, a saved bundle posts a second toast beside
+`BUG REPORT: SAVED`, held 15 s, and logs the same line as a warning:
+`Some files in this report contain your user folder or computer name:`
+followed by the flagged members' names, cut to `, and N more` past 200
+bytes. A bundle written at a fatal exit logs the line only.
+
+The recomp module and compiled mod objects are built with
+`-ffile-prefix-map`, so neither carries a directory of the build machine:
+every CMake preset maps the source tree to `openpete` and the build tree
+to `openpete-build`; the first-boot module build maps the working
+directory to `.`, the install directory to `openpete` and the module's
+build directory to `module`; a mod compile (at boot, `--compile-mods`,
+the cross presets' mod DLL rule and `scripts/crossbuild-mods.sh`) maps the
+working directory to `.`, the compiler's install tree to `toolchain`, the
+SDK to `sdk` and the mod's directory to `mods/<id>`. A module or prebuilt
+mod object built elsewhere without these remaps ships flagged.
 
 A mod config row marked `secret = true`, and every key the mod's schema
 does not declare, is written as a comment naming the key.

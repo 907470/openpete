@@ -89,12 +89,15 @@ void openpete_bugreport_request(void) { SDL_SetAtomicInt(&s_bp.requested, 1); }
 /* The one toast key of a bundle: SAVING holds under it until SAVED or
  * FAILED repaints it in place. */
 #define BR_OSD_KEY "bugreport.saved"
+/* The toast naming the members shipped flagged, beside SAVED. */
+#define BR_OSD_FLAG_KEY "bugreport.flagged"
 
 /** @brief Post the held SAVING toast once the job's note prompt has ended, then join a finished worker, repaint the toast with the result and log it, then free the job.
  *
  * The SAVING toast holds with OPENPETE_OSD_TIMEOUT_HOLD and every job ends
  * here, so the toast is always repainted with SAVED or FAILED and an
- * ordinary hold. A call without wait inside a speculative or replayed tick
+ * ordinary hold. A saved bundle with flagged members adds one toast and a
+ * log line naming them (br_flag_line). A call without wait inside a speculative or replayed tick
  * returns at once.
  * @param wait Nonzero to wait for the worker; else return at once while it runs. */
 static void bundle_reap(int wait) OP_REQUIRES(sim)
@@ -121,6 +124,12 @@ static void bundle_reap(int wait) OP_REQUIRES(sim)
                    (unsigned long long)j->press_us, (unsigned long long)j->display_us,
                    (unsigned long long)j->write_ms, j->mods_line[0] ? j->mods_line : "none");
         openpete_osd_notify("host", BR_OSD_KEY, 8000, "BUG REPORT: SAVED");
+        /* The flagged members ship unchanged with the tester's identity in
+         * them; one toast of its own, held longer, names them. */
+        if (j->flag_line[0]) {
+            OPL_WARN_F("bugreport", "%s", j->flag_line);
+            openpete_osd_notify("host", BR_OSD_FLAG_KEY, 15000, "%s", j->flag_line);
+        }
     } else {
         s_bp.failed++;
         OPL_ERROR_F("bugreport", "bundle %s not written (see the lines above)", j->zip_path);
@@ -731,6 +740,7 @@ static void bundle_exit_flush(void)
                    (unsigned long long)j->write_ms);
     else
         OPL_ERROR_F("bugreport", "fatal exit: bundle %s not written (see the lines above)", j->zip_path);
+    if (j->rc == 0 && j->flag_line[0]) OPL_WARN_F("bugreport", "%s", j->flag_line);
 }
 
 /* Documented at the declaration in bugreport_internal.h. */

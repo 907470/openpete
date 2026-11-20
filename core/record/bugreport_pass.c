@@ -193,6 +193,15 @@ void br_redact_members(br_redactor_t* R, br_members_t* m, br_pass_t* s)
             }
             break;
         }
+        case BRM_DUMP: {
+            const br_needle_kind_t k = survivor(R, mb->data, mb->len);
+            if (k != BRF_N) {
+                snprintf(why, sizeof why, "the %s occurs in the crash dump, which cannot be rewritten",
+                         k_what[k]);
+                drop = why;
+            }
+            break;
+        }
         case BRM_STATE: {
             const int n = openpete_state_image_card_paths_set(mb->data, mb->len, "card1.mcd", "card2.mcd");
             if (n < 0) {
@@ -212,4 +221,28 @@ void br_redact_members(br_redactor_t* R, br_members_t* m, br_pass_t* s)
         if (drop) drop_member(m, i, s, "%s", drop);
         else i++;
     }
+}
+
+size_t br_flag_line(const br_pass_t* s, char* out, size_t cap)
+{
+    static const char lead[] = "Some files in this report contain your user folder or computer name: ";
+    out[0] = '\0';
+    if (s->flag_total == 0 || cap < 128) return 0;
+    size_t n = (size_t)snprintf(out, cap, "%s", lead);
+    if (n >= cap) n = cap - 1;
+    for (size_t i = 0; i < s->nflag; i++) {
+        const size_t rest = s->flag_total - i - 1;
+        /* Room for this name, its separator and a worst-case ", and N more". */
+        char more[40];
+        const int ml = rest ? snprintf(more, sizeof more, ", and %zu more", rest) : 0;
+        const size_t need = strlen(s->flag[i].member) + (i ? 2 : 0) + (size_t)ml;
+        if (n + need >= cap) {
+            n += (size_t)snprintf(out + n, cap - n, "%sand %zu more", i ? ", " : "", s->flag_total - i);
+            return n < cap ? n : cap - 1;
+        }
+        n += (size_t)snprintf(out + n, cap - n, "%s%s", i ? ", " : "", s->flag[i].member);
+    }
+    if (s->flag_total > s->nflag)
+        n += (size_t)snprintf(out + n, cap - n, ", and %zu more", s->flag_total - s->nflag);
+    return n < cap ? n : cap - 1;
 }
