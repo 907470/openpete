@@ -15066,7 +15066,8 @@ static int record_euler12_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc
 
 /** @brief Whether moby_interp_pair_stale applies: OPENPETE_MOBY_SNAP_STALE, default on, read once.
  *
- * 0 interpolates across a stale pair, for a same-window A/B.
+ * It also gates moby_record_pair's stale test. 0 interpolates across a stale
+ * pair, for a same-window A/B.
  * @return Nonzero when the stale test applies. */
 static int moby_interp_stale_snap_enabled(void) {
     static int s = -1;
@@ -15078,11 +15079,10 @@ static int moby_interp_stale_snap_enabled(void) {
  *
  * The ring rolls prev from curr only on a change, so a gap that long means
  * prev straddles a static stretch and the pair is a discontinuity, not
- * motion. Two readers snap on it: the billboard position lerp, reached by the
- * mobys that miss the primary sub-tick position path
- * (openpete_native_interp_pos), such as HUD-pool text, tally and icon mobys;
- * and moby_record_pair, which gates every record-replay term built on a pair.
- * A HUD text glyph keys by (class, slot), which is not stable across a HUD
+ * motion. The billboard position lerp snaps on it, reached by the mobys that
+ * miss the primary sub-tick position path (openpete_native_interp_pos), such
+ * as HUD-pool text, tally and icon mobys; moby_record_pair takes the
+ * observation-stamp test (cut_pair_is_tick) under the same switch. A HUD text glyph keys by (class, slot), which is not stable across a HUD
  * relayout: after a submenu switch a slot's prev can be the glyph that last
  * held it about 20 ticks earlier, and a lerp over that gap moves the letter
  * across the screen. A moving billboard (a flying tally gem, a sliding HUD
@@ -15092,7 +15092,7 @@ static int moby_interp_stale_snap_enabled(void) {
  * (moby_prev_keyframe) lerps do not consult it: slowly rotating or animating
  * mobys (gems, idle dragons) change less than one byte per tick and roll
  * their record only every few ticks, and snapping them would restore the
- * 1.4-degree steps. OPENPETE_MOBY_SNAP_STALE=0 disables the test.
+ * 1.4-degree steps. OPENPETE_MOBY_SNAP_STALE=0 disables both tests.
  * @param prev_ns The previous snapshot's stamp.
  * @param curr_ns The current snapshot's stamp.
  * @return 1 when stale, else 0. */
@@ -17909,15 +17909,23 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
  * The phase is the present clock past the curr stamp over the roll interval,
  * capped at one tick so a pair whose two distinct states are further apart
  * sweeps the whole delta over the tick and still lands exactly on curr at
- * t = 1, and clamped to [0, 1]. On a held camera cut it is 1 for an object
+ * t = 1, and clamped to [CUT_PHASE_FLOOR, 1], the camera bracket's range, so
+ * on a present before the curr stamp the object extrapolates back along its
+ * last motion with the camera. On a held camera cut it is 1 for an object
  * that did not roll at the cut's tick (cut_held_rolled), and 0 for a record
  * moby_jump_held holds.
+ *
+ * A pair whose prev state was last observed more than 1.5 ticks before curr
+ * (cut_pair_is_tick) is stale: the object was not captured in between, so the
+ * two states do not bracket one tick of motion. A record that held prev on
+ * every capture up to the change is not stale however long it held it, so a
+ * moby that rests and then moves sweeps its first move.
  * @param moby The Moby address.
  * @param t Receives the phase when a pair is returned.
  * @return The interp object, or NULL when no term built on the pair may be
  *         applied: no pair, a slot that changed class between the two states,
- *         or a stale pair, where a multi-tick gap is a discontinuity rather
- *         than motion and the record's own pose is what to keep. */
+ *         or a stale pair, where the gap is a discontinuity rather than
+ *         motion and the record's own pose is what to keep. */
 static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t) {
     const openpete_interp_obj_t* o = moby_interp_find(moby);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return NULL;
@@ -17925,11 +17933,11 @@ static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t) {
     memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
     memcpy(&ccls, o->curr + game_layout.moby.class_off, 2);
     if (pcls != ccls) return NULL;
-    if (moby_interp_pair_stale(o->prev_ns, o->curr_ns)) return NULL;
+    if (moby_interp_stale_snap_enabled() && !cut_pair_is_tick(o)) return NULL;
     double period = (double)(o->curr_ns - o->prev_ns);
     if (period > (double)MOBY_TICK_PERIOD_NS) period = (double)MOBY_TICK_PERIOD_NS;
     double ph = (double)(openpete_interp_present_now() - o->curr_ns) / period;
-    *t = ph < 0.0 ? 0.0 : (ph > 1.0 ? 1.0 : ph);
+    *t = ph < CUT_PHASE_FLOOR ? CUT_PHASE_FLOOR : (ph > 1.0 ? 1.0 : ph);
     if (cut_held_rolled(o) == 0) *t = 1.0;
     if (moby_jump_held(moby, o)) *t = 0.0;
     return o;
@@ -17990,6 +17998,8 @@ static void moby_centre_census(const char* pass) {
  *
  * A byte of 0 on either tick is the cull's unscaled branch, a discontinuity,
  * so it does not lerp; without a live interp pair the byte is this tick's.
+ * A phase below 0 (a present before the curr stamp) takes the previous byte
+ * rather than extrapolating past it, which could cross the byte's 0 branch.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @return The size byte, fractional between ticks; 0 for an unsized moby. */
@@ -17998,6 +18008,7 @@ static double moby_record_size_at(CPUState* cpu, uint32_t moby) {
     if (size == 0.0) return 0.0;
     double t = 0.0;
     const openpete_interp_obj_t* o = moby_record_pair(moby, &t);
+    if (t < 0.0) t = 0.0;
     if (o && game_layout.moby.size_off < (uint32_t)o->blob_len &&
         o->prev[game_layout.moby.size_off] && o->curr[game_layout.moby.size_off])
         size += ((double)o->prev[game_layout.moby.size_off]

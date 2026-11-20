@@ -191,6 +191,14 @@ const char* cut_camera_reason(const openpete_interp_snapshot_t* prev2,
  * @return 1 when the pair spans one tick, else 0. */
 int cut_pair_is_tick(const openpete_interp_obj_t* o);
 
+/* The lowest phase a sub-tick present takes past the current tick's stamp.
+ * The canonical present fires a few ms before its tick's grid stamp, so its
+ * phase is slightly negative; the camera bracket (cam_bracket_t) extrapolates
+ * back to this floor rather than clamping at 0, and every channel that moves
+ * with the scene floors its own phase here so it extrapolates with the camera
+ * instead of holding while the camera moves. */
+#define CUT_PHASE_FLOOR (-0.35)
+
 /** @brief Whether one object's world-position step between two ticks is a jump rather than a move, by the game's distance bound.
  *
  * The step is a jump when its length exceeds game_layout.moby.jump_bound

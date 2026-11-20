@@ -1410,6 +1410,87 @@ typedef struct {
     double   ofx, ofy;  /* its projection origin, PSX px */
 } s23_place;
 
+/* Records whose camera-relative base s23_simple_base took at full precision
+ * (exact) or left on the cull's truncated value (kept), indexed by the decode
+ * kind: 0 canonical, 1 sub-tick. Cumulative since startup. */
+static _Atomic(long) s_simple_base_exact[2], s_simple_base_kept[2];
+
+/** @brief Whether OPENPETE_SIMPLE_RECORD_BASE keeps every simple-moby base on the cull's truncated record, read once.
+ *
+ * The in-binary A/B of s23_simple_base: 1 restores the record's quarter-world
+ * deltas as the base on every decode.
+ * @return Nonzero when the record's base is kept. */
+static int s23_simple_record_base_forced(void) {
+    static _Atomic(int) s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_SIMPLE_RECORD_BASE"); s = (e && *e && *e != '0'); }
+    return s;
+}
+
+/** @brief A world-placed simple-moby record's camera-relative base, in its quarter-world units and axis order, at full precision.
+ *
+ * The cull stores (camY - mobyY) >> 2, (camZ - mobyZ) >> 2 and
+ * (mobyX - camX) >> 2 (mobydraw.s:81,87,94), so the record's base carries the
+ * floor of a quarter of the camera-relative position. The decode adds the
+ * camera's and the moby's motion since the tick to that base at full
+ * precision, so a present at phase t shows the truncated tick position minus
+ * the untruncated motion: each tick's sub-tick run ends on the truncated
+ * position, and the change of the dropped residue (up to three world units
+ * per axis) appears as a step at every tick boundary. This divides the same
+ * differences by 4.0 instead.
+ *
+ * The camera is the one the record's cull subtracted: the installed tick
+ * camera on a sub-tick present (s23_simple_tick_camera_pos), else the
+ * camera position words. The moby position is the moby's at the record's
+ * tick: its position words, less the displacement moby_record_world_offset
+ * adds to reach this present and plus the own motion the decode adds
+ * (@p dmob), which on a previous-queue replay also carries the object's
+ * change since that queue's cull. The base replaces the record's only when
+ * its floor is the record's on all three axes, the proof that both inputs are
+ * the ones the cull read; a reveal record built from the same words passes,
+ * and a record whose halves wrapped or whose moby has moved on keeps its own.
+ * @param cpu The guest CPU state, read only.
+ * @param r The queue index.
+ * @param bracketed 1 on a sub-tick present.
+ * @param dmob The moby's own displacement over this present, world units.
+ * @param base Receives the base.
+ * @return 1 when the base is the full-precision one, 0 when it is the record's. */
+static int s23_simple_base(CPUState* cpu, int r, int bracketed, const double dmob[3], double base[3]) {
+    for (int i = 0; i < 3; i++) base[i] = (double)s_sq->d[r][i];
+    if (s23_simple_record_base_forced()) return 0;
+    const uint32_t moby = s_sq->q[r][0];
+    int32_t cam[3];
+    if (!s23_simple_tick_camera_pos(cam))
+        for (int i = 0; i < 3; i++) cam[i] = (int32_t)cpu->read_word(game_layout.cam.position + 4u * (uint32_t)i);
+    double mw[3] = { 0.0, 0.0, 0.0 };
+    if (bracketed) moby_record_world_offset(moby, mw);
+    double p[3];
+    for (int i = 0; i < 3; i++)
+        p[i] = (double)(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u * (uint32_t)i)
+             + (bracketed ? mw[i] - dmob[i] : 0.0);
+    const double e[3] = { ((double)cam[1] - p[1]) * 0.25,
+                          ((double)cam[2] - p[2]) * 0.25,
+                          (p[0] - (double)cam[0]) * 0.25 };
+    for (int i = 0; i < 3; i++)
+        if (floor(e[i]) != base[i]) return 0;
+    memcpy(base, e, sizeof e);
+    return 1;
+}
+
+/** @brief OPENPETE_SIMPLE_BASE_CENSUS: print the cumulative s23_simple_base counts, at most one line per VBL.
+ *
+ * The line carries the world-placed records whose base was the full-precision
+ * one and those that kept the record's, on canonical and sub-tick decodes. */
+static void s23_simple_base_census(void) {
+    static _Atomic(int) on = -1;
+    static _Atomic(unsigned) last = ~0u;
+    if (on < 0) { const char* e = getenv("OPENPETE_SIMPLE_BASE_CENSUS"); on = (e && *e && *e != '0'); }
+    if (!on || last == openpete_frame) return;
+    last = openpete_frame;
+    fprintf(stderr, "[simple-base vbl=%u] canon exact=%ld kept=%ld sub exact=%ld kept=%ld\n", openpete_frame,
+            (long)s_simple_base_exact[0], (long)s_simple_base_kept[0],
+            (long)s_simple_base_exact[1], (long)s_simple_base_kept[1]);
+}
+
 /** @brief Places one queued simple-moby record and reports whether it draws.
  *
  * Fills the translation, matrix, geometry header and, for the screen-space
@@ -1418,8 +1499,9 @@ typedef struct {
  * The far-cull distance's bit 15 sorts the record into the screen-space kind,
  * which takes its depth and screen offsets from the record itself (dropped at
  * a non-positive depth) and skips the camera transform and the range and
- * bounding-box tests. The other kind transforms the record's camera-relative
- * deltas by the camera matrix and is dropped past its far distance (unless
+ * bounding-box tests. The other kind transforms its camera-relative base,
+ * moved by the camera's and the moby's motion since the tick, by the camera
+ * matrix and is dropped past its far distance (unless
  * extended LOD is on) or when the header's four bounding-box bytes fail the
  * draw's frustum tests. Either kind is dropped when the geometry header at
  * slot + 0x14 is not a KSEG0 pointer. `pl->screen` is written before any
@@ -1430,11 +1512,13 @@ typedef struct {
  *        quarter-world units, per axis (X, Y, Z); zero on a canonical decode.
  * @param dmob The moby's displacement over the present's fraction of the tick,
  *        in world units; zero on a canonical decode.
+ * @param base The world-placed kind's camera-relative base at the tick, in
+ *        the record's quarter-world units and axis order (s23_simple_base).
  * @param pl Receives the placement; valid only on a return of 1.
  * @return 1 when the record draws, 0 when it draws nothing. */
 static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
                             const double dcam[3], const double dmob[3],
-                            s23_place* pl) {
+                            const double base[3], s23_place* pl) {
     const uint32_t slot = s_sq->q[r][3];
     /* The far-cull distance's bit 15 sorts the record (mobydraw.s:3914-3915). */
     pl->screen = (s_sq->q[r][2] & 0x8000u) != 0;
@@ -1450,7 +1534,9 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
          * that register's 16.16 pixels (mobydraw.s:4016-4019). The view X and
          * Y translation are zero (mobydraw.s:4020-4021) and the Z translation
          * is the depth over four (mobydraw.s:4022), all three doubled at the
-         * rejoin (mobydraw.s:4039-4041). No camera rotation, no range test and
+         * rejoin (mobydraw.s:4039-4041); the depth keeps its fraction here,
+         * where the draw shifts it right 2, so the size does not step on a
+         * 4-unit depth grid as the moby's own motion moves it. No camera rotation, no range test and
          * no bounding-box test: the matrix is the constant the branch installs,
          * the identity with its Y row at 0xA00 (mobydraw.s:4024-4028,
          * 4031-4035). */
@@ -1465,7 +1551,7 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
         pl->ofx = (double)s_sq->d[r][2] + dmob[0];
         pl->ofy = (double)s_sq->d[r][0] + dmob[1];
         pl->TR[0] = pl->TR[1] = 0.0;
-        pl->TR[2] = (double)(((int)dz >> 2) * 2);
+        pl->TR[2] = dz * 0.5;
         memset(pl->R, 0, sizeof pl->R);
         pl->R[0][0] = 0x1000; pl->R[1][1] = 0x0A00; pl->R[2][2] = 0x1000;
     } else {
@@ -1474,9 +1560,9 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
          * and (moby - cam) >> 2 on the third (mobydraw.s:81,87,94), so the
          * moby's own displacement enters in quarter-world units with the
          * opposite sign per component, beside the camera's. */
-        ngte_mac(Rcam, (double)s_sq->d[r][0] + dcam[1] - dmob[1] * 0.25,
-                       (double)s_sq->d[r][1] + dcam[2] - dmob[2] * 0.25,
-                       (double)s_sq->d[r][2] + dcam[0] + dmob[0] * 0.25, &m1, &m2, &m3);
+        ngte_mac(Rcam, base[0] + dcam[1] - dmob[1] * 0.25,
+                       base[1] + dcam[2] - dmob[2] * 0.25,
+                       base[2] + dcam[0] + dmob[0] * 0.25, &m1, &m2, &m3);
         /* The record's own draw range (mobydraw.s:3958). Extended LOD removes
          * the range rather than widening it: the threshold is a per-moby byte
          * scaled by 256, so any raised value is still a ceiling a high camera
@@ -1897,9 +1983,9 @@ static int s23_simple_hidden(CPUState* cpu, uint32_t moby, const s23_place* pl, 
  * is a no-op bit for bit.
  *
  * A tick camera is installed only for a sub-tick present, so its absence is
- * what keeps every canonical decode - the inline pass and the canonical lag
- * leg alike - bit for bit what the cull wrote: no camera delta, no
- * per-record own motion and the tick's own rotation word.
+ * what gives every canonical decode - the inline pass and the canonical lag
+ * leg alike - no camera delta, no per-record own motion and the tick's own
+ * rotation word.
  * @param cpu The guest CPU state, read only.
  * @param dcam Receives the change, zero on a canonical decode.
  * @return 1 on a sub-tick present (a tick camera is installed), else 0. */
@@ -2237,8 +2323,12 @@ static int s23_simple_admit(CPUState* cpu, int r, const int Rcam[3][3], const do
      * holds that position for the whole tick and steps at the tick rate. */
     dmob[0] = dmob[1] = dmob[2] = 0.0;
     if (bracketed) s23_simple_own_motion(moby, dmob);
-    const int placed = s23_simple_place(cpu, r, Rcam, dcam, dmob, pl);
+    double base[3];
+    const int exact = s23_simple_base(cpu, r, bracketed, dmob, base);
+    const int placed = s23_simple_place(cpu, r, Rcam, dcam, dmob, base, pl);
     if (pl->screen) s_simple_screen++;
+    else if (exact) s_simple_base_exact[bracketed != 0]++;
+    else s_simple_base_kept[bracketed != 0]++;
     s_simple_recs++;
     if (!placed) { s_simple_culled++; return 0; }
     if (pl->screen) s_simple_screen_drawn++;
@@ -2492,6 +2582,7 @@ static int s23_simple_replay(CPUState* cpu) {
                 s_simple_screen, s_simple_screen_drawn,
                 s_simple_verts, s_simple_faces, n, s_simple_lp, s_simple_fade);
     moby_kind_census("sub", "simple", s_sq->qn, s_simple_occl, s_simple_verts, n);
+    s23_simple_base_census();
     return n;
 }
 
@@ -3028,6 +3119,7 @@ static int s23_simple_pass(CPUState* cpu) {
                 s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped,
                 s_flat_front_blended);
     moby_kind_census("canon", "simple", s_sq->qn, s_simple_occl, s_simple_verts, n);
+    s23_simple_base_census();
     return n;
 }
 

@@ -54,7 +54,7 @@ static struct {
     bool vk_fired[OPENPETE_MAX_SCREENSHOT_FRAMES];   /* -vk leg */
     bool vk_armed[OPENPETE_MAX_SCREENSHOT_FRAMES];
     bool int_fired[OPENPETE_MAX_SCREENSHOT_FRAMES];  /* intermediate leg */
-    double int_alpha;            /* OPENPETE_INTERMEDIATE_ALPHA, < 0 until read */
+    double int_alpha;            /* OPENPETE_INTERMEDIATE_ALPHA, < -1 until read */
     /* OPENPETE_INTERMEDIATE_PRE_ALPHA: the phases re-extracted, in order and
      * uncaptured, before each intermediate leg's own; -1 entries until read. */
     double int_pre[OPENPETE_MAX_SCREENSHOT_FRAMES];
@@ -78,7 +78,7 @@ static struct {
     int vd_read;
     const char *vd;
     bool vram_dumped;
-} s_cap = { .int_alpha = -1.0, .int_pre_n = -1 };
+} s_cap = { .int_alpha = -2.0, .int_pre_n = -1 };
 
 /** @brief Log one captured present and warn once when the sequence mixes pixel extents.
  *
@@ -410,21 +410,22 @@ void openpete_capture_canon_native(const openpete_options_t *opts, int shot_key,
  * The phase is a fraction of the tick period: 0 sits on the ring's curr
  * stamp and 1 on the identity instant, so the re-extract can be diffed
  * against the canonical dump of the same tick as an identity check on the
- * spine. Default 0.5; clamped to 0..1.
+ * spine; a negative phase precedes the curr stamp, as an early present does.
+ * Default 0.5; clamped to -1..1.
  * @return The phase. */
 static double intermediate_alpha(void)
 {
-    if (s_cap.int_alpha < 0.0) {
+    if (s_cap.int_alpha < -1.0) {
         const char* e = getenv("OPENPETE_INTERMEDIATE_ALPHA");
         s_cap.int_alpha = (e && *e) ? atof(e) : 0.5;
-        if (s_cap.int_alpha < 0.0) s_cap.int_alpha = 0.0; else if (s_cap.int_alpha > 1.0) s_cap.int_alpha = 1.0;
+        if (s_cap.int_alpha < -1.0) s_cap.int_alpha = -1.0; else if (s_cap.int_alpha > 1.0) s_cap.int_alpha = 1.0;
     }
     return s_cap.int_alpha;
 }
 
 /** @brief Return the uncaptured phases each intermediate leg re-extracts first, reading OPENPETE_INTERMEDIATE_PRE_ALPHA once.
  *
- * The variable is a comma-separated list of phases, each clamped to 0..1 and
+ * The variable is a comma-separated list of phases, each clamped to -1..1 and
  * read as intermediate_alpha reads its one; unset or empty is no list. A
  * second re-extract inside one canonical epoch is what a live run's later
  * sub-tick presents are, so a leg that runs these first captures what such a
@@ -440,7 +441,7 @@ static const double *intermediate_pre_alphas(int *n)
             char *end = NULL;
             double a = strtod(e, &end);
             if (end == e) break;
-            s_cap.int_pre[s_cap.int_pre_n++] = a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
+            s_cap.int_pre[s_cap.int_pre_n++] = a < -1.0 ? -1.0 : (a > 1.0 ? 1.0 : a);
             e = (*end == ',') ? end + 1 : end;
             if (*end != ',') break;
         }

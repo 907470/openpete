@@ -983,7 +983,7 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev2,
     /* Slightly negative rather than clamped at 0: the canonical present fires a
      * few ms before its tick's grid stamp, and clamping delivers that fraction
      * of all motion as tick-rate jumps. */
-    if (r.alpha < -0.35) r.alpha = -0.35; else if (r.alpha > 1.0) r.alpha = 1.0;
+    if (r.alpha < CUT_PHASE_FLOOR) r.alpha = CUT_PHASE_FLOOR; else if (r.alpha > 1.0) r.alpha = 1.0;
     /* A held cut shows prev for the whole interval; a negative alpha would
      * extrapolate backwards through the cut, which is the motion that does not
      * exist. */
