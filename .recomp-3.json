@@ -1,0 +1,37 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Spyro: Year of the Dragon",
+  "wikidata": "Q943115",
+  "system": "PS1",
+  "type": "recomp",
+  "original": {
+    "region": "USA",
+    "revision": "1.0",
+    "serial": "SCUS-94467",
+    "sha1": "9df489e2420988494691c9193fe74dec4b1dbfcd"
+  },
+  "project": "OpenPete",
+  "status": "playable",
+  "targets": [
+    "Windows",
+    "Linux"
+  ],
+  "approach": "MIPS code statically recompiled to C at build time, PsyQ replaced by a host implementation, native Vulkan renderer drawing from gameplay state",
+  "maintainers": [
+    {
+      "name": "tyscorp",
+      "link": "https://github.com/tyscorp"
+    }
+  ],
+  "links": [
+    {
+      "url": "https://openpete.com",
+      "label": "Website"
+    },
+    {
+      "url": "https://openpete.com/docs/user/games/spyro-3/",
+      "label": "Docs"
+    }
+  ],
+  "notes": "Plays start to finish on Windows and Linux. Native Vulkan renderer with widescreen, FOV, extended LOD, interpolation to any refresh rate, and a mod SDK"
+}
