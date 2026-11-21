@@ -49,9 +49,15 @@
 #include <sched.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #define PRESENTS 20000
 #define READS    6
+/* A run continues past PRESENTS (or TICKS) until its engagement counts are
+ * met, so a setter thread the host schedules rarely lengthens the run
+ * instead of making it vacuous. RUN_CAP_S bounds the wall time of one run;
+ * only a run that reaches it is reported vacuous. */
+#define RUN_CAP_S 120
 
 static _Atomic(int) s_mult_want = 0;     /* s_mult's initializer */
 static _Atomic(int) s_aspect_want = 0;   /* s_aspect's initializer, float bits */
@@ -124,6 +130,31 @@ static void* getter(void* unused)
     return NULL;
 }
 
+/** @brief Report whether RUN_CAP_S seconds have passed since a start instant.
+ *
+ * @param start The run's start, CLOCK_MONOTONIC.
+ * @return 1 once the cap is reached, else 0. */
+static int run_capped(const struct timespec* start)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec - start->tv_sec >= RUN_CAP_S;
+}
+
+/** @brief Report whether a run has its engagement: the change count and, for a control, a torn count reached, and a getter read made.
+ *
+ * @param n Presents or ticks run so far.
+ * @param min_n PRESENTS or TICKS: the run is never shorter.
+ * @param changed The run's change count so far.
+ * @param need_torn 1 for a control, which runs until one torn read.
+ * @param torn The run's torn count so far.
+ * @return 1 when the run may stop. */
+static int run_engaged(int n, int min_n, int changed, int need_torn, int torn)
+{
+    return n >= min_n && changed >= min_n / 100 && torn >= need_torn &&
+           atomic_load(&s_getter_reads) > 0;
+}
+
 /** @brief Set the producer-read settings in a loop from the present thread and check the getter returns each chosen value.
  *
  * @param unused Unused.
@@ -178,13 +209,16 @@ static int producer_reads(int old, int* first)
  * @param old 1 reads the setter's variables directly, 0 latches before each tick body and each re-extract.
  * @param changed Receives the ticks whose first read differed from the previous tick's.
  * @param lost Receives the sim-thread stores the next latch did not apply although no other store intervened.
+ * @param ran Receives the ticks run: at least TICKS, more until the change count (and for the pattern of `old`, one torn tick) is reached.
  * @return The tick bodies and re-extracts in which two reads of one setting disagreed. */
-static int run_ticks(int old, int* changed, int* lost)
+static int run_ticks(int old, int* changed, int* lost, int* ran)
 {
-    int torn = 0, prev_l = -1;
+    int torn = 0, prev_l = -1, t = 0;
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     *changed = 0;
     *lost = 0;
-    for (int t = 0; t < TICKS; t++) {
+    for (; !run_engaged(t, TICKS, *changed, old, torn) && !run_capped(&start); t++) {
         if (!old) {   /* game_on_frame_pre: before the guest resume */
             (void)op_live_latch(&s_lod_want, &s_lod);
             (void)op_live_latch_f(&s_fog_want, &s_fog);
@@ -208,6 +242,7 @@ static int run_ticks(int old, int* changed, int* lost)
             if (s_lod != want && !(before & 1u) && atomic_load(&s_lod_sets) == before) (*lost)++;
         }
     }
+    *ran = t;
     return torn;
 }
 
@@ -216,14 +251,15 @@ static int run_ticks(int old, int* changed, int* lost)
  * @param old Passed to run_ticks.
  * @param changed Receives run_ticks' change count.
  * @param lost Receives run_ticks' lost-store count.
+ * @param ran Receives the ticks run.
  * @return run_ticks' disagreement count. */
-static int run_producer(int old, int* changed, int* lost)
+static int run_producer(int old, int* changed, int* lost, int* ran)
 {
     pthread_t th, gt;
     atomic_store(&s_stop, 0);
     pthread_create(&th, NULL, producer_setter, NULL);
     pthread_create(&gt, NULL, getter, NULL);
-    const int torn = run_ticks(old, changed, lost);
+    const int torn = run_ticks(old, changed, lost, ran);
     atomic_store(&s_stop, 1);
     pthread_join(th, NULL);
     pthread_join(gt, NULL);
@@ -236,12 +272,17 @@ static int run_producer(int old, int* changed, int* lost)
  *        0 latches once per present and reads the latched values.
  * @param changed Receives the presents whose first read differed from the
  *        previous present's.
+ * @param ran Receives the presents run: at least PRESENTS, more until the
+ *        change count (and for the pattern of `old`, one torn present) is
+ *        reached.
  * @return The presents in which two reads of one setting disagreed. */
-static int run_presents(int old, int* changed)
+static int run_presents(int old, int* changed, int* ran)
 {
-    int torn = 0, prev_m = -1;
+    int torn = 0, prev_m = -1, p = 0;
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     *changed = 0;
-    for (int p = 0; p < PRESENTS; p++) {
+    for (; !run_engaged(p, PRESENTS, *changed, old, torn) && !run_capped(&start); p++) {
         if (!old) {
             (void)op_live_latch(&s_mult_want, &s_mult);
             (void)op_live_latch_f(&s_aspect_want, &s_aspect);
@@ -258,6 +299,7 @@ static int run_presents(int old, int* changed)
         prev_m = m0;
         torn += bad;
     }
+    *ran = p;
     return torn;
 }
 
@@ -265,14 +307,15 @@ static int run_presents(int old, int* changed)
  *
  * @param old Passed to run_presents.
  * @param changed Receives run_presents' change count.
+ * @param ran Receives the presents run.
  * @return run_presents' disagreement count. */
-static int run_mode(int old, int* changed)
+static int run_mode(int old, int* changed, int* ran)
 {
     pthread_t th, gt;
     atomic_store(&s_stop, 0);
     pthread_create(&th, NULL, setter, NULL);
     pthread_create(&gt, NULL, getter, NULL);
-    const int torn = run_presents(old, changed);
+    const int torn = run_presents(old, changed, ran);
     atomic_store(&s_stop, 1);
     pthread_join(th, NULL);
     pthread_join(gt, NULL);
@@ -311,21 +354,21 @@ static int semantics(void)
  * @return 0 on pass, 1 on a failure, 2 when the run is vacuous. */
 static int producer_case(int old_under_test)
 {
-    int changed = 0, lost = 0;
-    const int torn = run_producer(old_under_test, &changed, &lost);
+    int changed = 0, lost = 0, ran = 0;
+    const int torn = run_producer(old_under_test, &changed, &lost, &ran);
     const int wrong = atomic_load(&s_getter_wrong);
     printf("producer %s: %d ticks, %d with a changed value, %d torn, %d sim stores lost, getter wrong %d\n",
-           old_under_test ? "pre-latch reads" : "latched", TICKS, changed, torn, lost, wrong);
+           old_under_test ? "pre-latch reads" : "latched", ran, changed, torn, lost, wrong);
     if (changed < TICKS / 100) {
         fprintf(stderr, "VACUOUS: the producer setting changed in %d ticks\n", changed);
         return 2;
     }
     if (torn || wrong || lost) return 1;
 
-    int ctl_changed = 0, ctl_lost = 0;
-    const int ctl_torn = run_producer(1, &ctl_changed, &ctl_lost);
+    int ctl_changed = 0, ctl_lost = 0, ctl_ran = 0;
+    const int ctl_torn = run_producer(1, &ctl_changed, &ctl_lost, &ctl_ran);
     printf("producer control (pre-latch reads): %d ticks, %d with a changed value, %d torn\n",
-           TICKS, ctl_changed, ctl_torn);
+           ctl_ran, ctl_changed, ctl_torn);
     if (ctl_torn == 0) {
         fprintf(stderr, "VACUOUS: the producer control saw no torn tick\n");
         return 2;
@@ -347,21 +390,21 @@ int main(int argc, char** argv)
     s_getter_old = argc > 1 && strcmp(argv[1], "old-getter") == 0;
     if (semantics()) return 1;
 
-    int changed = 0;
-    const int torn = run_mode(old_under_test, &changed);
+    int changed = 0, ran = 0;
+    const int torn = run_mode(old_under_test, &changed, &ran);
     const int wrong = atomic_load(&s_getter_wrong);
     printf("%s: %d presents, %d with a changed value, %d torn, getter wrong %d\n",
-           old_under_test ? "pre-latch reads" : "latched", PRESENTS, changed, torn, wrong);
+           old_under_test ? "pre-latch reads" : "latched", ran, changed, torn, wrong);
     if (changed < PRESENTS / 100) {
         fprintf(stderr, "VACUOUS: the setting changed in %d presents\n", changed);
         return 2;
     }
     if (torn || wrong) return 1;
 
-    int ctl_changed = 0;
-    const int ctl_torn = run_mode(1, &ctl_changed);
+    int ctl_changed = 0, ctl_ran = 0;
+    const int ctl_torn = run_mode(1, &ctl_changed, &ctl_ran);
     printf("control (pre-latch reads): %d presents, %d with a changed value, %d torn\n",
-           PRESENTS, ctl_changed, ctl_torn);
+           ctl_ran, ctl_changed, ctl_torn);
     if (ctl_torn == 0) {
         fprintf(stderr, "VACUOUS: the control saw no torn present\n");
         return 2;

@@ -1,9 +1,10 @@
 /* tests/unit/openpete_time_test.c - verify openpete_time.c contract:
  *   1. op_now() is monotonically non-decreasing across calls.
  *   2. op_sleep_until(t) wakes at or after t (never undershoots).
- *   3. Overshoot is small on a quiet host (sanity bound, not a hard
- *      SLA - CI runners are noisy, so the bound is generous; the
- *      `pacing_quality` slow target is where we gate real numbers).
+ *   3. op_sleep_until adds no lateness of its own: over interleaved
+ *      rounds, its least overshoot is within 1 ms of the least overshoot
+ *      of a plain OS sleep of the same length in the same run, so host
+ *      load moves both and the bound holds at any load.
  *   4. op_pacer_slack_ns honours OPENPETE_PACER_SLACK_US.
  *   5. The exact NTSC period arithmetic (op_period_t / op_deadline_t):
  *      deadlines land on floor(n * period) forever, 2 VBL == 1 tick, a
@@ -25,6 +26,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <inttypes.h>
+#if defined(_WIN32)
+#  include <windows.h>
+#else
+#  include <errno.h>
+#  include <time.h>
+#endif
 
 #define FAIL(...) do { fprintf(stderr, "FAIL: " __VA_ARGS__); return 1; } while (0)
 
@@ -41,24 +48,60 @@ static int test_monotonic(void) {
     return 0;
 }
 
+#define SLEEP_ROUNDS 32
+#define SLEEP_NS     (5 * OP_NS_PER_MS)
+
+/** @brief Sleep SLEEP_NS with the host's plain relative sleep and return how far past it the clock reads on return.
+ *
+ * nanosleep on POSIX, Sleep on Win32: the host's own wake latency for a
+ * sleep of the length the op_sleep_until rounds use.
+ * @return Wake time minus the requested end, ns; negative on an early wake. */
+static op_time_t host_sleep_overshoot(void) {
+    const op_time_t start = op_now();
+#if defined(_WIN32)
+    Sleep((DWORD)(SLEEP_NS / OP_NS_PER_MS));
+#else
+    struct timespec rel = { 0, (long)SLEEP_NS };
+    while (nanosleep(&rel, &rel) == -1 && errno == EINTR) {}
+#endif
+    return op_now() - (start + SLEEP_NS);
+}
+
+/** @brief Check op_sleep_until never wakes before its deadline and adds no lateness beyond the host's plain sleep.
+ *
+ * Its lateness is compared with the host's: SLEEP_ROUNDS rounds alternate a
+ * plain sleep and an op_sleep_until of the same length, and the least
+ * overshoot of each is taken. Host load delays individual wakes of both
+ * kinds, and the minimum over interleaved rounds discards those delays,
+ * so the bound tests the hybrid sleep (slack sizing and the spin exit),
+ * not the scheduler. A sleep that targets past its deadline, or a spin
+ * that misses its exit, raises every op_sleep_until round and fails.
+ * @return 0 on pass, 1 on a failure. */
 static int test_sleep_reaches_deadline(void) {
-    op_time_t now      = op_now();
-    op_time_t deadline = now + 5 * OP_NS_PER_MS;  /* 5 ms */
-    op_sleep_until(deadline);
-    op_time_t after = op_now();
-    if (after < deadline) {
-        FAIL("op_sleep_until undershot: deadline=%" PRId64
-             " woke at %" PRId64 " (delta %" PRId64 " ns)\n",
-             (int64_t)deadline, (int64_t)after,
-             (int64_t)(after - deadline));
+    op_time_t host_min = INT64_MAX, op_min = INT64_MAX;
+    for (int i = 0; i < SLEEP_ROUNDS; ++i) {
+        const op_time_t h = host_sleep_overshoot();
+        if (h < host_min) host_min = h;
+
+        const op_time_t deadline = op_now() + SLEEP_NS;
+        op_sleep_until(deadline);
+        const op_time_t after = op_now();
+        if (after < deadline) {
+            FAIL("op_sleep_until undershot: deadline=%" PRId64
+                 " woke at %" PRId64 " (delta %" PRId64 " ns)\n",
+                 (int64_t)deadline, (int64_t)after,
+                 (int64_t)(after - deadline));
+        }
+        if (after - deadline < op_min) op_min = after - deadline;
     }
-    /* Generous overshoot bound - 10 ms - to survive CI scheduler noise.
-     * The real number on a quiet Linux dev box is < 100 µs. The
-     * `pacing_quality` slow CTest target asserts the tight bound. */
-    op_time_t overshoot = after - deadline;
-    if (overshoot > 10 * OP_NS_PER_MS) {
-        FAIL("op_sleep_until overshot by %" PRId64 " ns (>10 ms)\n",
-             (int64_t)overshoot);
+    if (host_min < 0) host_min = 0;
+    printf("sleep %d x 5 ms: least overshoot op_sleep_until %" PRId64
+           " ns, plain sleep %" PRId64 " ns\n",
+           SLEEP_ROUNDS, (int64_t)op_min, (int64_t)host_min);
+    if (op_min > host_min + 1 * OP_NS_PER_MS) {
+        FAIL("op_sleep_until least overshoot %" PRId64 " ns exceeds the plain"
+             " sleep's %" PRId64 " ns by more than 1 ms\n",
+             (int64_t)op_min, (int64_t)host_min);
     }
     return 0;
 }
