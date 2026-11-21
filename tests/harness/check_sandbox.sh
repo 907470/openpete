@@ -116,6 +116,14 @@ done
 DECOY="$OUT/decoy-home"
 mkdir -p "$DECOY/config" "$DECOY/state" "$DECOY/data"
 DECOY_ENV=("XDG_CONFIG_HOME=$DECOY/config" "XDG_STATE_HOME=$DECOY/state" "XDG_DATA_HOME=$DECOY/data")
+# OpenAL Soft's PulseAudio backend loads the client cookie through libpulse
+# (pa_client_conf_load_cookie), which creates $XDG_CONFIG_HOME/pulse/cookie
+# when the home holds none. A developer's home holds one and the load only
+# reads it; the empty decoy holds none, so the write is the decoy's own and
+# no openpete writer's. The null backend opens a device without an audio
+# server: the device open and the feed still run, and the decoy listing
+# stays strict over every write.
+AUDIO_ENV=(ALSOFT_DRIVERS=null)
 
 # listing FILE DIR...: path, mtime and size of every entry under each DIR.
 listing() {
@@ -168,7 +176,7 @@ run() {
     local -a env=()
     while [[ $# -gt 0 && "$1" != "--" ]]; do env+=("$1"); shift; done
     [[ "${1:-}" == "--" ]] && shift
-    local -a pre=(env -u OPENPETE_SANDBOX -u OPENPETE_CARD_DIR "${DECOY_ENV[@]}")
+    local -a pre=(env -u OPENPETE_SANDBOX -u OPENPETE_CARD_DIR "${DECOY_ENV[@]}" "${AUDIO_ENV[@]}")
     [[ -n "$root" ]] && pre+=("OPENPETE_SANDBOX=$root")
     if [[ "$PLATFORM" == windows ]]; then
         # The root is exported while the forward is built, so WSLENV names
