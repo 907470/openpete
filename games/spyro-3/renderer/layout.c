@@ -105,6 +105,9 @@ const game_layout_t spyro3_game_layout = {
                                                      * LP/HP with constants (terrain.lod_dist_default) */
         .cull_dist       = G_ENVIRONMENT + 0x2Cu,   /* 0x2C000; the LP far cull, (v >> 7) - 1 against
                                                      * the LP OT key */
+        .area = 0x8006C5C8u,                        /* the current sub-area word EnterSubArea
+                                                     * (func_80052918) sets, the one
+                                                     * features/skip_to_area.c waits on */
         .vis_aspect_independent = 1u,               /* the verdict comes from the pre-pass
                                                      * func_8002D0D8 (mobyfunc.s:11-150), a PVS lookup
                                                      * keyed on the camera position alone: it reads

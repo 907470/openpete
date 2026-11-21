@@ -1,0 +1,78 @@
+/* games/common/renderer/sector_pvs.h - the Spyro 2/3 sector PVS lookup.
+ *
+ * The level's potentially-visible-set octree (Spyro 2 func_80048D18, Spyro 3
+ * func_8002D0D8) is keyed on the camera position shifted right 11, so one
+ * leaf cell spans 2048 world units on each axis. Each node on the descent
+ * hides its first strictly increasing run of sector bytes and marks the rest
+ * visible. The lookup is evaluated host-side over a copy of the tree bytes, at
+ * any position, and writes no guest memory. */
+
+#ifndef OPENPETE_SECTOR_PVS_H
+#define OPENPETE_SECTOR_PVS_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** The edge of one PVS leaf cell in world units (the lookup's shift of 11). */
+#define SECTOR_PVS_CELL 2048
+
+/** @brief Computes the sectors the PVS octree marks visible from a position.
+ *
+ * From the root at depth 7 each node clears its first, strictly increasing
+ * run of sector bytes and marks the rest visible; the descent takes the child
+ * octant the position falls in and ends at depth 0 or at a node without
+ * children. A missing child, a zero-length node or a read past len makes every
+ * sector visible, as the game's walk does.
+ * @param b The bytes holding the tree.
+ * @param len Their length.
+ * @param tree The offset of the root node in b.
+ * @param pos The position, world units.
+ * @param vis Receives 256 bytes, 0xFF for a visible sector, 0 for a hidden one.
+ * @param open Receives 1 when the walk ended on an all-visible exit (an
+ *        empty or -1 tree, a missing child, a malformed node), 0 when a node
+ *        decided the list; NULL when not wanted.
+ * @return The number of visible sectors. */
+int sector_pvs_lookup(const uint8_t* b, uint32_t len, uint32_t tree, const int32_t pos[3],
+                      uint8_t vis[256], int* open);
+
+/** Lattice points of the 3x3x3 ring around a cell: index (dx+1)*9 + (dy+1)*3
+ * + (dz+1), the centre at SECTOR_PVS_CENTRE, the opposite of k at 26 - k. */
+#define SECTOR_PVS_RING   27
+#define SECTOR_PVS_CENTRE 13
+
+/** @brief Looks the tree up at the 27 lattice points one cell around `p`.
+ *
+ * A point is open when its lookup takes the all-visible exit or lies outside
+ * the tree's 128-cell lattice (world 0 to 262143 on each axis, past which the
+ * descent's coordinate would wrap into another cell); an open point's list
+ * is all 0.
+ * @param b The bytes holding the tree.
+ * @param len Their length.
+ * @param tree The offset of the root node in b.
+ * @param p The position, world units.
+ * @param nb Receives each point's 256 visibility bytes.
+ * @param open Receives 1 for an open point, else 0. */
+void sector_pvs_ring(const uint8_t* b, uint32_t len, uint32_t tree, const int32_t p[3],
+                     uint8_t nb[SECTOR_PVS_RING][256], uint8_t open[SECTOR_PVS_RING]);
+
+/** @brief Marks in `out` the sectors one of the 13 opposite pairs of a ring admits.
+ *
+ * A pair (k, 26 - k) admits a sector both points list; with `open_agrees`
+ * also a sector one point lists while the other is open. An open point
+ * admits nothing alone. `out` is only set, never cleared.
+ * @param nb The ring's lists (sector_pvs_ring).
+ * @param open The ring's open flags.
+ * @param open_agrees Nonzero counts an open partner as listing the sector.
+ * @param n The sector count to test, at most 256.
+ * @param out The set to add to, 0xFF per admitted sector. */
+void sector_pvs_pairs(const uint8_t nb[SECTOR_PVS_RING][256], const uint8_t open[SECTOR_PVS_RING],
+                      int open_agrees, uint32_t n, uint8_t out[256]);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

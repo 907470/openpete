@@ -2107,10 +2107,10 @@ static uint32_t s_hide_hud_tris;    /* triangles those layers held */
 #define NR_HIDE_CLASSES_MAX 32
 static uint32_t s_hide_cls[NR_HIDE_CLASSES_MAX];
 static int s_hide_cls_n;
-/* --terrain-visibility: the terrain feeder's candidate-set policy
- * (openpete_terrain_visibility_t), seeded at init and latched on the sim
+/* --sector-visibility: the terrain feeder's candidate-set policy
+ * (openpete_sector_visibility_t), seeded at init and latched on the sim
  * thread from the setter's wanted value. */
-static int s_terrain_vis = OPENPETE_TERRAIN_VIS_FRUSTUM;
+static int s_terrain_vis = OPENPETE_SECTOR_VIS_FRUSTUM;
 /* --texture-mapping (0 = perspective, 1 = affine): the drawn mode plus the
  * queued one. The mode is a vertex spec constant baked into every scene
  * pipeline, so a change cannot apply mid-frame like the knobs above - the
@@ -2136,7 +2136,14 @@ static _Atomic(int) s_wireframe_want = 0;
  * value whichever thread ran the setter. */
 static _Atomic(int) s_vertex_snap_want = 0;
 static _Atomic(int) s_hide_player_want = 0;
-static _Atomic(int) s_terrain_vis_want = OPENPETE_TERRAIN_VIS_FRUSTUM;
+static _Atomic(int) s_terrain_vis_want = OPENPETE_SECTOR_VIS_FRUSTUM;
+/** @brief Maps a requested sector visibility mode to one the feeder runs: game and filled as given, anything else frustum.
+ * @param mode An openpete_sector_visibility_t value.
+ * @return OPENPETE_SECTOR_VIS_GAME, _FILLED or _FRUSTUM. */
+static int sector_vis_clamp(int mode) {
+    return (mode == OPENPETE_SECTOR_VIS_GAME || mode == OPENPETE_SECTOR_VIS_FILLED)
+           ? mode : OPENPETE_SECTOR_VIS_FRUSTUM;
+}
 /* The terrain walk's skipped-sub-cell packing: 1 keys a skipped sub-cell at
  * the face's least key and draws it, 0 stores the sentinel the key and colour
  * passes discard, -1 until resolved from OPENPETE_TERRAIN_DRAIN_SKIP. */
@@ -8589,10 +8596,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     op_live_set(&s_hide_player_want, s_hide_player);
     s_hide_hud = opts->hide_hud > 0;
     hide_classes_parse(opts->hide_classes);
-    /* --terrain-visibility: the terrain feeder's candidate set (frustum =
+    /* --sector-visibility: the terrain feeder's candidate set (frustum =
      * every sector inside the displayed frame, hidden or not). */
-    s_terrain_vis = (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_GAME)
-                    ? OPENPETE_TERRAIN_VIS_GAME : OPENPETE_TERRAIN_VIS_FRUSTUM;
+    s_terrain_vis = sector_vis_clamp(opts->sector_visibility);
     op_live_set(&s_terrain_vis_want, s_terrain_vis);
     (void)openpete_native_terrain_drain_legacy();   /* resolve before the first walk */
 
@@ -19657,17 +19663,16 @@ int openpete_native_hide_class(uint32_t cls) {
 }
 
 /* Latched on the sim thread; the terrain feeder reads the latched mode. */
-void openpete_native_set_terrain_visibility(int mode) {
-    const int v = (mode == OPENPETE_TERRAIN_VIS_GAME) ? OPENPETE_TERRAIN_VIS_GAME
-                                                      : OPENPETE_TERRAIN_VIS_FRUSTUM;
+void openpete_native_set_sector_visibility(int mode) {
+    const int v = sector_vis_clamp(mode);
     op_live_set(&s_terrain_vis_want, v);
-    OPL_INFO_F("native", "terrain-visibility -> %s",
-               v == OPENPETE_TERRAIN_VIS_GAME
-               ? "game (the game's visibility verdict)"
+    OPL_INFO_F("native", "sector-visibility -> %s",
+               v == OPENPETE_SECTOR_VIS_GAME ? "game (the game's visibility verdict)"
+               : v == OPENPETE_SECTOR_VIS_FILLED ? "filled (the game's verdict, holes filled)"
                : "frustum (every sector inside the displayed frame)");
 }
 
-int openpete_native_get_terrain_visibility(void) { return op_live_get(&s_terrain_vis_want); }
+int openpete_native_get_sector_visibility(void) { return op_live_get(&s_terrain_vis_want); }
 
 /* Stored from any thread; the walk reads it once at its start. */
 void openpete_native_set_terrain_drain_legacy(int legacy) {
@@ -19686,7 +19691,7 @@ int openpete_native_terrain_drain_legacy(void) {
     return op_live_get(&s_drain_legacy_want);
 }
 
-int openpete_native_terrain_visibility_active(void) { return s_terrain_vis; }
+int openpete_native_sector_visibility_active(void) { return s_terrain_vis; }
 
 /* Counted by the terrain walk, read by the eager planner; both run on the sim thread. */
 static unsigned s_level_edges OP_GUARDED_BY(sim);

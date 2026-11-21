@@ -15,6 +15,7 @@
 #include "openpete_time.h"
 #include "game_layout.h"
 #include "renderer/terrain.h"
+#include "renderer/sector_pvs.h"
 #include "renderer/wad_subfile.h"
 
 #include <math.h>
@@ -232,76 +233,10 @@ static int lp_load_subfiles(disc_image_t* img, int e, launcher_preview_level* L,
     return lp_sectors(L, ts + 8u, ts + 12u, ts + 4u, why, cap);
 }
 
-/** @brief Walks one PVS node's sector bytes: the first strictly increasing run hidden, the rest visible, 0xFF bytes skipped.
- * @param b The level bytes.
- * @param v The first sector byte's offset.
- * @param end The node's end offset.
- * @param vis The visibility table. */
-static void lp_pvs_node(const uint8_t* b, uint32_t v, uint32_t end, uint8_t vis[256]) {
-    if (v < end) {
-        uint32_t a = b[v];
-        while (v != end && a != 0xFFu) {
-            vis[a] = 0;
-            const uint32_t prev = a;
-            if (v + 1u >= end) { v++; break; }
-            a = b[v + 1u];
-            v++;
-            if ((int32_t)prev - (int32_t)a >= 0) break;
-        }
-    }
-    for (; v < end; v++)
-        if (b[v] != 0xFFu) vis[b[v]] = 0xFF;
-}
-
-/** @brief Steps the PVS descent's node coordinates one level down and returns the octant the position falls in.
- * @param p The position shifted right 11, x y z.
- * @param c The node coordinates, doubled and advanced into the octant.
- * @param depth The depth being left, 7 at the root.
- * @return The octant, x bit 4, y bit 2, z bit 1. */
-static uint32_t lp_pvs_octant(const uint32_t p[3], uint32_t c[3], int depth) {
-    uint32_t oct = 0;
-    for (int a = 0; a < 3; a++) {
-        c[a] <<= 1;
-        if ((int64_t)p[a] - (int64_t)((((uint64_t)c[a] + 1u) << depth) >> 1) >= 0) { c[a]++; oct |= 4u >> a; }
-    }
-    return oct;
-}
-
-/** @brief Returns the offset of a PVS node's child in an octant: past the node's children offset, then past each lower present sibling's length byte.
- * @param b The level bytes.
- * @param len Their length.
- * @param t The node's offset.
- * @param mask The node's child mask.
- * @param oct The octant, present in the mask.
- * @return The child's offset; past len when the bytes end. */
-static uint32_t lp_pvs_child(const uint8_t* b, uint32_t len, uint32_t t, uint32_t mask, uint32_t oct) {
-    t += (uint32_t)b[t + 2u] | ((uint32_t)b[t + 3u] << 8);
-    for (uint32_t i = 0; i < oct && t < len; i++)
-        if (mask & (1u << i)) t += b[t];
-    return t;
-}
-
 int launcher_preview_pvs(const launcher_preview_level* L, const int32_t pos[3], uint8_t vis[256]) {
     if (L->pvs_form == 0) return -1;
-    memset(vis, 0xFF, 256);
-    const uint8_t* b = L->bytes;
-    uint32_t t = L->pvs_off;
-    if (L->pvs_form == 1 || t > L->len - 4u || lp_w(b, L->len, t) == 0xFFFFFFFFu) return 256;
-    memset(vis, 0, 256);
-    const uint32_t p[3] = { (uint32_t)pos[0] >> 11, (uint32_t)pos[1] >> 11, (uint32_t)pos[2] >> 11 };
-    uint32_t c[3] = { 0, 0, 0 };
-    for (int depth = 7; ; depth--) {
-        if (t > L->len - 4u || b[t] == 0u || t + b[t] > L->len) { memset(vis, 0xFF, 256); break; }
-        const uint32_t mask = b[t + 1u], end = t + b[t];
-        lp_pvs_node(b, t + (depth ? (mask ? 4u : 2u) : 1u), end, vis);
-        if (depth == 0 || mask == 0) break;
-        const uint32_t oct = lp_pvs_octant(p, c, depth);
-        if (!(mask & (1u << oct))) { memset(vis, 0xFF, 256); break; }
-        t = lp_pvs_child(b, L->len, t, mask, oct);
-    }
-    int n = 0;
-    for (int i = 0; i < 256; i++) n += vis[i] == 0xFF;
-    return n;
+    if (L->pvs_form == 1) { memset(vis, 0xFF, 256); return 256; }
+    return sector_pvs_lookup(L->bytes, L->len, L->pvs_off, pos, vis, NULL);
 }
 
 int launcher_preview_level_load(disc_image_t* img, const openpete_game_build_t* b, int number,
@@ -393,14 +328,14 @@ static int lp_build(const openpete_game_build_t* b, launcher_preview_level* L, c
     int nvis = -1;
     if (S->vis_game) {
         nvis = launcher_preview_pvs(L, V.pos, vis);
-        if (nvis < 0) return lp_fail(why, cap, "--terrain-visibility game: the level form has no PVS the preview reads");
+        if (nvis < 0) return lp_fail(why, cap, "--sector-visibility game: the level form has no PVS the preview reads");
     }
     const terrain_host_level H = { L->bytes, L->len, L->sector_off, L->sector_count, L->lq_off, L->hq_off,
                                    L->exe, L->exe_addr, L->exe_len, nvis >= 0 ? vis : NULL, nvis >= 0 ? 256 : 0 };
     terrain_preview_stats st;
     if (terrain_preview_build(&H, &V, P, &st, why, cap) != 0) return -1;
     if (nvis >= 0)
-        OPL_INFO_F("launcher", "preview of %s: --terrain-visibility game: the PVS at the pose keeps %d of 256 "
+        OPL_INFO_F("launcher", "preview of %s: --sector-visibility game: the PVS at the pose keeps %d of 256 "
                    "table entries; %d decoded sectors outside it", b->id, nvis, st.vis_hidden);
     OPL_INFO_F("launcher", "preview of %s: %d sectors decoded, %d drawn from the pose, %d baked (%d near, %d failed); "
                "vertices opaque %llu, alpha %llu, add %llu, sub %llu, lp %llu; %llu in arenas not drawn; "

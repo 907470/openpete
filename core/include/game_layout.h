@@ -260,6 +260,11 @@ typedef struct game_layout {
          * is computed inside the draw's own frustum cull, and widescreen falls
          * back to the occlusion-group sublist. */
         uint32_t vis_aspect_independent;
+        /* The word holding the current sub-area of a level that loads its
+         * sub-areas into the same environment buffer, each with its own PVS
+         * tree (0 = the game has no sub-areas): a change of it is a change of
+         * tree even at the same address and size. */
+        uint32_t area;
     } env;
 
     /* The environment animations. `form` picks which registry the shared

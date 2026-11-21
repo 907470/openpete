@@ -4450,7 +4450,6 @@ games/common/renderer/terrain.c	terrain_verify_frame	f	local	-
 games/common/renderer/terrain.c	terrain_visdbg	inset	local	-	
 games/common/renderer/terrain.c	terrain_visdbg	s_done	local	-	
 games/common/renderer/terrain.c	terrain_vislist	cand	local	-	
-games/common/renderer/terrain.c	terrain_vislist	s_allvis	local	-	
 games/common/renderer/terrain.c	terrain_vislist	s_binchk	local	-	
 games/common/renderer/terrain.c	terrain_vislist	s_viscal	local	-	
 games/common/renderer/terrain.c	tgpu_animnear_on	v	local	once	= -1, one filler, first reference tests it

@@ -327,7 +327,7 @@ python3 -I tools/bugreport.py diff-hashes A B
 ```
 
 - `info` prints the summary a reader starts from: first each knob changed
-  live after boot (`knob changed live: terrain_visibility = game (changed
+  live after boot (`knob changed live: sector_visibility = game (changed
   live at 85.5 s, frame 2557; boot frustum, default frustum; render)`), the
   knobs whose value differs from the declared default, or that the bundle
   has no `knobs.txt`; then build, exe SHA-256,

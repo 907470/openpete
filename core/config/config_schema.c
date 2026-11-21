@@ -11,7 +11,7 @@ static const char *const v_anchor[]   = { "top-left", "top-center", "top-right",
 static const char *const v_vprec[]    = { "subpixel", "integer", NULL };
 static const char *const v_texmap[]   = { "perspective", "affine", NULL };
 static const char *const v_lod[]      = { "original", "extended", NULL };
-static const char *const v_tervis[]   = { "game", "frustum", NULL };
+static const char *const v_tervis[]   = { "game", "frustum", "filled", NULL };
 static const char *const v_cadence[]  = { "even", "fill", NULL };
 static const char *const v_fog[]      = { "original", "per-pixel", "off", NULL };
 static const char *const v_renderer[] = { "psycross", "vk", NULL };
@@ -43,7 +43,7 @@ static const cfg_knob_t g_schema[] = {
     { "raster_quantize",  "--raster-quantize",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "extract_threads",  "--extract-threads",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "terrain_cache",    "--terrain-cache",    "OPENPETE_TERRAIN_CACHE", CFG_BOOL,  NULL,       NULL,       NULL,       0 },
-    { "terrain_visibility", "--terrain-visibility", "OPENPETE_TERRAIN_VISIBILITY", CFG_ENUM, v_tervis, NULL, NULL, 0 },
+    { "sector_visibility", "--sector-visibility", "OPENPETE_SECTOR_VISIBILITY", CFG_ENUM, v_tervis, NULL, NULL, 0 },
     { "notex",            "--notex",            "OPENPETE_NOTEX",        CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "wireframe",        "--wireframe",        "OPENPETE_WIREFRAME",    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "dither",           "--dither",           NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },

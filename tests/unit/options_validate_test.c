@@ -249,20 +249,20 @@ static void resolved_env_fields(void) {
           "notex %d wireframe %d terrain_cache %d disc_cache %d", o.notex, o.wireframe,
           o.terrain_cache, o.disc_cache);
     CHECK(o.load_delay == -1, "load_delay = %d, want -1 for run.c", o.load_delay);
-    CHECK(o.terrain_visibility == OPENPETE_TERRAIN_VIS_FRUSTUM, "terrain_visibility %d",
-          (int)o.terrain_visibility);
+    CHECK(o.sector_visibility == OPENPETE_SECTOR_VIS_FRUSTUM, "sector_visibility %d",
+          (int)o.sector_visibility);
 
     g_case = "[env] table";
     CHECK(parse_cfg(&o, "[env]\nOPENPETE_LOAD_DELAY = \"7\"\n"
-                        "OPENPETE_TERRAIN_VISIBILITY = \"game\"\n"
+                        "OPENPETE_SECTOR_VISIBILITY = \"game\"\n"
                         "OPENPETE_TERRAIN_CACHE = \"0\"\n", 0, NULL) == OPENPETE_EXIT_OK,
           "the [env] parse failed");
     CHECK(o.load_delay == 7, "load_delay = %d, want 7 from [env]", o.load_delay);
-    CHECK(o.terrain_visibility == OPENPETE_TERRAIN_VIS_GAME, "terrain_visibility %d",
-          (int)o.terrain_visibility);
+    CHECK(o.sector_visibility == OPENPETE_SECTOR_VIS_GAME, "sector_visibility %d",
+          (int)o.sector_visibility);
     CHECK(o.terrain_cache == 0, "terrain_cache = %d, want 0 from [env]", o.terrain_cache);
     unsetenv_portable("OPENPETE_LOAD_DELAY");
-    unsetenv_portable("OPENPETE_TERRAIN_VISIBILITY");
+    unsetenv_portable("OPENPETE_SECTOR_VISIBILITY");
     unsetenv_portable("OPENPETE_TERRAIN_CACHE");
 
     g_case = "typed beats env";

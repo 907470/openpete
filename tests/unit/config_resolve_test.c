@@ -460,6 +460,59 @@ static void case_schema_sanity(void) {
     }
 }
 
+/* A key renamed after a release could save it is rewritten in the managed
+ * zone the first time the file loads: v0.4.3 saved the Display row as
+ * `terrain_visibility`, which the reader now maps to `sector_visibility`, and
+ * the load rewrites the file so the old spelling is gone from it. */
+static void case_saved_key_migration(void) {
+    static const char *v043 =
+        "# hand-written\n"
+        "ssaa = 2\n"
+        "\n"
+        "# >>> openpete managed settings - written by the in-game menus <<<\n"
+        "# Anything below this line is REGENERATED on save; edit above it.\n"
+        "[saved]\n"
+        "terrain_visibility = \"game\"\n";
+
+    run_t r = run("migration: v0.4.3 terrain_visibility loads as sector_visibility", v043, NULL, 0);
+    CHECK(r.rc >= 0, "the v0.4.3 file should load");
+    expect_flag_value(&r, "--sector-visibility", "game");
+    expect_no_flag(&r, "--terrain-visibility");
+
+    char body[4096];
+    read_toml(body, sizeof body);
+    CHECK(strstr(body, "sector_visibility = \"game\"") != NULL,
+          "the load should rewrite the saved key under its new name, value kept");
+    CHECK(strstr(body, "terrain_visibility") == NULL,
+          "the old key should be gone from the file after the load");
+    CHECK(strstr(body, "# hand-written") != NULL, "the hand-written zone was lost");
+
+    g_case = "migration: the rewritten file reads back";
+    openpete_config_reset();
+    static char *argv[8];
+    int argc = 0;
+    argv[argc++] = (char *)"openpete";
+    argv[argc++] = (char *)"--config";
+    argv[argc++] = g_toml_path;
+    openpete_config_set_game_id("spyro-1");
+    int oc = 0; char **ov = NULL;
+    run_t r2 = { argc, argv, 0 };
+    r2.rc = openpete_config_apply(argc, argv, argc, &oc, &ov);
+    if (r2.rc == 1) { r2.argc = oc; r2.argv = ov; }
+    CHECK(r2.rc >= 0, "the rewritten file should re-read cleanly");
+    expect_flag_value(&r2, "--sector-visibility", "game");
+
+    /* frustum maps to itself too */
+    r = run("migration: frustum maps to itself",
+        "# >>> openpete managed settings - written by the in-game menus <<<\n"
+        "[saved]\n"
+        "terrain_visibility = \"frustum\"\n", NULL, 0);
+    expect_flag_value(&r, "--sector-visibility", "frustum");
+    read_toml(body, sizeof body);
+    CHECK(strstr(body, "sector_visibility = \"frustum\"") != NULL,
+          "frustum should be rewritten under the new key");
+}
+
 /* The writer's contract: everything above the managed marker survives byte
  * for byte (comments, ordering, tables the reader doesn't know), and the
  * zone below round-trips back through the reader as the [saved] tier. */
@@ -1080,6 +1133,7 @@ int main(void) {
     case_false_suppresses();
     case_alias_collapses();
     case_renamed_key();
+    case_saved_key_migration();
     case_env_only_knob();
     case_validation();
     case_scope_beats_file();

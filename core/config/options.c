@@ -1013,9 +1013,9 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->load_delay    = -1;
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
     opts->fog_mode            = OPENPETE_FOG_AUTO;      /* follows --lod until --fog picks one */
-    /* Unset until resolve_env_spellings applies OPENPETE_TERRAIN_VISIBILITY,
+    /* Unset until resolve_env_spellings applies OPENPETE_SECTOR_VISIBILITY,
      * else frustum. */
-    opts->terrain_visibility = OPENPETE_TERRAIN_VIS_UNSET;
+    opts->sector_visibility = OPENPETE_SECTOR_VIS_UNSET;
     /* Unset until resolve_env_spellings applies OPENPETE_CADENCE, else even. */
     opts->cadence = OPENPETE_CADENCE_UNSET;
 }
@@ -1399,14 +1399,16 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
             return OPENPETE_EXIT_SETUP_ERROR;
         }
         i++;
-    } else if (strcmp(a, "--terrain-visibility") == 0) {
+    } else if (strcmp(a, "--sector-visibility") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         if (strcmp(v, "game") == 0) {
-            opts->terrain_visibility = OPENPETE_TERRAIN_VIS_GAME;
+            opts->sector_visibility = OPENPETE_SECTOR_VIS_GAME;
         } else if (strcmp(v, "frustum") == 0) {
-            opts->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
+            opts->sector_visibility = OPENPETE_SECTOR_VIS_FRUSTUM;
+        } else if (strcmp(v, "filled") == 0) {
+            opts->sector_visibility = OPENPETE_SECTOR_VIS_FILLED;
         } else {
-            fprintf(stderr, "openpete: --terrain-visibility expects game|frustum, got: %s\n", v);
+            fprintf(stderr, "openpete: --sector-visibility expects game|frustum|filled, got: %s\n", v);
             return OPENPETE_EXIT_SETUP_ERROR;
         }
         i++;
@@ -2331,8 +2333,8 @@ static void env_switch(int* field, const char* name, int def, int by_atoi) {
  * OPENPETE_TERRAIN_CACHE and OPENPETE_DISC_CACHE take atoi's verdict
  * (default 1); OPENPETE_SCAN_GUARD is off when it starts with '0' (default
  * 1); OPENPETE_HIDE_CLASSES is taken as written;
- * OPENPETE_TERRAIN_VISIBILITY=game selects the game's verdict (default
- * frustum). OPENPETE_LOAD_DELAY is applied with atoi when set; unset,
+ * OPENPETE_SECTOR_VISIBILITY=game selects the game's verdict and =filled
+ * the filled set (default frustum). OPENPETE_LOAD_DELAY is applied with atoi when set; unset,
  * load_delay stays -1 and run.c applies the game's default.
  * OPENPETE_RUN_RECOMP names a guest entry address (strtoul, base auto).
  * @param opts The options block. */
@@ -2349,10 +2351,13 @@ static void resolve_env_spellings(openpete_options_t* opts) {
         opts->hide_classes = strdup(e);   /* outlives a later setenv or [env] release */
     if (opts->load_delay < 0 && env_value("OPENPETE_LOAD_DELAY", &e))
         opts->load_delay = atoi(e);
-    if (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_UNSET)
-        opts->terrain_visibility =
-            (env_value("OPENPETE_TERRAIN_VISIBILITY", &e) && strcmp(e, "game") == 0)
-                ? OPENPETE_TERRAIN_VIS_GAME : OPENPETE_TERRAIN_VIS_FRUSTUM;
+    if (opts->sector_visibility == OPENPETE_SECTOR_VIS_UNSET) {
+        opts->sector_visibility = OPENPETE_SECTOR_VIS_FRUSTUM;
+        if (env_value("OPENPETE_SECTOR_VISIBILITY", &e)) {
+            if (strcmp(e, "game") == 0) opts->sector_visibility = OPENPETE_SECTOR_VIS_GAME;
+            else if (strcmp(e, "filled") == 0) opts->sector_visibility = OPENPETE_SECTOR_VIS_FILLED;
+        }
+    }
     if (opts->cadence == OPENPETE_CADENCE_UNSET &&
         !(env_value("OPENPETE_CADENCE", &e) && cadence_parse(e, &opts->cadence) == 0))
         opts->cadence = OPENPETE_CADENCE_EVEN;
@@ -2379,8 +2384,8 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->disc_cache < 0)            out->disc_cache = 1;
     if (out->scan_guard < 0)            out->scan_guard = 1;
     if (out->mod_hot_reload < 0)        out->mod_hot_reload = 0;
-    if (out->terrain_visibility == OPENPETE_TERRAIN_VIS_UNSET)
-        out->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
+    if (out->sector_visibility == OPENPETE_SECTOR_VIS_UNSET)
+        out->sector_visibility = OPENPETE_SECTOR_VIS_FRUSTUM;
     if (out->cadence == OPENPETE_CADENCE_UNSET) out->cadence = OPENPETE_CADENCE_EVEN;
 }
 

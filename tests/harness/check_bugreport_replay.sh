@@ -15,7 +15,7 @@
 #           the host slips and the time stretch engages before the press
 #   knobs   as skip, under --renderer vk --aspect 16:9 and --no-config (no
 #           change is saved), press at VBL 4400, with knob changes from the
-#           harness schedule OPENPETE_BUGREPORT_KNOB_AT: terrain_visibility
+#           harness schedule OPENPETE_BUGREPORT_KNOB_AT: sector_visibility
 #           = game and hide_player = on at feed key 1400 (before the
 #           bundle's anchor, the session's second) and dither = on at 3000
 #           (after it); a native screenshot at feed key 4390
@@ -97,7 +97,7 @@
 # mute=1; the audio recording's names device=synthetic, has played data,
 # and holds a nonzero event count with a prime, a slip and a stretch;
 # `info` of the knobs bundle names each of the three knobs as changed live;
-# knobs IDENTICAL with terrain_visibility and hide_player applied at the
+# knobs IDENTICAL with sector_visibility and hide_player applied at the
 # anchor load and dither at its tick, and its screenshot equal to the
 # recording's (zero knobs applied reads VACUOUS); knobs-off IDENTICAL with
 # zero applied and a screenshot that differs from the recording's (equal
@@ -189,7 +189,7 @@ skip_zip="$(record skip 1500 --skip-to-level summer_forest)" || fail+=("skip rec
 plain_zip="$(record plain 900)" || fail+=("plain recording failed (see $OUT/rec-plain.log)")
 REC_ENV=("OPENPETE_AUDIO_FEED_SIM=0.0,1" "OPENPETE_PACE_INJECT_US=16536,1,200,600")
 audio_zip="$(record audio 900)" || fail+=("audio recording failed (see $OUT/rec-audio.log)")
-REC_ENV=("OPENPETE_BUGREPORT_KNOB_AT=1400:terrain_visibility=game,1400:hide_player=on,3000:dither=on")
+REC_ENV=("OPENPETE_BUGREPORT_KNOB_AT=1400:sector_visibility=game,1400:hide_player=on,3000:dither=on")
 knobs_zip="$(record knobs 4400 --skip-to-level summer_forest --renderer vk --aspect 16:9 \
     --screenshot-on-frame 4390 --screenshot-native-only --screenshot-output "$OUT/knobs-rec__{n}.png")" ||
     fail+=("knobs recording failed (see $OUT/rec-knobs.log)")
@@ -371,7 +371,7 @@ PY
 }
 
 python3 -I tools/bugreport.py info "$knobs_zip" >"$OUT/info-knobs.txt" 2>&1 || fail+=("knobs: info exit $?")
-for k in "terrain_visibility = game" "hide_player = on" "dither = on"; do
+for k in "sector_visibility = game" "hide_player = on" "dither = on"; do
     grep -q "^knob changed live: $k (changed live at " "$OUT/info-knobs.txt" ||
         fail+=("knobs: info names no live change '$k'")
 done
@@ -381,7 +381,7 @@ replay knobs "$knobs_zip" --screenshot-on-frame 4390 --screenshot-native-only \
     --screenshot-output "$OUT/knobs-on__{n}.png"
 v_knobs="$(verdict "$LOG")"
 [[ "$v_knobs" == IDENTICAL ]] || fail+=("knobs: $v_knobs, want IDENTICAL")
-for k in "terrain_visibility = game applied at the anchor load" "hide_player = on applied at the anchor load" \
+for k in "sector_visibility = game applied at the anchor load" "hide_player = on applied at the anchor load" \
          "dither = on applied at frame"; do
     grep -q "bug-report-replay: knob $k" "$LOG" || fail+=("knobs: no '$k' line")
 done

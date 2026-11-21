@@ -120,7 +120,7 @@ typedef enum {
     OPENPETE_FOG_OFF,
 } openpete_fog_mode_t;
 
-/* Terrain candidate-set policy (`--terrain-visibility game|frustum`). GAME is
+/* Sector candidate-set policy (`--sector-visibility game|frustum|filled`). GAME is
  * the faithful path: the sector set the game's own visibility pass and
  * occlusion groups produce, which hides everything outside the room the camera
  * sits in and everything outside the 4:3 frame. FRUSTUM (default) admits every
@@ -131,12 +131,17 @@ typedef enum {
  * from an inside-geometry view. The admitted set is still culled by the
  * frustum test, the per-sector tier verdicts, the retained GPU cache and the
  * native occlusion pre-pass. Display-only: the visibility flags are read, never
- * written. Native renderer only. */
+ * written. FILLED admits, on a game whose verdict is a position-keyed PVS,
+ * the game's verdict plus the sectors an opposite pair of neighbour cells
+ * around the tick camera lists (an all-visible neighbour counting as
+ * agreeing, never alone), within the frustum; elsewhere it is FRUSTUM.
+ * Native renderer only. */
 typedef enum {
-    OPENPETE_TERRAIN_VIS_UNSET = -1, /* options only: not yet resolved */
-    OPENPETE_TERRAIN_VIS_GAME = 0,  /* the game's visibility verdict */
-    OPENPETE_TERRAIN_VIS_FRUSTUM,   /* default: every sector inside the frustum */
-} openpete_terrain_visibility_t;
+    OPENPETE_SECTOR_VIS_UNSET = -1, /* options only: not yet resolved */
+    OPENPETE_SECTOR_VIS_GAME = 0,  /* the game's visibility verdict */
+    OPENPETE_SECTOR_VIS_FRUSTUM,   /* default: every sector inside the frustum */
+    OPENPETE_SECTOR_VIS_FILLED,    /* the game's verdict with its holes filled */
+} openpete_sector_visibility_t;
 
 /* --cadence: how the eager planner places the in-between scenes of a tick's
  * span on a display grid (vsync on) when the span affords fewer scenes than
@@ -237,10 +242,10 @@ typedef struct openpete_options {
      * `--no-lod` is a deprecated alias for `--lod extended`. */
     openpete_lod_mode_t lod;
 
-    /* --terrain-visibility game|frustum: the terrain candidate set (see
-     * openpete_terrain_visibility_t above). Default FRUSTUM. Set from
-     * OPENPETE_TERRAIN_VISIBILITY when no flag is given. */
-    openpete_terrain_visibility_t terrain_visibility;
+    /* --sector-visibility game|frustum: the terrain candidate set (see
+     * openpete_sector_visibility_t above). Default FRUSTUM. Set from
+     * OPENPETE_SECTOR_VISIBILITY when no flag is given. */
+    openpete_sector_visibility_t sector_visibility;
 
     /* --cadence even|fill (openpete_cadence_t above). Default EVEN. Set from
      * OPENPETE_CADENCE when no flag is given; live through
@@ -1001,8 +1006,8 @@ typedef struct openpete_options {
 
 /** @brief Zero opts, then set every field whose default is not zero.
  *
- * Unset tri-state fields take -1 (OPENPETE_TERRAIN_VIS_UNSET for
- * terrain_visibility) so a later consumer can tell a typed value from the
+ * Unset tri-state fields take -1 (OPENPETE_SECTOR_VIS_UNSET for
+ * sector_visibility) so a later consumer can tell a typed value from the
  * default. No environment variable is read here: openpete_options_parse
  * applies the env spellings after the flags, so an openpete.toml [env]
  * entry reaches them too.
@@ -1044,7 +1049,7 @@ int  openpete_options_parse_neutral(openpete_options_t* opts, int argc, char** a
  * walk it resolves the default --bk2-record path and its sidecar, then
  * applies the env spellings of the flags that were not typed and resolves
  * notex, wireframe, terrain_cache, disc_cache, scan_guard, mod_hot_reload
- * and terrain_visibility to their defaults (load_delay stays -1 for run.c). The EXE-source check is left to
+ * and sector_visibility to their defaults (load_delay stays -1 for run.c). The EXE-source check is left to
  * openpete_options_require_exe_source. --help prints the help, sets
  * opts->help and returns OPENPETE_EXIT_OK at once; the caller exits 0. A
  * value refused by type or range fails the parse when typed or from a bk2
@@ -1071,7 +1076,7 @@ void openpete_options_set_strict(int on);
  * launcher_fullscreen -1 become 0,
  * mouse_sensitivity -1 becomes 1.0, load_delay -1 becomes
  * game_get_load_delay_default(), and notex, wireframe, terrain_cache,
- * disc_cache, scan_guard, mod_hot_reload and terrain_visibility take their
+ * disc_cache, scan_guard, mod_hot_reload and sector_visibility take their
  * built-in defaults when still unset.
  * Every runtime consumer reads the raw fields; this serves the surface
  * dump's selfcheck, which compares a parse of a flag at its declared default

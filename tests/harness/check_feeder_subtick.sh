@@ -46,12 +46,12 @@
 #                  both read games/<slug>/corpus/terrain-subtick-corpus.manifest
 #   terrain-canim  OPENPETE_TERRAIN_CANIM=1 against =0, the interp statistic
 #                  referenced at alpha 1, games/<slug>/corpus/terrain-canim-subtick-corpus.manifest
-#   terrain-vis    --terrain-visibility game against frustum, the vis statistic,
+#   terrain-vis    --sector-visibility game against frustum, the vis statistic,
 #                  games/<slug>/corpus/terrain-vis-subtick-corpus.manifest
 #
 # The vis statistic (STAT=vis) prices the sector set a sub-tick present draws
 # under the game's own visibility verdict. Its legs are the intermediate
-# present at V+1, per alpha, under --terrain-visibility game and under
+# present at V+1, per alpha, under --sector-visibility game and under
 # frustum, which admits every sector whose sphere the present's camera sees.
 # The difference of the two is the pixels of sectors one mode draws and the
 # other does not; the game's occlusion groups hide only sectors the depth test
@@ -378,8 +378,8 @@ case "$PATHNAME" in
             ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0,0.5;;
     # The game's visibility verdict against the frustum candidate set, every
     # path drawn in both legs: what differs is the sector set alone.
-    terrain-vis) LEG_ARGS_ON=(--terrain-visibility game)
-            LEG_ARGS_OFF=(--terrain-visibility frustum)
+    terrain-vis) LEG_ARGS_ON=(--sector-visibility game)
+            LEG_ARGS_OFF=(--sector-visibility frustum)
             STAT=vis; MASK_CAP=320000
             ALPHAS=(0 0.5 1); JUDGE_DEF=0,0.5,1;;
     # The cyclorama has no suppress knob; the two legs are a render-path

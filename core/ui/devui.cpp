@@ -2282,7 +2282,7 @@ static const lay_row k_lay_display[] = {
     { LAY_ROW,    nullptr, { "fog_scale" } },
     { LAY_DRAWMODE, "Render mode", { "notex", "wireframe" } },
     { LAY_ROW,    nullptr, { "terrain_cache" } },
-    { LAY_SEG,    nullptr, { "terrain_visibility" } },
+    { LAY_SEG,    nullptr, { "sector_visibility" } },
     { LAY_TOKENS, nullptr, { "render_paths" } },
     { LAY_SUB_END, nullptr },
 };

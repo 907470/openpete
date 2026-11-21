@@ -54,6 +54,7 @@
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/orchestrator.h"  /* openpete_native_interp_pos */
 #include "renderer/terrain.h"        /* this feeder's exports */
+#include "renderer/sector_pvs.h"     /* the PVS census */
 #include "renderer/cut_guard.h"      /* cut_census_on: the held terrain line */
 #include "freecam_game.h"            /* freecam_view_rotation: the preview's view matrix */
 #include "renderer/moby_snap.h"      /* moby_snap_terrain_fed: the sunk-pickup contact */
@@ -9365,7 +9366,7 @@ static int tsec_game_out_y(int32_t y, int32_t z, int32_t r) {
  * The draw's own slack (environment.s, the sphere test ahead of its sector
  * lists) falls short of that distance: 4·t3 + 3·t4 ≈ 4.9r against the exact
  * 5r on the 4:3 side plane, so it rejects spheres reaching into the cone.
- * Under OPENPETE_TERRAIN_VIS_GAME an axis whose scale is 1 therefore keeps
+ * Under OPENPETE_SECTOR_VIS_GAME an axis whose scale is 1 therefore keeps
  * the draw's integer verdict (tsec_game_ir, tsec_game_out_x, tsec_game_out_y)
  * and the near test is the draw's; an axis at another scale has no game
  * verdict and takes the plane distance in both modes.
@@ -9379,7 +9380,7 @@ static int tsec_game_out_y(int32_t y, int32_t z, int32_t r) {
  * @return Nonzero when the sphere is rejected. */
 static int tsec_sphere_cull(const int M[3][3], const double cam[3], const int c[3], int r,
                             double wx, double wy) {
-    const int game = openpete_native_terrain_visibility_active() != OPENPETE_TERRAIN_VIS_FRUSTUM;
+    const int game = openpete_native_sector_visibility_active() == OPENPETE_SECTOR_VIS_GAME;
     int32_t ir[3] = { 0, 0, 0 };
     if (game) {
         tsec_game_ir(M, cam, c, ir);
@@ -9558,6 +9559,749 @@ static void tvis_calibrate(CPUState* cpu, const tvis_sphere* S, uint32_t list, u
             openpete_frame, cn, vis, extra, miss);
 }
 
+/* ---- --sector-visibility filled --------------------------------------------
+ *
+ * On a game whose verdict is a position-keyed PVS (env.vis_aspect_independent:
+ * Spyro 2 func_80048D18, Spyro 3 func_8002D0D8), the filled set of a tick is
+ * C' = V plus the sectors that, for one of the 13 opposite neighbour pairs
+ * (d, -d) one cell (2048 units) around the tick's draw-time camera position
+ * (cam.xform_end, the position the game's lookup reads), one side lists while
+ * the other lists them or is open. V is the game's own verdict for the tick
+ * (tvis_visible). A lattice point is open when its lookup takes the
+ * all-visible exit or lies outside the tree's 128-cell lattice; an open point
+ * admits nothing alone. The drawn set U is C' of the current tick united with
+ * C' of the previous tick when the two tick cells are within Chebyshev
+ * distance 1 and the tree snapshot did not change between them, so a sub-tick
+ * present between the two tick cameras has both cells' sets. Everything here
+ * runs on the sim thread at the walk and writes host memory only. */
+
+/* The host copy of the level's PVS tree and the key it was taken under. */
+typedef struct {
+    uint8_t* b;           /* the tree bytes (NULL: the level has no PVS) */
+    uint32_t len, cap;
+    uint32_t ptr, size;   /* the pointer at env.occ_groups and its size word */
+    uint32_t flag;        /* the word at env.base + 0x10 (0: lookup off) */
+    int32_t  level, area; /* level id and sub-area word at the snapshot */
+    uint32_t state;       /* the game-state word at the snapshot */
+    uint64_t hash;        /* FNV-1a over the tree bytes */
+    unsigned gen;         /* bumped when the tree content changes */
+} sf_tree_t;
+
+static sf_tree_t s_sf_tree OP_GUARDED_BY(sim);
+static uint8_t   s_sf_cur[256] OP_GUARDED_BY(sim);    /* C' of the current tick */
+static uint8_t   s_sf_prev[256] OP_GUARDED_BY(sim);   /* C' of the previous tick */
+static uint8_t   s_sf_u[256] OP_GUARDED_BY(sim);      /* U, the drawn set */
+static int32_t   s_sf_cur_cell[3] OP_GUARDED_BY(sim), s_sf_prev_cell[3] OP_GUARDED_BY(sim);
+static unsigned  s_sf_cur_gen OP_GUARDED_BY(sim), s_sf_prev_gen OP_GUARDED_BY(sim);
+static int       s_sf_cur_ok OP_GUARDED_BY(sim), s_sf_prev_ok OP_GUARDED_BY(sim);
+static int       s_sf_ready OP_GUARDED_BY(sim);       /* U is valid for this tick */
+/* Engagement counters (OPENPETE_SECTOR_FILLED_CENSUS). */
+static unsigned long s_sf_ticks OP_GUARDED_BY(sim), s_sf_computes OP_GUARDED_BY(sim),
+                     s_sf_refreshes OP_GUARDED_BY(sim), s_sf_walks_differ OP_GUARDED_BY(sim),
+                     s_sf_added OP_GUARDED_BY(sim), s_sf_unions OP_GUARDED_BY(sim);
+
+/** @brief Re-copies the PVS tree when its key changed, and re-hashes it then or when the game-state word changed.
+ *
+ * The key is the pointer at env.occ_groups, its size word, the lookup flag
+ * at env.base + 0x10, the level id and the sub-area word (env.area). A load
+ * that reuses the buffer at the same address and size changes the game-state
+ * word on its way in and out, so a change of that word re-hashes the tree;
+ * a hash change bumps the generation, which drops the previous tick's set.
+ * @param cpu The guest CPU state, read only. */
+static void sf_tree_refresh(CPUState* cpu) OP_REQUIRES(sim) {
+    sf_tree_t* T = &s_sf_tree;
+    const uint32_t flag = game_layout.env.base ? cpu->read_word(game_layout.env.base + 0x10u) : 0u;
+    const uint32_t ptr = tenv_rd(cpu, game_layout.env.occ_groups);
+    const uint32_t size = (ptr >= 0x80000004u) ? cpu->read_word(ptr - 4u) : 0u;
+    const int32_t level = game_layout.level_id ? (int32_t)cpu->read_word(game_layout.level_id) : 0;
+    const int32_t area = game_layout.env.area ? (int32_t)cpu->read_word(game_layout.env.area) : 0;
+    const uint32_t state = game_layout.game_state ? cpu->read_word(game_layout.game_state) : 0u;
+    const int key_same = T->ptr == ptr && T->size == size && T->flag == flag && T->level == level
+                         && T->area == area;
+    if (key_same && T->state == state && (T->b || !flag || size < 9u)) return;
+    T->ptr = ptr; T->size = size; T->flag = flag; T->level = level; T->area = area; T->state = state;
+    s_sf_refreshes++;
+    if (!flag || ptr < 0x80000004u || size < 9u) {
+        if (T->b || T->len) T->gen++;
+        T->len = 0;
+        free(T->b);
+        T->b = NULL;
+        T->cap = 0;
+        T->hash = 0;
+        return;
+    }
+    const uint32_t len = size > 262144u ? 262144u : size;
+    if (len > T->cap) {
+        uint8_t* nb = (uint8_t*)realloc(T->b, len);
+        if (!nb) return;
+        T->b = nb;
+        T->cap = len;
+    }
+    uint64_t h = 1469598103934665603ull;
+    for (uint32_t k = 0; k < len; k++) {
+        T->b[k] = cpu->read_byte(ptr + k);
+        h = (h ^ T->b[k]) * 1099511628211ull;
+    }
+    if (h != T->hash || len != T->len) T->gen++;
+    T->hash = h;
+    T->len = len;
+}
+
+/** @brief Looks the snapshot up one lattice step from `p`, open outside the 128-cell lattice.
+ * @param p The tick camera position, world units.
+ * @param d The step in cells.
+ * @param vis Receives the 256 visibility bytes, all 0 at an open point.
+ * @return 1 when the point is open, else 0. */
+static int sf_lookup(const int32_t p[3], const int d[3], uint8_t vis[256]) OP_REQUIRES(sim) {
+    int32_t q[3];
+    for (int a = 0; a < 3; a++) {
+        q[a] = p[a] + d[a] * SECTOR_PVS_CELL;
+        if (q[a] < 0 || q[a] >= 128 * SECTOR_PVS_CELL) { memset(vis, 0, 256); return 1; }
+    }
+    int open = 0;
+    sector_pvs_lookup(s_sf_tree.b, s_sf_tree.len, 0, q, vis, &open);
+    if (open) memset(vis, 0, 256);
+    return open;
+}
+
+/** @brief Computes C' at the tick camera into `out`: the game's verdict plus the opposite-pair admissions, an open partner agreeing.
+ * @param cpu The guest CPU state, read only.
+ * @param p The tick camera position, world units.
+ * @param n The guest sector count, at most 256.
+ * @param out Receives 256 bytes, 0xFF for an admitted sector. */
+static void sf_compute(CPUState* cpu, const int32_t p[3], uint32_t n, uint8_t out[256]) OP_REQUIRES(sim) {
+    uint8_t nb[SECTOR_PVS_RING][256], open[SECTOR_PVS_RING];
+    memset(out, 0, 256);
+    for (uint32_t i = 0; i < n; i++)
+        if (tvis_visible(cpu, i)) out[i] = 0xFF;
+    sector_pvs_ring(s_sf_tree.b, s_sf_tree.len, 0, p, nb, open);
+    sector_pvs_pairs((const uint8_t (*)[256])nb, open, 1, n, out);
+    s_sf_computes++;
+}
+
+/** @brief Advances the filled set on a canonical walk: snapshot refresh, C' of the tick, U over two ticks.
+ *
+ * A sub-tick re-extract (s_vanim_sub) reads the U of the last canonical walk
+ * unchanged. Not ready (frustum behaviour) on a game without a
+ * position-keyed PVS, on a level whose PVS flag is 0, or with no tree.
+ * @param cpu The guest CPU state, read only.
+ * @param sectorCnt The guest sector count. */
+static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
+    if (s_vanim_sub) return;
+    s_sf_ready = 0;
+    if (!game_layout.env.vis_aspect_independent) return;
+    sf_tree_refresh(cpu);
+    if (!s_sf_tree.b) { s_sf_cur_ok = s_sf_prev_ok = 0; return; }
+    const uint32_t n = sectorCnt < 256u ? sectorCnt : 256u;
+    const uint32_t xe = game_layout.cam.xform_end;
+    const int32_t p[3] = { (int32_t)cpu->read_word(xe), (int32_t)cpu->read_word(xe + 4u),
+                           (int32_t)cpu->read_word(xe + 8u) };
+    const int32_t cell[3] = { p[0] >> 11, p[1] >> 11, p[2] >> 11 };
+    s_sf_ticks++;
+    memcpy(s_sf_prev, s_sf_cur, sizeof s_sf_prev);
+    memcpy(s_sf_prev_cell, s_sf_cur_cell, sizeof s_sf_prev_cell);
+    s_sf_prev_gen = s_sf_cur_gen;
+    s_sf_prev_ok = s_sf_cur_ok;
+    /* The game's verdict changes only with the cell; recompute on a new cell
+     * or tree, else the previous tick's C' is this tick's too. */
+    if (!s_sf_cur_ok || s_sf_cur_gen != s_sf_tree.gen || memcmp(cell, s_sf_cur_cell, sizeof cell)) {
+        sf_compute(cpu, p, n, s_sf_cur);
+        memcpy(s_sf_cur_cell, cell, sizeof cell);
+        s_sf_cur_gen = s_sf_tree.gen;
+        s_sf_cur_ok = 1;
+    }
+    memcpy(s_sf_u, s_sf_cur, sizeof s_sf_u);
+    int near = s_sf_prev_ok && s_sf_prev_gen == s_sf_cur_gen;
+    for (int a = 0; a < 3 && near; a++) near = abs(s_sf_prev_cell[a] - s_sf_cur_cell[a]) <= 1;
+    if (near) {
+        s_sf_unions++;
+        for (int i = 0; i < 256; i++) s_sf_u[i] |= s_sf_prev[i];
+    }
+    int added = 0;
+    for (uint32_t i = 0; i < n; i++) added += s_sf_u[i] && !tvis_visible(cpu, i);
+    s_sf_added += (unsigned long)added;
+    s_sf_walks_differ += added > 0;
+    s_sf_ready = 1;
+    const char* e = getenv("OPENPETE_SECTOR_FILLED_CENSUS");
+    if (e && *e && *e != '0' && (s_sf_ticks % 300u) == 1u)
+        fprintf(stderr, "[sector-filled] frame=%u ticks=%lu computes=%lu refreshes=%lu "
+                        "unions=%lu walks_differ=%lu added=%lu gen=%u\n",
+                openpete_frame, s_sf_ticks, s_sf_computes, s_sf_refreshes, s_sf_unions,
+                s_sf_walks_differ, s_sf_added, s_sf_tree.gen);
+}
+
+int terrain_sector_admitted(uint32_t i) OP_REQUIRES(sim) {
+    const int mode = openpete_native_sector_visibility_active();
+    if (mode == OPENPETE_SECTOR_VIS_FRUSTUM) return 1;
+    if (i >= 255u) return 1;
+    if (mode == OPENPETE_SECTOR_VIS_FILLED && s_sf_ready) return s_sf_u[i] != 0;
+    if (mode == OPENPETE_SECTOR_VIS_FILLED) return 1;   /* no PVS: frustum behaviour */
+    return -1;   /* game: the caller reads the game's verdict */
+}
+
+/* ---- the sector PVS census ---------------------------------------------------
+ *
+ * Env-gated instrument over the tree snapshot of the filled mode (s_sf_tree,
+ * refreshed here in any mode). OPENPETE_SECTOR_VIS_CENSUS=1 prints a [secvis]
+ * line per walk: the calibration (the host lookup at the guest's own
+ * draw-time position against the guest's verdict), the frustum set F, the PVS
+ * set V at the presented camera and, for comparison, D1 (the union over the
+ * 26 neighbours), C (pairs that both list a sector) and C' (as C, an open
+ * partner agreeing), with each extra sector's Chebyshev lattice distance to
+ * the nearest listing point and, for a sector only D1 admits, the listing
+ * neighbours' direction. =cal prints a [secvis-cal] line per walk instead.
+ * OPENPETE_SECTOR_VIS_SWEEP=<vbl> prices V, C, C' and D1 over every cell of
+ * the level's tree once ([secvis-sweep], [secvis-edge]). OPENPETE_SECVIS_OWNER=1
+ * keys the effect pools ([secvis-owner]). Reads guest RAM only; never
+ * changes what draws. */
+
+#define SECVIS_R 6
+
+/* The census sets at the presented camera. */
+typedef struct {
+    uint8_t g[256], v[256], d1[256], cl[256], c2[256], dist[256];
+    uint8_t nb[SECTOR_PVS_RING][256], open[SECTOR_PVS_RING];
+    int32_t p[3], tick[3];
+    int cal, nopen;
+} secvis_sets_t;
+
+/** @brief Reads the guest's draw-time camera position (cam.xform_end), the position the game's PVS lookup reads.
+ * @param cpu The guest CPU state, read only.
+ * @param tick Receives X, Y, Z. */
+static void secvis_tick_pos(CPUState* cpu, int32_t tick[3]) {
+    const uint32_t xe = game_layout.cam.xform_end;
+    for (int a = 0; a < 3; a++) tick[a] = (int32_t)cpu->read_word(xe + 4u * (uint32_t)a);
+}
+
+/** @brief Lowers dist[i] to r for every sector the lookup one lattice step `d` from `p` lists.
+ * @param p The camera position, world units.
+ * @param d The step in cells.
+ * @param r The step's Chebyshev radius.
+ * @param dist The per-sector distances. */
+static void secvis_shell_point(const int32_t p[3], const int d[3], int r, uint8_t dist[256]) OP_REQUIRES(sim) {
+    uint8_t vis[256];
+    if (sf_lookup(p, d, vis)) return;
+    for (int i = 0; i < 256; i++)
+        if (vis[i] && dist[i] > r) dist[i] = (uint8_t)r;
+}
+
+/** @brief Each sector's Chebyshev lattice distance from `p` to the nearest non-open point listing it, searched to SECVIS_R (SECVIS_R + 1 when none).
+ * @param p The camera position, world units.
+ * @param v The lookup at p (distance 0).
+ * @param dist Receives the distances. */
+static void secvis_distance(const int32_t p[3], const uint8_t v[256], uint8_t dist[256]) OP_REQUIRES(sim) {
+    memset(dist, SECVIS_R + 1, 256);
+    for (int i = 0; i < 256; i++) if (v[i]) dist[i] = 0;
+    for (int r = 1; r <= SECVIS_R; r++)
+        for (int dx = -r; dx <= r; dx++)
+            for (int dy = -r; dy <= r; dy++)
+                for (int dz = -r; dz <= r; dz++) {
+                    if (abs(dx) != r && abs(dy) != r && abs(dz) != r) continue;
+                    const int d[3] = { dx, dy, dz };
+                    secvis_shell_point(p, d, r, dist);
+                }
+}
+
+/** @brief Computes the census sets at the presented camera.
+ * @param cpu The guest CPU state, read only.
+ * @param n The guest sector count, at most 256.
+ * @param R Receives the sets.
+ * @return 0, or -1 when the level has no tree. */
+static int secvis_compute(CPUState* cpu, uint32_t n, secvis_sets_t* R) OP_REQUIRES(sim) {
+    if (!s_sf_tree.b) return -1;
+    secvis_tick_pos(cpu, R->tick);
+    sector_pvs_lookup(s_sf_tree.b, s_sf_tree.len, 0, R->tick, R->g, NULL);
+    R->cal = 0;
+    for (uint32_t i = 0; i < n; i++) R->cal += (R->g[i] == 0xFF) != (tvis_visible(cpu, i) != 0);
+    for (int a = 0; a < 3; a++) R->p[a] = (int32_t)lrint(s_view.cam[a]);
+    sector_pvs_ring(s_sf_tree.b, s_sf_tree.len, 0, R->p, R->nb, R->open);
+    /* the camera's own cell keeps the game's all-visible verdict when open */
+    if (R->open[SECTOR_PVS_CENTRE]) memset(R->v, 0xFF, 256);
+    else memcpy(R->v, R->nb[SECTOR_PVS_CENTRE], 256);
+    R->nopen = 0;
+    memcpy(R->d1, R->v, 256);
+    for (int k = 0; k < SECTOR_PVS_RING; k++) {
+        R->nopen += k != SECTOR_PVS_CENTRE && R->open[k];
+        for (int i = 0; i < 256; i++) R->d1[i] |= R->nb[k][i];
+    }
+    memcpy(R->cl, R->v, 256);
+    sector_pvs_pairs((const uint8_t (*)[256])R->nb, R->open, 0, n, R->cl);
+    memcpy(R->c2, R->v, 256);
+    sector_pvs_pairs((const uint8_t (*)[256])R->nb, R->open, 1, n, R->c2);
+    secvis_distance(R->p, R->v, R->dist);
+    return 0;
+}
+
+/** @brief Appends the listing direction of a sector only D1 admits: the neighbours that list it and the mean cosine between their offsets and the camera-to-sector direction.
+ * @param cpu The guest CPU state, read only.
+ * @param S The sphere-test inputs (sector table).
+ * @param R The sets.
+ * @param i The sector index.
+ * @param buf The line buffer.
+ * @param cap Its size.
+ * @param o The write offset, advanced. */
+static void secvis_dir(CPUState* cpu, const tvis_sphere* S, const secvis_sets_t* R, uint32_t i,
+                       char* buf, size_t cap, size_t* o) {
+    const uint32_t sp = rd(cpu, S->sectorPtr + i * 4);
+    const uint32_t w0 = rd(cpu, sp), w1 = rd(cpu, sp + 4u);
+    const double c[3] = { 16.0 * thdr_s16(w0 >> 16) - R->p[0], 16.0 * thdr_s16(w0) - R->p[1],
+                          16.0 * thdr_s16(w1 >> 16) - R->p[2] };
+    const double cl = sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) + 1e-9;
+    int k = 0;
+    double cs = 0.0;
+    for (int j = 0; j < SECTOR_PVS_RING; j++) {
+        if (j == SECTOR_PVS_CENTRE || !R->nb[j][i]) continue;
+        const int d[3] = { j / 9 - 1, (j / 3) % 3 - 1, j % 3 - 1 };
+        const double ol = sqrt((double)(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+        cs += (d[0] * c[0] + d[1] * c[1] + d[2] * c[2]) / (ol * cl);
+        k++;
+    }
+    *o += (size_t)snprintf(buf + *o, cap - *o, "[n=%d cos=%.2f dist=%.0f]", k, k ? cs / k : 0.0, cl);
+}
+
+/** @brief Prints one [secvis] census line for this walk.
+ * @param cpu The guest CPU state.
+ * @param S The sphere-test inputs.
+ * @param n The guest sector count, at most 256.
+ * @param R The sets. */
+static void secvis_print(CPUState* cpu, const tvis_sphere* S, uint32_t n, const secvis_sets_t* R) {
+    int nf = 0, nv = 0, nd = 0, nc = 0, nc2 = 0, tickdiff = 0;
+    char buf[8192];
+    size_t o = 0;
+    buf[0] = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        tickdiff += (R->g[i] != 0) != (R->v[i] != 0);
+        if (!tvis_sphere_in(cpu, S, i)) continue;
+        nf++;
+        nv += R->v[i] != 0;
+        nd += R->d1[i] != 0;
+        nc += R->cl[i] != 0;
+        nc2 += R->c2[i] != 0;
+        if (R->v[i] || o >= sizeof buf - 64) continue;
+        o += (size_t)snprintf(buf + o, sizeof buf - o, " %u:%u%s%s%s", i, R->dist[i],
+                              R->d1[i] ? "d" : "", R->cl[i] ? "c" : "", R->c2[i] ? "2" : "");
+        if (R->d1[i] && !R->c2[i]) secvis_dir(cpu, S, R, i, buf, sizeof buf, &o);
+    }
+    fprintf(stderr, "[secvis] frame=%u cam=(%d,%d,%d) tick=(%d,%d,%d) sectors=%u cal_mismatch=%d "
+                    "tick_vs_present=%d self_open=%d open_nbrs=%d F=%d V=%d D1=%d C=%d C2=%d extra:%s\n",
+            openpete_frame, R->p[0], R->p[1], R->p[2], R->tick[0], R->tick[1], R->tick[2], n,
+            R->cal, tickdiff, R->open[SECTOR_PVS_CENTRE], R->nopen, nf, nv, nd, nc, nc2, buf);
+}
+
+/** @brief Prints one [secvis-cal] line: the host lookup at the guest's draw-time position against the guest's verdict.
+ * @param cpu The guest CPU state, read only.
+ * @param n The guest sector count, at most 256.
+ * @param sectorCnt The guest sector count as the walk received it. */
+static void secvis_cal(CPUState* cpu, uint32_t n, uint32_t sectorCnt) OP_REQUIRES(sim) {
+    uint8_t g[256];
+    int32_t tick[3];
+    secvis_tick_pos(cpu, tick);
+    int open = 1, cal = 0, nv = 0, ng = 0;
+    if (s_sf_tree.b) sector_pvs_lookup(s_sf_tree.b, s_sf_tree.len, 0, tick, g, &open);
+    else memset(g, 0xFF, sizeof g);   /* lookup off: every sector visible */
+    for (uint32_t i = 0; i < n; i++) {
+        const int gv = tvis_visible(cpu, i) != 0;
+        cal += (g[i] == 0xFF) != gv;
+        nv += g[i] == 0xFF;
+        ng += gv;
+    }
+    fprintf(stderr, "[secvis-cal] frame=%u level=%u cell=%d,%d,%d sectors=%u tree=%d open=%d host=%d guest=%d mismatch=%d\n",
+            openpete_frame, game_layout.level_id ? cpu->read_word(game_layout.level_id) : 0u,
+            tick[0] >> 11, tick[1] >> 11, tick[2] >> 11, sectorCnt, s_sf_tree.b != NULL, open, nv, ng, cal);
+}
+
+/* ---- the full-tree sweep ---- */
+
+enum { SW_N = 128, SW_MAXL = 16384 };
+
+/* The interned lists of one tree: list 0 is the open point. */
+typedef struct {
+    uint16_t* id;                 /* per lattice point, SW_N^3 */
+    uint8_t (*lists)[256];
+    uint32_t* hash;
+    int nl, maxidx;
+    long open;
+} secvis_lattice_t;
+
+/* The sweep's per-cell sums and its best edge cells. */
+typedef struct {
+    double v, c, c2, d1, open_only;
+    long cells, cells_c2, cells_d1;
+    int best_n[3], best_xyz[3][3], best_sec[3];
+} secvis_sweep_sums_t;
+
+/** @brief Returns the id of `vis` in the interned lists, adding it when new (0 when the table is full).
+ * @param L The lattice.
+ * @param vis The 256 visibility bytes. */
+static int secvis_intern(secvis_lattice_t* L, const uint8_t vis[256]) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 256; i++) h = (h ^ vis[i]) * 16777619u;
+    for (int j = 1; j < L->nl; j++)
+        if (L->hash[j] == h && !memcmp(L->lists[j], vis, 256)) return j;
+    if (L->nl >= SW_MAXL) return 0;
+    const int f = L->nl++;
+    memcpy(L->lists[f], vis, 256);
+    L->hash[f] = h;
+    for (int i = 0; i < 256; i++) if (vis[i] && i > L->maxidx) L->maxidx = i;
+    return f;
+}
+
+/** @brief Looks the tree up at every lattice cell centre and interns the lists.
+ * @param T The tree snapshot.
+ * @param L The lattice, filled. */
+static void secvis_lattice_fill(const sf_tree_t* T, secvis_lattice_t* L) {
+    L->nl = 1;
+    memset(L->lists[0], 0, 256);
+    L->hash[0] = 0;
+    L->maxidx = -1;
+    L->open = 0;
+    for (int x = 0; x < SW_N; x++)
+        for (int y = 0; y < SW_N; y++)
+            for (int z = 0; z < SW_N; z++) {
+                const int32_t q[3] = { x * SECTOR_PVS_CELL + 1024, y * SECTOR_PVS_CELL + 1024,
+                                       z * SECTOR_PVS_CELL + 1024 };
+                uint8_t vis[256];
+                int op = 0;
+                sector_pvs_lookup(T->b, T->len, 0, q, vis, &op);
+                const size_t k = ((size_t)x * SW_N + (size_t)y) * SW_N + (size_t)z;
+                L->id[k] = op ? 0 : (uint16_t)secvis_intern(L, vis);
+                L->open += op;
+            }
+}
+
+/** @brief Builds a lattice cell's ring from the interned lists, out-of-lattice and list 0 open.
+ * @param L The lattice.
+ * @param c The cell.
+ * @param nb Receives the ring's lists.
+ * @param open Receives the ring's open flags. */
+static void secvis_lattice_ring(const secvis_lattice_t* L, const int c[3], uint8_t nb[SECTOR_PVS_RING][256],
+                                uint8_t open[SECTOR_PVS_RING]) {
+    for (int k = 0; k < SECTOR_PVS_RING; k++) {
+        const int X = c[0] + k / 9 - 1, Y = c[1] + (k / 3) % 3 - 1, Z = c[2] + k % 3 - 1;
+        const int oob = X < 0 || Y < 0 || Z < 0 || X >= SW_N || Y >= SW_N || Z >= SW_N;
+        const int id = oob ? 0 : L->id[((size_t)X * SW_N + (size_t)Y) * SW_N + (size_t)Z];
+        open[k] = (uint8_t)(id == 0);
+        memcpy(nb[k], L->lists[id], 256);
+    }
+}
+
+/** @brief Keeps the three cells with the most open-partner-only admissions.
+ * @param S The sums.
+ * @param no The cell's open-only count.
+ * @param sec Its lowest-indexed open-only sector.
+ * @param c The cell. */
+static void secvis_sweep_rank(secvis_sweep_sums_t* S, int no, int sec, const int c[3]) {
+    for (int b = 0; b < 3; b++) {
+        if (no <= S->best_n[b]) continue;
+        for (int m = 2; m > b; m--) {
+            S->best_n[m] = S->best_n[m - 1];
+            S->best_sec[m] = S->best_sec[m - 1];
+            memcpy(S->best_xyz[m], S->best_xyz[m - 1], sizeof S->best_xyz[m]);
+        }
+        S->best_n[b] = no;
+        S->best_sec[b] = sec;
+        memcpy(S->best_xyz[b], c, sizeof S->best_xyz[b]);
+        return;
+    }
+}
+
+/** @brief Prices one non-open cell: |V| and C, C', D1 minus V, the open-only admissions, the edge rank.
+ * @param L The lattice.
+ * @param c The cell.
+ * @param n The sector count, at most 256.
+ * @param S The sums, accumulated. */
+static void secvis_sweep_cell(const secvis_lattice_t* L, const int c[3], uint32_t n, secvis_sweep_sums_t* S) {
+    uint8_t nb[SECTOR_PVS_RING][256], open[SECTOR_PVS_RING], cs[256] = { 0 }, cp[256] = { 0 }, d1[256] = { 0 };
+    secvis_lattice_ring(L, c, nb, open);
+    sector_pvs_pairs((const uint8_t (*)[256])nb, open, 0, n, cs);
+    sector_pvs_pairs((const uint8_t (*)[256])nb, open, 1, n, cp);
+    for (int k = 0; k < SECTOR_PVS_RING; k++)
+        for (int i = 0; i < 256; i++) d1[i] |= nb[k][i];
+    const uint8_t* v = nb[SECTOR_PVS_CENTRE];
+    int nv = 0, nc = 0, nc2 = 0, nd = 0, no = 0, first_no = -1;
+    for (uint32_t i = 0; i < 256; i++) {
+        if (v[i]) { nv++; continue; }
+        nc += cs[i] != 0;
+        nc2 += cp[i] != 0;
+        nd += d1[i] != 0;
+        if (!cp[i] || cs[i]) continue;
+        no++;
+        if (first_no < 0 && i < n) first_no = (int)i;
+    }
+    S->v += nv; S->c += nc; S->c2 += nc2; S->d1 += nd; S->open_only += no;
+    S->cells++;
+    S->cells_c2 += nc2 > nc;
+    S->cells_d1 += nd > 0;
+    if (first_no >= 0) secvis_sweep_rank(S, no, first_no, c);
+}
+
+/** @brief Prints the [secvis-edge] rows: a freecam pose at each best edge cell's centre aimed at its lowest-indexed open-only sector (yaw 4096 per turn from +X, pitch positive looking down).
+ * @param cpu The guest CPU state, read only.
+ * @param T The sphere-test inputs (sector table).
+ * @param S The sums. */
+static void secvis_sweep_edges(CPUState* cpu, const tvis_sphere* T, const secvis_sweep_sums_t* S) {
+    for (int b = 0; b < 3; b++) {
+        if (S->best_n[b] <= 0) continue;
+        const uint32_t sp = rd(cpu, T->sectorPtr + (uint32_t)S->best_sec[b] * 4u);
+        if (!sp) continue;
+        double c[3];
+        for (int a = 0; a < 3; a++) c[a] = S->best_xyz[b][a] * (double)SECTOR_PVS_CELL + 1024.0;
+        const uint32_t w0 = rd(cpu, sp), w1 = rd(cpu, sp + 4u);
+        const double tx = 16.0 * thdr_s16(w0 >> 16), ty = 16.0 * thdr_s16(w0), tz = 16.0 * thdr_s16(w1 >> 16);
+        const double h = sqrt((tx - c[0]) * (tx - c[0]) + (ty - c[1]) * (ty - c[1]));
+        int yaw = (int)lrint(atan2(ty - c[1], tx - c[0]) * 4096.0 / (2.0 * M_PI)) & 0xFFF;
+        if (yaw >= 0x800) yaw -= 0x1000;
+        const double pt = atan2(c[2] - tz, h) * 4096.0 / (2.0 * M_PI);
+        const int pitch = (int)lrint(pt > 0x3E0 ? 0x3E0 : pt < -0x3E0 ? -0x3E0 : pt);
+        fprintf(stderr, "[secvis-edge] rank=%d open_only=%d sector=%d pose=pos=(%.0f, %.0f, %.0f) yaw=%d pitch=%d\n",
+                b, S->best_n[b], S->best_sec[b], c[0], c[1], c[2], yaw, pitch);
+    }
+}
+
+/** @brief Prices V, C, C' and D1 over every cell of the level's tree and prints the [secvis-sweep] line and the edge rows.
+ * @param cpu The guest CPU state, read only.
+ * @param T The sphere-test inputs (sector table).
+ * @param sectorCnt The level's sector count. */
+static void secvis_sweep(CPUState* cpu, const tvis_sphere* T, uint32_t sectorCnt) OP_REQUIRES(sim) {
+    secvis_lattice_t L;
+    L.id = (uint16_t*)malloc((size_t)SW_N * SW_N * SW_N * sizeof(uint16_t));
+    L.lists = malloc((size_t)SW_MAXL * 256);
+    L.hash = (uint32_t*)malloc((size_t)SW_MAXL * sizeof(uint32_t));
+    if (L.id && L.lists && L.hash) {
+        secvis_lattice_fill(&s_sf_tree, &L);
+        secvis_sweep_sums_t S;
+        memset(&S, 0, sizeof S);
+        const uint32_t n = sectorCnt < 256u ? sectorCnt : 256u;
+        for (int x = 0; x < SW_N; x++)
+            for (int y = 0; y < SW_N; y++)
+                for (int z = 0; z < SW_N; z++) {
+                    const int c[3] = { x, y, z };
+                    if (L.id[((size_t)x * SW_N + (size_t)y) * SW_N + (size_t)z])
+                        secvis_sweep_cell(&L, c, n, &S);
+                }
+        const double cells = S.cells ? (double)S.cells : 1.0;
+        fprintf(stderr, "[secvis-sweep] level=0 sectors=%u tree=%u lists=%d%s maxidx=%d points=%ld open=%ld "
+                        "cells=%ld mean|V|=%.2f mean|C\\V|=%.3f mean|C'\\V|=%.3f mean|D1\\V|=%.3f "
+                        "mean_open_only=%.3f cells_C'>C=%ld cells_D1>V=%ld\n",
+                sectorCnt, s_sf_tree.len, L.nl - 1, L.nl >= SW_MAXL ? "(cap)" : "", L.maxidx,
+                (long)SW_N * SW_N * SW_N, L.open, S.cells, S.v / cells, S.c / cells, S.c2 / cells,
+                S.d1 / cells, S.open_only / cells, S.cells_c2, S.cells_d1);
+        secvis_sweep_edges(cpu, T, &S);
+    }
+    free(L.id); free(L.lists); free(L.hash);
+}
+
+/* ---- the effect-pool owner census ---- */
+
+/* The tallies of one effect pool for the owner census. */
+typedef struct { int live, own, own_rej, own_ff, inside, inside_rej, none; } secvis_pool_t;
+
+/** @brief Keys one effect point for the owner census and tallies it.
+ *
+ * The owner candidate is the nearest live moby (game_layout.moby walk) whose
+ * position lies within 1536 world units; its key is its sector byte at
+ * Moby+0x52 (0xFE and 0xFF mean none). The containment key is every sector
+ * whose header sphere holds the point. A key is rejected when the game's
+ * verdict marks the sector hidden.
+ * @param cpu The guest CPU state, read only.
+ * @param S The sphere-test inputs (sector table).
+ * @param n The guest sector count, at most 256.
+ * @param mp The live mobys' positions and sector bytes, four ints each.
+ * @param nm Their count.
+ * @param x The point, world X.
+ * @param y The point, world Y.
+ * @param z The point, world Z.
+ * @param t Receives the tallies. */
+static void secvis_owner_point(CPUState* cpu, const tvis_sphere* S, uint32_t n, const int32_t (*mp)[4],
+                               int nm, double x, double y, double z, secvis_pool_t* t) {
+    t->live++;
+    double best = 1536.0 * 1536.0;
+    int bi = -1;
+    for (int k = 0; k < nm; k++) {
+        const double dx = mp[k][0] - x, dy = mp[k][1] - y, dz = mp[k][2] - z;
+        const double d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < best) { best = d2; bi = k; }
+    }
+    if (bi >= 0) {
+        t->own++;
+        const int sec = mp[bi][3];
+        if (sec >= 0xFE || (uint32_t)sec >= n) t->own_ff++;
+        else if (!tvis_visible(cpu, (uint32_t)sec)) t->own_rej++;
+    }
+    int in = 0, vis = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t sp = rd(cpu, S->sectorPtr + i * 4u);
+        if (!sp) continue;
+        const uint32_t w0 = rd(cpu, sp), w1 = rd(cpu, sp + 4u);
+        const double cx = 16.0 * thdr_s16(w0 >> 16) - x, cy = 16.0 * thdr_s16(w0) - y,
+                     cz = 16.0 * thdr_s16(w1 >> 16) - z, r = 16.0 * thdr_radius(w1);
+        if (cx * cx + cy * cy + cz * cz > r * r) continue;
+        in = 1;
+        vis |= tvis_visible(cpu, i) != 0;
+    }
+    if (!in) t->none++;
+    else { t->inside++; if (!vis) t->inside_rej++; }
+}
+
+/** @brief Collects the live mobys' positions and sector bytes and counts those on a sector the game's verdict hides.
+ * @param cpu The guest CPU state, read only.
+ * @param n The guest sector count, at most 256.
+ * @param mp Receives up to 1024 entries of {x, y, z, sector byte}.
+ * @param rej Receives the count on a hidden sector.
+ * @return The number collected. */
+static int secvis_owner_mobys(CPUState* cpu, uint32_t n, int32_t (*mp)[4], int* rej) {
+    const uint32_t head = game_layout.moby.array_direct ? game_layout.moby.array_head
+                                                         : rd(cpu, game_layout.moby.array_head);
+    int nm = 0;
+    *rej = 0;
+    for (uint32_t m = head; head >= 0x80000000u && nm < 1024; m += game_layout.moby.array_stride) {
+        const uint8_t st = cpu->read_byte(m + game_layout.moby.state_off);
+        if (st == (uint8_t)game_layout.moby.state_term) break;
+        if ((int8_t)st < 0) continue;
+        for (int a = 0; a < 3; a++) mp[nm][a] = (int32_t)rd(cpu, m + game_layout.moby.pos_off + 4u * (uint32_t)a);
+        mp[nm][3] = cpu->read_byte(m + 0x52u);
+        *rej += mp[nm][3] < 0xFE && (uint32_t)mp[nm][3] < n && !tvis_visible(cpu, (uint32_t)mp[nm][3]);
+        nm++;
+    }
+    return nm;
+}
+
+/** @brief Tallies the particle records the routine stamped drawn this tick (first point's halfwords times 4).
+ * @param cpu The guest CPU state, read only.
+ * @param S The sphere-test inputs.
+ * @param n The guest sector count, at most 256.
+ * @param mp The live mobys.
+ * @param nm Their count.
+ * @param t The tallies. */
+static void secvis_owner_particles(CPUState* cpu, const tvis_sphere* S, uint32_t n, const int32_t (*mp)[4],
+                                   int nm, secvis_pool_t* t) {
+    const uint32_t pb = game_layout.particles.array_ptr ? rd(cpu, game_layout.particles.array_ptr) : 0u;
+    for (uint32_t k = 0; pb >= 0x80000000u && k < 0x2000u; k++) {
+        const uint32_t r = pb + k * game_layout.particles.rec_stride;
+        const int sel = (int)(int16_t)(uint16_t)cpu->read_half(r + game_layout.particles.sel_off);
+        if ((sel >> 8) == -1) break;
+        if (!cpu->read_byte(r + game_layout.particles.drawn_off)) continue;
+        const uint32_t w0 = rd(cpu, r + game_layout.particles.pos_off),
+                       w1 = rd(cpu, r + game_layout.particles.pos_off + 4u);
+        secvis_owner_point(cpu, S, n, mp, nm, 4.0 * (w0 & 0xFFFFu), 4.0 * (w0 >> 16), 4.0 * (w1 & 0xFFFFu), t);
+    }
+}
+
+/** @brief Tallies the live records of a 16-slot world-XYZ pool (glints: lifetime byte, glows: shape byte, both the packed word's low byte).
+ * @param cpu The guest CPU state, read only.
+ * @param S The sphere-test inputs.
+ * @param n The guest sector count, at most 256.
+ * @param mp The live mobys.
+ * @param nm Their count.
+ * @param pool The pool address (0 = none).
+ * @param slots The slot count.
+ * @param stride The record stride.
+ * @param pos The XYZ offset.
+ * @param packed The packed word's offset.
+ * @param t The tallies. */
+static void secvis_owner_slots(CPUState* cpu, const tvis_sphere* S, uint32_t n, const int32_t (*mp)[4], int nm,
+                               uint32_t pool, uint32_t slots, uint32_t stride, uint32_t pos, uint32_t packed,
+                               secvis_pool_t* t) {
+    for (uint32_t k = 0; pool && k < slots; k++) {
+        const uint32_t r = pool + k * stride;
+        if (!(rd(cpu, r + packed) & 0xFFu)) continue;
+        secvis_owner_point(cpu, S, n, mp, nm, (int32_t)rd(cpu, r + pos), (int32_t)rd(cpu, r + pos + 4u),
+                           (int32_t)rd(cpu, r + pos + 8u), t);
+    }
+}
+
+/** @brief Prints one [secvis-owner] line keying the particle, glint and glow pools.
+ * @param cpu The guest CPU state, read only.
+ * @param S The sphere-test inputs.
+ * @param sectorCnt The guest sector count. */
+static void secvis_owner_census(CPUState* cpu, const tvis_sphere* S, uint32_t sectorCnt) {
+    const uint32_t n = sectorCnt < 256u ? sectorCnt : 256u;
+    int32_t (*mp)[4] = malloc(1024 * sizeof *mp);
+    if (!mp) return;
+    int rej = 0;
+    const int nm = secvis_owner_mobys(cpu, n, mp, &rej);
+    const int32_t (*cm)[4] = (const int32_t (*)[4])mp;
+    secvis_pool_t T[3];
+    memset(T, 0, sizeof T);
+    secvis_owner_particles(cpu, S, n, cm, nm, &T[0]);
+    secvis_owner_slots(cpu, S, n, cm, nm, game_layout.glint.pool, game_layout.glint.slots, game_layout.glint.stride,
+                       game_layout.glint.pos_off, game_layout.glint.packed_off, &T[1]);
+    secvis_owner_slots(cpu, S, n, cm, nm, game_layout.glow.pool, game_layout.glow.slots, game_layout.glow.stride,
+                       game_layout.glow.pos_off, game_layout.glow.packed_off, &T[2]);
+    const char* nmz[3] = { "particle", "glint", "glow" };
+    char buf[512];
+    size_t o = 0;
+    for (int i = 0; i < 3; i++)
+        o += (size_t)snprintf(buf + o, sizeof buf - o, " %s=live:%d own:%d own_rej:%d own_none:%d in:%d in_rej:%d out:%d",
+                              nmz[i], T[i].live, T[i].own, T[i].own_rej, T[i].own_ff,
+                              T[i].inside, T[i].inside_rej, T[i].none);
+    fprintf(stderr, "[secvis-owner] frame=%u mobys=%d mobys_sector_rej=%d%s\n", openpete_frame, nm, rej, buf);
+    free(mp);
+}
+
+/** @brief Runs the census lines this walk's environment asks for; none changes what draws.
+ * @param cpu The guest CPU state.
+ * @param S The sphere-test inputs, or NULL.
+ * @param sectorCnt The guest sector count. */
+static void secvis_census(CPUState* cpu, const tvis_sphere* S, uint32_t sectorCnt) OP_REQUIRES(sim) {
+    if (!game_layout.env.vis_aspect_independent || !S) return;
+    const char* e = getenv("OPENPETE_SECTOR_VIS_CENSUS");
+    const char* ow = getenv("OPENPETE_SECVIS_OWNER");
+    const char* sw = getenv("OPENPETE_SECTOR_VIS_SWEEP");
+    const unsigned at = (sw && *sw) ? (unsigned)atoi(sw) : 0u;
+    const int census = e && *e && *e != '0';
+    if (!census && !(ow && *ow == '1') && !at) return;
+    sf_tree_refresh(cpu);
+    const uint32_t n = sectorCnt < 256u ? sectorCnt : 256u;
+    if (ow && *ow == '1') secvis_owner_census(cpu, S, sectorCnt);
+    if (at && (openpete_frame == at || openpete_frame == at + 1u)) {
+        if (s_sf_tree.b) secvis_sweep(cpu, S, sectorCnt);
+        else fprintf(stderr, "[secvis-sweep] sectors=%u no-tree\n", sectorCnt);
+    }
+    if (!census) return;
+    if (!strcmp(e, "cal")) { secvis_cal(cpu, n, sectorCnt); return; }
+    secvis_sets_t R;
+    if (secvis_compute(cpu, n, &R) < 0) fprintf(stderr, "[secvis] frame=%u no-tree\n", openpete_frame);
+    else secvis_print(cpu, S, n, &R);
+}
+
+/** @brief The --sector-visibility filled candidate set: advances the tick's set and admits the frustum sectors it holds.
+ *
+ * Every sector at index 255 or above is admitted (no PVS byte names it).
+ * @param cpu The guest CPU state.
+ * @param sectorCnt The guest sector count, at most 1024.
+ * @param out Receives the admitted sector indices.
+ * @param S The sphere-test inputs, or NULL.
+ * @return The admitted count, or -1 when the mode is not filled or the level has no PVS (the caller's frustum branch). */
+static int terrain_vislist_filled(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, const tvis_sphere* S)
+    OP_REQUIRES(sim) {
+    if (openpete_native_sector_visibility_active() != OPENPETE_SECTOR_VIS_FILLED) return -1;
+    sf_tick(cpu, sectorCnt);
+    if (!S || !s_sf_ready) return -1;
+    int n = 0;
+    for (uint32_t i = 0; i < sectorCnt && n < 1024; i++)
+        if ((i >= 255u || s_sf_u[i]) && tvis_sphere_in(cpu, S, i)) out[n++] = (uint16_t)i;
+    return n;
+}
+
+/** @brief OPENPETE_TERRAIN_ALLVIS=1: every sector, bypassing the verdict and the occlusion groups (an A/B probe for view-dependent sector culling).
+ * @param sectorCnt The sector count, at most 1024.
+ * @param out Receives the indices.
+ * @return The count, or -1 when the probe is off. */
+static int terrain_vislist_allvis(uint32_t sectorCnt, uint16_t* out) OP_REQUIRES(sim) {
+    static int s_allvis OP_GUARDED_BY(sim) = -1;
+    ENV_FLAG_LATCH(s_allvis, "OPENPETE_TERRAIN_ALLVIS");
+    if (!s_allvis) return -1;
+    int n = 0;
+    for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) out[n++] = (uint16_t)i;
+    if (s_vis_engage) {
+        fprintf(stderr, "[terrain-vis] frame=%u mode=allvis admitted=%d of %u\n",
+                openpete_frame, n, sectorCnt);
+        s_vis_engage = 0;
+    }
+    return n;
+}
+
 /** @brief Fills out with the sector indices this walk draws and returns their count.
  *
  * At most min(sectorCnt, 1024) sectors are considered, so out holds 1024
@@ -9582,8 +10326,13 @@ static void tvis_calibrate(CPUState* cpu, const tvis_sphere* S, uint32_t list, u
  * @param S The sphere-test inputs, or NULL to disable the frustum mode.
  * @return The number of indices written to out. */
 static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int32_t group,
-                           const tvis_sphere* S) {
+                           const tvis_sphere* S) OP_REQUIRES(sim) {
     if (sectorCnt > 1024) sectorCnt = 1024;
+    secvis_census(cpu, S, sectorCnt);
+    {
+        const int k = terrain_vislist_filled(cpu, sectorCnt, out, S);
+        if (k >= 0) return k;
+    }
     int ws = s_view.extended;   /* Hor+ or a wider FOV: the 4:3 verdict is too narrow */
     ENV_FLAG_LATCH(s_visdbg, "OPENPETE_TERRAIN_VISDBG");
     {   /* OPENPETE_TERRAIN_BINCHECK=<frame>: engagement window, the two
@@ -9594,23 +10343,12 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
         s_vis_engage = (s_binchk && openpete_frame >= (unsigned)s_binchk
                         && openpete_frame < (unsigned)s_binchk + 2u);
     }
-    {   /* OPENPETE_TERRAIN_ALLVIS=1: walk ALL sectors (bypass the visibility verdict /
-         * occlusion groups) - A/B probe for view-dependent sector culling. */
-        static int s_allvis = -1;
-        ENV_FLAG_LATCH(s_allvis, "OPENPETE_TERRAIN_ALLVIS");
-        if (s_allvis) {
-            int n = 0;
-            for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) out[n++] = (uint16_t)i;
-            if (s_vis_engage) {
-                fprintf(stderr, "[terrain-vis] frame=%u mode=allvis admitted=%d of %u\n",
-                        openpete_frame, n, sectorCnt);
-                s_vis_engage = 0;
-            }
-            return n;
-        }
+    {
+        const int k = terrain_vislist_allvis(sectorCnt, out);
+        if (k >= 0) return k;
     }
 
-    /* --terrain-visibility frustum (default): the candidate set is every
+    /* --sector-visibility frustum (default): the candidate set is every
      * sector whose bounding sphere passes the frustum test at the displayed
      * half-widths, independent of the game's visibility verdict and its
      * occlusion groups, so geometry the game hides - sectors behind the walls
@@ -9619,9 +10357,9 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
      * seen. A deliberate departure from the original presentation. The
      * verdict is not read in this mode; the admitted set is culled downstream
      * exactly as any other sector (per-sector tier verdicts, the retained GPU
-     * cache, the native occlusion pre-pass). `--terrain-visibility game` is
+     * cache, the native occlusion pre-pass). `--sector-visibility game` is
      * the faithful path. */
-    if (S && openpete_native_terrain_visibility_active() == OPENPETE_TERRAIN_VIS_FRUSTUM) {
+    if (S && openpete_native_sector_visibility_active() != OPENPETE_SECTOR_VIS_GAME) {
         int n = 0;
         for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) {
             if (tvis_sphere_in(cpu, S, i)) out[n++] = (uint16_t)i;
@@ -15859,7 +16597,7 @@ static void sector_verdicts(tscache_t* SC, const tn_wcfg* G, tn_secverd* V) {
     if (game_layout.terrain.sector_cull == TERRAIN_SECTOR_CULL_SPHERE) {
         /* The sphere test runs at the displayed half-widths, so the side
          * wedges keep the sectors the 4:3 half-width would reject; at the
-         * canonical frame under --terrain-visibility game it is the draw's
+         * canonical frame under --sector-visibility game it is the draw's
          * own verdict. */
         const double cam[3] = { G->camx, G->camy, G->camz };
         const int c[3] = { H.cx, H.cy, H.cz };

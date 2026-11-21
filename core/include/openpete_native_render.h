@@ -883,25 +883,27 @@ void openpete_native_set_wireframe(int on);
  * @return 1 when on, else 0. */
 int  openpete_native_get_wireframe(void);
 
-/** @brief Select the terrain candidate set: the game's sector visibility flags, or a frustum test.
+/** @brief Select the sector candidate set: the game's verdict, a frustum test, or the game's verdict with its holes filled.
  *
- * OPENPETE_TERRAIN_VIS_GAME admits the sectors the game marked visible; any
- * other value selects OPENPETE_TERRAIN_VIS_FRUSTUM, which admits every
- * sector whose bounding sphere is inside the displayed frame and does not
- * read the game's flags. Seeded from --terrain-visibility at init; the
+ * OPENPETE_SECTOR_VIS_GAME admits the sectors the game marked visible;
+ * OPENPETE_SECTOR_VIS_FILLED adds the sectors an opposite pair of neighbour
+ * cells of the game's PVS lists (terrain.c, sector_filled_*), on a game
+ * whose verdict is a position-keyed PVS; any other value selects
+ * OPENPETE_SECTOR_VIS_FRUSTUM, which admits every sector whose bounding
+ * sphere is inside the displayed frame and does not read the game's flags. Seeded from --sector-visibility at init; the
  * setter stores a wanted value from any thread, which the next
  * openpete_native_producer_knobs_latch applies to the terrain feeder's
  * sector walks. Renderer state only; the game's flags are never written.
- * @param mode An openpete_terrain_visibility_t value. */
-void openpete_native_set_terrain_visibility(int mode);
+ * @param mode An openpete_sector_visibility_t value. */
+void openpete_native_set_sector_visibility(int mode);
 /** @brief Return the chosen terrain candidate-set mode: the value the next latch applies, for the settings rows.
  *
- * @return An openpete_terrain_visibility_t value. */
-int  openpete_native_get_terrain_visibility(void);
+ * @return An openpete_sector_visibility_t value. */
+int  openpete_native_get_sector_visibility(void);
 /** @brief Return the terrain candidate-set mode the sector walks use, as latched on the sim thread.
  *
- * @return An openpete_terrain_visibility_t value. */
-int  openpete_native_terrain_visibility_active(void);
+ * @return An openpete_sector_visibility_t value. */
+int  openpete_native_sector_visibility_active(void);
 /** @brief Set how the terrain walk packs a skipped drain sub-cell: 1 keys it at the face's least key and draws it, 0 stores the sentinel the key and colour passes discard.
  *
  * The live channel of the TERRAIN_DRAIN_SKIP row; callable from any

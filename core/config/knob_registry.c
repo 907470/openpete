@@ -448,17 +448,24 @@ static int hide_hud_set(knob_desc_t *k, double v) {
 }
 
 static const char *const k_lod_names[] = { "original", "extended" };
-static const char *const k_tervis_names[] = { "game", "frustum" };
-/** @brief 1 when terrain visibility uses the view frustum, 0 when it follows the game's own verdict. */
+static const char *const k_tervis_names[] = { "game", "frustum", "filled" };
+/** @brief The sector visibility mode as its k_tervis_names index (openpete_sector_visibility_t).
+ * @param k The row.
+ * @return 0 game, 1 frustum, 2 filled. */
 static double tervis_get(const knob_desc_t *k) {
     (void)k;
-    return openpete_native_get_terrain_visibility() == OPENPETE_TERRAIN_VIS_FRUSTUM ? 1.0 : 0.0;
+    return (double)openpete_native_get_sector_visibility();
 }
-/** @brief Select terrain visibility: nonzero `v` is frustum, zero is the game's verdict. */
+/** @brief Select the sector visibility mode by its k_tervis_names index.
+ * @param k The row.
+ * @param v The index: 0 game, 1 frustum, 2 filled.
+ * @return 0. */
 static int tervis_set(knob_desc_t *k, double v) {
     (void)k;
-    openpete_native_set_terrain_visibility(v != 0.0 ? OPENPETE_TERRAIN_VIS_FRUSTUM
-                                                    : OPENPETE_TERRAIN_VIS_GAME);
+    const int i = (int)v;
+    openpete_native_set_sector_visibility(i == 0 ? OPENPETE_SECTOR_VIS_GAME
+                                          : i == 2 ? OPENPETE_SECTOR_VIS_FILLED
+                                                   : OPENPETE_SECTOR_VIS_FRUSTUM);
     return 0;
 }
 /** @brief 1 when the terrain walk stores the sentinel for a skipped drain sub-cell, 0 when it keys and draws it. */
@@ -1332,26 +1339,32 @@ static const knob_desc_t g_builtin[] = {
           "stage (default {def}; needs a hardware GPU, else the CPU\n"
           "walk runs as before). 0 = kill switch." },
 
-    { "terrain_visibility", "Terrain visibility", "Display", "--terrain-visibility",
-      "OPENPETE_TERRAIN_VISIBILITY",
-      "Which terrain sectors are candidates to draw. frustum (default) takes "
+    { "sector_visibility", "Sector visibility", "Display", "--sector-visibility",
+      "OPENPETE_SECTOR_VISIBILITY",
+      "Which level sectors are candidates to draw. frustum (default) takes "
       "every sector whose bounding sphere is inside the displayed frame, "
       "hidden or not, so the geometry the original hides - the world outside "
       "the room the camera sits in, the side wedges of a frame wider than "
       "4:3 - draws and the depth buffer decides what is seen; a departure "
       "from the original presentation. game takes the game's own visibility "
-      "verdict (faithful). Either way the frustum test, the per-sector tier "
-      "verdicts, the retained GPU cache and the occlusion pre-pass still cull.",
+      "verdict (faithful). filled (Spyro 2 and 3) takes the game's verdict "
+      "plus the sectors the game's visibility data lists from both sides of "
+      "the camera's cell, or from one side where the other is outside the "
+      "data; a departure; frustum where the level has no visibility data. "
+      "Every mode still culls by the frustum test, the per-sector tier "
+      "verdicts, the retained GPU cache and the occlusion pre-pass.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_tervis_names), 0, 0,
       tervis_get, tervis_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "frustum",
       .help_arg = "MODE", .help_order = 250,
-      .help_text = "terrain candidate set: {def} (default) = every sector whose\n"
+      .help_text = "sector candidate set: {def} (default) = every sector whose\n"
           "bounding sphere is inside the displayed frame, hidden or not, so\n"
           "the geometry the original hides (inside-geometry views, the side\n"
           "wedges wider than 4:3) draws and the depth buffer decides what is\n"
           "seen - a departure from the original presentation | game = the\n"
-          "game's own visibility verdict (faithful). Native renderer only." },
+          "game's own visibility verdict (faithful) | filled = the game's\n"
+          "verdict plus the sectors its visibility data lists around the\n"
+          "camera's cell (Spyro 2/3; a departure). Native renderer only." },
 
     ENVROW_LATCHED("TERRAIN_HDFOLD", "Display", "1",
       "HD texture-replacement fold (default on): with a texture pack active, "
@@ -3428,8 +3441,8 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = (opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE);
         } else if (!strcmp(k->id, "lod")) {
             k->stored_num = (opts->lod != OPENPETE_LOD_ORIGINAL);
-        } else if (!strcmp(k->id, "terrain_visibility")) {
-            k->stored_num = (opts->terrain_visibility != OPENPETE_TERRAIN_VIS_GAME);
+        } else if (!strcmp(k->id, "sector_visibility")) {
+            k->stored_num = (double)opts->sector_visibility;
         } else if (!strcmp(k->id, "fog")) {
             k->stored_num = opts->fog_mode + 1;
         } else if (!strcmp(k->id, "fog_scale")) {

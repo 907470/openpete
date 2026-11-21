@@ -373,4 +373,14 @@ int terrain_preview_build(const terrain_host_level* L, const terrain_preview_vie
 #ifdef __cplusplus
 }
 #endif
+/** @brief Whether sector `i` is admitted by the --sector-visibility mode for this tick.
+ *
+ * frustum admits every sector (the identity for non-terrain paths); filled
+ * answers from the tick's drawn set U, admitting every sector at index 255
+ * or above and every sector on a level without a PVS; game returns -1 and the
+ * caller reads the game's own verdict. Sim thread.
+ * @param i The sector index.
+ * @return 1 admitted, 0 rejected, -1 under game. */
+int terrain_sector_admitted(uint32_t i) OP_REQUIRES(sim);
+
 #endif /* OPENPETE_COMMON_RENDERER_TERRAIN_H */

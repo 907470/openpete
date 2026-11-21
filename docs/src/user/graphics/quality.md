@@ -101,7 +101,7 @@ away: 1 is the game's own fog, 100 turns it off in practice. Range 0.25 to
 the dev overlay's **Fog scale** row under Display's **Advanced**, fixes it;
 from then on LOD switches leave it alone.
 
-## Terrain visibility
+## Sector visibility
 
 The game skips level geometry it judges unseen from the camera's position,
 for a 4:3 view. In widescreen, with the free camera, or with the camera
@@ -109,8 +109,11 @@ inside geometry, the skipped parts can show as missing terrain.
 
 | Value | Effect |
 | --- | --- |
-| `frustum` (default <!-- id: knob:terrain_visibility -->) | Every section of the level and of the sky inside the view is drawn, hidden or not, and depth decides what shows. This departs from the original presentation. |
+| `frustum` (default <!-- id: knob:sector_visibility -->) | Every section of the level and of the sky inside the view is drawn, hidden or not, and depth decides what shows. This departs from the original presentation. |
 | `game` | The game's own visibility decision, as the original drew it |
+| `filled` | Spyro 2 and 3: the game's own decision, plus the sections it leaves out at one position while drawing them from the positions around it. This departs from the original presentation. On Spyro 1 and on levels without the game's visibility data, the same as `frustum`. |
 
-Dev overlay **Terrain visibility**, `--terrain-visibility frustum|game`
-<!-- id: knob:terrain_visibility -->.
+Dev overlay **Sector visibility**, `--sector-visibility frustum|game|filled`
+<!-- id: knob:sector_visibility -->. A settings file saved by an earlier
+version with `terrain_visibility` has the key renamed to
+`sector_visibility` the first time it loads.

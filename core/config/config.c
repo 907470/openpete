@@ -425,6 +425,7 @@ typedef struct {
 
 static const cfg_renamed_t g_renamed[] = {
     { "show_fps", "perf_stats", "fps", "off" },
+    { "terrain_visibility", "sector_visibility", NULL, NULL },
 };
 
 /** @brief The g_renamed row whose old key is `key`, or NULL. */
@@ -1098,14 +1099,45 @@ static void saved_keys_copy(const toml_table_t *keys) {
     }
 }
 
+/** @brief Copies the write target's [saved] scalars into the in-memory saved table, a renamed key under its new name.
+ *
+ * A renamed key (g_renamed) is stored under its new name with its value
+ * translated, so a later save writes the new spelling and not both; each one
+ * is counted in `*migrated`.
+ * @param tab The [saved] table.
+ * @param migrated Incremented per renamed key. */
+static void saved_zone_copy(const toml_table_t *tab, int *migrated) {
+    for (int i = 0;; i++) {
+        const char *key = toml_key_in(tab, i);
+        if (!key) break;
+        toml_raw_t raw = toml_raw_in(tab, key);
+        if (!raw || s_saved_n >= CFG_MAX_SAVED) continue;
+        char val[CFG_VALUE_MAX];
+        int ib = 0, bv = 0;
+        if (toml_scalar_to_string(raw, val, sizeof val, &ib, &bv) != 0) continue;
+        const cfg_renamed_t *ren = renamed_for(key);
+        if (ren && ren->on)
+            snprintf(val, sizeof val, "%s", renamed_truth(val, ib, bv) ? ren->on : ren->off);
+        if (ren) { key = ren->new_key; (*migrated)++; }
+        snprintf(s_saved[s_saved_n].id, CFG_KEY_MAX, "%s", key);
+        snprintf(s_saved[s_saved_n].value, CFG_VALUE_MAX, "%s", val);
+        s_saved_n++;
+    }
+}
+
 /** @brief Harvest the managed [saved] zone of file `file`: its bare keys and [saved.keys.*].
  *
  * Read like any other layer; written by the menus through
  * openpete_config_save_flush. From the write target the zone's scalars are
  * also copied into the in-memory saved table, so a later save rewrites the
- * whole zone. A [saved] zone in a file ranked above the write target is
- * warned about. Returns 0, or -1 on a harvest error. */
-static int harvest_saved(int file) {
+ * whole zone; a renamed key (g_renamed) is copied under its new name with
+ * its value translated, and counted in `*migrated` so the caller can
+ * rewrite the file once. A [saved] zone in a file ranked above the write
+ * target is warned about.
+ * @param file The file index.
+ * @param migrated Incremented once per renamed key copied from the write target.
+ * @return 0, or -1 on a harvest error. */
+static int harvest_saved(int file, int *migrated) {
     toml_table_t *doc = s_doc[file];
     if (!doc) return 0;
     const toml_table_t *tab = toml_table_in(doc, "saved");
@@ -1140,20 +1172,7 @@ static int harvest_saved(int file) {
 
     /* Keep a copy so a later save rewrites the whole zone rather than
      * dropping the knobs this session didn't touch. */
-    if (file == s_write_file) {
-        for (int i = 0;; i++) {
-            const char *key = toml_key_in(tab, i);
-            if (!key) break;
-            toml_raw_t raw = toml_raw_in(tab, key);
-            if (!raw || s_saved_n >= CFG_MAX_SAVED) continue;
-            char val[CFG_VALUE_MAX];
-            int ib = 0, bv = 0;
-            if (toml_scalar_to_string(raw, val, sizeof val, &ib, &bv) != 0) continue;
-            snprintf(s_saved[s_saved_n].id, CFG_KEY_MAX, "%s", key);
-            snprintf(s_saved[s_saved_n].value, CFG_VALUE_MAX, "%s", val);
-            s_saved_n++;
-        }
-    }
+    if (file == s_write_file) saved_zone_copy(tab, migrated);
     return 0;
 }
 
@@ -1764,14 +1783,24 @@ static int resolve_stage(int argc, char **argv, int typed_argc,
 
     if (harvest_launch_and_global(argc, argv, typed_argc) != 0) return -1;
 
+    int migrated = 0;
     if (!s_no_config) {
         if (!s_neutral && harvest_identified_scopes() != 0) return -1;
         for (int f = 0; f < s_file_n; f++)
-            if (s_doc[f] && harvest_saved(f) != 0) return -1;
+            if (s_doc[f] && harvest_saved(f, &migrated) != 0) return -1;
     }
 
     if (s_write_file >= 0 && s_file_path[s_write_file][0])
         snprintf(s_save_path, sizeof s_save_path, "%s", s_file_path[s_write_file]);
+
+    /* A renamed key in the managed zone is rewritten under its new name
+     * once, at the load that finds it, so the next release can drop the
+     * mapping without the player's saved settings failing to boot. */
+    if (migrated && s_save_path[0]) {
+        if (openpete_config_save_flush() == 0)
+            cfg_diag("openpete: config: %s: rewrote %d renamed saved key(s) "
+                     "under their new names\n", s_save_path, migrated);
+    }
 
     if (!s_neutral) {
         drop_scoped_unapplied();

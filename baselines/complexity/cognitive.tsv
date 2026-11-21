@@ -2,12 +2,12 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: a69080c6063365238846d3fd3463ba092ac87535
+# head: cb8ccac63111c407e64d73873f3d4bce8a31da31
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
 core/config/knob_registry.c	knob_registry_init	131	0	
-core/config/options.c	parse_one_flag	707	1	
+core/config/options.c	parse_one_flag	708	1	
 core/config/options.c	tokenize_sidecar_args	43	0	
 core/diag/ident_audit.c	openpete_ident_audit_present	32	0	
 core/diag/psxtrace_schedule.c	openpete_sched_anchor_window	29	0	
@@ -56,7 +56,7 @@ core/renderer/native_render.c	native_postfx_run	47	0
 core/renderer/native_render.c	native_render_screenshot_all_impl	49	0	
 core/renderer/native_render.c	native_terrain_key_pass	64	0	
 core/renderer/native_render.c	openpete_native_hdfold_intern	32	0	
-core/renderer/native_render.c	openpete_native_render_init	47	0	
+core/renderer/native_render.c	openpete_native_render_init	46	0	
 core/renderer/native_render.c	portal_cover_check	142	0	
 core/renderer/native_render.c	pt_dump_maybe	59	0	
 core/renderer/native_render.c	render_frame_common	44	0	
@@ -128,7 +128,7 @@ games/common/renderer/terrain.c	terrain_build	508	0
 games/common/renderer/terrain.c	terrain_compare	313	0	
 games/common/renderer/terrain.c	terrain_feed_native	351	0	
 games/common/renderer/terrain.c	terrain_texrecords	26	0	
-games/common/renderer/terrain.c	terrain_vislist	94	0	
+games/common/renderer/terrain.c	terrain_vislist	90	0	
 games/common/renderer/terrain.c	tgpu_build_sector	32	0	
 games/common/renderer/terrain.c	tgpu_ensure	39	0	
 games/common/renderer/terrain.c	tgpu_env_block	26	0	

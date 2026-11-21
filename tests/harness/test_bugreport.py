@@ -760,10 +760,10 @@ class Pace(unittest.TestCase):
 KNOBS_TXT = ("# knobs.txt v1\n"
              "session\tfirst_frame=1\tchanges=2\tkept=2\tdropped=0\n"
              "knob\taspect\trender\t16:9\t16:9\tauto\tcli\tD\t3\t0\t-\n"
-             "knob\tterrain_visibility\trender\tgame\tfrustum\tfrustum\tdefault\tLDC\t0\t1\t2557@85.512\n"
+             "knob\tsector_visibility\trender\tgame\tfrustum\tfrustum\tdefault\tLDC\t0\t1\t2557@85.512\n"
              "knob\tfreecam\tsim\toff\toff\t-\tdefault\tC\t0\t2\t2600@87.000\n"
              "knob\tssaa\trender\t1\t1\t1\tdefault\t-\t0\t0\t-\n"
-             "change\t2557\t5110\t2557\t85.512\tterrain_visibility\tfrustum\tgame\t1\t0\n"
+             "change\t2557\t5110\t2557\t85.512\tsector_visibility\tfrustum\tgame\t1\t0\n"
              "change\t2600\t5196\t2600\t87.000\tfreecam\toff\toff\t1\t0\n").encode()
 
 
@@ -774,7 +774,7 @@ class Knobs(Base):
         rc, out, err = run("info", write_bundle(self.d / "k.zip", mem, manifest(mem)), "--archive", self.arch)
         self.assertEqual(rc, 0, out + err)
         lines = out.splitlines()
-        self.assertEqual(lines[1], "knob changed live: terrain_visibility = game (changed live at 85.5 s, "
+        self.assertEqual(lines[1], "knob changed live: sector_visibility = game (changed live at 85.5 s, "
                                    "frame 2557; boot frustum, default frustum; render)")
         self.assertIn("knob changed live: freecam = off (changed live at 87.0 s, frame 2600, back to its boot "
                       "value after 2 change(s); boot off, default -; sim)", out)
@@ -797,7 +797,7 @@ class Knobs(Base):
         stub = self.d / "stub-openpete"
         stub.write_text("#!/bin/sh\n"
                         "# Stub: stands in for openpete --bug-report-replay; prints knob lines and a verdict.\n"
-                        "echo 'bug-report-replay: knob terrain_visibility = game applied at the anchor load "
+                        "echo 'bug-report-replay: knob sector_visibility = game applied at the anchor load "
                         "(frame 2100; set live before the anchor; boot value frustum)'\n"
                         "echo 'bug-report-replay: knobs: 1 changed after boot, 1 applied (1 at the anchor load, "
                         "0 at their tick), 0 not applied'\n"
@@ -805,7 +805,7 @@ class Knobs(Base):
         stub.chmod(0o755)
         rc, out, err = run("replay", z, "--exe", stub, "--disc", disc, "--work", self.d / "w", "--archive", self.arch)
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("bug-report-replay: knob terrain_visibility = game applied at the anchor load", out)
+        self.assertIn("bug-report-replay: knob sector_visibility = game applied at the anchor load", out)
         self.assertIn("bug-report-replay: knobs: 1 changed after boot, 1 applied", out)
 
 

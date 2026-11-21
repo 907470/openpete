@@ -49,7 +49,7 @@ typedef struct launcher_preview_spec {
     const char* game;    /* the game id */
     const char* level;   /* the level table's name of the level */
     const char* pose;    /* the --freecam-pose text */
-    int vis_game;        /* 1: the sector set --terrain-visibility game draws (the level's PVS at the
+    int vis_game;        /* 1: the sector set --sector-visibility game draws (the level's PVS at the
                           * pose, launcher_preview_pvs); 0: every sector in the frustum */
 } launcher_preview_spec;
 

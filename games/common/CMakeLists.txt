@@ -43,6 +43,7 @@ set(OPENPETE_GAME_COMMON_SOURCES
     renderer/render_paths.c
     renderer/portal_plane.c
     renderer/terrain.c
+    renderer/sector_pvs.c
     renderer/cyclorama.c
     renderer/shadow.c
     renderer/shadow_player.c

@@ -63,7 +63,7 @@
 #               queries were all in bound is a sound cull: the grid and the
 #               querying camera agree, and the sector is genuinely hidden.
 #
-# Game-visibility bk2 leg: a movie replay under --terrain-visibility game,
+# Game-visibility bk2 leg: a movie replay under --sector-visibility game,
 # where the terrain cull's candidate set is the game's own visibility list and
 # an inflated rect can lie wholly off screen, so the per-walk frustum test
 # engages. Written "<bk2>:<first VBL>:<last VBL>:<tick scale>"; the replay runs
@@ -427,7 +427,7 @@ for LEG in $BK2_LEGS; do
     rm -f "$LOG"
     env "${WSLENV_ARGS[@]}" "${OP_XVFB[@]}" "$EXE" \
         --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
-        --renderer vk --lod extended --terrain-visibility game \
+        --renderer vk --lod extended --sector-visibility game \
         --tick-scale "$TSCALE" --vsync 0 --render-fps 60 \
         --bk2 "$MOVIE_ABS" --frame-limit "$((VHI + 10))" 2>&1 | tr -d '\r' |
         grep -E --line-buffered '^\[fardbg-hdr\]|^\[occl-inbound\]|^\[moby-occl |exit: reason|panic|assert' \

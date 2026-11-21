@@ -203,7 +203,7 @@ static uint32_t s_cyc_vis_n OP_GUARDED_BY(sim) = 0;  /* thread-roles: copied aft
  * copied right after the canonical draw because the game reuses that scratch
  * range later in the tick; a sub-tick re-extract reads the copy in s_cyc_vis.
  * The count is the sector count clamped to 1024. A layout without a
- * visibility range leaves the count at 0. Under --terrain-visibility frustum
+ * visibility range leaves the count at 0. Under --sector-visibility frustum
  * every sector is marked drawn.
  * @param cpu The guest CPU state, read only. */
 static void cyc_capture_visibility(CPUState* cpu) OP_REQUIRES(sim) {
@@ -215,7 +215,7 @@ static void cyc_capture_visibility(CPUState* cpu) OP_REQUIRES(sim) {
     s_cyc_vis_n = n;
     /* frustum draws every sky sector in front of the camera, as a view wider
      * than 4:3 does in any mode: the radius cull and the depth test decide. */
-    if (openpete_native_terrain_visibility_active() == OPENPETE_TERRAIN_VIS_FRUSTUM) memset(s_cyc_vis, 0xFF, n);
+    if (openpete_native_sector_visibility_active() == OPENPETE_SECTOR_VIS_FRUSTUM) memset(s_cyc_vis, 0xFF, n);
 }
 /** @brief Passes one camera-space sky face to cyc_clip_emit under the view in `ctx`.
  * @param a The first corner.
