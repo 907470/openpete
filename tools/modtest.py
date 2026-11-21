@@ -142,6 +142,49 @@ def parse_manifest(mod_dir: Path):
     return m
 
 
+GAME_DISC = {"spyro-1": "SCUS-94228", "spyro-2": "SCUS-94425", "spyro-3": "SCUS-94467"}
+
+
+def mod_games(mod_dir: Path):
+    """Return the games a mod's manifest names in requires_games and optional_games."""
+    games = []
+    try:
+        text = (mod_dir / "mod.toml").read_text()
+    except OSError:
+        return games
+    for line in text.splitlines():
+        key = line.split("=", 1)[0].strip()
+        if key in ("requires_games", "optional_games") and "=" in line:
+            games += [g for g in ARR_RE.findall(line.split("=", 1)[1]) if g not in games]
+    return games
+
+
+def seed_library(sbroot: str, games):
+    """Install the repository's built disc of each named game in a sandbox's launcher library.
+
+    A sandbox root starts with an empty library, so the mod loader's
+    required-games check refuses a mod that needs a disc other than the booted
+    one. Each entry is the layout the library reads: meta.toml naming the game,
+    disc.cue and the .bin its FILE line names, linked from games/<g>/<g>/build.
+    A game whose disc is not built is left out, and the loader reports it."""
+    lib = Path(sbroot) / "data" / "openpete" / "library"
+    for g in games:
+        serial = GAME_DISC.get(g)
+        if not serial:
+            continue
+        build = REPO / "games" / g / g / "build"
+        cue, bin_ = build / f"{serial}.cue", build / f"{serial}.bin"
+        if not (cue.is_file() and bin_.is_file()):
+            continue
+        entry = lib / f"modtest-{g}"
+        entry.mkdir(parents=True, exist_ok=True)
+        (entry / "meta.toml").write_text(f'label = "{g} (modtest)"\ngame = "{g}"\n')
+        for name, src in (("disc.cue", cue), (bin_.name, bin_)):
+            link = entry / name
+            if not link.exists():
+                link.symlink_to(src)
+
+
 def dep_closure(mod_dir: Path):
     """[dep dirs...] + mod_dir, dependency-first (siblings by id)."""
     ordered, seen = [], set()
@@ -241,6 +284,7 @@ def run_one(mod_dir: Path, game, verbose: bool, emit,
         sbroot = sandbox_run_root()
         env["OPENPETE_SANDBOX"] = sbroot
         env["OPENPETE_CARD_DIR"] = os.path.join(sbroot, "cards")
+        seed_library(sbroot, mod_games(mod_dir))
         if mode in ("pass", "fail"):
             env["OPENPETE_FRAME_LIMIT"] = frames
             if concurrent_run and env.get("OPENPETE_ORACLE_LOG"):
