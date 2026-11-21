@@ -135,6 +135,7 @@ STALL_RE = re.compile(r"stall: ([a-z-]+) blocked ([0-9.]+) ms")
 PACE_F_NOT_LIVE = 64
 PACE_EP_CUT, PACE_EP_LATE, PACE_EP_PINNED, PACE_EP_GREEDY = 1, 2, 4, 8
 PACE_EP_RING, PACE_EP_WITHHELD, PACE_EP_FILL, PACE_EP_HEAD_DUP = 16, 32, 64, 128
+PACE_EP_B_SPAN = 1 << 62   # EAGER_PLAN b: bits 32-55 carry the previous span's spare, capacity and final plan
 PACE_WINDOW_S = 30.0
 # TICK_SPLIT slots in record order: (slot, high word) per duration (core/include/openpete_pace_log.h);
 # slot 4 is the record's f. host_other is 0 in a log written before the exclusive layout.
@@ -507,18 +508,26 @@ def plan_decode(r):
     `fill` is the fill cadence's flag; `made` is the scenes the previous span published (0 in a log
     written before the field). `anchor_ms` is the plan instant less the span anchor (0 when anchored on
     the plan instant), `head_vbls` the VBLs from the interp ring head's capture to the plan's VBL and
-    `head_dup` whether that head is a duplicate commit; all three are 0 in a log written before them."""
+    `head_dup` whether that head is a duplicate commit; all three are 0 in a log written before them.
+    `prev_spare` (scenes the produce guard would still have started when the previous span's plan
+    finished; 128 when it finished before the update VBL), `prev_capacity` (its scenes produced plus
+    spare; 0 when spare was not measured) and `prev_planned` (its planned count after any re-plan) are
+    None in a log written before them."""
     f = r[10] or 0
     a = r[5] or 0
+    b = r[6] or 0
+    span = bool(b & PACE_EP_B_SPAN)
     return {"index": r[3], "t_ns": r[4], "flags": r[1], "cut": bool(r[1] & PACE_EP_CUT),
             "ring": bool(r[1] & PACE_EP_RING), "withheld": bool(r[1] & PACE_EP_WITHHELD),
             "late": bool(r[1] & PACE_EP_LATE), "fill": bool(r[1] & PACE_EP_FILL),
             "level": r[2] & 0xFF, "std": (r[2] >> 8) & 0xFF,
-            "budget": (a & 0xFFFFFFFF) / 1e6, "made": (a >> 32) & 0xFFFF, "tail": r[6] / 1e6, "lag": r[7] / 1e6, "vbl": r[8] / 1e6,
+            "budget": (a & 0xFFFFFFFF) / 1e6, "made": (a >> 32) & 0xFFFF, "tail": (b & 0xFFFFFFFF) / 1e6, "lag": r[7] / 1e6, "vbl": r[8] / 1e6,
             "late_ms": (r[9] or 0) / 1e6, "slots": f & 0xFFFF, "afford": (f >> 16) & 0xFFFF,
             "planned": (f >> 32) & 0xFFFF, "period_ms": ((f >> 48) & 0xFFFF) / 1000.0,
             "anchor_ms": ((a >> 48) & 0x1FFF) / 100.0, "head_vbls": (a >> 61) & 7,
-            "head_dup": bool(r[1] & PACE_EP_HEAD_DUP)}
+            "head_dup": bool(r[1] & PACE_EP_HEAD_DUP),
+            "prev_spare": (b >> 32) & 0xFF if span else None, "prev_capacity": (b >> 40) & 0xFF if span else None,
+            "prev_planned": (b >> 48) & 0xFF if span else None}
 
 
 def gpu_decode(r):
@@ -622,6 +631,11 @@ def perf_rollup(data, tail_s=10.0):
         out["plan_cut_frac"] = sum(1 for p in plans if p["cut"]) / n
         out["plan_cut_ring_frac"] = sum(1 for p in plans if p["cut"] and p["ring"]) / n
         out["plan_budget_p50"] = pct([p["budget"] for p in plans], 50)
+        # The previous span's capacity and final plan, read one record on, where its spare was measured.
+        caps = [p for p in plans[1:] if p["prev_capacity"]]
+        if caps:
+            out["plan_capacity"] = sum(p["prev_capacity"] for p in caps) / len(caps)
+            out["plan_final"] = sum(p["prev_planned"] for p in caps) / len(caps)
     gpus = [gpu_decode(r) for r in recs if r[0] == PACE_GPU_FRAME]
     if gpus:
         out["gpu_frames"] = len(gpus)
@@ -1878,7 +1892,9 @@ def perf_lines(pace, coarse, manifest, logt=None):
               f"{r['plan_slots']:.2f} afford {r['plan_afford']:.2f} planned {r['plan_scenes']:.2f} "
               f"published {r['plan_made']:.2f} per span; level p50 {r['plan_level_p50']} max {r['plan_level_max']}; "
               f"cut {100 * r['plan_cut_frac']:.1f}% (ring {100 * r['plan_cut_ring_frac']:.1f}%); "
-              f"budget p50 {r['plan_budget_p50']:.2f} ms")
+              f"budget p50 {r['plan_budget_p50']:.2f} ms" +
+              (f"; capacity {r['plan_capacity']:.2f} final plan {r['plan_final']:.2f} per measured span"
+               if "plan_capacity" in r else ""))
         else:
             w("  planner: no EAGER_PLAN record (eager production did not run: headless, or not windowed)")
         if "gpu_frames" in r:

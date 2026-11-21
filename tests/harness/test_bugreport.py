@@ -627,6 +627,12 @@ class PerfRecords(Base):
         self.assertAlmostEqual(pl["period_ms"], 8.333)
         self.assertAlmostEqual(pl["budget"], 20.0)
         self.assertEqual((pl["made"], pl["fill"]), (2, False))
+        self.assertAlmostEqual(pl["tail"], 1.5)
+        self.assertEqual((pl["prev_spare"], pl["prev_capacity"], pl["prev_planned"]), (None, None, None))
+        b = 1_500_000 | 2 << 32 | 15 << 40 | 14 << 48 | br.PACE_EP_B_SPAN
+        new = br.plan_decode(tuple(b if i == 6 else v for i, v in enumerate(recs[[r[0] for r in recs].index(br.PACE_EAGER_PLAN)])))
+        self.assertAlmostEqual(new["tail"], 1.5)
+        self.assertEqual((new["prev_spare"], new["prev_capacity"], new["prev_planned"]), (2, 15, 14))
         g = [br.gpu_decode(r) for r in recs if r[0] == br.PACE_GPU_FRAME][1]
         self.assertEqual((g["token"], g["zones"], g["frame_ms"], g["busy_ms"]), (1, 12, 3.0, 2.5))
 

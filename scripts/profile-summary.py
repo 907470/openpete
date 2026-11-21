@@ -27,7 +27,8 @@ Notes:
     the planned rate (scenes planned per span times spans per second), the
     cost floor's rate (1 / max(tail, present-thread render + present step)),
     the prediction (the lower of the two) and the measured present and scene
-    rates. Absent without eager.
+    rates; on free spans (vsync off) the count controller's deficit and the
+    plan's slack below capacity, each as ms per present. Absent without eager.
   * [sim.split] breaks the sim tick down: each fiber hook's inclusive cost
     (hook.<feature>), the guest renderer it calls (<feature>.srend), and the
     remainder - openpete's own extraction on the game fiber. The bottom
@@ -128,7 +129,7 @@ def scheduler(markers, present_cadence, scene_cadence):
             "eager.afford", "eager.slots", "eager.planned", "eager.level", "eager.std_level",
             "eager.period_ns", "eager.grid_period_ns", "eager.free", "eager.lattice",
             "eager.warm", "eager.vbl_ema_ns", "eager.tick_late_ns", "eager.lag_ns",
-            "pt.render_ema_ns", "pt.present_ema_ns")
+            "pt.render_ema_ns", "pt.present_ema_ns", "eager.prev_capacity", "eager.prev_planned")
     rows = [{k: p.counts.get(k, 0) for k in keys} for p in plans]
 
     def q(k, f=0.5, scale=1e-3):
@@ -146,6 +147,7 @@ def scheduler(markers, present_cadence, scene_cadence):
     match = sum(1 for r in rows if plan_afford(r) == r["eager.afford"])
     pt_cost = sorted(r["pt.render_ema_ns"] + r["pt.present_ema_ns"] for r in rows)
     floor_ns = max(pct(sorted(r["eager.tail_ns"] for r in rows), 0.5), pct(pt_cost, 0.5))
+    deficit_ms, slack_ms = per_present_gaps(rows, spans_per_s)
     return {
         "spans": len(rows),
         "warm_spans": len(warm),
@@ -176,7 +178,30 @@ def scheduler(markers, present_cadence, scene_cadence):
         if present_cadence.get("span_us") else 0.0,
         "measured_scenes_per_s": round(scene_cadence["intervals"] * 1e6 / scene_cadence["span_us"], 1)
         if scene_cadence.get("span_us") else 0.0,
+        "deficit_ms_per_present": deficit_ms,
+        "slack_ms_per_present": slack_ms,
     }
+
+
+def per_present_gaps(rows, spans_per_s):
+    """The free spans' (eager.free) count gaps as ms per present, at the span length 1 / spans_per_s:
+    the deficit, the interval at the mean planned count less the interval at the mean afford (the count
+    controller's kept fraction), and the slack, the interval at the previous span's mean final planned
+    count less the interval at its mean capacity (scenes produced plus the guard's room at its end),
+    over the spans whose capacity was measured. Each None when it has no rows; the slack is None in a
+    trace written before the eager.prev_capacity counter."""
+    free = [r for r in rows if r["eager.free"]]
+    if not free or spans_per_s <= 0:
+        return None, None
+    t_ms = 1e3 / spans_per_s
+
+    def gap(have, want):
+        return round(t_ms / have - t_ms / want, 3) if have > 0 and want > 0 else None
+    deficit = gap(sum(r["eager.planned"] for r in free) / len(free), sum(r["eager.afford"] for r in free) / len(free))
+    cap = [r for r in free if r["eager.prev_capacity"] > 0]
+    slack = gap(sum(r["eager.prev_planned"] for r in cap) / len(cap),
+                sum(r["eager.prev_capacity"] for r in cap) / len(cap)) if cap else None
+    return deficit, slack
 
 
 def present_source(tr):
@@ -898,7 +923,8 @@ def render_text(s):
                  "cost_dev %.1f/%.1f us  tail %.1f/%.1f us  budget p50 %.1f p1 %.1f us  pt render/present "
                  "p50 %.1f/%.1f us  period p50 %.1f us (grid %.1f)  slots %.2f planned %.2f per span  "
                  "level %s  std %s  afford %s  afford recomputed %.1f%%  planned %.1f/s (%.2f spans/s), "
-                 "cost floor %.1f/s, predicted %.1f/s, measured presents %.1f/s scenes %.1f/s"
+                 "cost floor %.1f/s, predicted %.1f/s, measured presents %.1f/s scenes %.1f/s, "
+                 "free-span deficit %s slack %s ms per present"
                  % (sch["spans"], sch["warm_spans"], sch["free_pct"], sch["lattice_pct"],
                     sch["cost_ema_p50_us"], sch["cost_ema_p99_us"], sch["cost_dev_p50_us"],
                     sch["cost_dev_p99_us"], sch["tail_p50_us"], sch["tail_p99_us"],
@@ -909,7 +935,9 @@ def render_text(s):
                     sch["afford_recomputed_match_pct"], sch["predicted_scenes_per_s"],
                     sch["spans_per_s"], sch["cost_floor_per_s"], sch["predicted_presents_per_s"],
                     sch["measured_presents_per_s"],
-                    sch["measured_scenes_per_s"]))
+                    sch["measured_scenes_per_s"],
+                    "n/a" if sch.get("deficit_ms_per_present") is None else "%.3f" % sch["deficit_ms_per_present"],
+                    "n/a" if sch.get("slack_ms_per_present") is None else "%.3f" % sch["slack_ms_per_present"]))
     L.append("# producer threads: %s" % ", ".join(str(t) for t in s.get("threads", [])))
     gf = s.get("gpu_frames", {})
     if gf.get("frames"):

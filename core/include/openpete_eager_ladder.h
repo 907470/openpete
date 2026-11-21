@@ -234,6 +234,83 @@ static inline void op_eager_count_step(op_eager_count_t *c, op_eager_cut_t cause
     if (c->deficit < 0) c->deficit = 0;
 }
 
+/** @brief Return how many scenes the produce guard starts in room nanoseconds: the last needs the tail cost, each other one the mean cost.
+ *
+ * The guard starts a scene while its start plus the tail cost is at or
+ * before the deadline, so the room holds 1 plus the mean costs that fit in
+ * room - tail, or 0 when room is below tail. Capped at
+ * OP_EAGER_LADDER_MAX_AFFORD.
+ * @param room The time left before the deadline, in nanoseconds.
+ * @param ema The per-scene production cost mean in nanoseconds; below 1 counts as 1.
+ * @param tail The per-scene tail cost in nanoseconds.
+ * @return The scene count, 0 to OP_EAGER_LADDER_MAX_AFFORD. */
+static inline int op_eager_guard_room(int64_t room, int64_t ema, int64_t tail)
+{
+    if (room < 0 || room < tail) return 0;
+    if (ema < 1) ema = 1;
+    const int64_t n = 1 + (room - tail) / ema;
+    return n > OP_EAGER_LADDER_MAX_AFFORD ? OP_EAGER_LADDER_MAX_AFFORD : (int)n;
+}
+
+/** @brief Re-space a free span's unproduced instants to m scenes, evenly between its last produced instant and its last instant, and return the new count.
+ *
+ * target[0 .. i-1] are produced and stay; target[n-1], the span's last
+ * instant, stays, so the next span continues after the same instant. The
+ * m instants are prev + k * (last - prev) / m for k = 1 .. m, prev being
+ * target[i-1], the m-th exactly last. m is lowered until the spacing is at
+ * least floor_ns and at least 1 ns, and until i + m is at most max_n; it is
+ * at least 1, which keeps the last instant even when it lies closer than
+ * floor_ns to prev. With nothing produced (i < 1), nothing left (i >= n),
+ * m below 1 (the guard stops before another scene and the plan is cut as
+ * planned) or last not after prev, the plan is unchanged.
+ * @param target The span's instants; entries i .. return value - 1 are rewritten.
+ * @param i The number of instants produced, the index of the next one.
+ * @param n The number of instants planned.
+ * @param m The scenes the room left affords (op_eager_guard_room).
+ * @param floor_ns The least spacing in nanoseconds, or 0 for none.
+ * @param max_n The capacity of target.
+ * @return The number of instants planned after the re-plan. */
+static inline int op_eager_replan(int64_t *target, int i, int n, int m, int64_t floor_ns, int max_n)
+{
+    if (i < 1 || i >= n || m < 1) return n;
+    const int64_t prev = target[i - 1], len = target[n - 1] - prev;
+    if (len <= 0) return n;
+    if (floor_ns > 0 && len / floor_ns < m) m = (int)(len / floor_ns);
+    if (len < m) m = (int)len;
+    if (i + m > max_n) m = max_n - i;
+    if (m < 1) m = 1;
+    const int64_t last = target[n - 1];
+    for (int k = 1; k < m; k++) target[i - 1 + k] = prev + len * k / m;
+    target[i + m - 1] = last;
+    return i + m;
+}
+
+/** @brief Return the cut cause a free span's seed plan of seed scenes would have closed with, and its spare, from the span the re-plan reshaped.
+ *
+ * The re-plan changes the count after the update VBL, so the count
+ * controller, which only seeds the plan, is stepped on the seed: a span
+ * whose produce walk passed fewer than seed instants (produced, or skipped
+ * because their instant had gone) would have cut the seed at the deadline;
+ * one that passed seed or more would have finished it with done - seed
+ * scenes of room, plus the guard's room at the end when the reshaped plan
+ * was not cut. A ring, withheld or late cut is passed through with spare.
+ * A span the re-plan did not reshape passes all seed instants unless cut,
+ * so the view is then the span's own cause and spare.
+ * @param cause Why the span ended with scenes unproduced, or OP_EAGER_CUT_NONE.
+ * @param seed The scenes the span's seed plan held.
+ * @param done The instants the span's produce walk passed.
+ * @param spare The guard's room when the span's plan finished; 0 when cut.
+ * @param seed_spare Receives the spare the seed plan would have finished with.
+ * @return The cause the seed plan would have closed with. */
+static inline op_eager_cut_t op_eager_seed_view(op_eager_cut_t cause, int seed, int done, int spare,
+                                                int *seed_spare)
+{
+    if (cause != OP_EAGER_CUT_NONE && cause != OP_EAGER_CUT_DEADLINE) { *seed_spare = spare; return cause; }
+    if (done < seed) { *seed_spare = 0; return OP_EAGER_CUT_DEADLINE; }
+    *seed_spare = done - seed + (cause == OP_EAGER_CUT_NONE ? spare : 0);
+    return OP_EAGER_CUT_NONE;
+}
+
 /** @brief Return the display-grid slot of the q-th of k scenes spread over ns slots, the first and last slot kept.
  *
  * The slot is q * (ns - 1) / (k - 1) rounded to nearest, halves up, so the

@@ -1033,6 +1033,197 @@ static void test_fill_cut_causes(void)
     check(op_eager_fill_count(&c, 13, 13) == 13, "control: op_eager_count_step keeps 13 after a ring cut");
 }
 
+/* The re-plan rows: a scripted cost sequence on the span geometry the
+ * Windows pace logs of Skelos Badlands (vsync off, uncapped) measure. The
+ * plan is made at 0; the first window ends 0.5 ms before the update VBL's
+ * deadline D1; the update VBL runs for RP_VBL; the second window ends 0.5
+ * ms before D2. Scene costs are RP_COST times a per-span factor in
+ * [0.92, 1.08] times a per-scene factor in [0.88, 1.12], from a fixed LCG.
+ * The cost mean and deviation follow eager_cost_note's rules outside the
+ * re-warm window. A span's capacity is the scenes the produce guard starts
+ * with no plan limit on the same costs; its planned count is the count it
+ * finished with. The control is the count controller's plan without the
+ * re-plan, which stays more than half a scene below capacity. */
+#define RP_COST 1570000LL
+#define RP_D1 11990000LL
+#define RP_D2 (RP_D1 + 16715000LL)
+#define RP_VBL 300000LL
+#define RP_SPAN 33433000LL
+#define RP_MAXT 128
+
+/* The cost sequence's state: the LCG and the span's factor. */
+typedef struct { uint32_t lcg; double span_k; } rp_costs_t;
+
+/** @brief Return the LCG's next value in [0, 1).
+ * @param r The sequence state.
+ * @return The value. */
+static double rp_unit(rp_costs_t *r)
+{
+    r->lcg = r->lcg * 1664525u + 1013904223u;
+    return (double)(r->lcg >> 8) / 16777216.0;
+}
+
+/* The producer's cost estimate, as eager_cost_note keeps it. */
+typedef struct { int64_t ema, dev; } rp_est_t;
+
+/** @brief Fold one scene cost into the estimate by eager_cost_note's rules (bounded sample, deviation step capped at ema + 4 dev).
+ * @param e The estimate.
+ * @param c The scene's cost in nanoseconds. */
+static void rp_note(rp_est_t *e, int64_t c)
+{
+    if (!e->ema) { e->ema = c; return; }
+    const int64_t s = op_eager_cost_sample(e->ema, c);
+    int64_t d = s > e->ema ? s - e->ema : e->ema - s;
+    const int64_t cap = e->ema + 4 * e->dev;
+    if (d > cap) d = cap;
+    e->dev = (e->dev * 31 + d) / 32;
+    e->ema = (e->ema * 7 + s) / 8;
+}
+
+/* One span's producer: the cost estimate, the span's scene costs, the plan
+ * and the walk through it, as eager_produce keeps them. */
+typedef struct {
+    rp_est_t e;
+    const int64_t *cost;
+    int64_t *target;     /* the plan's instants; NULL for a plan of n unplaced scenes */
+    int64_t now;         /* the producer's clock, from the plan at 0 */
+    int i, n;            /* instants produced, instants planned */
+    int64_t floor_ns;    /* the re-plan's least spacing */
+    int floor_bad;       /* a re-planned instant other than the last lies closer than floor_ns to its predecessor */
+} rp_walk_t;
+
+/** @brief Produce one window of the span as eager_produce does: re-plan at each boundary when asked, stop when the tail cost would pass end.
+ * @param w The span's producer.
+ * @param end The window's deadline.
+ * @param replan Nonzero to re-plan the unproduced instants at each scene boundary.
+ * @return The guard's room when the plan's last scene finished in this window, else -1. */
+static int rp_window(rp_walk_t *w, int64_t end, int replan)
+{
+    while (w->i < w->n) {
+        const int64_t tail = w->e.ema + 3 * w->e.dev;
+        if (replan) {
+            const int before = w->i;
+            w->n = op_eager_replan(w->target, w->i, w->n, op_eager_guard_room(end - w->now, w->e.ema, tail),
+                                   w->floor_ns, RP_MAXT);
+            for (int q = before; q < w->n - 1; q++) w->floor_bad |= w->target[q] - w->target[q - 1] < w->floor_ns;
+        }
+        if (w->now + tail > end) return -1;
+        w->now += w->cost[w->i];
+        rp_note(&w->e, w->cost[w->i]);
+        w->i++;
+    }
+    return op_eager_guard_room(end - w->now, w->e.ema, w->e.ema + 3 * w->e.dev);
+}
+
+/** @brief Produce one span: the canonical scene, the first window, the update VBL, the second window (re-planned when asked).
+ * @param w The span's producer at the plan.
+ * @param replan Nonzero to re-plan after the update VBL.
+ * @return The guard's room when the plan finished: OP_EAGER_LADDER_MAX_AFFORD when it finished in the first window, 0 when cut. */
+static int rp_span(rp_walk_t *w, int replan)
+{
+    w->now += w->cost[0];
+    rp_note(&w->e, w->cost[0]);
+    w->i = 1;
+    if (w->i >= w->n || rp_window(w, RP_D1 - 500000, 0) >= 0) return OP_EAGER_LADDER_MAX_AFFORD;
+    w->now = (w->now > RP_D1 ? w->now : RP_D1) + RP_VBL;
+    const int spare = rp_window(w, RP_D2 - 500000, replan);
+    return spare < 0 ? 0 : spare;
+}
+
+/** @brief Return how many scenes the produce guard starts in the span with no plan limit, on the span's costs.
+ * @param e The estimate at the span's plan; not changed.
+ * @param cost The span's scene costs.
+ * @return The span's capacity. */
+static int rp_capacity(const rp_est_t *e, const int64_t *cost)
+{
+    rp_walk_t w = { *e, cost, NULL, 0, 0, RP_MAXT, 0, 0 };
+    rp_span(&w, 0);
+    return w.i;
+}
+
+/* A re-plan run's means over its measured spans. */
+typedef struct { double planned, capacity, seed; int cuts, floor_bad, ends_bad, spans; } rp_run_t;
+
+/** @brief Run spans spans of the scripted costs through the seed plan and, when replan is set, the re-plan; measure after 64 spans.
+ * @param replan Nonzero to re-plan after the update VBL.
+ * @param floor_ns The least spacing.
+ * @param spans The spans to run.
+ * @return The run's means. */
+static rp_run_t rp_run(int replan, int64_t floor_ns, int spans)
+{
+    rp_costs_t r = { 12345u, 1.0 };
+    rp_est_t e = { 0, 0 };
+    op_eager_count_t c;
+    memset(&c, 0, sizeof c);
+    rp_run_t out = { 0, 0, 0, 0, 0, 0, 0 };
+    for (int s = 0; s < spans; s++) {
+        int64_t cost[RP_MAXT], target[RP_MAXT];
+        r.span_k = 0.92 + 0.16 * rp_unit(&r);
+        for (int q = 0; q < RP_MAXT; q++) cost[q] = (int64_t)((double)RP_COST * r.span_k * (0.88 + 0.24 * rp_unit(&r)));
+        const int afford = e.ema ? op_eager_ladder_afford(RP_D2 - RP_VBL - 1000000, e.ema, e.dev) : 8;
+        int n = 0;
+        const int64_t p = op_eager_ladder_fill(RP_SPAN, op_eager_count_plan(&c, afford), floor_ns, 1, &n);
+        for (int q = 0; q < n; q++) target[q] = p * (q + 1);
+        const int cap = rp_capacity(&e, cost);
+        rp_walk_t w = { e, cost, target, 0, 0, n, floor_ns, 0 };
+        const int end_spare = rp_span(&w, replan);
+        e = w.e;
+        int spare = 0;
+        const op_eager_cut_t cause = op_eager_seed_view(w.i < w.n ? OP_EAGER_CUT_DEADLINE : OP_EAGER_CUT_NONE,
+                                                        n, w.i, end_spare, &spare);
+        op_eager_count_step(&c, cause, afford, spare, w.i, RP_SPAN, COUNT_RUNS, 1, 32);
+        if (s < 64) continue;
+        out.spans++;
+        out.planned += w.n; out.capacity += cap; out.seed += n;
+        out.cuts += w.i < w.n; out.floor_bad += w.floor_bad;
+        out.ends_bad += target[0] != p || target[w.n - 1] != p * n;
+    }
+    out.planned /= out.spans; out.capacity /= out.spans; out.seed /= out.spans;
+    return out;
+}
+
+/** @brief Check the re-plan: first and last instants kept, spacing at or above the floor, planned count within half a scene of capacity where the count controller's plan sits below it.
+ * @param print Nonzero to print the runs' means. */
+static void test_replan(int print)
+{
+    char what[160];
+    /* op_eager_replan on a hand case: 3 produced of 6, room for 5 more, last kept. */
+    int64_t t[16] = { 0, 10, 20, 30, 40, 60 };
+    int n = op_eager_replan(t, 3, 6, 5, 0, 16);
+    check(n == 8 && t[2] == 20 && t[3] == 28 && t[7] == 60 && t[0] == 0, "replan: 3 of 6 produced, 5 more spaced 8 to the kept last 60");
+    n = op_eager_replan(t, 3, 8, 5, 15, 16);
+    check(n == 5 && t[3] == 40 && t[4] == 60, "replan: a 15 floor keeps 2 of the 40 left");
+    n = op_eager_replan(t, 3, 5, 0, 0, 16);
+    check(n == 5 && t[4] == 60, "replan: no room leaves the plan for the guard to cut");
+    check(op_eager_guard_room(5000, 1000, 2000) == 4 && op_eager_guard_room(1999, 1000, 2000) == 0,
+          "guard room: tail for the last, the mean for each other");
+    /* The seed view: unchanged on a span the re-plan did not reshape. */
+    int sp = -1;
+    check(op_eager_seed_view(OP_EAGER_CUT_NONE, 12, 12, 2, &sp) == OP_EAGER_CUT_NONE && sp == 2, "seed view: a plan run to its end keeps its spare");
+    check(op_eager_seed_view(OP_EAGER_CUT_DEADLINE, 12, 9, 0, &sp) == OP_EAGER_CUT_DEADLINE, "seed view: a cut seed stays cut");
+    check(op_eager_seed_view(OP_EAGER_CUT_NONE, 12, 15, 0, &sp) == OP_EAGER_CUT_NONE && sp == 3, "seed view: a plan grown by 3 gives the seed 3 spare");
+    check(op_eager_seed_view(OP_EAGER_CUT_NONE, 12, 11, 0, &sp) == OP_EAGER_CUT_DEADLINE, "seed view: a plan shrunk below the seed cuts the seed");
+    check(op_eager_seed_view(OP_EAGER_CUT_RING, 12, 5, 0, &sp) == OP_EAGER_CUT_RING, "seed view: a ring cut passes through");
+
+    const rp_run_t re = rp_run(1, 500000, 1200), old = rp_run(0, 500000, 1200);
+    const rp_run_t fl = rp_run(1, 3000000, 1200);
+    if (print) {
+        printf("replan    : planned %.2f capacity %.2f seed %.2f cuts %d/%d\n", re.planned, re.capacity, re.seed, re.cuts, re.spans);
+        printf("seed only : planned %.2f capacity %.2f seed %.2f cuts %d/%d\n", old.planned, old.capacity, old.seed, old.cuts, old.spans);
+        printf("floor 3 ms: planned %.2f capacity %.2f seed %.2f cuts %d/%d\n", fl.planned, fl.capacity, fl.seed, fl.cuts, fl.spans);
+    }
+    snprintf(what, sizeof what, "replan: planned %.2f within 0.5 of capacity %.2f", re.planned, re.capacity);
+    check(re.planned - re.capacity <= 0.5 && re.capacity - re.planned <= 0.5, what);
+    snprintf(what, sizeof what, "replan: first and last instants kept (%d spans moved one), spacing at the floor (%d below)",
+             re.ends_bad, re.floor_bad);
+    check(re.ends_bad == 0 && re.floor_bad == 0, what);
+    snprintf(what, sizeof what, "replan floor 3 ms: ends kept (%d), spacing at the floor (%d below), planned %.2f <= %d",
+             fl.ends_bad, fl.floor_bad, fl.planned, (int)(RP_SPAN / 3000000));
+    check(fl.ends_bad == 0 && fl.floor_bad == 0 && fl.planned <= RP_SPAN / 3000000, what);
+    snprintf(what, sizeof what, "control: the seed plan %.2f sits more than 0.5 below capacity %.2f", old.planned, old.capacity);
+    check(old.capacity - old.planned > 0.5, what);
+}
+
 /** @brief Run the checks; `replay` also prints the recorded-row table.
  * @param argc Argument count.
  * @param argv Arguments.
@@ -1055,6 +1246,7 @@ int main(int argc, char **argv)
     test_fill_count();
     test_fill_recovery();
     test_fill_cut_causes();
+    test_replan(argc > 1 && !strcmp(argv[1], "replay"));
     printf("eager_ladder_test: %s\n", g_fail ? "FAIL" : "PASS");
     return g_fail;
 }

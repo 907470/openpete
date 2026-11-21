@@ -21,6 +21,11 @@ Earlier trace: the same spans with no region fields (as written before the
 region tree) read, and the split is the inclusive hook table with its
 "unattributed" remainder.
 
+Scheduler gaps: free-span counter rows give the count controller's deficit
+and the plan's slack below capacity as ms per present; display-grid rows and
+rows without a measured capacity are not counted; rows written before the
+capacity counter give no slack.
+
 Usage: tests/harness/test_profile_summary.py
 """
 import importlib.util
@@ -185,6 +190,23 @@ class Earlier(Base):
         self.assertEqual(rows["terrain_native"]["srend_us"], 100.0)
         self.assertEqual(ss["unattributed_us"], 1000.0 - 300 - 400 - 100)
         self.assertIn("trace without region records", ps.render_text(ps.summarize(p)))
+
+
+class SchedulerGaps(unittest.TestCase):
+    def row(self, free, afford, planned, cap, final):
+        return {"eager.free": free, "eager.afford": afford, "eager.planned": planned,
+                "eager.prev_capacity": cap, "eager.prev_planned": final}
+
+    def test_gaps(self):
+        rows = [self.row(1, 16, 14, 16, 14), self.row(1, 16, 14, 0, 12), self.row(0, 30, 8, 9, 8)]
+        deficit, slack = ps.per_present_gaps(rows, 30.0)
+        t = 1e3 / 30.0
+        self.assertAlmostEqual(deficit, round(t / 14 - t / 16, 3))
+        self.assertAlmostEqual(slack, round(t / 14 - t / 16, 3))
+
+    def test_earlier_trace(self):
+        self.assertEqual(ps.per_present_gaps([self.row(1, 16, 14, 0, 0)], 30.0)[1], None)
+        self.assertEqual(ps.per_present_gaps([self.row(0, 16, 14, 16, 14)], 30.0), (None, None))
 
 
 if __name__ == "__main__":

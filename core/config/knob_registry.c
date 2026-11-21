@@ -3030,6 +3030,8 @@ static const knob_desc_t g_builtin_debug[] = {
         "Scenes a span must leave spare to count as clean for the eager planner's free-span and fill count controllers (default 1)."),
     ENVROW_LATCHED("EAGER_COUNT_RUNS", "Debug", "16",
         "Clean spans in a row after which the eager planner's free-span controller gives back one scene (default 16)."),
+    ENVROW_LATCHED("EAGER_REPLAN", "Debug", "1",
+        "1 = after the update VBL the eager planner re-spaces a free span's unproduced scenes to the room left (vsync off); 0 = the count controller's plan stands (default 1)."),
     ENVROW_LATCHED("FOG_SAT_CULL", "Debug", "0",
         "1 = a world moby the level's heavy fog saturates is skipped on a one-colour level and drawn from its LP model on a mixed-haze level (default 0)."),
     ENVROW_LATCHED("GLINT_OWN", "Debug", "1",
