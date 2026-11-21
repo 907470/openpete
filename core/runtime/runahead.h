@@ -50,7 +50,7 @@ int ra_snapshot_save(openpete_state_mem_t* snap, const CPUState* cpu,
  * @param frame Receives the snapshot's frame.
  * @return openpete_state_mem_load's result, 0 on success. */
 int ra_snapshot_rollback(const openpete_state_mem_t* snap, CPUState* cpu,
-                                unsigned* frame);
+                                unsigned* frame) OP_REQUIRES(sim);
 
 /** @brief Settle the card writes of a speculation after its rollback attempt.
  *
@@ -183,4 +183,4 @@ runahead_lead_t runahead_lead(void) OP_REQUIRES(sim);
  * Runs after the interp captures, before anything else reads RAM. A no-op
  * for every other outcome.
  * @param r The lead's verdict. */
-void runahead_settle(runahead_lead_t r);
+void runahead_settle(runahead_lead_t r) OP_REQUIRES(sim);

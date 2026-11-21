@@ -340,8 +340,13 @@ case "$PATHNAME" in
     glint-rot) LEG_ENV_ON=(OPENPETE_GLINT_TRACE=1)
             SUPPRESS=OPENPETE_GLINT_SPIN; STAT=rot
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
+    # No suppress knob: the feeder re-derives each opening from its portal
+    # record under the present's own view (p3_resolve), so the polygon is a
+    # producer at rest in the world whose whole step is the camera's, and
+    # OPENPETE_PORTAL3_INTERP, which lerps the captured previews, cannot move
+    # it. The step floor and the alpha-0.5 residual are the engagement proof.
     portal) LEG_ENV_ON=(OPENPETE_PORTAL3_DBG=1)
-            SUPPRESS=OPENPETE_PORTAL3_INTERP; STAT=vertex
+            STAT=vertex
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     shadow) LEG_ENV_ON=(OPENPETE_SHADOW_PLAYER=0)
             LEG_ENV_OFF=(OPENPETE_SHADOW_PLAYER=0)
@@ -1115,7 +1120,7 @@ FIND_R = 12.0
 IDENT_TOL = 0.011
 
 AP = re.compile(r'\[portal3-ap f=(\d+) src=(\w+) a=([0-9.]+) slot=(\d+) arg=(\d+) n=(\d+) '
-                r'd7=(-?\d+) dw=(-?[0-9.]+) ir0=(-?\d+) far=([0-9A-F]+)\](.*)')
+                r'd7=(-?\d+) dw=(-?[0-9.]+) ir0=(-?\d+) far=([0-9A-F]+)(?: rec=[0-9A-F]+ native=\d+)?\](.*)')
 FEED = re.compile(r'\[portal3-feed f=(\d+) src=(\w+) a=([0-9.]+) portals=(\d+) '
                   r'tris=(\d+) emitted=(\d+)\]')
 XY = re.compile(r'\(([-0-9.]+),([-0-9.]+)\)')

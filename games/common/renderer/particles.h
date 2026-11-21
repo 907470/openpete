@@ -55,10 +55,11 @@ int particles_slot(uint32_t rec);
 
 /** @brief The serial of the allocation that last handed out the slot of the particle record at `rec`.
  *
- * The slot allocator hook gives every allocation the next serial of one
- * global count, so a slot holds a different serial after every allocation
- * and two slots never hold the same nonzero serial. A record whose serial is
- * unchanged between two captures is one continuing particle.
+ * The slot allocator hook gives every allocation a serial naming its tick and
+ * its ordinal in that tick (alloc_serial_next), so a slot holds a different
+ * serial after every allocation within 2^20 ticks and two slots never hold
+ * the same nonzero serial. A record whose serial is unchanged between two
+ * captures is one continuing particle.
  * @param rec The record's guest address.
  * @return The serial, or 0 when no allocation of the slot has been seen. */
 uint32_t particles_slot_serial(uint32_t rec);

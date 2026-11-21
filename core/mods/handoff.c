@@ -32,6 +32,7 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 #endif
 
 static const char* s_resume_path = NULL; /* --resume-handoff */
@@ -101,7 +102,7 @@ static void handoff_path(char* out, size_t cap) {
  * and without this the resumed frame counter (>= the trigger) would
  * re-fire it every quiescent pass, exec-looping forever.
  * @param cpu Guest CPU state the resume restores. */
-static void handoff_resume_poll(CPUState* cpu) {
+static void handoff_resume_poll(CPUState* cpu) OP_REQUIRES(sim) {
     s_trigger_at = 0;
     s_exec_done = 1;
     /* Under the empty-queue policy the load waits, like the park
@@ -132,7 +133,7 @@ static void handoff_resume_poll(CPUState* cpu) {
     }
 }
 
-void openpete_handoff_poll(CPUState* cpu) {
+void openpete_handoff_poll(CPUState* cpu) OP_REQUIRES(sim) {
     /* Resume leg: first quiescent point of the fresh process. */
     if (s_resume_path && !s_resume_done) {
         handoff_resume_poll(cpu);

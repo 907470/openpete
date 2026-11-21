@@ -31,6 +31,7 @@
 #include <SDL3/SDL.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 extern void PsyX_SPUAL_Speculate(int on, int commit);
 
@@ -323,7 +324,7 @@ static unsigned s_stress_it = 0, s_stress_ops = 0;  /* iterations in the current
 /** @brief --state-stress N: every N iterations, an in-memory save and an immediate quiet restore; a stressed run must be hash-identical to a clean one.
  * @param sm The stress snapshot.
  * @param every N. */
-static void state_stress_roundtrip(openpete_state_mem_t* sm, unsigned every) {
+static void state_stress_roundtrip(openpete_state_mem_t* sm, unsigned every) OP_REQUIRES(sim) {
     if (s_stress_it % every != 0) return;
     if (openpete_state_mem_save(sm, &g_game.cpu, openpete_frame) != 0 ||
         openpete_state_mem_load(sm, &g_game.cpu, NULL, 1) != 0)
@@ -345,7 +346,7 @@ static void state_stress_roundtrip(openpete_state_mem_t* sm, unsigned every) {
  * recur by then abandons the rollback and re-arms at the current site.
  * @param sm The stress snapshot.
  * @param k K. */
-static void state_stress_rewind(openpete_state_mem_t* sm, unsigned k) {
+static void state_stress_rewind(openpete_state_mem_t* sm, unsigned k) OP_REQUIRES(sim) {
     static int armed = 0;
     const int live = game_is_gameplay_live(&g_game.cpu);
     if (armed == 1 && !live) armed = 0;
@@ -375,7 +376,7 @@ static void state_stress_rewind(openpete_state_mem_t* sm, unsigned k) {
     s_stress_it = 0;
 }
 
-void state_stress_step(const openpete_options_t* opts) {
+void state_stress_step(const openpete_options_t* opts) OP_REQUIRES(sim) {
     static openpete_state_mem_t* sm = NULL;
     if (opts->state_stress <= 0 && opts->state_stress_rewind <= 0) return;
     if (!sm) sm = openpete_state_mem_new();

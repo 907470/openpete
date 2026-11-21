@@ -50,6 +50,7 @@
 #include "openpete_subtick_view.h"  /* openpete_subtick_view_active: the trace's leg */
 #include "openpete_fiber.h"         /* openpete_feed_key_now: the trace's window */
 #include "renderer/particles.h"
+#include "renderer/alloc_serial.h"   /* alloc_serial_next */
 #include "renderer/orchestrator.h"  /* the canonical-render epoch */
 #include "renderer/cut_guard.h"     /* cut_held_set_pick, cut_census_held_set */
 #include "renderer/moby.h"          /* moby_native_canon_ref_ns */
@@ -84,7 +85,8 @@ extern unsigned openpete_frame;
 
 /* Per pool slot, the serial of the allocation that last handed it out (0 for
  * none seen since the pool base was last read, or freed since). The serial is
- * global, so two allocations never share one. The record carries nothing that
+ * the allocation's tick and ordinal (alloc_serial_next), so a tick re-run from
+ * a restored state stamps the serials its first run did. The record carries nothing that
  * names the allocation it came from: the allocator writes only the class byte
  * (+0x01), which a slot reused by a spawn of the same class keeps, and every
  * other byte is the spawner's and the type's update's to write, the byte at
@@ -93,7 +95,7 @@ extern unsigned openpete_frame;
  * it. */
 static uint32_t s_slot_serial[PART_SLOTS_MAX];
 static uint32_t s_slot_base;      /* the pool base the serials index from */
-static uint32_t s_alloc_serial;   /* the last serial handed out */
+static alloc_serial_t s_alloc_serial;   /* the pool's serial source */
 static int      s_alloc_in;       /* the allocator hook's re-entrancy latch */
 static unsigned long s_free_hits; /* free-hook calls that cleared a slot's serial */
 
@@ -2368,10 +2370,7 @@ static int on_part_alloc(CPUState* cpu, uint32_t addr) {
         moved = 1;
     }
     const int i = particles_slot(cpu->v0);
-    if (i >= 0) {
-        if (++s_alloc_serial == 0u) s_alloc_serial = 1u;   /* 0 means none seen */
-        s_slot_serial[i] = s_alloc_serial;
-    }
+    if (i >= 0) s_slot_serial[i] = alloc_serial_next(&s_alloc_serial);
     player_hide_note_alloc(i, moved);
     return 1;
 }

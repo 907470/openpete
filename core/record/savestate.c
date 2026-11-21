@@ -147,6 +147,7 @@ extern int g_cdXaStartVBL;
 
 #ifndef _WIN32
   #include <unistd.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 #endif
 
 #define OPENPETE_STATE_MAGIC    0x3176534Fu  /* 'OSv1' little-endian */
@@ -1185,7 +1186,7 @@ static int sched_refuses_load(const char* what) {
 }
 
 int openpete_state_load_file(const char* path, CPUState* cpu,
-                             unsigned* out_frame) {
+                             unsigned* out_frame) OP_REQUIRES(sim) {
     if (sched_refuses_load(path)) return -1;
     FILE* fp = fopen(path, "rb");
     if (!fp) {
@@ -1337,7 +1338,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
 }
 
 int openpete_state_load(unsigned slot, CPUState* cpu,
-                        unsigned* out_frame) {
+                        unsigned* out_frame) OP_REQUIRES(sim) {
     char path[1280];
     if (slot_path(slot, path, sizeof(path)) != 0) return -1;
     return openpete_state_load_file(path, cpu, out_frame);
@@ -1485,7 +1486,7 @@ static int state_fault_spu_restore(void) {
 }
 
 int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
-                            unsigned* out_frame, int quiet) {
+                            unsigned* out_frame, int quiet) OP_REQUIRES(sim) {
     if (!m || !m->valid) return -1;
     if (sched_refuses_load("in-memory state load")) return -1;
     if (!openpete_park_site_matches(&m->site)) return 1;

@@ -1741,9 +1741,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endforeach()
 
     # Sub-tick interpolation of the homeworld portal preview's aperture. Per
-    # row of games/<slug>/corpus/portal-subtick-corpus.manifest, four headless replays
-    # of one bk2 - the intermediate present at alpha 0, 0.5 and 1, and once
-    # more with the replay's own interpolation suppressed - with the feeder's
+    # row of games/<slug>/corpus/portal-subtick-corpus.manifest, three headless replays
+    # of one bk2 - the intermediate present at alpha 0, 0.5 and 1 - with the feeder's
     # emitted aperture polygon read out of each run's census and every named
     # corner required to sit on the alpha blend of the two canonical ticks the
     # same run recorded. The statistic is the polygon rather than a pixel mask:

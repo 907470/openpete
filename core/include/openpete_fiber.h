@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "openpete_park_site.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -57,7 +58,14 @@ void openpete_fiber_switch(void* to);
 unsigned openpete_guest_generation(void);
 
 /** @brief Advance the guest generation: a caller that replaces guest memory outside the game fiber calls it. */
-void openpete_guest_generation_bump(void);
+void openpete_guest_generation_bump(void) OP_REQUIRES(sim);
+
+/** @brief The count of guest memory replacements: openpete_guest_generation_bump calls, one per savestate restore, quiet rollbacks included.
+ *
+ * Unlike the generation it does not move when guest code runs, so two reads
+ * that differ bracket a restore. Read on the thread holding the `sim` role.
+ * @return The count. */
+unsigned openpete_guest_restore_count(void) OP_REQUIRES_SHARED(sim);
 
 /** @brief Delete a fiber made by openpete_fiber_create_guarded and release its stack.
  *

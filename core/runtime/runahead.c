@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* Declared in PsyCross's private src/audio/PsyX_SPUAL.h, which is not on
  * any public include path. A speculation runs the SPU speculatively; its
@@ -74,7 +75,7 @@ int ra_snapshot_save(openpete_state_mem_t* snap, const CPUState* cpu,
 }
 
 int ra_snapshot_rollback(const openpete_state_mem_t* snap, CPUState* cpu,
-                                unsigned* frame) {
+                                unsigned* frame) OP_REQUIRES(sim) {
     const op_time_t t0 = op_now();
     const int rc = openpete_state_mem_load(snap, cpu, frame, 1);
     if (rc == 0)
@@ -512,7 +513,7 @@ runahead_lead_t runahead_lead(void) OP_REQUIRES(sim)
     return r;
 }
 
-void runahead_settle(runahead_lead_t r)
+void runahead_settle(runahead_lead_t r) OP_REQUIRES(sim)
 {
     /* Captures done at the led head - roll back to the committed tick
      * before anything else observes RAM. */

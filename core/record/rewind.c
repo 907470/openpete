@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 static openpete_rewind_kf_t* s_ring = NULL;
 static rwp_table_t* s_tab = NULL;  /* per slot: the keyframe's arena pages */
@@ -240,7 +241,7 @@ const openpete_rewind_kf_t* openpete_rewind_pick(unsigned target, const openpete
     return best;
 }
 
-int openpete_rewind_restore(const openpete_rewind_kf_t* kf, CPUState* cpu, unsigned* out_frame) {
+int openpete_rewind_restore(const openpete_rewind_kf_t* kf, CPUState* cpu, unsigned* out_frame) OP_REQUIRES(sim) {
     if (!kf || kf < s_ring || kf >= s_ring + s_ring_n || !kf->valid) return -1;
     const int rc = openpete_state_mem_load(kf->mem, cpu, out_frame, 1);
     if (rc == 0) rwp_restore(&s_tab[kf - s_ring]);

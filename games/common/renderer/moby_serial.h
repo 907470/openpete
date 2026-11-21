@@ -3,7 +3,9 @@
  * A moby's interp identity is its address, and the game's allocator can hand
  * a slot freed in a tick to a new moby in the same tick, so the address alone
  * pairs the dead moby with the newborn. The allocator hook gives every
- * allocation the next serial of one global count; the object capture appends
+ * allocation a serial naming its tick and its ordinal in that tick
+ * (alloc_serial_next), so a tick re-run from a restored state stamps the
+ * serials its first run did; the object capture appends
  * the slot's serial to the moby's record, and a changed serial makes the
  * capture a despawn of the old record and a spawn of the new one. */
 #ifndef OPENPETE_RENDERER_MOBY_SERIAL_H
@@ -20,8 +22,8 @@ int moby_serial_enabled(void);
 /** @brief The serial of the allocation that last handed out the moby slot at `moby`.
  *
  * Two slots never hold the same nonzero serial, and a slot's serial changes on
- * every allocation of it, so a moby whose serial is unchanged between two
- * captures is one continuing record.
+ * every allocation of it within 2^20 ticks, so a moby whose serial is
+ * unchanged between two captures is one continuing record.
  * @param moby The moby's guest address.
  * @return The serial, or 0 when no allocation of the slot has been seen. */
 uint32_t moby_slot_serial(uint32_t moby);

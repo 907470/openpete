@@ -30,5 +30,7 @@ autumn-plains-skelos-badlands-portal-entry.bk2 | 1918-1928 | lerps=900 segs=60 d
 #
 # glimmer-pogo-dialogue 1468-1478: the dialogue panel glides in from the edge,
 # and its body is repeated identical tiles - no tile is distinguishable from
-# its siblings, so only the run's rigid translation carries them.
-glimmer-pogo-dialogue.bk2 | 1468-1478 | lerps=750
+# its siblings, so only the run's rigid translation carries them. The panel is
+# three runs of 20 triangles per present, 660 over the row's 33 presents; the
+# cutscene letterbox bars are drawn by the native letterbox pass, not carried.
+glimmer-pogo-dialogue.bk2 | 1468-1478 | lerps=620

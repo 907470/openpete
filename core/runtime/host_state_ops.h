@@ -32,7 +32,7 @@ void state_ops_collect(const openpete_options_t* opts) OP_REQUIRES(sim);
 
 /** @brief Step the savestate stress harnesses (restore-at-yield checks) by one quiescent iteration.
  * @param opts Run options (--state-stress, --state-stress-rewind). */
-void state_stress_step(const openpete_options_t* opts);
+void state_stress_step(const openpete_options_t* opts) OP_REQUIRES(sim);
 
 /** @brief Run one quiescent iteration of rewind: the keyframe cadence, then one tick back while the rewind key is held in live, unpaused gameplay.
  * @param opts Run options.

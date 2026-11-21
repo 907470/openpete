@@ -29,6 +29,7 @@
 #define OPENPETE_REWIND_H
 
 #include "openpete_state.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -100,7 +101,7 @@ const openpete_rewind_kf_t* openpete_rewind_pick(unsigned target, const openpete
  * @return openpete_state_mem_load's result (0 restored, 1 park site
  *         mismatch, -1 refused, -2 partial restore); -1 for a keyframe not
  *         in the ring. */
-int  openpete_rewind_restore(const openpete_rewind_kf_t* kf, CPUState* cpu, unsigned* out_frame);
+int  openpete_rewind_restore(const openpete_rewind_kf_t* kf, CPUState* cpu, unsigned* out_frame) OP_REQUIRES(sim);
 
 /** @brief Report whether a --rewind-hold may start at this VBL under OPENPETE_REWIND_HOLD_PHASE.
  *

@@ -1,3 +1,4 @@
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 /* openpete_handoff.h - process handoff (checkpoint -> exec -> restore).
  * See core/mods/handoff.c for scope + contracts. */
 #ifndef OPENPETE_HANDOFF_H
@@ -59,7 +60,7 @@ int openpete_handoff_resume_result(unsigned* site_waits, unsigned* cd_waits);
  * error). Each leg runs at most once per process; a failed save or execv
  * logs an error and the current process keeps running.
  * @param cpu Guest CPU state the checkpoint saves and the resume restores. */
-void openpete_handoff_poll(CPUState* cpu);
+void openpete_handoff_poll(CPUState* cpu) OP_REQUIRES(sim);
 
 #ifdef __cplusplus
 }

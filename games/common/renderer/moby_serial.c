@@ -13,6 +13,7 @@
  * array head afterwards. */
 
 #include "renderer/moby_serial.h"
+#include "renderer/alloc_serial.h"
 #include "game_layout.h"
 #include "openpete_recomp_module.h"
 
@@ -25,7 +26,7 @@
 
 static uint32_t s_slot_serial[MOBY_SLOTS_MAX];
 static uint32_t s_slot_base;     /* the array base the serials index */
-static uint32_t s_alloc_serial;  /* the last serial handed out */
+static alloc_serial_t s_alloc_serial;  /* the array's serial source */
 static int      s_alloc_in;      /* the hook's re-entrancy latch */
 
 int moby_serial_enabled(void) { return game_layout.moby.alloc != 0u; }
@@ -72,9 +73,6 @@ int moby_serial_on_alloc(CPUState* cpu, uint32_t addr) {
         s_slot_base = base;
     }
     const int i = moby_slot(cpu->v0);
-    if (i >= 0) {
-        if (++s_alloc_serial == 0u) s_alloc_serial = 1u;   /* 0 means none seen */
-        s_slot_serial[i] = s_alloc_serial;
-    }
+    if (i >= 0) s_slot_serial[i] = alloc_serial_next(&s_alloc_serial);
     return 1;
 }

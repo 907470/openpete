@@ -159,12 +159,16 @@ int openpete_fiber_guard_contains(uintptr_t addr) {
 }
 #endif
 
-/* The guest generation (openpete_guest_generation). */
+/* The guest generation (openpete_guest_generation) and the restores among
+ * its advances (openpete_guest_restore_count). */
 static unsigned s_guest_gen;
+static unsigned s_guest_restores OP_GUARDED_BY(sim);   /* thread-roles: restores and allocator hooks run on sim */
 
 unsigned openpete_guest_generation(void) { return s_guest_gen; }
 
-void openpete_guest_generation_bump(void) { s_guest_gen++; }
+void openpete_guest_generation_bump(void) OP_REQUIRES(sim) { s_guest_gen++; s_guest_restores++; }
+
+unsigned openpete_guest_restore_count(void) OP_REQUIRES_SHARED(sim) { return s_guest_restores; }
 
 void openpete_fiber_switch(void* to) {
     OP_ROLE_CHECK(sim);

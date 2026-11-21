@@ -14,6 +14,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,7 +45,7 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame);
  *         site (nothing restored; retry at a later final yield); -1 on
  *         refusal or failure, with the running state untouched and the
  *         reason logged. */
-int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame);
+int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame) OP_REQUIRES(sim);
 
 /** @brief Capture the running state as the bytes of a state file, into a reusable buffer.
  *
@@ -169,7 +170,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
  *         site (nothing restored); -1 on refusal or failure, with the
  *         reason logged. */
 int openpete_state_load_file(const char* path, CPUState* cpu,
-                             unsigned* out_frame);
+                             unsigned* out_frame) OP_REQUIRES(sim);
 
 /* ── In-memory snapshot (rewind keyframes / runahead speculation) ──────
  * Same-process only: no header, no identity gating, no file I/O - pure
@@ -247,7 +248,7 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
  *         site; -1 on refusal, restoring nothing; -2 on a failed SPU
  *         restore (a partial restore). */
 int  openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
-                             unsigned* out_frame, int quiet);
+                             unsigned* out_frame, int quiet) OP_REQUIRES(sim);
 
 /** @brief Exclude the mod arena from an in-memory snapshot: save no longer copies it and load no longer restores it.
  *
