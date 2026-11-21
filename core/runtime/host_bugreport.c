@@ -628,13 +628,18 @@ void openpete_bugreport_report(void)
  *
  * Runs on the thread that is exiting, after the movie's flush, which keeps
  * the input log's lock for good: the lock is recursive, so only the thread
- * holding it can read the segment. On the sim's own thread the sim is
- * stopped and the state read is quiescent. Off it (the stall monitor's
- * fallback dump, which runs while the game fiber is still executing guest
- * code, or a fatal exit on another thread) nothing stops the sim, so the
- * anchor, rings, summary and mod rows copied here may be torn; the
- * subsystem reports are not run there, since the running sim may hold what
- * they read.
+ * holding it can read the segment. On the sim's own thread no guest code
+ * runs during the copy: the host and game fibers share that OS thread, and
+ * the exit is taken either on the host fiber or on the game fiber inside a
+ * guest call (a hang-watchdog trip or stall request taken at an entry or
+ * loop poll, or the CdSync spin limit), which suspends the guest mid-tick,
+ * so the copy is consistent but need not sit at a tick boundary. Off it (the
+ * stall monitor's fallback dump on its own thread, taken when the game
+ * fiber reached no entry or poll within the handoff and may still be
+ * executing guest code, or a fatal exit on another thread) nothing stops
+ * the sim, so the anchor, rings, summary and mod rows copied here may be
+ * torn; the subsystem reports are not run there, since the running sim may
+ * hold what they read.
  * @param j The job. */
 static void fatal_collect(br_job_t* j)
 {

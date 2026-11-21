@@ -34,8 +34,9 @@
 // Each segment is a region registered at its committed extent on its
 // first block and grown in place, so a guest access past the committed
 // extent never touches an uncommitted page: below physical 8 MB it
-// reaches the RAM mirror, at or above it an unmapped address (a read
-// answers 0 or the ROM model, a store is dropped).
+// reaches the RAM mirror (guest RAM at phys & 0x1FFFFF), at or above it
+// an unmapped address (a read answers 0, since no pool reaches the BIOS
+// ROM window, and a store is dropped).
 //
 // Contracts and caveats (documented, not hidden):
 //   - Allocation is a session-lifetime bump (no free): the arena is
