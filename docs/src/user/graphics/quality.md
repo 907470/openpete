@@ -109,7 +109,7 @@ inside geometry, the skipped parts can show as missing terrain.
 
 | Value | Effect |
 | --- | --- |
-| `frustum` (default <!-- id: knob:terrain_visibility -->) | Every terrain section inside the view is drawn, hidden or not, and depth decides what shows. This departs from the original presentation. |
+| `frustum` (default <!-- id: knob:terrain_visibility -->) | Every section of the level and of the sky inside the view is drawn, hidden or not, and depth decides what shows. This departs from the original presentation. |
 | `game` | The game's own visibility decision, as the original drew it |
 
 Dev overlay **Terrain visibility**, `--terrain-visibility frustum|game`
