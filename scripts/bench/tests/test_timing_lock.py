@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Tests for scripts/bench/timing_lock.py and scripts/lib/timing_gate.sh.
+"""Tests for scripts/bench/timing_lock.py, scripts/lib/timing_gate.sh and the
+gate's use in scripts/golden-capture-container.sh.
 
 Every test runs against a private OPENPETE_BENCH_DIR, so no real timing
 window is read, created or removed."""
+import hashlib
 import json
 import multiprocessing
 import os
@@ -186,6 +188,72 @@ class TimingLockTest(unittest.TestCase):
         inside = subprocess.run(["bash", "-c", sh], env=env, capture_output=True, text=True)
         self.assertIn("rc=0", inside.stdout, inside.stderr)
         h.release()
+
+    def _capture_container(self, *args, env_extra=None):
+        """Start scripts/golden-capture-container.sh against a stub engine
+        that logs each `run` and a throwaway tree, fleet root and store."""
+        d = self.dir
+        tree, fleet, store = (os.path.join(d, n) for n in ("tree", "fleet", "store"))
+        for p in (tree, fleet, store):
+            os.makedirs(p, exist_ok=True)
+        recipe = os.path.join(ROOT, "tests", "harness", "linux-capture.Dockerfile")
+        with open(recipe, "rb") as f:
+            recipe_hash = hashlib.sha256(f.read()).hexdigest()
+        engine = os.path.join(d, "fake-engine")
+        self.engine_log = os.path.join(d, "engine.log")
+        with open(engine, "w") as f:
+            f.write('#!/bin/bash\n'
+                    'if [[ "$1 $2" == "image inspect" ]]; then\n'
+                    '  [[ "$*" == *Labels* ]] && echo %s || echo sha256:0\n'
+                    'else echo "$*" >>%s; fi\n' % (recipe_hash, self.engine_log))
+        os.chmod(engine, 0o755)
+        env = dict(os.environ, OPENPETE_CONTAINER_ENGINE=engine, OPENPETE_CAPTURE_TREE=tree,
+                   OPENPETE_FLEET_ROOT=fleet, OPENPETE_GOLDEN_REF_DIR=store)
+        env.pop("OPENPETE_GOLDEN_LOCK_HELD", None)
+        env.update(env_extra or {})
+        script = os.path.join(ROOT, "scripts", "golden-capture-container.sh")
+        self.golden_lock = os.path.join(fleet, "golden.lock")
+        return subprocess.Popen(["bash", script, *args], env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def _launches(self):
+        if not os.path.exists(self.engine_log):
+            return []
+        with open(self.engine_log) as f:
+            return [line for line in f if line.startswith("run ")]
+
+    def test_capture_container_launch_waits_for_window(self):
+        free = self._capture_container("run", "--golden", "--", "true")
+        out, err = free.communicate(timeout=30)
+        self.assertEqual(free.returncode, 0, err)
+        self.assertEqual(len(self._launches()), 1, err)
+        os.remove(self.engine_log)
+
+        h = timing_lock.try_acquire("timing leg")
+        try:
+            proc = self._capture_container("run", "--golden", "--", "true")
+            time.sleep(3)
+            self.assertIsNone(proc.poll())
+            self.assertEqual(self._launches(), [])
+            # The golden lock is taken before the gate and kept while it waits.
+            self.assertNotEqual(subprocess.run(["flock", "-n", self.golden_lock, "true"]).returncode, 0)
+        finally:
+            h.release()
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertEqual(len(self._launches()), 1, err)
+        self.assertIn("timing leg", err)
+
+        os.remove(self.engine_log)
+        h = timing_lock.try_acquire("timing leg")
+        try:
+            refused = self._capture_container("run", "--golden", "--", "true",
+                                              env_extra={"OPENPETE_TIMING_GATE_TIMEOUT": "1"})
+            out, err = refused.communicate(timeout=30)
+        finally:
+            h.release()
+        self.assertEqual(refused.returncode, timing_lock.EXIT_TIMEOUT, err)
+        self.assertEqual(self._launches(), [])
 
     def test_display_hold_beats_and_reads_held(self):
         """The holder re-asserts on every beat and rewrites its record; the

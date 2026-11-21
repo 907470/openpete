@@ -35,6 +35,10 @@
 # short checks) does not take it. When OPENPETE_GOLDEN_LOCK_HELD equals the
 # lock's path, the caller already holds the lock and the flock is skipped.
 #
+# Timing window. Every container launch and image build waits first, after
+# any lock wait, while another job holds the timing window
+# (scripts/bench/timing_lock.py, through scripts/lib/timing_gate.sh).
+#
 # The image is labelled with the SHA-256 of the recipe it was built from and
 # carries the recipe at /etc/openpete/capture.Dockerfile. An image whose label
 # differs from the tracked recipe's hash is stale: `image`, `build` and `run`
@@ -116,6 +120,8 @@ IMAGE="${OPENPETE_CAPTURE_IMAGE:-openpete-linux-capture}"
 # from the shared container library.
 # shellcheck source=scripts/lib/container.sh
 source "$RECIPE_DIR/scripts/lib/container.sh"
+# shellcheck source=scripts/lib/timing_gate.sh
+source "$RECIPE_DIR/scripts/lib/timing_gate.sh"
 ctr_engine capture-container
 ENGINE="$CTR_ENGINE"
 
@@ -152,6 +158,7 @@ if [[ "$image_label" != "$RECIPE_HASH" ]]; then
         exit 64
     fi
     echo "[capture-container] building $IMAGE from recipe ${RECIPE_HASH:0:12}"
+    op_timing_gate "capture-container image" >&2 || exit $?
     ctx="$(mktemp -d)"
     cp "$RECIPE_DIR/tests/harness/linux-capture.Dockerfile" "$ctx/Dockerfile"
     "$ENGINE" build --label "$LABEL=$RECIPE_HASH" -f "$ctx/Dockerfile" -t "$IMAGE" "$ctx"
@@ -219,7 +226,17 @@ run_opts=(--network=none)
 # the engine: rootless podman leaves helper processes (a session dbus-daemon)
 # running after the container exits, and an inherited descriptor would hold
 # the lock with them.
+#
+# Each launch first waits out another job's timing window
+# (scripts/lib/timing_gate.sh): a caller may have queued on a lock for longer
+# than a timing leg takes to start, so the check runs at the launch, not at
+# the script's start. The golden and build-directory locks stay held while it
+# waits: every other waiter on them launches a container and would wait on
+# the same window, and releasing them would let a later run take the host's
+# golden slot ahead of this one. A refusal (OPENPETE_TIMING_GATE_TIMEOUT
+# reached) returns the gate's status, 75, without launching.
 run_in() {
+    op_timing_gate "capture-container $sub" >&2 || return $?
     "$ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm "${run_opts[@]}" "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" \
         -w "$CTREE" "$IMAGE" "$@" 9>&- 8>&-
 }
