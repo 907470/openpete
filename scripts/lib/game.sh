@@ -70,10 +70,13 @@ pg_capture() {
     # cards, savestates or settings an earlier one wrote. An OPENPETE_SANDBOX
     # or OPENPETE_CARD_DIR in PG_CAPTURE_ENV comes later on the env line and
     # wins; a --card1/--card2/--card-dir argument beats both.
+    # The XDG bases go under the root too (op_sandbox_xdg), so a PG_BIN
+    # that predates OPENPETE_SANDBOX stays inside it.
     local run_root
     run_root="$(op_sandbox_run_root)" || return 1
+    op_sandbox_xdg "$run_root" || return 1
     local -a pre=(env OPENPETE_VIBRATION=0 "OPENPETE_SANDBOX=$run_root"
-                  "OPENPETE_CARD_DIR=$run_root/cards")
+                  "OPENPETE_CARD_DIR=$run_root/cards" "${OP_SANDBOX_XDG_ENV[@]}")
     [[ -n "${PG_CAPTURE_ENV+set}" ]] && pre+=("${PG_CAPTURE_ENV[@]}")
     [[ -n "${PG_CAPTURE_TIMEOUT:-}" && "${PG_CAPTURE_TIMEOUT:-0}" != 0 ]] &&
         pre+=(timeout -k "$OP_OWN_GRACE" "$PG_CAPTURE_TIMEOUT")

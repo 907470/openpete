@@ -217,20 +217,29 @@ void openpete_bugrec_taint_since(const openpete_bugrec_anchor_t* a, uint64_t out
  * @return A static string. */
 const char* openpete_bugrec_taint_name(openpete_bugrec_taint_t kind);
 
-/* Dev-overlay warp requests the warps ring keeps (warps.txt). */
+/* Warp requests the warps ring keeps (warps.txt). */
 #define OPENPETE_BUGREC_WARPS 256u
 
-/** @brief Record a dev-overlay warp request at the tick its queue drained.
+/* openpete_bugrec_hold bits: 0 and 1 are the dev-overlay level warps (their
+ * registration slot); the mod registry holds a queued custom-level warp, and
+ * a level entry the level ops accepted until a level is live. */
+#define OPENPETE_BUGREC_HOLD_CUSTOM_WARP 2u
+#define OPENPETE_BUGREC_HOLD_LEVEL_ENTRY 3u
+
+/** @brief Record a warp request at the tick its queue drained.
  *
  * The drain is the warp's only host input: every later step reads guest
  * state, so a replay that queues the same request on the same tick
- * reproduces the warp. Entries past a rewind target are dropped; a
- * savestate load clears the ring.
- * @param id The Warp button row's id ("warp_go", "warp_area_go").
+ * reproduces the warp. The routes: the dev-overlay level and area warps,
+ * the Mods menu's custom-level warp, and a mod's level entry
+ * (openpete_mods_level_enter), which the replay matches against the mod's
+ * own call instead of queueing. Entries past a rewind target are dropped;
+ * a savestate load clears the ring.
+ * @param id The route's id ("warp_go", "warp_area_go", "custom_warp", "mod_level_enter").
  * @param target The target number the request carried. */
 void openpete_bugrec_warp(const char* id, int target);
 
-/** @brief Write warps.txt: a header, then one `warp` line (frame, vbl, feed key, row id, target) per held request.
+/** @brief Write warps.txt: a header, then one `warp` line (frame, vbl, feed key, route id, target) per held request.
  *
  * @return The text on the heap (free with free()), or NULL when allocation failed. */
 char* openpete_bugrec_warps_text(void);

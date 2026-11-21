@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# check_bugreport_warp.sh - a dev-overlay level warp inside a bug-report
-# bundle's window replays from the bundle's warps.txt.
+# check_bugreport_warp.sh - a dev-overlay level warp and a custom-level warp
+# inside a bug-report bundle's window replay from the bundle's warps.txt.
 #
 # Recording (Spyro 2, headless, --skip-to-level summer_forest): the harness
 # knob schedule OPENPETE_BUGREPORT_KNOB_AT selects Glimmer in the warp_level
@@ -33,8 +33,28 @@
 # past their frame, 0 not reached); warp-old DIVERGED at a tick at or after
 # the recorded warp frame, labelled warps-unrecorded.
 #
+# Custom-level warp (Spyro 1, headless, --skip-to-level artisans): a
+# declarative mod in $OUT/mods serves Dark Hollow's own data entry (read from
+# the disc's WAD.WAD at run time) as a replace-mode custom level over donor
+# 12; OPENPETE_CUSTOM_WARP=CUSTOM_AT:Warp Fixture queues the request the Mods
+# menu's Warp button queues, at the CUSTOM_AT-th registry tick. The press is
+# at CUSTOM_PRESS, after the level load; the anchor is the session's second,
+# before the warp. Both recordings run --no-card. A second recording
+# (custom-hold, no --skip-to-level, no press) queues the warp at the
+# CUSTOM_HOLD_WARP-th registry tick, on the title screen, where the level ops
+# arm the game's level skip, and takes an extra anchor due at feed key
+# CUSTOM_HOLD_AT, before the level is live. Replays:
+# custom (as written) and custom-old (without warps.txt, negative control).
+# Pass criterion: warps.txt holds one custom_warp line to 0 after the anchor
+# and the recording ends in level 12 (`openpete-pose: level=12`);
+# custom-hold defers at least one final yield on hold; custom IDENTICAL with
+# the request taken at the recorded frame (queued 1, 0 past their frame, 0
+# not reached), ending in level 12; custom-old DIVERGED at or after the
+# recorded frame, labelled warps-unrecorded.
+#
 # Verdict line:
-#   [bugreport-warp] frame=<F> hold=<deferrals> warp=<verdict> warp-old=<verdict>@<tick> verdict=PASS|FAIL
+#   [bugreport-warp] frame=<F> hold=<deferrals> warp=<verdict> warp-old=<verdict>@<tick>
+#     custom-frame=<F> custom-hold=<deferrals> custom=<verdict> custom-old=<verdict>@<tick> verdict=PASS|FAIL
 #
 # Usage: tests/harness/check_bugreport_warp.sh [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL, 64 SKIP (binary or disc missing).
@@ -65,6 +85,36 @@ PRESS_AT=4700
 HOLD_AT=2700
 
 fail=()
+
+# strip_warps SRC DST: the bundle without warps.txt and its manifest entry,
+# the shape a bundle written before the member has.
+strip_warps() {
+    python3 -I - "$1" "$2" <<'PY'
+import json, sys, zipfile
+src = zipfile.ZipFile(sys.argv[1])
+m = json.loads(src.read("manifest.json"))
+m["members"] = [x for x in m["members"] if x["name"] != "warps.txt"]
+with zipfile.ZipFile(sys.argv[2], "w", zipfile.ZIP_DEFLATED) as out:
+    for n in src.namelist():
+        if n == "manifest.json":
+            out.writestr(n, json.dumps(m))
+        elif n != "warps.txt":
+            out.writestr(n, src.read(n))
+PY
+}
+
+# warp_frame BUNDLE ID TARGET: the frame of the bundle's one warps.txt line,
+# when it is ID to TARGET after the anchor; else empty.
+warp_frame() {
+    python3 -I - "$1" "$2" "$3" <<'PY'
+import json, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+anchor = json.loads(z.read("manifest.json"))["anchor"]["frame"]
+rows = [l.split("\t") for l in z.read("warps.txt").decode().splitlines() if l.startswith("warp\t")]
+hit = [r for r in rows if r[4] == sys.argv[2] and r[5] == sys.argv[3] and int(r[1]) > anchor]
+print(hit[0][1] if len(hit) == 1 and len(rows) == 1 else "")
+PY
+}
 PG_CAPTURE_ENV=("OPENPETE_SANDBOX=$ABS_OUT/xdg-rec" "OPENPETE_BUGREPORT_AT=$PRESS_AT" "OPENPETE_BUGREPORT_NOTE=0"
                 "OPENPETE_BUGREPORT_KNOB_AT=$WARP_AT:warp_level=Glimmer,$WARP_AT:warp_go=1")
 pg_capture "$OUT/rec.log" "" -- --game "$GAME" --mute 1 --frame-limit $((PRESS_AT + 20)) \
@@ -90,16 +140,7 @@ if (( ${hold:-0} == 0 )); then
     hold=VACUOUS
 fi
 
-# The warp line after the anchor: its frame, or empty.
-frame="$(python3 -I - "$zip" <<'PY'
-import json, sys, zipfile
-z = zipfile.ZipFile(sys.argv[1])
-anchor = json.loads(z.read("manifest.json"))["anchor"]["frame"]
-rows = [l.split("\t") for l in z.read("warps.txt").decode().splitlines() if l.startswith("warp\t")]
-hit = [r for r in rows if r[4] == "warp_go" and r[5] == "11" and int(r[1]) > anchor]
-print(hit[0][1] if len(hit) == 1 and len(rows) == 1 else "")
-PY
-)"
+frame="$(warp_frame "$zip" warp_go 11)"
 [[ -n "$frame" ]] || fail+=("warps.txt holds no single warp_go line to 11 after the anchor")
 
 # replay TAG BUNDLE: one replay; sets LOG.
@@ -126,18 +167,7 @@ grep -q "bug-report-replay: warp warp_go to 11 queued at frame ${frame:-x} (drai
 grep -q 'bug-report-replay: warps: 1 queued (0 past their frame), 0 not reached' "$LOG" ||
     fail+=("warp: no 'warps: 1 queued (0 past their frame), 0 not reached' line")
 
-python3 -I - "$zip" "$OUT/warp-old.zip" <<'PY'
-import json, sys, zipfile
-src = zipfile.ZipFile(sys.argv[1])
-m = json.loads(src.read("manifest.json"))
-m["members"] = [x for x in m["members"] if x["name"] != "warps.txt"]
-with zipfile.ZipFile(sys.argv[2], "w", zipfile.ZIP_DEFLATED) as out:
-    for n in src.namelist():
-        if n == "manifest.json":
-            out.writestr(n, json.dumps(m))
-        elif n != "warps.txt":
-            out.writestr(n, src.read(n))
-PY
+strip_warps "$zip" "$OUT/warp-old.zip"
 replay warp-old "$OUT/warp-old.zip"
 v_old="$(verdict "$LOG")"
 t_old="$(grep -oE '^bug-report-replay: DIVERGED tick=[0-9]+' "$LOG" | grep -oE '[0-9]+$')"
@@ -145,10 +175,102 @@ t_old="$(grep -oE '^bug-report-replay: DIVERGED tick=[0-9]+' "$LOG" | grep -oE '
 (( ${t_old:-0} >= ${frame:-1} )) || fail+=("warp-old: diverged at tick ${t_old:-none}, before the warp frame ${frame:-?}")
 grep -q 'labels=[^ ]*warps-unrecorded' "$LOG" || fail+=("warp-old: not labelled warps-unrecorded")
 
+# ---- the custom-level warp (Spyro 1) ----
+GAME=spyro-1
+pg_resolve "$GAME"
+c_frame=none c_hold=none v_custom=none v_cold=none t_cold=none czip=""
+if [[ ! -x "$PG_BIN" || ! -f "$PG_DISC" ]]; then
+    fail+=("custom: the Spyro 1 binary or disc is missing")
+fi
+WAD="$(dirname "$PG_DISC")/WAD.WAD"
+CUSTOM_AT=1400
+CUSTOM_PRESS=5200
+CUSTOM_HOLD_WARP=30
+CUSTOM_HOLD_AT=400
+MODS="$ABS_OUT/mods"
+mkdir -p "$MODS/warpfx/assets/levels"
+cat > "$MODS/warpfx/mod.toml" <<'TOML'
+[mod]
+id      = "warpfx"
+name    = "Warp Fixture"
+version = "1.0.0"
+game    = "spyro-1"
+api     = 1
+
+[[level]]
+name    = "Warp Fixture"
+files   = "warp_fx"
+donor   = "dark_hollow"
+replace = true
+TOML
+# The level file is Dark Hollow's own data entry, read from the disc's WAD
+# at run time: the WAD TOC's level entries start at byte 72, 16 bytes each
+# (overlay offset and length, data offset and length), level id L at index
+# (L / 10 - 1) * 6 + L % 10.
+python3 -I - "$WAD" "$MODS/warpfx/assets/levels/warp_fx.wad" <<'PY' || fail+=("custom: cannot read level 12's data entry from $WAD")
+import struct, sys
+with open(sys.argv[1], "rb") as f:
+    _, _, off, n = struct.unpack_from("<4I", f.read(2048), 72 + 2 * 16)
+    f.seek(off)
+    d = f.read(n)
+if n == 0 or len(d) != n:
+    sys.exit(1)
+open(sys.argv[2], "wb").write(d)
+PY
+
+if (( ${#fail[@]} == 0 )); then
+    PG_CAPTURE_ENV=("OPENPETE_SANDBOX=$ABS_OUT/xdg-custom" "OPENPETE_BUGREPORT_AT=$CUSTOM_PRESS"
+                    "OPENPETE_BUGREPORT_NOTE=0" "OPENPETE_CUSTOM_WARP=$CUSTOM_AT:Warp Fixture")
+    pg_capture "$OUT/rec-custom.log" "" -- --game "$GAME" --mute 1 --no-card --mods-dir "$MODS" \
+        --frame-limit $((CUSTOM_PRESS + 20)) --skip-to-level artisans </dev/null ||
+        fail+=("custom recording failed (see $OUT/rec-custom.log)")
+    czip="$(find "$OUT/xdg-custom" -name 'bug-*.zip' | head -n 1)"
+    [[ -n "$czip" ]] || fail+=("custom: the recording wrote no bundle (see $OUT/rec-custom.log)")
+    grep -q 'custom warp scheduled: "Warp Fixture"' "$OUT/rec-custom.log" || fail+=("custom: the warp was not requested")
+    grep -q '^openpete-pose: level=12 ' "$OUT/rec-custom.log" || fail+=("custom: the recording did not end in level 12")
+
+    PG_CAPTURE_ENV=("OPENPETE_SANDBOX=$ABS_OUT/xdg-custom-hold" "OPENPETE_BUGREC_ANCHOR_AT=$CUSTOM_HOLD_AT"
+                    "OPENPETE_CUSTOM_WARP=$CUSTOM_HOLD_WARP:Warp Fixture")
+    pg_capture "$OUT/rec-custom-hold.log" "" -- --game "$GAME" --mute 1 --no-card --mods-dir "$MODS" \
+        --frame-limit $((CUSTOM_HOLD_AT + 1100)) </dev/null ||
+        fail+=("custom-hold recording failed (see $OUT/rec-custom-hold.log)")
+    c_hold="$(grep -oE 'bugrec: anchors taken=.* hold=[0-9]+ ' "$OUT/rec-custom-hold.log" | grep -oE 'hold=[0-9]+' | head -n 1)"
+    c_hold="${c_hold#hold=}"
+    if (( ${c_hold:-0} == 0 )); then
+        fail+=("custom-hold: VACUOUS: no final yield was deferred on the entry's anchor hold (see $OUT/rec-custom-hold.log)")
+        c_hold=VACUOUS
+    fi
+fi
+
+if [[ -n "$czip" ]]; then
+    c_frame="$(warp_frame "$czip" custom_warp 0)"
+    [[ -n "$c_frame" ]] || { fail+=("custom: warps.txt holds no single custom_warp line to 0 after the anchor"); c_frame=none; }
+
+    replay custom "$czip"
+    v_custom="$(verdict "$LOG")"
+    [[ "$v_custom" == IDENTICAL ]] || fail+=("custom: $v_custom, want IDENTICAL (see $LOG)")
+    grep -q "bug-report-replay: warp custom_warp to 0 queued at frame $c_frame (drained at frame $c_frame " "$LOG" ||
+        fail+=("custom: the warp was not taken at the recorded frame $c_frame")
+    grep -q 'bug-report-replay: warps: 1 queued (0 past their frame), 0 not reached' "$LOG" ||
+        fail+=("custom: no 'warps: 1 queued (0 past their frame), 0 not reached' line")
+    grep -q '^openpete-pose: level=12 ' "$LOG" || fail+=("custom: the replay did not end in level 12")
+
+    strip_warps "$czip" "$OUT/custom-old.zip"
+    replay custom-old "$OUT/custom-old.zip"
+    v_cold="$(verdict "$LOG")"
+    t_cold="$(grep -oE '^bug-report-replay: DIVERGED tick=[0-9]+' "$LOG" | grep -oE '[0-9]+$')"
+    [[ "$v_cold" == DIVERGED ]] || fail+=("custom-old: $v_cold, want DIVERGED (see $LOG)")
+    if [[ ! "$c_frame" =~ ^[0-9]+$ ]] || (( ${t_cold:-0} < c_frame )); then
+        fail+=("custom-old: diverged at tick ${t_cold:-none}, before the warp frame $c_frame")
+    fi
+    grep -q 'labels=[^ ]*warps-unrecorded' "$LOG" || fail+=("custom-old: not labelled warps-unrecorded")
+fi
+
 res=PASS
 if (( ${#fail[@]} )); then
     printf 'bugreport-warp: %s\n' "${fail[@]}"
     res=FAIL
 fi
-echo "[bugreport-warp] frame=${frame:-none} hold=$hold warp=$v_warp warp-old=$v_old@${t_old:-none} verdict=$res"
+echo "[bugreport-warp] frame=${frame:-none} hold=$hold warp=$v_warp warp-old=$v_old@${t_old:-none}" \
+     "custom-frame=$c_frame custom-hold=$c_hold custom=$v_custom custom-old=$v_cold@${t_cold:-none} verdict=$res"
 [[ "$res" == PASS ]]

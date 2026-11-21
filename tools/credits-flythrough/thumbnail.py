@@ -44,7 +44,7 @@ from PIL import Image, ImageFilter
 import config
 
 sys.path.insert(0, os.path.join(config.ROOT, "scripts", "lib"))
-from hostenv import child_env, sandbox_link_cache, sandbox_run_root  # noqa: E402
+from hostenv import child_env, sandbox_run_root, sandbox_xdg  # noqa: E402
 
 W, H = 3840, 2160
 PATCH = os.path.join(config.HERE, "patches", "title-matte.patch")
@@ -182,15 +182,12 @@ def capture(exe, wt, cfg, disc, bg, out, log):
     with open(log, "a") as f:
         f.write("knobs " + " ".join(f"{k}={v}" for k, v in sorted(knobs.items())) + "\n")
     # The pinned revision predates OPENPETE_SANDBOX and ignores it, so its
-    # per-user directories are pointed inside the run root through XDG too
-    # (<root>/xdg, its pipeline cache linked to the shared one); a binary
-    # that reads OPENPETE_SANDBOX resolves to <root>/{config,state,data}.
+    # per-user directories are pointed through XDG at the per-user bases
+    # of this run root (sandbox_xdg: <root>/xdg, its pipeline cache linked to
+    # the shared one); a binary that reads OPENPETE_SANDBOX resolves to
+    # <root>/{config,state,data}.
     root = sandbox_run_root()
-    xdg = os.path.join(root, "xdg")
-    sandbox_link_cache(xdg)
-    base = dict(os.environ, OPENPETE_SANDBOX=root, OPENPETE_CARD_DIR=os.path.join(root, "cards"),
-                XDG_CONFIG_HOME=os.path.join(xdg, "config"), XDG_STATE_HOME=os.path.join(xdg, "state"),
-                XDG_DATA_HOME=os.path.join(xdg, "data"))
+    base = dict(os.environ, OPENPETE_SANDBOX=root, OPENPETE_CARD_DIR=os.path.join(root, "cards"), **sandbox_xdg(root))
     step(log, f"capture bg {bg}", cmd, cwd=wt, env=child_env(knobs, base=base))
     got = os.path.join(shots, f"x__{t['vbl']}-vk.png")
     if not os.path.exists(got):

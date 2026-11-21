@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 30317dbbd77629709a301576b038fa0595490b4a
+# head: 3cf1436c2bf4a265139ecc63a2c2643a555102d6
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -37,7 +37,7 @@ core/mods/mod_loader.c	openpete_mods_tick_boundary	34	0
 core/mods/mod_loader.c	parse_config_row	27	0	
 core/mods/mod_loader.c	parse_levels	31	0	
 core/mods/mod_loader.c	parse_mod_header	35	0	
-core/mods/mod_registry.c	custom_tick	51	0	
+core/mods/mod_registry.c	custom_tick	34	0	
 core/psx/cdrom_mmio.c	openpete_cdrom_mmio_open	49	0	
 core/psx/exe_loader.cpp	openpete_psx_resolve_disc_bin	29	0	
 core/record/bk2_movie.c	bk2_decode_port	28	0	

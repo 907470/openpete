@@ -322,7 +322,7 @@ static struct {
     int      launch_keep;
     char     launch_why[160];
     char     launch_flags[400];   /* the launch flags of the tester's argv, with values */
-    /* warps.txt: the recorded dev-overlay warp requests. */
+    /* warps.txt: the recorded warp requests. */
     int      warps_loaded;    /* the bundle holds the member */
     rp_warp_t* warps;
     size_t   nwarps;
@@ -1013,7 +1013,7 @@ static const char* const k_env_drop[] = {
     "OPENPETE_BUGREC_DUMP_DIR", "OPENPETE_HANDOFF_AT", "OPENPETE_FRAME_LIMIT", "OPENPETE_CONFIG",
     "OPENPETE_LOG_FILE", "OPENPETE_MOUSE_INJECT", "OPENPETE_MOUSE_INJECT_RAW",
     "OPENPETE_DEVUI_INJECT_MOUSE", "OPENPETE_BUGREPORT_KNOB_AT", "OPENPETE_SANDBOX",
-    "OPENPETE_LEVELWARP_TEST", "OPENPETE_AREAWARP_TEST",
+    "OPENPETE_LEVELWARP_TEST", "OPENPETE_AREAWARP_TEST", "OPENPETE_CUSTOM_WARP",
 };
 
 /** @brief Report whether a variable is one of k_env_drop's harness triggers. */
@@ -1812,7 +1812,7 @@ static int rp_warps_load(const char* scratch, unsigned anchor_frame)
     uint8_t* d = NULL;
     if (br_read_file(p, &d, &len) != 0) {
         fprintf(stderr, "bug-report-replay: warps: the bundle has no warps.txt (written before the member): a "
-                "dev-overlay warp in the window is not replayed and diverges at its tick\n");
+                "dev-overlay or custom-level warp in the window is not replayed and diverges at its tick\n");
         return 1;
     }
     R.warps_loaded = 1;

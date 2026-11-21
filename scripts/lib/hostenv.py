@@ -69,6 +69,25 @@ def sandbox_link_cache(root):
         os.symlink(sandbox_cache_dir(), cache)
 
 
+def sandbox_xdg(root):
+    """The XDG config, state and data bases under root/xdg, as a dict; root/xdg/state/openpete/cache is linked
+    to the shared pipeline cache.
+
+    A binary that predates OPENPETE_SANDBOX resolves its per-user directories from these, so it writes inside
+    the root too; they lie apart from root/{config,state,data} because a sandboxed build refuses a write path
+    inside the directories its XDG variables name. Pass it in one launch's environment, never into
+    os.environ: ccache, git, podman and the harness's own stores read the same variables. The layout
+    scripts/lib/sandbox.sh op_sandbox_xdg makes.
+    """
+    xdg = os.path.join(root, "xdg")
+    sandbox_link_cache(xdg)
+    env = {"XDG_CONFIG_HOME": os.path.join(xdg, "config"), "XDG_STATE_HOME": os.path.join(xdg, "state"),
+           "XDG_DATA_HOME": os.path.join(xdg, "data")}
+    for d in env.values():
+        os.makedirs(d, exist_ok=True)
+    return env
+
+
 def timing_gate(label=None):
     """Block while another job holds the timing window (scripts/bench/timing_lock.py).
 

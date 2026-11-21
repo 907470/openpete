@@ -62,12 +62,12 @@ static const char* const k_taint_names[BUGREC_TAINT_N] = {
 
 static _Atomic uint64_t s_taint[BUGREC_TAINT_N];
 
-/* One dev-overlay warp request, at the tick its queue drained. */
+/* One warp request, at the tick its queue drained. */
 typedef struct {
     unsigned frame;     /* openpete_frame at the drain */
     int      vbl;
     unsigned feed_key;
-    char     id[32];    /* the Warp button row's id */
+    char     id[32];    /* the route's id */
     int      target;
 } warp_rec_t;
 
@@ -393,7 +393,7 @@ char* openpete_bugrec_warps_text(void) {
     const size_t cap = 512u + (size_t)kept * 96u;
     char* t = (char*)malloc(cap);
     if (!t) return NULL;
-    int n = snprintf(t, cap, "# warps.txt v1: each dev-overlay warp request, at the tick its queue drained.\n"
+    int n = snprintf(t, cap, "# warps.txt v1: each warp request (dev overlay, custom level, mod level entry), at the tick its queue drained.\n"
                              "# warp\tframe\tvbl\tfeed_key\tid\ttarget\n"
                              "session\trequests=%llu\tkept=%llu\n",
                      (unsigned long long)s_br.warp_n, (unsigned long long)kept);

@@ -96,12 +96,14 @@ void openpete_bugreport_replay_step(const CPUState* cpu) OP_REQUIRES(sim);
 void openpete_bugreport_replay_tick(unsigned frame, int vbl, uint64_t total, const uint64_t* per)
     OP_REQUIRES(sim);
 
-/** @brief Take the bundle's next recorded warp request of a Warp button row due at the current tick.
+/** @brief Take the bundle's next recorded warp request of a route due at the current tick.
  *
- * The dev-overlay warp calls it where its scripted driver queues, before
- * the queue drains; a request is due at openpete_frame equal to (or past)
- * the frame it drained at in the recording, and is taken once.
- * @param id The Warp button row's id.
+ * The dev-overlay warp and the custom-level warp call it where their host
+ * requests queue, before the queue drains; a mod's level entry calls it at
+ * the entry, which matches the replay's own call against the recorded one.
+ * A request is due at openpete_frame equal to (or past) the frame it
+ * drained at in the recording, and is taken once.
+ * @param id The route's id (openpete_bugrec_warp).
  * @param target Receives the target number.
  * @return 1 when a request was taken, else 0 (also when no replay runs). */
 int openpete_bugreport_replay_warp_take(const char* id, int* target);

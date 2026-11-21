@@ -29,6 +29,20 @@
 # OPENPETE_CARD_DIR is exported as <root>/cards for the harnesses that make
 # per-run card directories inside it (scripts/lib/game.sh pg_capture).
 #
+# A binary that predates OPENPETE_SANDBOX (a bisect checkout, a kept playtest
+# build) resolves its per-user directories from XDG_CONFIG_HOME,
+# XDG_STATE_HOME and XDG_DATA_HOME, else $HOME. op_contain CMD... runs one
+# launch with those set to <root>/xdg/{config,state,data} of the current
+# OPENPETE_SANDBOX (its pipeline cache linked to the shared one), and
+# op_sandbox_xdg ROOT fills OP_SANDBOX_XDG_ENV with the same assignments for
+# an `env` line; pg_capture (scripts/lib/game.sh) adds them to every run.
+# They lie apart from <root>/{config,state,data} because a sandboxed build
+# refuses a write path inside the directories its XDG variables name. They
+# are set per launch, never exported: ccache, git, podman and the harness's
+# own stores (the golden store, the bench results) read the same variables.
+# Windows ignores XDG; a pre-sandbox Windows exe still writes %APPDATA% and
+# %LOCALAPPDATA%.
+#
 # op_sandbox_run_root prints a fresh per-run root under OPENPETE_SANDBOX
 # (with the cache link), for a harness that isolates its runs from each
 # other: `OPENPETE_SANDBOX="$(op_sandbox_run_root)" "$BIN" ...`.
@@ -64,6 +78,23 @@ op_sandbox_link_cache() {
     fi
     cache="$(op_sandbox_cache_dir)" || return 1
     ln -s "$cache" "$root/state/openpete/cache"
+}
+
+# op_sandbox_xdg ROOT: set OP_SANDBOX_XDG_ENV to the XDG config, state and
+# data assignments under ROOT/xdg, made, with ROOT/xdg/state/openpete/cache
+# linked to the shared pipeline cache.
+op_sandbox_xdg() {
+    local x="$1/xdg"
+    op_sandbox_link_cache "$x" || return 1
+    mkdir -p "$x/config" "$x/data" || return 1
+    OP_SANDBOX_XDG_ENV=("XDG_CONFIG_HOME=$x/config" "XDG_STATE_HOME=$x/state" "XDG_DATA_HOME=$x/data")
+}
+
+# op_contain CMD [ARG...]: run CMD with the XDG bases under the current
+# OPENPETE_SANDBOX (op_sandbox_xdg); returns its status.
+op_contain() {
+    op_sandbox_xdg "${OPENPETE_SANDBOX:?}" || return 1
+    env "${OP_SANDBOX_XDG_ENV[@]}" "$@"
 }
 
 op_sandbox() {

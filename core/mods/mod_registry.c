@@ -11,12 +11,16 @@
 
 #include "openpete_mods.h"
 #include "game_extras.h" /* game_get_id */
+#include "openpete_bugrec.h" /* openpete_bugrec_warp, openpete_bugrec_hold */
+#include "openpete_bugreport_replay.h" /* openpete_bugreport_replay_warp_take */
+#include "openpete_fiber.h" /* openpete_speculative */
 #include "openpete_log.h"
 #include "mod_vec.h"
 #include "openpete_str.h"
 #include "../host/wav_loader.h" /* op_wav_probe_seconds (custom-level music) */
 
 #include <dirent.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +31,12 @@
 int  openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
                              const char* owner_id);
 void openpete_mods_base(CPUState* cpu);
+
+/* Bug-report warps.txt row ids: the custom-level warp (target: the row's
+ * position in name order) and openpete_mods_level_enter (target: the
+ * level id). */
+#define CUSTOM_WARP_ID "custom_warp"
+#define LEVEL_ENTER_ID "mod_level_enter"
 
 #define MOBY_NAME_MAX   48
 #define MOBY_OWNER_MAX  64 /* mirrors the loader's MOD_ID_MAX */
@@ -109,6 +119,7 @@ int openpete_mods_moby_classes(uint16_t* out, int cap) {
 static void registry_tick(CPUState* cpu);
 static void level_slots_tick(CPUState* cpu);
 static void custom_tick(CPUState* cpu);
+static int  custom_warp_queued(void);
 static void counts_tick(CPUState* cpu);
 /** @brief Add the shared per-tick driver to the master-update chain once.
  *
@@ -140,8 +151,9 @@ static int ensure_hooked(const char* log_tag) {
  * update and every deeper link. It then claims pending level slots,
  * reconciles custom-level declarations and warps, and reconciles target
  * totals. A live level (level_id > 0) clears s_slot_entering and moves
- * s_resident_level, and each enabled level-ready hook whose fired_level
- * differs from it fires once with that level id.
+ * s_resident_level (on a committed tick it sets the bug-report anchor
+ * hold of a queued custom warp and releases the level-entry hold), and each enabled level-ready hook whose fired_level differs from
+ * it fires once with that level id.
  * @param cpu Live game CPU. */
 static void registry_tick(CPUState* cpu) {
     openpete_mods_base(cpu);
@@ -158,6 +170,14 @@ static void registry_tick(CPUState* cpu) {
     /* Any live level ends an in-flight slot transition: either we arrived
      * (lvl == the slot id) or the load went somewhere else. */
     if (lvl > 0) { s_slot_entering = 0; s_resident_level = lvl; }
+    if (!openpete_speculative) {
+        /* A queued custom warp, and an accepted entry until a level is
+         * live (the title route arms the game's level skip), are host
+         * state outside every savestate: no bug-report anchor is taken
+         * while either is held. */
+        openpete_bugrec_hold(OPENPETE_BUGREC_HOLD_CUSTOM_WARP, custom_warp_queued());
+        if (lvl > 0) openpete_bugrec_hold(OPENPETE_BUGREC_HOLD_LEVEL_ENTRY, 0);
+    }
     if (lvl != s_level) s_level = lvl;
     if (lvl <= 0) return;
 
@@ -351,6 +371,17 @@ int openpete_mods_level_enter(CPUState* cpu, int level_id) {
         break;
     }
     int rc = level_ops()->enter_level(cpu, level_id);
+    if (rc == 0 && !openpete_speculative) {
+        /* The caller is mod code on the tick, which a replay runs again:
+         * the bundle records the entry and the replay matches its own
+         * call against it, so an entry the replay does not repeat on the
+         * recorded tick is reported. */
+        int recorded = 0;
+        if (openpete_bugreport_replay_warp_take(LEVEL_ENTER_ID, &recorded) && recorded != level_id)
+            OPL_WARN_F("mods", "level entry to %d where the bundle recorded %d", level_id, recorded);
+        openpete_bugrec_warp(LEVEL_ENTER_ID, level_id);
+        openpete_bugrec_hold(OPENPETE_BUGREC_HOLD_LEVEL_ENTRY, 1);
+    }
     if (rc == 0) {
         for (int i = 0; i < level_slot_count(); i++)
             if (level_slot_at(i)->slot_id == level_id) {
@@ -427,6 +458,10 @@ static int order_row(int i) {
 static int s_custom_active = -1;       /* row owning the shared slot */
 static int s_custom_slot_id = 0;       /* claimed slot id (65), 0 = none */
 static int s_custom_warp = -1;         /* queued warp (real row index) */
+/* A warp request from the host (the Mods menu's Warp button,
+ * OPENPETE_CUSTOM_WARP): the row's position in name order, -1 = none.
+ * custom_tick takes it into s_custom_warp on a committed tick. */
+static _Atomic int s_custom_req = -1;
 
 /* Literal lowercase path first, then a case-insensitive directory scan. */
 int openpete_mods_custom_asset_path(const char* dir, const char* stem,
@@ -619,7 +654,7 @@ int openpete_mods_custom_info(int i, openpete_mods_custom_info_t* out) {
 
 int openpete_mods_custom_warp(int i) {
     if (i < 0 || i >= custom_count()) return -1;
-    s_custom_warp = order_row(i);
+    atomic_store(&s_custom_req, i);
     return 0;
 }
 
@@ -693,10 +728,30 @@ static void custom_env_schedule(unsigned tick_no) {
     }
     if (!s_name[0] || tick_no != s_at) return;
     for (int i = 0; i < custom_count(); i++)
-        if (strcmp(custom_at(i)->name, s_name) == 0) {
-            s_custom_warp = i;
+        if (strcmp(custom_at(order_row(i))->name, s_name) == 0) {
+            atomic_store(&s_custom_req, i);
             OPL_INFO_F("mods", "custom warp scheduled: \"%s\"", s_name);
         }
+}
+
+/** @brief Report whether a custom-level warp is queued and not yet accepted by the level ops.
+ * @return Nonzero while one is queued. */
+static int custom_warp_queued(void) { return s_custom_warp >= 0; }
+
+/** @brief Take the custom-level warp request of this tick into s_custom_warp and record it for the bug-report bundle.
+ *
+ * Under --bug-report-replay the bundle's request recorded at this tick is
+ * taken first, else the host's (openpete_mods_custom_warp). The request is
+ * the warp's only host input: the drive that follows reads guest state and
+ * registry rows, so a replay that takes the same row on the same tick
+ * reproduces the warp. Runs on committed ticks only. */
+static void custom_take_request(void) {
+    int pos = -1;
+    if (!openpete_bugreport_replay_warp_take(CUSTOM_WARP_ID, &pos))
+        pos = atomic_exchange(&s_custom_req, -1);
+    if (pos < 0 || pos >= custom_count()) return;
+    s_custom_warp = order_row(pos);
+    openpete_bugrec_warp(CUSTOM_WARP_ID, pos);
 }
 
 /** @brief Test whether a custom-level row's data file was found and its mod is enabled.
@@ -830,20 +885,69 @@ unsigned long openpete_mods_registry_counts_writes(void) {
     return s_counts_writes;
 }
 
+/** @brief Take this tick's custom-level warp request, then drive the queued warp one step.
+ *
+ * A queued warp into a row whose files are missing or whose mod is
+ * disabled is dropped. A replace-mode warp enters the donor and retries
+ * each tick until enter_level succeeds. A slot-mode warp claims the shared
+ * slot (retrying each tick until the claim succeeds), or retargets it to
+ * the row's donor when another row holds it (dropping the warp on
+ * failure), declares the row's data length and title on the slot, and
+ * enters it, retrying the entry each tick. An accepted entry sets the
+ * bug-report level-entry hold. Runs on committed ticks only.
+ * @param cpu Live game CPU. */
+static void custom_warp_step(CPUState* cpu) {
+    custom_take_request();
+    if (s_custom_warp < 0) return;
+    custom_level_t* r = custom_at(s_custom_warp);
+    if (!r->data_size || !openpete_mods_is_enabled(r->mod_id)) {
+        s_custom_warp = -1;
+        return;
+    }
+    if (r->replace_mode) {
+        if (level_ops()->enter_level(cpu, r->donor_id) == 0) {
+            s_custom_warp = -1;
+            openpete_bugrec_hold(OPENPETE_BUGREC_HOLD_LEVEL_ENTRY, 1);
+        }
+        return; /* refused = not in gameplay yet; retry next tick */
+    }
+    if (!s_custom_slot_id) {
+        int got = level_ops()->claim_slot(cpu, r->donor_id);
+        if (!got) return; /* TOC not read yet, or the slot is another
+                           * mod's - keep retrying quietly */
+        s_custom_slot_id = got;
+    } else if (s_custom_active != s_custom_warp) {
+        if (!level_ops()->retarget_slot ||
+            level_ops()->retarget_slot(cpu, r->donor_id) != 0) {
+            s_custom_warp = -1;
+            return;
+        }
+    }
+    s_custom_active = s_custom_warp;
+    if (level_ops()->declare_data_len)
+        (void)level_ops()->declare_data_len(cpu, s_custom_slot_id,
+                                            r->data_size);
+    if (level_ops()->set_level_name)
+        (void)level_ops()->set_level_name(cpu, s_custom_slot_id,
+                                          r->title[0] ? r->title
+                                                      : r->name);
+    if (level_ops()->enter_level(cpu, s_custom_slot_id) == 0) {
+        s_slot_entering = s_custom_slot_id;
+        s_custom_warp = -1;
+        openpete_bugrec_hold(OPENPETE_BUGREC_HOLD_LEVEL_ENTRY, 1);
+        OPL_INFO_F("mods", "custom level \"%s\" entering (id %d, donor "
+                   "%d)", r->name, s_custom_slot_id, r->donor_id);
+    }
+}
+
 /** @brief Keep each custom-level row's replace declaration in sync, then run a queued warp.
  *
  * A row wants its replace declared when its data file exists, it is in
  * replace mode and its mod is enabled. Declaring writes the data length
  * over the donor's entry and sets the donor's title to the row's title or
  * name; undeclaring writes length 0 and restores the stock name. Each
- * replace row also drives the donor portal's sky preview every tick. A
- * queued warp into a row whose files are missing or whose mod is disabled
- * is dropped. A replace-mode warp enters the donor and retries each tick
- * until enter_level succeeds. A slot-mode warp claims the shared slot
- * (retrying each tick until the claim succeeds), or retargets it to the
- * row's donor when another row holds it (dropping the warp on failure),
- * declares the row's data length and title on the slot, and enters it,
- * retrying the entry each tick.
+ * replace row also drives the donor portal's sky preview every tick. The
+ * warp runs through custom_warp_step on committed ticks.
  * @param cpu Live game CPU. */
 static void custom_tick(CPUState* cpu) {
     static unsigned s_tickno = 0;
@@ -886,43 +990,9 @@ static void custom_tick(CPUState* cpu) {
                                                 r->declared_replace);
     }
 
-    if (s_custom_warp < 0) return;
-    custom_level_t* r = custom_at(s_custom_warp);
-    if (!r->data_size || !openpete_mods_is_enabled(r->mod_id)) {
-        s_custom_warp = -1;
-        return;
-    }
-    if (r->replace_mode) {
-        if (level_ops()->enter_level(cpu, r->donor_id) == 0)
-            s_custom_warp = -1;
-        return; /* refused = not in gameplay yet; retry next tick */
-    }
-    if (!s_custom_slot_id) {
-        int got = level_ops()->claim_slot(cpu, r->donor_id);
-        if (!got) return; /* TOC not read yet, or the slot is another
-                           * mod's - keep retrying quietly */
-        s_custom_slot_id = got;
-    } else if (s_custom_active != s_custom_warp) {
-        if (!level_ops()->retarget_slot ||
-            level_ops()->retarget_slot(cpu, r->donor_id) != 0) {
-            s_custom_warp = -1;
-            return;
-        }
-    }
-    s_custom_active = s_custom_warp;
-    if (level_ops()->declare_data_len)
-        (void)level_ops()->declare_data_len(cpu, s_custom_slot_id,
-                                            r->data_size);
-    if (level_ops()->set_level_name)
-        (void)level_ops()->set_level_name(cpu, s_custom_slot_id,
-                                          r->title[0] ? r->title
-                                                      : r->name);
-    if (level_ops()->enter_level(cpu, s_custom_slot_id) == 0) {
-        s_slot_entering = s_custom_slot_id;
-        s_custom_warp = -1;
-        OPL_INFO_F("mods", "custom level \"%s\" entering (id %d, donor "
-                   "%d)", r->name, s_custom_slot_id, r->donor_id);
-    }
+    /* A speculative tick's guest writes are rolled back: the warp is taken
+     * and driven on committed ticks only, so it is not spent on one. */
+    if (!openpete_speculative) custom_warp_step(cpu);
 }
 
 /* Reads host-side statics only: the last level the per-tick driver saw. */

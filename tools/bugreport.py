@@ -12,7 +12,7 @@ Subcommands:
       The summary a reader starts from: first the knobs changed live after
       boot (knobs.txt: id, value, the session time and tick of the last
       change, boot value, default, replay class) and the knobs whose value
-      differs from the declared default, the dev-overlay warp requests
+      differs from the declared default, the warp requests
       (warps.txt), then build, commit, exe SHA-256, game,
       disc, ROM stamp, codegen stamp and march, mods, the press and anchor
       counters and the anchor's age, the state summary, taint counts, the
@@ -1031,10 +1031,11 @@ def knobs_lines(b):
 
 
 def warps_line(b):
-    """The `info` line of warps.txt: each dev-overlay warp request with its drain tick, which the replay queues again."""
+    """The `info` line of warps.txt: each warp request with its drain tick, which the replay queues again (a mod's
+    level entry: matches against the mod's own call)."""
     text = b.text("warps.txt")
     if text is None:
-        return "warps: no warps.txt (written before the member): a dev-overlay warp in the window is not replayed"
+        return "warps: no warps.txt (written before the member): a dev-overlay or custom-level warp in the window is not replayed"
     reqs = [f.split("\t") for f in text.splitlines() if f.startswith("warp\t")]
     reqs = [f for f in reqs if len(f) >= 6]
     if not reqs:

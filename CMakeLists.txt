@@ -839,16 +839,17 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Bug-report warp replay: a dev-overlay level warp pressed inside a
-    # Spyro 2 bundle's window is queued again from warps.txt at its drain
-    # tick and replays IDENTICAL; the bundle without the member diverges at
-    # the warp (negative control). Exit 64 = no binary or disc.
+    # Spyro 2 bundle's window and a custom-level warp inside a Spyro 1
+    # bundle's window are queued again from warps.txt at their drain ticks
+    # and replay IDENTICAL; each bundle without the member diverges at the
+    # warp (negative control). Exit 64 = no binary or disc.
     add_test(NAME bugreport_warp
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_bugreport_warp.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(bugreport_warp PROPERTIES
         LABELS "disc"
         RESOURCE_LOCK openpete_game
-        TIMEOUT 900
+        TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
