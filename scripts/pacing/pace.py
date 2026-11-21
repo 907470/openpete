@@ -990,17 +990,20 @@ def cmd_attribute(a):
             cause = "previous tick overran"
         blocked = [p for p in presents if lo <= p.t_ns <= hi
                    and max(p.fence_block_ns, p.acquire_block_ns,
-                           p.queue_block_ns, p.recreate_block_ns) > thr]
+                           p.queue_block_ns, p.recreate_block_ns,
+                           p.image_fence_block_ns) > thr]
         if cause:
             pass
         elif blocked:
             p = max(blocked, key=lambda p: max(
                 p.fence_block_ns, p.acquire_block_ns,
-                p.queue_block_ns, p.recreate_block_ns))
+                p.queue_block_ns, p.recreate_block_ns,
+                p.image_fence_block_ns))
             worst = max((p.fence_block_ns, "present/fence"),
                         (p.acquire_block_ns, "present/acquire"),
                         (p.queue_block_ns, "present/queue"),
-                        (p.recreate_block_ns, "present/recreate"))
+                        (p.recreate_block_ns, "present/recreate"),
+                        (p.image_fence_block_ns, "present/image-fence"))
             cause = worst[1]
         elif any(s.span_start_ns <= hi and s.t_ns >= r.deadline_ns
                  for s in spans_near(r)):
@@ -1116,7 +1119,8 @@ def cmd_export_perfetto(a):
                        "args": {"fence_us": r.fence_block_ns / 1000.0,
                                 "acquire_us": r.acquire_block_ns / 1000.0,
                                 "queue_us": r.queue_block_ns / 1000.0,
-                                "recreate_us": r.recreate_block_ns / 1000.0}})
+                                "recreate_us": r.recreate_block_ns / 1000.0,
+                                "image_fence_us": r.image_fence_block_ns / 1000.0}})
         elif r.type == pacelog.SLIP:
             ev.append({"name": f"slip {r.a} VBL", "ph": "i", "pid": pid,
                        "tid": 4, "ts": ts, "s": "g"})

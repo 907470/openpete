@@ -59,6 +59,13 @@ enum { PACE_SHED_SLOT_BUSY = 1, PACE_SHED_NO_BUDGET = 2, PACE_SHED_NO_IMAGE = 3,
 /* Record types. Never renumber: logs outlive the build that wrote them. */
 enum {
     OP_PACE_VBL         = 1,
+    /* One present: flags = kind, index = present sequence, t_ns = when the
+     * present path returned, a..d = ns blocked on the frame fence, the
+     * acquire, the queue present and a swapchain rebuild, e = alpha in 1e-6
+     * of a tick. With aux OP_PACE_PRESENT_IMAGE_FENCE, f = paired (bit 0)
+     * and the ns blocked on the acquired image's previous submission
+     * (bits 1-63); without it (logs written before) f = paired and that
+     * wait is in no slot. */
     OP_PACE_PRESENT     = 2,
     OP_PACE_SHED        = 3,
     OP_PACE_SLIP        = 4,
@@ -141,6 +148,11 @@ enum {
     OP_PACE_SPLIT_HOST,       /* every feature hook but terrain's and moby's (f high word) */
     OP_PACE_SPLIT_GUEST,      /* a guest call inside a hook: subtracted from its hook, not written */
     OP_PACE_SPLIT_COUNT
+};
+
+/* PRESENT aux bits. */
+enum {
+    OP_PACE_PRESENT_IMAGE_FENCE = 1u << 0  /* f bits 1-63 carry the image-fence wait */
 };
 
 /* TICK_SPLIT flags. */
@@ -448,12 +460,15 @@ void openpete_pace_record_present(uint8_t kind, double alpha, int paired);
  * @param acquire_block_ns Time blocked acquiring a swapchain image.
  * @param queue_present_block_ns Time blocked in the queue present.
  * @param recreate_block_ns Time spent rebuilding the swapchain.
+ * @param image_fence_block_ns Time blocked on the fence of the submission
+ *        that last used the acquired image.
  * @param alpha_micro Alpha the image showed, in 1e-6 of a tick.
  * @param paired 0 when the image had no prev/curr pair. */
 void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
                                  int64_t fence_block_ns, int64_t acquire_block_ns,
                                  int64_t queue_present_block_ns,
                                  int64_t recreate_block_ns,
+                                 int64_t image_fence_block_ns,
                                  int64_t alpha_micro, int paired);
 /** @brief Record one present attempt with the alpha last published by openpete_pace_note_alpha.
  * @param kind OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE or OP_PACE_REPEAT.
@@ -461,11 +476,14 @@ void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
  * @param fence_block_ns Time blocked on the frame fence.
  * @param acquire_block_ns Time blocked acquiring a swapchain image.
  * @param queue_present_block_ns Time blocked in the queue present.
- * @param recreate_block_ns Time spent rebuilding the swapchain. */
+ * @param recreate_block_ns Time spent rebuilding the swapchain.
+ * @param image_fence_block_ns Time blocked on the fence of the submission
+ *        that last used the acquired image. */
 void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t fence_block_ns, int64_t acquire_block_ns,
                            int64_t queue_present_block_ns,
-                           int64_t recreate_block_ns);
+                           int64_t recreate_block_ns,
+                           int64_t image_fence_block_ns);
 
 /** @brief Record a present deliberately not made, and count it in the census.
  *

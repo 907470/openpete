@@ -903,6 +903,7 @@ int openpete_pace_last_alpha_paired(void) { return s_next_alpha_paired; }
  * @param acquire_block_ns Time blocked acquiring a swapchain image.
  * @param queue_present_block_ns Time blocked in the queue present.
  * @param recreate_block_ns Time spent rebuilding the swapchain.
+ * @param image_fence_block_ns Time blocked on the acquired image's previous submission.
  * @param alpha_micro Alpha the image showed, in 1e-6 of a tick.
  * @param paired 0 when the image had no prev/curr pair.
  * @return The present's sequence number, the PRESENT record's index. */
@@ -910,6 +911,7 @@ static uint32_t present_record(uint8_t kind, int64_t done_ns,
                                int64_t fence_block_ns, int64_t acquire_block_ns,
                                int64_t queue_present_block_ns,
                                int64_t recreate_block_ns,
+                               int64_t image_fence_block_ns,
                                int64_t alpha_micro, int paired)
 {
     census_lock();
@@ -948,7 +950,12 @@ static uint32_t present_record(uint8_t kind, int64_t done_ns,
      * countable as MOTION rather than as an event: two presents at the same
      * alpha are the same image however far apart they were submitted. */
     r.e = alpha_micro;
-    r.f = paired;
+    /* The image-fence wait is where a GPU-bound present under a non-blocking
+     * present mode waits: the acquire returns at once and the image's
+     * previous frame has not retired. aux marks the packed layout. */
+    r.aux = OP_PACE_PRESENT_IMAGE_FENCE;
+    r.f = (paired ? 1 : 0) |
+          (int64_t)((uint64_t)(image_fence_block_ns > 0 ? image_fence_block_ns : 0) << 1);
     pace_emit(&r);
     return seq;
 }
@@ -1013,18 +1020,19 @@ void openpete_pace_record_present(uint8_t kind, double alpha, int paired)
     }
     const uint32_t seq = present_record(kind, now_ns, blk[RHI_BLOCK_FENCE], blk[RHI_BLOCK_ACQUIRE],
                                         blk[RHI_BLOCK_PRESENT], blk[RHI_BLOCK_RECREATE],
-                                        (int64_t)(alpha * 1e6), paired);
+                                        blk[RHI_BLOCK_IMAGE_FENCE], (int64_t)(alpha * 1e6), paired);
     present_detail(kind, now_ns, seq, paired);
 }
 
 void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t fence_block_ns, int64_t acquire_block_ns,
                            int64_t queue_present_block_ns,
-                           int64_t recreate_block_ns)
+                           int64_t recreate_block_ns,
+                           int64_t image_fence_block_ns)
 {
     openpete_pace_present_alpha(kind, done_ns, fence_block_ns, acquire_block_ns,
                                 queue_present_block_ns, recreate_block_ns,
-                                s_next_alpha_micro, s_next_alpha_paired);
+                                image_fence_block_ns, s_next_alpha_micro, s_next_alpha_paired);
 }
 
 /* The alpha is an argument so a present on another thread logs its own scene's alpha. */
@@ -1032,10 +1040,12 @@ void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
                                  int64_t fence_block_ns, int64_t acquire_block_ns,
                                  int64_t queue_present_block_ns,
                                  int64_t recreate_block_ns,
+                                 int64_t image_fence_block_ns,
                                  int64_t alpha_micro, int paired)
 {
     (void)present_record(kind, done_ns, fence_block_ns, acquire_block_ns,
-                         queue_present_block_ns, recreate_block_ns, alpha_micro, paired);
+                         queue_present_block_ns, recreate_block_ns, image_fence_block_ns,
+                         alpha_micro, paired);
 }
 
 void openpete_pace_shed(uint8_t kind, uint16_t reason,

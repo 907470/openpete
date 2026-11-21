@@ -122,6 +122,15 @@ OPPL_LAYOUT = {48: "<BBHIqqqqq", 64: "<BBHIqqqqqqq"}
 PACE_VBL, PACE_PRESENT, PACE_SHED, PACE_SLIP = 1, 2, 3, 4
 PACE_TICK_SPLIT, PACE_EAGER_PLAN, PACE_GPU_FRAME = 15, 16, 17
 PACE_CANONICAL, PACE_INTERMEDIATE, PACE_REPEAT = 0, 1, 2
+# PRESENT aux bit: f packs paired (bit 0) and the image-fence wait in ns (bits 1-63); a record without it
+# (written before) did not measure the image-fence wait.
+PACE_PRESENT_IMAGE_FENCE = 1
+# PRESENT block phases in report order; image_fence is decoded from f.
+PRESENT_BLOCK_PHASES = ("fence", "acquire", "queue", "recreate", "image_fence")
+# The image-fence wait is GPU-bound when it is the largest block phase and covers this share of the window.
+GPU_BOUND_SHARE = 0.10
+# A present-path stall line of log.txt (core/rhi/rhi_vulkan.c rhi_note_stall_phase): phase and ms.
+STALL_RE = re.compile(r"stall: ([a-z-]+) blocked ([0-9.]+) ms")
 PACE_F_NOT_LIVE = 64
 PACE_EP_CUT, PACE_EP_LATE, PACE_EP_PINNED, PACE_EP_GREEDY = 1, 2, 4, 8
 PACE_EP_RING, PACE_EP_WITHHELD, PACE_EP_FILL, PACE_EP_HEAD_DUP = 16, 32, 64, 128
@@ -420,6 +429,44 @@ def pace_records(data):
     return hdr, recs
 
 
+def present_blocks(r):
+    """A PRESENT record's block times in ms by PRESENT_BLOCK_PHASES name; image_fence is None on a record
+    written before the field."""
+    d = {"fence": r[5] / 1e6, "acquire": r[6] / 1e6, "queue": r[7] / 1e6, "recreate": r[8] / 1e6}
+    d["image_fence"] = ((r[10] or 0) >> 1) / 1e6 if r[2] & PACE_PRESENT_IMAGE_FENCE else None
+    return d
+
+
+def present_block_rollup(pres, window_s):
+    """Per block phase of PRESENT records: p50, p99, max and sum in ms, the sum's share of window_s, and the
+    `bound` verdict ("gpu" when the image-fence wait is the largest phase by sum and covers GPU_BOUND_SHARE of
+    the window, else "-"). Keys are absent for phases no record measured; `image_fence_unmeasured` counts
+    records written before that field."""
+    blocks = [present_blocks(r) for r in pres]
+    out = {"image_fence_unmeasured": sum(1 for b in blocks if b["image_fence"] is None)}
+    sums = {}
+    for name in PRESENT_BLOCK_PHASES:
+        xs = [b[name] for b in blocks if b[name] is not None]
+        if not xs:
+            continue
+        sums[name] = sum(xs)
+        out[name] = {"p50": pct(xs, 50), "p99": pct(xs, 99), "max": max(xs), "sum": sums[name],
+                     "share": sums[name] / (window_s * 1e3) if window_s > 0 else 0.0}
+    top = max(sums, key=sums.get) if sums else None
+    out["bound"] = ("gpu" if top == "image_fence" and out[top]["share"] >= GPU_BOUND_SHARE else "-")
+    out["top"] = top
+    return out
+
+
+def log_stalls(text):
+    """Present-path stall lines of a log (each a wait of 12 ms or more) as {phase: (count, total ms)}."""
+    out = {}
+    for m in STALL_RE.finditer(text or ""):
+        n, ms = out.get(m.group(1), (0, 0.0))
+        out[m.group(1)] = (n + 1, ms + float(m.group(2)))
+    return out
+
+
 def pct(xs, p):
     """The p-th percentile of xs by nearest rank (index int(p/100 * n), clamped); None for an empty list."""
     if not xs:
@@ -541,6 +588,8 @@ def perf_rollup(data, tail_s=10.0):
     iv = [(b - a) / 1e6 for a, b in zip(shown, shown[1:])]
     if iv:
         out["iv_p50"], out["iv_p99"], out["iv_max"] = pct(iv, 50), pct(iv, 99), max(iv)
+    if pres:
+        out["blocks"] = present_block_rollup(pres, out["window_s"])
     if canon:
         out["scenes_tick"] = (canon + inter) / canon
         out["sheds_tick"] = sheds / canon
@@ -1726,15 +1775,17 @@ def cmd_audio(args):
 
 
 def perf_source(arg):
-    """(pace bytes or None, coarse bytes or None, manifest or None) of a bundle or an extracted pace log."""
+    """(pace bytes or None, coarse bytes or None, manifest or None, log.txt text or None) of a bundle or an
+    extracted pace log."""
     pth = Path(arg)
     if pth.is_file() and not zipfile.is_zipfile(pth):
         if pth.stat().st_size > MEMBER_MAX:
             raise BundleError(f"{arg}: over the bound {MEMBER_MAX}")
-        return pth.read_bytes(), None, None
+        return pth.read_bytes(), None, None, None
     b = Bundle(arg)
     return (b.read("pace.oppl") if b.has("pace.oppl") else None,
-            b.read("pace-coarse.bin") if b.has("pace-coarse.bin") else None, b.manifest)
+            b.read("pace-coarse.bin") if b.has("pace-coarse.bin") else None, b.manifest,
+            b.text("log.txt") if b.has("log.txt") else None)
 
 
 def fmt_ms(v, nd=2):
@@ -1742,8 +1793,36 @@ def fmt_ms(v, nd=2):
     return "-" if v is None else f"{v:.{nd}f}"
 
 
-def perf_lines(pace, coarse, manifest):
-    """The `perf` report lines for a pace image, a coarse image and a manifest (each may be None)."""
+def block_lines(r, logt):
+    """The present-block lines of `perf`: per-phase rollup of the PRESENT records, the GPU-bound verdict, and
+    the stall lines of log.txt (logt None when there is none)."""
+    o = []
+    bl = r.get("blocks")
+    if bl:
+        o.append("  present block (ms per present p50/p99/max, sum as % of window): " + "; ".join(
+            f"{n.replace('_', '-')} {bl[n]['p50']:.2f}/{bl[n]['p99']:.2f}/{bl[n]['max']:.2f} "
+            f"{100 * bl[n]['share']:.1f}%" for n in PRESENT_BLOCK_PHASES if n in bl))
+        if bl["image_fence_unmeasured"]:
+            o.append(f"  image-fence: not in {bl['image_fence_unmeasured']} PRESENT records (written before the "
+                     f"field); the log.txt stall lines below are its only measure")
+        if bl["bound"] == "gpu":
+            o.append(f"  GPU-bound: the image-fence wait (the acquired image's previous frame not retired) is the "
+                     f"largest present block, {100 * bl['image_fence']['share']:.1f}% of the window")
+        elif "image_fence" in bl:
+            o.append(f"  largest present block: {bl['top'].replace('_', '-')} "
+                     f"({100 * bl[bl['top']]['share']:.1f}% of the window); not GPU-bound by the image-fence test")
+    if logt is not None:
+        st = log_stalls(logt)
+        o.append("  log.txt stalls >= 12 ms: " + (", ".join(
+            f"{k} {n} ({ms / 1e3:.1f} s)" for k, (n, ms) in sorted(st.items(), key=lambda kv: -kv[1][1]))
+            if st else "none"))
+        if st and max(st, key=lambda k: st[k][1]) == "image-fence" and not (bl and bl["bound"] == "gpu"):
+            o.append("  GPU-bound (by log.txt): image-fence stalls hold the most stall time")
+    return o
+
+
+def perf_lines(pace, coarse, manifest, logt=None):
+    """The `perf` report lines for a pace image, a coarse image, a manifest and log.txt (each may be None)."""
     o = []
     w = o.append
     rec = (manifest or {}).get("records")
@@ -1763,6 +1842,7 @@ def perf_lines(pace, coarse, manifest):
               f"max {fmt_ms(r.get('iv_max'))} ms; sim tick p50 {fmt_ms(r.get('sim_p50'))} p90 {fmt_ms(r.get('sim_p90'))} ms; "
               f"scenes/tick {fmt_ms(r.get('scenes_tick'))} sheds/tick {fmt_ms(r.get('sheds_tick'))}; "
               f"{r['not_live']} of {r['vbls']} VBLs not live")
+        o.extend(block_lines(r, logt))
         if "split_ticks" in r:
             w(f"  split ({r['split_ticks']} ticks), p50 ms per tick: " +
               " ".join(f"{n} {fmt_ms(r['split_' + n])}" for n, _s, _h in SPLIT_FIELDS
@@ -1803,8 +1883,8 @@ def perf_lines(pace, coarse, manifest):
 
 
 def cmd_perf(args):
-    pace, coarse, man = perf_source(args.bundle)
-    print("\n".join(perf_lines(pace, coarse, man)))
+    pace, coarse, man, logt = perf_source(args.bundle)
+    print("\n".join(perf_lines(pace, coarse, man, logt)))
     if args.rows and coarse is not None:
         _h, rows = coarse_parse(coarse)
         cols = ("t0_s", "span_s", "vbls", "vbls_not_live", "presents", "repeats", "sheds", "iv_max_us", "ticks",

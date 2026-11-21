@@ -52,6 +52,9 @@ HP_SUMMARY, HP_WINDOW, HP_PARKED = 1 << 0, 1 << 1, 1 << 2
 # last composed frame). It closes a hole in the display without advancing
 # animation, so every statistic has to decide explicitly whether it counts.
 CANONICAL, INTERMEDIATE, REPEAT = 0, 1, 2
+# PRESENT aux bit: f packs paired (bit 0) and the image-fence wait in ns
+# (bits 1-63). A record without it (written before) has f = paired alone.
+PRESENT_IMAGE_FENCE = 1 << 0
 KIND_NAME = {CANONICAL: "canonical   ", INTERMEDIATE: "intermediate",
              REPEAT: "repeat      "}
 
@@ -109,7 +112,9 @@ class Record:
 
     @property
     def present_paired(self):
-        return None if self.f is None else bool(self.f)
+        if self.f is None:
+            return None
+        return bool(self.f & 1) if self.aux & PRESENT_IMAGE_FENCE else bool(self.f)
 
     # VBL accessors, named so callers never index the raw payload slots.
     @property
@@ -234,6 +239,13 @@ class Record:
     def queue_block_ns(self): return self.c
     @property
     def recreate_block_ns(self): return self.d
+    @property
+    def image_fence_block_ns(self):
+        """Wait on the acquired image's previous submission; 0 on a record
+        written before the field, which did not measure it."""
+        return self.f >> 1 if self.aux & PRESENT_IMAGE_FENCE and self.f else 0
+    @property
+    def has_image_fence(self): return bool(self.aux & PRESENT_IMAGE_FENCE)
 
     @property
     def paced(self):
@@ -432,7 +444,8 @@ def fmt_record(r, epoch_ns):
         kind = KIND_NAME.get(r.flags, f"kind {r.flags}")
         return (f"{t:10.4f} PRESENT #{r.index:<7} {kind} block: "
                 f"fence {r.a/1e6:6.2f} acquire {r.b/1e6:6.2f} "
-                f"queue {r.c/1e6:6.2f} recreate {r.d/1e6:6.2f} ms")
+                f"queue {r.c/1e6:6.2f} recreate {r.d/1e6:6.2f} "
+                f"image-fence {(f'{r.image_fence_block_ns/1e6:6.2f}' if r.has_image_fence else '   n/a')} ms")
     if r.type == SLIP:
         return (f"{t:10.4f} SLIP    {'render' if r.flags else 'sim   '} "
                 f"{r.a} period(s), {r.b/1e6:.1f} ms behind")

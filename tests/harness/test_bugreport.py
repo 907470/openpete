@@ -656,6 +656,26 @@ class PerfRecords(Base):
         self.assertAlmostEqual(r["plan_fill_frac"], 0.5)
         self.assertAlmostEqual(r["gpu_p50"], 3.0)
 
+    def test_present_image_fence(self):
+        hdr = struct.pack("<IIIIIIqqqqq", br.OPPL_MAGIC, 2, 64, 64, 0, 0, 0, 0, 2250000, 37609, 2)
+        t, new, old = 10**9, [], []
+        for k in range(100):
+            ts = t + k * 10_000_000
+            new.append(rec(br.PACE_PRESENT, ts, k, a=20_000, aux=br.PACE_PRESENT_IMAGE_FENCE,
+                           f=1 | 6_000_000 << 1))
+            old.append(rec(br.PACE_PRESENT, ts, k, a=20_000, f=1))
+        _h, recs = br.pace_records(hdr + b"".join(new))
+        self.assertAlmostEqual(br.present_blocks(recs[0])["image_fence"], 6.0)
+        bl = br.perf_rollup(hdr + b"".join(new))["blocks"]
+        self.assertEqual((bl["top"], bl["bound"], bl["image_fence_unmeasured"]), ("image_fence", "gpu", 0))
+        self.assertAlmostEqual(bl["image_fence"]["p50"], 6.0)
+        bl = br.perf_rollup(hdr + b"".join(old))["blocks"]
+        self.assertEqual((bl["bound"], bl["image_fence_unmeasured"]), ("-", 100))
+        self.assertNotIn("image_fence", bl)
+        st = br.log_stalls("x stall: image-fence blocked 12.5 ms\nstall: fence-wait blocked 13.0 ms\n"
+                           "stall: image-fence blocked 12.0 ms\n")
+        self.assertEqual(st, {"image-fence": (2, 24.5), "fence-wait": (1, 13.0)})
+
     def test_coarse(self):
         h, rows = br.coarse_parse(coarse_image())
         self.assertEqual((h["rows"], h["span_s"]), (3, 1))
