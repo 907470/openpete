@@ -373,6 +373,7 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:run.c@F@audio_feed_exit_summary", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
     ROW("c:run.c@F@log_frame_on_exit", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
     ROW("c:scan_watch.c@F@exit_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:terrain.c@F@sf_exit_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
     ROW("c:terrain.c@F@taud_report", "arg:atexit", "sim") /* thread-roles: the terrain audit's atexit summary, run by exit() or main's return with sim in the mask */ \
     ROW("c:spyro.c@F@spyro_agg_final", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
     ROW("c:terrain.c@F@terrain_defer_census", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \

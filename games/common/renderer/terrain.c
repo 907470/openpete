@@ -9595,10 +9595,76 @@ static int32_t   s_sf_cur_cell[3] OP_GUARDED_BY(sim), s_sf_prev_cell[3] OP_GUARD
 static unsigned  s_sf_cur_gen OP_GUARDED_BY(sim), s_sf_prev_gen OP_GUARDED_BY(sim);
 static int       s_sf_cur_ok OP_GUARDED_BY(sim), s_sf_prev_ok OP_GUARDED_BY(sim);
 static int       s_sf_ready OP_GUARDED_BY(sim);       /* U is valid for this tick */
-/* Engagement counters (OPENPETE_SECTOR_FILLED_CENSUS). */
+/* Engagement counters: run totals (OPENPETE_SECTOR_FILLED_CENSUS periodic
+ * line, the sector-filled exit row) and one load window's share. */
 static unsigned long s_sf_ticks OP_GUARDED_BY(sim), s_sf_computes OP_GUARDED_BY(sim),
                      s_sf_refreshes OP_GUARDED_BY(sim), s_sf_walks_differ OP_GUARDED_BY(sim),
                      s_sf_added OP_GUARDED_BY(sim), s_sf_unions OP_GUARDED_BY(sim);
+
+/* One load window: the canonical walks between two changes of (level,
+ * sub-area). `notree` counts the walks that ran frustum because the level
+ * had no tree or its lookup flag was 0; `pred`/`pred_rej` count
+ * terrain_sector_admitted's filled answers and its rejections. */
+typedef struct {
+    int32_t level, area;
+    unsigned long walks, notree, ticks, computes, walks_differ, added, pred, pred_rej;
+} sf_window_t;
+
+static sf_window_t   s_sf_win OP_GUARDED_BY(sim);
+static sf_window_t   s_sf_total OP_GUARDED_BY(sim);   /* the closed windows summed */
+static unsigned long s_sf_windows OP_GUARDED_BY(sim), s_sf_windows_engaged OP_GUARDED_BY(sim);
+static int           s_sf_win_open OP_GUARDED_BY(sim);
+
+/** @brief Prints the open load window's [sector-filled-window] row and folds it into the run totals.
+ *
+ * A window is engaged when a walk in it computed the filled set and at
+ * least one walk drew a sector the game's verdict hid. */
+static void sf_window_close(void) OP_REQUIRES(sim) {
+    if (!s_sf_win_open) return;
+    const sf_window_t* w = &s_sf_win;
+    const int engaged = w->computes > 0 && w->walks_differ > 0;
+    fprintf(stderr, "[sector-filled-window] frame=%u level=%d area=%d walks=%lu notree=%lu ticks=%lu "
+                    "computes=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu engaged=%d\n",
+            openpete_frame, w->level, w->area, w->walks, w->notree, w->ticks, w->computes,
+            w->walks_differ, w->added, w->pred, w->pred_rej, engaged);
+    s_sf_windows++;
+    s_sf_windows_engaged += (unsigned long)engaged;
+    s_sf_total.walks += w->walks; s_sf_total.notree += w->notree; s_sf_total.ticks += w->ticks;
+    s_sf_total.computes += w->computes; s_sf_total.walks_differ += w->walks_differ;
+    s_sf_total.added += w->added; s_sf_total.pred += w->pred; s_sf_total.pred_rej += w->pred_rej;
+    s_sf_win_open = 0;
+}
+
+/** @brief Prints the sector-filled exit row: the last window's row, then the run totals over every window.
+ *
+ * Registered on the first filled walk; a run that never walked under filled
+ * prints nothing, which a harness requiring the row reads as unengaged. */
+static void sf_exit_report(void) {
+    OP_ROLE_ASSERT(sim);
+    sf_window_close();
+    fprintf(stderr, "sector-filled: windows=%lu engaged=%lu walks=%lu notree=%lu ticks=%lu computes=%lu "
+                    "refreshes=%lu unions=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu\n",
+            s_sf_windows, s_sf_windows_engaged, s_sf_total.walks, s_sf_total.notree, s_sf_total.ticks,
+            s_sf_total.computes, s_sf_refreshes, s_sf_unions, s_sf_total.walks_differ, s_sf_total.added,
+            s_sf_total.pred, s_sf_total.pred_rej);
+}
+
+/** @brief Opens a new load window when the level or sub-area differs from the open one's, closing that first; counts the walk.
+ * @param cpu The guest CPU state, read only. */
+static void sf_window_walk(CPUState* cpu) OP_REQUIRES(sim) {
+    static int s_reg OP_GUARDED_BY(sim);
+    if (!s_reg) { s_reg = 1; atexit(sf_exit_report); }
+    const int32_t level = game_layout.level_id ? (int32_t)cpu->read_word(game_layout.level_id) : 0;
+    const int32_t area = game_layout.env.area ? (int32_t)cpu->read_word(game_layout.env.area) : 0;
+    if (!s_sf_win_open || level != s_sf_win.level || area != s_sf_win.area) {
+        sf_window_close();
+        memset(&s_sf_win, 0, sizeof s_sf_win);
+        s_sf_win.level = level;
+        s_sf_win.area = area;
+        s_sf_win_open = 1;
+    }
+    s_sf_win.walks++;
+}
 
 /** @brief Re-copies the PVS tree when its key changed, and re-hashes it then or when the game-state word changed.
  *
@@ -9677,6 +9743,7 @@ static void sf_compute(CPUState* cpu, const int32_t p[3], uint32_t n, uint8_t ou
     sector_pvs_ring(s_sf_tree.b, s_sf_tree.len, 0, p, nb, open);
     sector_pvs_pairs((const uint8_t (*)[256])nb, open, 1, n, out);
     s_sf_computes++;
+    s_sf_win.computes++;
 }
 
 /** @brief Advances the filled set on a canonical walk: snapshot refresh, C' of the tick, U over two ticks.
@@ -9690,14 +9757,16 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     if (s_vanim_sub) return;
     s_sf_ready = 0;
     if (!game_layout.env.vis_aspect_independent) return;
+    sf_window_walk(cpu);
     sf_tree_refresh(cpu);
-    if (!s_sf_tree.b) { s_sf_cur_ok = s_sf_prev_ok = 0; return; }
+    if (!s_sf_tree.b) { s_sf_cur_ok = s_sf_prev_ok = 0; s_sf_win.notree++; return; }
     const uint32_t n = sectorCnt < 256u ? sectorCnt : 256u;
     const uint32_t xe = game_layout.cam.xform_end;
     const int32_t p[3] = { (int32_t)cpu->read_word(xe), (int32_t)cpu->read_word(xe + 4u),
                            (int32_t)cpu->read_word(xe + 8u) };
     const int32_t cell[3] = { p[0] >> 11, p[1] >> 11, p[2] >> 11 };
     s_sf_ticks++;
+    s_sf_win.ticks++;
     memcpy(s_sf_prev, s_sf_cur, sizeof s_sf_prev);
     memcpy(s_sf_prev_cell, s_sf_cur_cell, sizeof s_sf_prev_cell);
     s_sf_prev_gen = s_sf_cur_gen;
@@ -9721,6 +9790,8 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     for (uint32_t i = 0; i < n; i++) added += s_sf_u[i] && !tvis_visible(cpu, i);
     s_sf_added += (unsigned long)added;
     s_sf_walks_differ += added > 0;
+    s_sf_win.added += (unsigned long)added;
+    s_sf_win.walks_differ += added > 0;
     s_sf_ready = 1;
     const char* e = getenv("OPENPETE_SECTOR_FILLED_CENSUS");
     if (e && *e && *e != '0' && (s_sf_ticks % 300u) == 1u)
@@ -9734,7 +9805,11 @@ int terrain_sector_admitted(uint32_t i) OP_REQUIRES(sim) {
     const int mode = openpete_native_sector_visibility_active();
     if (mode == OPENPETE_SECTOR_VIS_FRUSTUM) return 1;
     if (i >= 255u) return 1;
-    if (mode == OPENPETE_SECTOR_VIS_FILLED && s_sf_ready) return s_sf_u[i] != 0;
+    if (mode == OPENPETE_SECTOR_VIS_FILLED && s_sf_ready) {
+        s_sf_win.pred++;
+        s_sf_win.pred_rej += !s_sf_u[i];
+        return s_sf_u[i] != 0;
+    }
     if (mode == OPENPETE_SECTOR_VIS_FILLED) return 1;   /* no PVS: frustum behaviour */
     return -1;   /* game: the caller reads the game's verdict */
 }
