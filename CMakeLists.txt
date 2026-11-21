@@ -2842,6 +2842,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # The same gate over the `full` corpus: the `quick` pair plus the
+    # skip-to-level vista and distant-terrain movies, whose baselines no
+    # `quick` run compares. Labelled apart from `subtick_state` so a run
+    # excluding `slow` skips it and an arc-end run selects it with
+    # `-L subtick_full`.
+    add_test(NAME subtick_state_full
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_subtick_state.py
+                     --corpus full)
+    set_tests_properties(subtick_state_full PROPERTIES
+        LABELS "slow;subtick_full;determinism"
+        RESOURCE_LOCK openpete_game
+        # Twelve headless legs, each self-limited at --max-runtime-seconds 280.
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Retained-terrain GPU cache vs CPU terrain walk, headless on llvmpipe.
     # Per measured freecam row, two legs of one build at the same pose and
     # pinned VBL differing only in the feed (--terrain-cache 0 against the

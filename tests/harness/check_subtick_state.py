@@ -55,7 +55,7 @@ that were not sampled, regions no producer brackets, or whether the state is
 CORRECT -- only the oracle speaks to that.
 
 Kept deliberately small by default so it can run inside an iteration loop;
---corpus full is the complete sweep, run before a commit.
+--corpus full is the complete sweep, run before a commit (ctest -L subtick_full).
 """
 import argparse
 import gzip
@@ -209,6 +209,28 @@ def first_diff(a, b):
     return None
 
 
+def diff_regions(header, x, y):
+    """Names of the columns where hash-log rows x and y differ.
+
+    `header` is the log's first row (`frame,vbl,fnv1a64,<region>...`); the
+    frame and vbl columns are reported when they differ, and fnv1a64 (the
+    hash over every region) is omitted because it differs whenever any
+    region does. A row of the wrong width yields the column indices past
+    the header."""
+    names = header.split(",") if header else []
+    xs, ys = x.split(","), y.split(",")
+    out = []
+    for c in range(max(len(xs), len(ys))):
+        a = xs[c] if c < len(xs) else None
+        b = ys[c] if c < len(ys) else None
+        if a == b:
+            continue
+        name = names[c] if c < len(names) else f"col{c}"
+        if name != "fnv1a64":
+            out.append(name)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", choices=sorted(CORPUS), default="quick")
@@ -296,8 +318,15 @@ def main():
                     d = first_diff(log_b, log_p)
                     if d:
                         i, x, y = d
+                        if i == 0 or log_b[0] != log_p[0]:
+                            where = ("header differs: the region set changed "
+                                     "-- re-bless after reviewing the manifest")
+                        else:
+                            regions = diff_regions(log_p[0], x, y)
+                            where = "regions: " + (", ".join(regions) or "<none>")
                         failures.append(
                             f"{bk2}: REGRESSION vs baseline at row {i}\n"
+                            f"      {where}\n"
                             f"      baseline: {x}\n      current:  {y}")
                     else:
                         print(f"[subtick-state] {bk2}: baseline OK ({len(log_b)} rows)")
