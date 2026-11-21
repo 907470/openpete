@@ -42,7 +42,8 @@
 #include "openpete_fiber.h"           /* openpete_yield_site: the VSync wait of a repeat present */
 #include "openpete_recomp_module.h"  /* the game's own sky draw, run through the module dispatch */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
-#include "renderer/sector_pvs.h"    /* the sky census: the game's PVS lookup, ring and pairs */
+#include "renderer/sector_pvs.h"    /* the sky tree snapshot, lookup and filled step */
+#include "renderer/terrain.h"       /* terrain_sector_filled_note_sky: the load-window counts */
 
 #include <math.h>
 #include <stdint.h>
@@ -197,7 +198,44 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
 }
 
 static uint8_t s_cyc_vis[1024] OP_GUARDED_BY(sim);   /* thread-roles: copied after the draw on sim */
+static uint8_t s_cyc_game[1024] OP_GUARDED_BY(sim);  /* the game's own bytes of the same draw */
 static uint32_t s_cyc_vis_n OP_GUARDED_BY(sim) = 0;  /* thread-roles: copied after the draw on sim */
+/* The sky PVS tree (the tree func_80048D18(1) / func_8002D0D8(1) reads) and
+ * its --sector-visibility filled state. */
+static sector_pvs_tree_t   s_sky_tree OP_GUARDED_BY(sim);
+static sector_pvs_filled_t s_sky_filled OP_GUARDED_BY(sim);
+
+/** @brief Under --sector-visibility filled, adds the sky sectors C' admits to the captured bytes.
+ *
+ * The sky's C' is the terrain rule (sector_pvs_filled_step) over the sky
+ * tree at the tick camera (cam.xform_end), with the game's bytes as the
+ * verdict: a sky sector one of the 13 opposite neighbour pairs lists is
+ * drawn too, and the previous tick's set joins while the camera stays
+ * within one cell. Nothing changes on a game without a position-keyed PVS,
+ * with the lookup flag 0 or without a sky tree (the game then draws every
+ * sky sector). Writes host memory only.
+ * @param cpu The guest CPU state, read only.
+ * @param n The captured byte count. */
+static void cyc_filled_visibility(CPUState* cpu, uint32_t n) OP_REQUIRES(sim) {
+    if (openpete_native_sector_visibility_active() != OPENPETE_SECTOR_VIS_FILLED
+        || !game_layout.env.vis_aspect_independent) return;
+    sector_pvs_tree_refresh(&s_sky_tree, cpu, cpu->read_word(game_layout.cyc.occ_groups));
+    if (!s_sky_tree.b) { sector_pvs_filled_reset(&s_sky_filled); return; }
+    const uint32_t m = n < 256u ? n : 256u;
+    uint8_t base[256] = { 0 };
+    for (uint32_t i = 0; i < m; i++) base[i] = s_cyc_game[i] ? 0xFF : 0;
+    const uint32_t xe = game_layout.cam.xform_end;
+    const int32_t p[3] = { (int32_t)cpu->read_word(xe), (int32_t)cpu->read_word(xe + 4u),
+                           (int32_t)cpu->read_word(xe + 8u) };
+    const int r = sector_pvs_filled_step(&s_sky_filled, &s_sky_tree, p, m, base);
+    int added = 0;
+    for (uint32_t i = 0; i < m; i++) {
+        added += s_sky_filled.u[i] && !base[i];
+        if (s_sky_filled.u[i]) s_cyc_vis[i] = 0xFF;
+    }
+    terrain_sector_filled_note_sky(r & SECTOR_PVS_COMPUTED, added);
+}
+
 /** @brief Copy the sky's per-sector visibility bytes out of guest scratch memory.
  *
  * The bytes (game_layout.cyc.visibility, one per sector, nonzero = drawn) are
@@ -205,48 +243,27 @@ static uint32_t s_cyc_vis_n OP_GUARDED_BY(sim) = 0;  /* thread-roles: copied aft
  * range later in the tick; a sub-tick re-extract reads the copy in s_cyc_vis.
  * The count is the sector count clamped to 1024. A layout without a
  * visibility range leaves the count at 0. Under --sector-visibility frustum
- * every sector is marked drawn.
+ * every sector is marked drawn; under filled the copy gains the sectors
+ * cyc_filled_visibility admits; s_cyc_game keeps the game's bytes.
  * @param cpu The guest CPU state, read only. */
 static void cyc_capture_visibility(CPUState* cpu) OP_REQUIRES(sim) {
     s_cyc_vis_n = 0;
     if (!game_layout.cyc.visibility) return;
     uint32_t n = cpu->read_word(game_layout.cyc.sector_count);
     if (n > sizeof s_cyc_vis) n = sizeof s_cyc_vis;
-    for (uint32_t i = 0; i < n; i++) s_cyc_vis[i] = cpu->read_byte(game_layout.cyc.visibility + i);
+    for (uint32_t i = 0; i < n; i++) s_cyc_vis[i] = s_cyc_game[i] = cpu->read_byte(game_layout.cyc.visibility + i);
     s_cyc_vis_n = n;
     /* frustum draws every sky sector in front of the camera, as a view wider
      * than 4:3 does in any mode: the radius cull and the depth test decide. */
     if (openpete_native_sector_visibility_active() == OPENPETE_SECTOR_VIS_FRUSTUM) memset(s_cyc_vis, 0xFF, n);
-}
-/* The sky census's tree copy (OPENPETE_SKY_VIS_CENSUS): the arg-1 PVS tree,
- * re-copied when its pointer, size or the level changes. */
-static struct { uint8_t* b; uint32_t len, ptr, size, level; } s_skyc OP_GUARDED_BY(sim);
-
-/** @brief Re-copies the sky PVS tree into s_skyc when its key changed; empties it when the lookup flag is 0 or the tree is absent.
- * @param cpu The guest CPU state, read only. */
-static void cyc_census_tree(CPUState* cpu) OP_REQUIRES(sim) {
-    const uint32_t flag = game_layout.env.base ? cpu->read_word(game_layout.env.base + 0x10u) : 0u;
-    const uint32_t ptr = flag ? cpu->read_word(game_layout.cyc.occ_groups) : 0u;
-    const uint32_t size = ptr >= 0x80000004u ? cpu->read_word(ptr - 4u) : 0u;
-    const uint32_t level = game_layout.level_id ? cpu->read_word(game_layout.level_id) : 0u;
-    if (ptr == s_skyc.ptr && size == s_skyc.size && level == s_skyc.level) return;
-    s_skyc.ptr = ptr; s_skyc.size = size; s_skyc.level = level;
-    free(s_skyc.b);
-    s_skyc.b = NULL;
-    s_skyc.len = 0;
-    if (size < 9u) return;
-    const uint32_t len = size > 262144u ? 262144u : size;
-    s_skyc.b = (uint8_t*)malloc(len);
-    if (!s_skyc.b) return;
-    for (uint32_t k = 0; k < len; k++) s_skyc.b[k] = cpu->read_byte(ptr + k);
-    s_skyc.len = len;
+    cyc_filled_visibility(cpu, n);
 }
 
 /** @brief Prints one [sky-vis] census line per canonical sky draw under OPENPETE_SKY_VIS_CENSUS=1.
  *
  * Compares the host lookup of the sky tree (game_layout.cyc.occ_groups, the
  * tree func_80048D18(1) / func_8002D0D8(1) reads) at the tick camera
- * (cam.xform_end) against the bytes the game wrote (s_cyc_vis, captured
+ * (cam.xform_end) against the bytes the game wrote (s_cyc_game, captured
  * after the draw), and counts the sectors C' (the opposite-pair rule of
  * --sector-visibility filled) adds to the game's set. With no tree or a
  * zero lookup flag the game draws every sector and the host set is all.
@@ -256,24 +273,24 @@ static void cyc_vis_census(CPUState* cpu) OP_REQUIRES(sim) {
     static int on OP_GUARDED_BY(sim) = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_SKY_VIS_CENSUS"); on = e && *e == '1'; }
     if (!on || !game_layout.env.vis_aspect_independent || !game_layout.cyc.visibility) return;
-    cyc_census_tree(cpu);
+    sector_pvs_tree_refresh(&s_sky_tree, cpu, cpu->read_word(game_layout.cyc.occ_groups));
     const uint32_t xe = game_layout.cam.xform_end;
     const int32_t p[3] = { (int32_t)cpu->read_word(xe), (int32_t)cpu->read_word(xe + 4u),
                            (int32_t)cpu->read_word(xe + 8u) };
     uint8_t host[256], cp[256];
     int open = 1;
-    if (s_skyc.b) sector_pvs_lookup(s_skyc.b, s_skyc.len, 0, p, host, &open);
+    if (s_sky_tree.b) sector_pvs_lookup(s_sky_tree.b, s_sky_tree.len, 0, p, host, &open);
     else memset(host, 0xFF, sizeof host);
     const uint32_t n = s_cyc_vis_n < 256u ? s_cyc_vis_n : 256u;
     memcpy(cp, host, sizeof cp);
-    if (s_skyc.b && !open) {
+    if (s_sky_tree.b && !open) {
         uint8_t nb[SECTOR_PVS_RING][256], op[SECTOR_PVS_RING];
-        sector_pvs_ring(s_skyc.b, s_skyc.len, 0, p, nb, op);
+        sector_pvs_ring(s_sky_tree.b, s_sky_tree.len, 0, p, nb, op);
         sector_pvs_pairs((const uint8_t (*)[256])nb, op, 1, n, cp);
     }
     int mismatch = 0, nh = 0, ng = 0, extra = 0;
     for (uint32_t i = 0; i < n; i++) {
-        const int g = s_cyc_vis[i] != 0, h = host[i] != 0;
+        const int g = s_cyc_game[i] != 0, h = host[i] != 0;
         mismatch += g != h;
         nh += h;
         ng += g;
@@ -281,7 +298,7 @@ static void cyc_vis_census(CPUState* cpu) OP_REQUIRES(sim) {
     }
     fprintf(stderr, "[sky-vis] frame=%u level=%u cell=%d,%d,%d sectors=%u tree=%d open=%d host=%d guest=%d "
                     "mismatch=%d c2_extra=%d\n",
-            openpete_frame, s_skyc.level, p[0] >> 11, p[1] >> 11, p[2] >> 11, n, s_skyc.b != NULL, open,
+            openpete_frame, (unsigned)s_sky_tree.level, p[0] >> 11, p[1] >> 11, p[2] >> 11, n, s_sky_tree.b != NULL, open,
             nh, ng, mismatch, extra);
 }
 

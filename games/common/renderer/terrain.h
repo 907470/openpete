@@ -373,6 +373,11 @@ int terrain_preview_build(const terrain_host_level* L, const terrain_preview_vie
 #ifdef __cplusplus
 }
 #endif
+/** @brief Counts one --sector-visibility filled sky draw in the open load window.
+ * @param computed Nonzero when the sky's C' was recomputed this draw.
+ * @param added The sky sectors drawn that the game's verdict hid. */
+void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim);
+
 /** @brief Whether sector `i` is admitted by the --sector-visibility mode for this tick.
  *
  * frustum admits every sector (the identity for non-terrain paths); filled

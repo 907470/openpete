@@ -9572,28 +9572,14 @@ static void tvis_calibrate(CPUState* cpu, const tvis_sphere* S, uint32_t list, u
  * admits nothing alone. The drawn set U is C' of the current tick united with
  * C' of the previous tick when the two tick cells are within Chebyshev
  * distance 1 and the tree snapshot did not change between them, so a sub-tick
- * present between the two tick cameras has both cells' sets. Everything here
- * runs on the sim thread at the walk and writes host memory only. */
+ * present between the two tick cameras has both cells' sets
+ * (sector_pvs_filled_step). The sky draw applies the same rule to the sky
+ * tree (cyclorama.c) and reports into this file's load windows
+ * (terrain_sector_filled_note_sky). Everything here runs on the sim thread
+ * and writes host memory only. */
 
-/* The host copy of the level's PVS tree and the key it was taken under. */
-typedef struct {
-    uint8_t* b;           /* the tree bytes (NULL: the level has no PVS) */
-    uint32_t len, cap;
-    uint32_t ptr, size;   /* the pointer at env.occ_groups and its size word */
-    uint32_t flag;        /* the word at env.base + 0x10 (0: lookup off) */
-    int32_t  level, area; /* level id and sub-area word at the snapshot */
-    uint32_t state;       /* the game-state word at the snapshot */
-    uint64_t hash;        /* FNV-1a over the tree bytes */
-    unsigned gen;         /* bumped when the tree content changes */
-} sf_tree_t;
-
-static sf_tree_t s_sf_tree OP_GUARDED_BY(sim);
-static uint8_t   s_sf_cur[256] OP_GUARDED_BY(sim);    /* C' of the current tick */
-static uint8_t   s_sf_prev[256] OP_GUARDED_BY(sim);   /* C' of the previous tick */
-static uint8_t   s_sf_u[256] OP_GUARDED_BY(sim);      /* U, the drawn set */
-static int32_t   s_sf_cur_cell[3] OP_GUARDED_BY(sim), s_sf_prev_cell[3] OP_GUARDED_BY(sim);
-static unsigned  s_sf_cur_gen OP_GUARDED_BY(sim), s_sf_prev_gen OP_GUARDED_BY(sim);
-static int       s_sf_cur_ok OP_GUARDED_BY(sim), s_sf_prev_ok OP_GUARDED_BY(sim);
+static sector_pvs_tree_t   s_sf_tree OP_GUARDED_BY(sim);   /* thread-roles: the terrain tree snapshot, refreshed and read on sim at the walk */
+static sector_pvs_filled_t s_sf OP_GUARDED_BY(sim);        /* C' over two ticks, U */
 static int       s_sf_ready OP_GUARDED_BY(sim);       /* U is valid for this tick */
 /* Engagement counters: run totals (OPENPETE_SECTOR_FILLED_CENSUS periodic
  * line, the sector-filled exit row) and one load window's share. */
@@ -9608,6 +9594,7 @@ static unsigned long s_sf_ticks OP_GUARDED_BY(sim), s_sf_computes OP_GUARDED_BY(
 typedef struct {
     int32_t level, area;
     unsigned long walks, notree, ticks, computes, walks_differ, added, pred, pred_rej;
+    unsigned long sky, sky_computes, sky_differ, sky_added;   /* filled sky draws */
 } sf_window_t;
 
 static sf_window_t   s_sf_win OP_GUARDED_BY(sim);
@@ -9624,14 +9611,18 @@ static void sf_window_close(void) OP_REQUIRES(sim) {
     const sf_window_t* w = &s_sf_win;
     const int engaged = w->computes > 0 && w->walks_differ > 0;
     fprintf(stderr, "[sector-filled-window] frame=%u level=%d area=%d walks=%lu notree=%lu ticks=%lu "
-                    "computes=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu engaged=%d\n",
+                    "computes=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu sky=%lu "
+                    "sky_computes=%lu sky_differ=%lu sky_added=%lu engaged=%d\n",
             openpete_frame, w->level, w->area, w->walks, w->notree, w->ticks, w->computes,
-            w->walks_differ, w->added, w->pred, w->pred_rej, engaged);
+            w->walks_differ, w->added, w->pred, w->pred_rej, w->sky, w->sky_computes, w->sky_differ,
+            w->sky_added, engaged);
     s_sf_windows++;
     s_sf_windows_engaged += (unsigned long)engaged;
     s_sf_total.walks += w->walks; s_sf_total.notree += w->notree; s_sf_total.ticks += w->ticks;
     s_sf_total.computes += w->computes; s_sf_total.walks_differ += w->walks_differ;
     s_sf_total.added += w->added; s_sf_total.pred += w->pred; s_sf_total.pred_rej += w->pred_rej;
+    s_sf_total.sky += w->sky; s_sf_total.sky_computes += w->sky_computes;
+    s_sf_total.sky_differ += w->sky_differ; s_sf_total.sky_added += w->sky_added;
     s_sf_win_open = 0;
 }
 
@@ -9643,10 +9634,12 @@ static void sf_exit_report(void) {
     OP_ROLE_ASSERT(sim);
     sf_window_close();
     fprintf(stderr, "sector-filled: windows=%lu engaged=%lu walks=%lu notree=%lu ticks=%lu computes=%lu "
-                    "refreshes=%lu unions=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu\n",
+                    "refreshes=%lu unions=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu sky=%lu "
+                    "sky_computes=%lu sky_differ=%lu sky_added=%lu\n",
             s_sf_windows, s_sf_windows_engaged, s_sf_total.walks, s_sf_total.notree, s_sf_total.ticks,
             s_sf_total.computes, s_sf_refreshes, s_sf_unions, s_sf_total.walks_differ, s_sf_total.added,
-            s_sf_total.pred, s_sf_total.pred_rej);
+            s_sf_total.pred, s_sf_total.pred_rej, s_sf_total.sky, s_sf_total.sky_computes,
+            s_sf_total.sky_differ, s_sf_total.sky_added);
 }
 
 /** @brief Opens a new load window when the level or sub-area differs from the open one's, closing that first; counts the walk.
@@ -9666,51 +9659,10 @@ static void sf_window_walk(CPUState* cpu) OP_REQUIRES(sim) {
     s_sf_win.walks++;
 }
 
-/** @brief Re-copies the PVS tree when its key changed, and re-hashes it then or when the game-state word changed.
- *
- * The key is the pointer at env.occ_groups, its size word, the lookup flag
- * at env.base + 0x10, the level id and the sub-area word (env.area). A load
- * that reuses the buffer at the same address and size changes the game-state
- * word on its way in and out, so a change of that word re-hashes the tree;
- * a hash change bumps the generation, which drops the previous tick's set.
+/** @brief Refreshes the terrain tree snapshot (sector_pvs_tree_refresh over the pointer at env.occ_groups), counting refreshes.
  * @param cpu The guest CPU state, read only. */
 static void sf_tree_refresh(CPUState* cpu) OP_REQUIRES(sim) {
-    sf_tree_t* T = &s_sf_tree;
-    const uint32_t flag = game_layout.env.base ? cpu->read_word(game_layout.env.base + 0x10u) : 0u;
-    const uint32_t ptr = tenv_rd(cpu, game_layout.env.occ_groups);
-    const uint32_t size = (ptr >= 0x80000004u) ? cpu->read_word(ptr - 4u) : 0u;
-    const int32_t level = game_layout.level_id ? (int32_t)cpu->read_word(game_layout.level_id) : 0;
-    const int32_t area = game_layout.env.area ? (int32_t)cpu->read_word(game_layout.env.area) : 0;
-    const uint32_t state = game_layout.game_state ? cpu->read_word(game_layout.game_state) : 0u;
-    const int key_same = T->ptr == ptr && T->size == size && T->flag == flag && T->level == level
-                         && T->area == area;
-    if (key_same && T->state == state && (T->b || !flag || size < 9u)) return;
-    T->ptr = ptr; T->size = size; T->flag = flag; T->level = level; T->area = area; T->state = state;
-    s_sf_refreshes++;
-    if (!flag || ptr < 0x80000004u || size < 9u) {
-        if (T->b || T->len) T->gen++;
-        T->len = 0;
-        free(T->b);
-        T->b = NULL;
-        T->cap = 0;
-        T->hash = 0;
-        return;
-    }
-    const uint32_t len = size > 262144u ? 262144u : size;
-    if (len > T->cap) {
-        uint8_t* nb = (uint8_t*)realloc(T->b, len);
-        if (!nb) return;
-        T->b = nb;
-        T->cap = len;
-    }
-    uint64_t h = 1469598103934665603ull;
-    for (uint32_t k = 0; k < len; k++) {
-        T->b[k] = cpu->read_byte(ptr + k);
-        h = (h ^ T->b[k]) * 1099511628211ull;
-    }
-    if (h != T->hash || len != T->len) T->gen++;
-    T->hash = h;
-    T->len = len;
+    if (sector_pvs_tree_refresh(&s_sf_tree, cpu, tenv_rd(cpu, game_layout.env.occ_groups))) s_sf_refreshes++;
 }
 
 /** @brief Looks the snapshot up one lattice step from `p`, open outside the 128-cell lattice.
@@ -9730,22 +9682,6 @@ static int sf_lookup(const int32_t p[3], const int d[3], uint8_t vis[256]) OP_RE
     return open;
 }
 
-/** @brief Computes C' at the tick camera into `out`: the game's verdict plus the opposite-pair admissions, an open partner agreeing.
- * @param cpu The guest CPU state, read only.
- * @param p The tick camera position, world units.
- * @param n The guest sector count, at most 256.
- * @param out Receives 256 bytes, 0xFF for an admitted sector. */
-static void sf_compute(CPUState* cpu, const int32_t p[3], uint32_t n, uint8_t out[256]) OP_REQUIRES(sim) {
-    uint8_t nb[SECTOR_PVS_RING][256], open[SECTOR_PVS_RING];
-    memset(out, 0, 256);
-    for (uint32_t i = 0; i < n; i++)
-        if (tvis_visible(cpu, i)) out[i] = 0xFF;
-    sector_pvs_ring(s_sf_tree.b, s_sf_tree.len, 0, p, nb, open);
-    sector_pvs_pairs((const uint8_t (*)[256])nb, open, 1, n, out);
-    s_sf_computes++;
-    s_sf_win.computes++;
-}
-
 /** @brief Advances the filled set on a canonical walk: snapshot refresh, C' of the tick, U over two ticks.
  *
  * A sub-tick re-extract (s_vanim_sub) reads the U of the last canonical walk
@@ -9759,35 +9695,21 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     if (!game_layout.env.vis_aspect_independent) return;
     sf_window_walk(cpu);
     sf_tree_refresh(cpu);
-    if (!s_sf_tree.b) { s_sf_cur_ok = s_sf_prev_ok = 0; s_sf_win.notree++; return; }
+    if (!s_sf_tree.b) { sector_pvs_filled_reset(&s_sf); s_sf_win.notree++; return; }
     const uint32_t n = sectorCnt < 256u ? sectorCnt : 256u;
     const uint32_t xe = game_layout.cam.xform_end;
     const int32_t p[3] = { (int32_t)cpu->read_word(xe), (int32_t)cpu->read_word(xe + 4u),
                            (int32_t)cpu->read_word(xe + 8u) };
-    const int32_t cell[3] = { p[0] >> 11, p[1] >> 11, p[2] >> 11 };
+    uint8_t v[256] = { 0 };
+    for (uint32_t i = 0; i < n; i++)
+        if (tvis_visible(cpu, i)) v[i] = 0xFF;
     s_sf_ticks++;
     s_sf_win.ticks++;
-    memcpy(s_sf_prev, s_sf_cur, sizeof s_sf_prev);
-    memcpy(s_sf_prev_cell, s_sf_cur_cell, sizeof s_sf_prev_cell);
-    s_sf_prev_gen = s_sf_cur_gen;
-    s_sf_prev_ok = s_sf_cur_ok;
-    /* The game's verdict changes only with the cell; recompute on a new cell
-     * or tree, else the previous tick's C' is this tick's too. */
-    if (!s_sf_cur_ok || s_sf_cur_gen != s_sf_tree.gen || memcmp(cell, s_sf_cur_cell, sizeof cell)) {
-        sf_compute(cpu, p, n, s_sf_cur);
-        memcpy(s_sf_cur_cell, cell, sizeof cell);
-        s_sf_cur_gen = s_sf_tree.gen;
-        s_sf_cur_ok = 1;
-    }
-    memcpy(s_sf_u, s_sf_cur, sizeof s_sf_u);
-    int near = s_sf_prev_ok && s_sf_prev_gen == s_sf_cur_gen;
-    for (int a = 0; a < 3 && near; a++) near = abs(s_sf_prev_cell[a] - s_sf_cur_cell[a]) <= 1;
-    if (near) {
-        s_sf_unions++;
-        for (int i = 0; i < 256; i++) s_sf_u[i] |= s_sf_prev[i];
-    }
+    const int r = sector_pvs_filled_step(&s_sf, &s_sf_tree, p, n, v);
+    if (r & SECTOR_PVS_COMPUTED) { s_sf_computes++; s_sf_win.computes++; }
+    if (r & SECTOR_PVS_UNIONED) s_sf_unions++;
     int added = 0;
-    for (uint32_t i = 0; i < n; i++) added += s_sf_u[i] && !tvis_visible(cpu, i);
+    for (uint32_t i = 0; i < n; i++) added += s_sf.u[i] && !v[i];
     s_sf_added += (unsigned long)added;
     s_sf_walks_differ += added > 0;
     s_sf_win.added += (unsigned long)added;
@@ -9801,14 +9723,21 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
                 s_sf_walks_differ, s_sf_added, s_sf_tree.gen);
 }
 
+void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim) {
+    s_sf_win.sky++;
+    s_sf_win.sky_computes += computed != 0;
+    s_sf_win.sky_differ += added > 0;
+    s_sf_win.sky_added += (unsigned long)(added > 0 ? added : 0);
+}
+
 int terrain_sector_admitted(uint32_t i) OP_REQUIRES(sim) {
     const int mode = openpete_native_sector_visibility_active();
     if (mode == OPENPETE_SECTOR_VIS_FRUSTUM) return 1;
     if (i >= 255u) return 1;
     if (mode == OPENPETE_SECTOR_VIS_FILLED && s_sf_ready) {
         s_sf_win.pred++;
-        s_sf_win.pred_rej += !s_sf_u[i];
-        return s_sf_u[i] != 0;
+        s_sf_win.pred_rej += !s_sf.u[i];
+        return s_sf.u[i] != 0;
     }
     if (mode == OPENPETE_SECTOR_VIS_FILLED) return 1;   /* no PVS: frustum behaviour */
     return -1;   /* game: the caller reads the game's verdict */
@@ -10024,7 +9953,7 @@ static int secvis_intern(secvis_lattice_t* L, const uint8_t vis[256]) {
 /** @brief Looks the tree up at every lattice cell centre and interns the lists.
  * @param T The tree snapshot.
  * @param L The lattice, filled. */
-static void secvis_lattice_fill(const sf_tree_t* T, secvis_lattice_t* L) {
+static void secvis_lattice_fill(const sector_pvs_tree_t* T, secvis_lattice_t* L) {
     L->nl = 1;
     memset(L->lists[0], 0, 256);
     L->hash[0] = 0;
@@ -10355,7 +10284,7 @@ static int terrain_vislist_filled(CPUState* cpu, uint32_t sectorCnt, uint16_t* o
     if (!S || !s_sf_ready) return -1;
     int n = 0;
     for (uint32_t i = 0; i < sectorCnt && n < 1024; i++)
-        if ((i >= 255u || s_sf_u[i]) && tvis_sphere_in(cpu, S, i)) out[n++] = (uint16_t)i;
+        if ((i >= 255u || s_sf.u[i]) && tvis_sphere_in(cpu, S, i)) out[n++] = (uint16_t)i;
     return n;
 }
 

@@ -1,6 +1,11 @@
 /* games/common/renderer/sector_pvs.c - see sector_pvs.h. */
 #include "renderer/sector_pvs.h"
 
+#include <stdlib.h>
+
+#include "game_layout.h"
+#include "psx_runtime_internal.h"
+
 #include <string.h>
 
 /** @brief Walks one PVS node's sector bytes: the first strictly increasing run hidden, the rest visible, 0xFF bytes skipped.
@@ -104,4 +109,74 @@ void sector_pvs_pairs(const uint8_t nb[SECTOR_PVS_RING][256], const uint8_t open
         for (uint32_t i = 0; i < n; i++)
             if ((nb[k][i] && (nb[o][i] || bo)) || (nb[o][i] && ao)) out[i] = 0xFF;
     }
+}
+
+int sector_pvs_tree_refresh(sector_pvs_tree_t* T, struct CPUState* cpu, uint32_t ptr) {
+    const uint32_t flag = game_layout.env.base ? cpu->read_word(game_layout.env.base + 0x10u) : 0u;
+    const uint32_t size = (ptr >= 0x80000004u) ? cpu->read_word(ptr - 4u) : 0u;
+    const int32_t level = game_layout.level_id ? (int32_t)cpu->read_word(game_layout.level_id) : 0;
+    const int32_t area = game_layout.env.area ? (int32_t)cpu->read_word(game_layout.env.area) : 0;
+    const uint32_t state = game_layout.game_state ? cpu->read_word(game_layout.game_state) : 0u;
+    const int key_same = T->ptr == ptr && T->size == size && T->flag == flag && T->level == level
+                         && T->area == area;
+    if (key_same && T->state == state && (T->b || !flag || size < 9u)) return 0;
+    T->ptr = ptr; T->size = size; T->flag = flag; T->level = level; T->area = area; T->state = state;
+    if (!flag || ptr < 0x80000004u || size < 9u) {
+        if (T->b || T->len) T->gen++;
+        free(T->b);
+        T->b = NULL;
+        T->len = T->cap = 0;
+        T->hash = 0;
+        return 1;
+    }
+    const uint32_t len = size > 262144u ? 262144u : size;
+    if (len > T->cap) {
+        uint8_t* nb = (uint8_t*)realloc(T->b, len);
+        if (!nb) return 1;
+        T->b = nb;
+        T->cap = len;
+    }
+    uint64_t h = 1469598103934665603ull;
+    for (uint32_t k = 0; k < len; k++) {
+        T->b[k] = cpu->read_byte(ptr + k);
+        h = (h ^ T->b[k]) * 1099511628211ull;
+    }
+    if (h != T->hash || len != T->len) T->gen++;
+    T->hash = h;
+    T->len = len;
+    return 1;
+}
+
+int sector_pvs_filled_step(sector_pvs_filled_t* F, const sector_pvs_tree_t* T, const int32_t p[3],
+                           uint32_t n, const uint8_t base[256]) {
+    const int32_t cell[3] = { p[0] >> 11, p[1] >> 11, p[2] >> 11 };
+    int r = 0;
+    memcpy(F->prev, F->cur, sizeof F->prev);
+    memcpy(F->prev_cell, F->cur_cell, sizeof F->prev_cell);
+    F->prev_gen = F->cur_gen;
+    F->prev_ok = F->cur_ok;
+    /* The game's verdict changes only with the cell; recompute on a new cell
+     * or tree, else the previous tick's C' is this tick's too. */
+    if (!F->cur_ok || F->cur_gen != T->gen || memcmp(cell, F->cur_cell, sizeof cell)) {
+        uint8_t nb[SECTOR_PVS_RING][256], open[SECTOR_PVS_RING];
+        memcpy(F->cur, base, sizeof F->cur);
+        sector_pvs_ring(T->b, T->len, 0, p, nb, open);
+        sector_pvs_pairs((const uint8_t (*)[256])nb, open, 1, n, F->cur);
+        memcpy(F->cur_cell, cell, sizeof cell);
+        F->cur_gen = T->gen;
+        F->cur_ok = 1;
+        r |= SECTOR_PVS_COMPUTED;
+    }
+    memcpy(F->u, F->cur, sizeof F->u);
+    int near = F->prev_ok && F->prev_gen == F->cur_gen;
+    for (int a = 0; a < 3 && near; a++) near = abs(F->prev_cell[a] - F->cur_cell[a]) <= 1;
+    if (near) {
+        for (int i = 0; i < 256; i++) F->u[i] |= F->prev[i];
+        r |= SECTOR_PVS_UNIONED;
+    }
+    return r;
+}
+
+void sector_pvs_filled_reset(sector_pvs_filled_t* F) {
+    F->cur_ok = F->prev_ok = 0;
 }

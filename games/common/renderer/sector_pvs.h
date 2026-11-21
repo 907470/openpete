@@ -71,6 +71,68 @@ void sector_pvs_ring(const uint8_t* b, uint32_t len, uint32_t tree, const int32_
 void sector_pvs_pairs(const uint8_t nb[SECTOR_PVS_RING][256], const uint8_t open[SECTOR_PVS_RING],
                       int open_agrees, uint32_t n, uint8_t out[256]);
 
+struct CPUState;
+
+/* A host copy of one PVS tree and the key it was taken under. */
+typedef struct {
+    uint8_t* b;           /* the tree bytes (NULL: no tree, or the lookup is off) */
+    uint32_t len, cap;
+    uint32_t ptr, size;   /* the tree pointer and its size word */
+    uint32_t flag;        /* the lookup flag, env.base + 0x10 (0: lookup off) */
+    int32_t  level, area; /* level id and sub-area word at the snapshot */
+    uint32_t state;       /* the game-state word at the snapshot */
+    uint64_t hash;        /* FNV-1a over the tree bytes */
+    unsigned gen;         /* bumped when the tree content changes */
+} sector_pvs_tree_t;
+
+/** @brief Re-copies a PVS tree when its key changed, and re-hashes it then or when the game-state word changed.
+ *
+ * The key is the tree pointer, its size word, the lookup flag at
+ * env.base + 0x10, the level id and the sub-area word (env.area). A load
+ * that reuses the buffer at the same address and size changes the
+ * game-state word on its way in and out, so a change of that word
+ * re-hashes the tree; a hash change bumps the generation. A zero flag or an
+ * absent tree empties the copy (the game draws every sector).
+ * @param T The snapshot.
+ * @param cpu The guest CPU state, read only.
+ * @param ptr The tree pointer (the word at env.occ_groups for the terrain,
+ *        at cyc.occ_groups for the sky).
+ * @return 1 when the key or state changed (a refresh), else 0. */
+int sector_pvs_tree_refresh(sector_pvs_tree_t* T, struct CPUState* cpu, uint32_t ptr);
+
+/* The --sector-visibility filled set over two ticks for one tree. */
+typedef struct {
+    uint8_t cur[256], prev[256];  /* C' of the current and the previous tick */
+    uint8_t u[256];               /* U, the drawn set */
+    int32_t cur_cell[3], prev_cell[3];
+    unsigned cur_gen, prev_gen;
+    int cur_ok, prev_ok;
+} sector_pvs_filled_t;
+
+/* sector_pvs_filled_step's result bits. */
+#define SECTOR_PVS_COMPUTED 1   /* C' was recomputed (a new cell or tree) */
+#define SECTOR_PVS_UNIONED  2   /* the previous tick's C' joined U */
+
+/** @brief Advances the filled set one tick: C' at the tick camera's cell, U over two ticks.
+ *
+ * C' (`base` plus the opposite-pair admissions, an open partner agreeing)
+ * is recomputed when the cell or the tree generation changed, else the
+ * previous tick's C' carries over. U is C' united with the previous tick's
+ * C' when the two cells are within Chebyshev distance 1 and the generation
+ * did not change. Out-of-lattice points are open (sector_pvs_ring).
+ * @param F The filled state.
+ * @param T The tree snapshot, with a tree.
+ * @param p The tick camera position, world units.
+ * @param n The sector count, at most 256.
+ * @param base The game's verdict, 0xFF per visible sector (read on a recompute).
+ * @return SECTOR_PVS_COMPUTED and SECTOR_PVS_UNIONED bits. */
+int sector_pvs_filled_step(sector_pvs_filled_t* F, const sector_pvs_tree_t* T, const int32_t p[3],
+                           uint32_t n, const uint8_t base[256]);
+
+/** @brief Drops both ticks' sets (no tree), so the next step neither reuses nor unites them.
+ * @param F The filled state. */
+void sector_pvs_filled_reset(sector_pvs_filled_t* F);
+
 #ifdef __cplusplus
 }
 #endif
