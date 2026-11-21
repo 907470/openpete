@@ -277,3 +277,7 @@ ocean_speedway@fogpp | pos=(51802, 81753, 36334) yaw=-160 pitch=356 | | --fog pe
 ocean_speedway@fogoff | pos=(51802, 81753, 36334) yaw=-160 pitch=356 | | --fog off
 # Metropolis across the pool: the hole-fill pass draws back-facing low-detail faces the world pass drops.
 metropolis@fillcull | pos=(47022, 108954, 39776) yaw=-211 pitch=81
+# Sky hole at 4:3: the game's sky PVS draws 3 of the 46 sky sectors here, so
+# the archway shows the background colour where the dome is. Pinned to 4:3: a
+# wider view draws every sky sector.
+autumn_plains@sky4x3 | pos=(99150, 161980, 32725) yaw=1546 pitch=160 | | --aspect 4:3
