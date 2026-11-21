@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 1a90484f8616e9f7adf11a59cf621f73a648949c
+# head: 30317dbbd77629709a301576b038fa0595490b4a
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -82,7 +82,6 @@ games/common/freecam_game.c	freecam_drive	38	0
 games/common/psyq/psyq_thunks.cpp	format_from_mips	79	0	
 games/common/psyq/psyq_thunks.cpp	psyq_CdRead	36	0	
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	34	0	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	174	0	
 games/common/psyq/psyq_thunks.cpp	psyq_VSync	29	0	
 games/common/psyq/psyq_thunks.cpp	psyq_thunk_state_load	27	0	
 games/common/renderer/cyclorama.c	compare_and_report	45	0	
@@ -114,7 +113,6 @@ games/common/renderer/native_gte.c	ngte_walk_prims	48	0
 games/common/renderer/player.c	pair_lists	27	0	
 games/common/renderer/player.c	player_build_walk	80	0	
 games/common/renderer/player.c	player_feed_walk_ex	33	0	
-games/common/renderer/player.c	player_records_epoch_commit	200	0	
 games/common/renderer/player.c	player_reextract_record	26	0	
 games/common/renderer/player.c	player_verify_report	109	0	
 games/common/renderer/player.c	pv_capture	60	0	
@@ -140,7 +138,6 @@ games/common/renderer/terrain.c	tn_tridump	29	0
 games/common/renderer/terrain.c	tsc_decode_faces	26	0	
 games/common/renderer/terrain.c	tsc_field_census	27	0	
 games/common/renderer/terrain.c	tsc_lp_grade	31	0	
-games/common/renderer/terrain.c	tsc_vert_anim_refresh	153	0	
 games/common/renderer/terrain.c	tsimp_attach	26	0	
 games/common/renderer/terrain.c	walk_sector	360	0	
 games/common/renderer/ui_sprite.c	build_ot_rank_map	43	0	
@@ -153,12 +150,11 @@ games/spyro-1/renderer/interp_regions.c	game_interp_moby_key	44	0
 games/spyro-1/renderer/interp_regions.c	spyro_interp_extra_pools	38	0	
 games/spyro-1/renderer/moby_game.c	s1_decode_faces	39	0	
 games/spyro-1/renderer/particle.c	dragonstar_compare	40	0	
-games/spyro-1/renderer/particle.c	glow_build	66	0	
+games/spyro-1/renderer/particle.c	glow_build	56	0	
 games/spyro-1/renderer/particle.c	glow_compare	40	0	
 games/spyro-1/renderer/particle.c	on_particle_renderer	47	0	
-games/spyro-1/renderer/particle.c	particle_build	216	0	
 games/spyro-1/renderer/particle.c	particle_compare	153	0	
-games/spyro-1/renderer/particle.c	sparkle_build	82	0	
+games/spyro-1/renderer/particle.c	sparkle_build	70	0	
 games/spyro-1/renderer/particle.c	sparkle_compare	40	0	
 games/spyro-1/renderer/particle.c	sparkle_feed_native	37	0	
 games/spyro-1/renderer/portal.c	dump_leaf	31	0	

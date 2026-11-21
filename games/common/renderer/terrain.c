@@ -7846,6 +7846,49 @@ static int tsc_vanim_jump(const tsvert_t* p, const tsvert_t* c, int n) {
     }
     return 0;
 }
+/* One vertex tier's animation banks of a cached sector, LP or HP: the decoded
+ * current bank, the lazily allocated previous-tick bank and float lerp bank
+ * (fields of the sector, reached through their addresses so a roll can
+ * allocate them), the vertex count (0 without the tier) and the guest
+ * address of the tier's packed vertices. */
+typedef struct {
+    tsvert_t* cur;
+    tsvert_t** prev;
+    float** frac;
+    int n;
+    uint32_t src;
+    const char* name;
+} tsc_vbank_t;
+
+/** @brief Fills the LP and HP bank views of a cached sector.
+ *
+ * LP decodes from s + 0x1C, HP from s + 0x1C + (sig[4] >> 24) * 4.
+ * @param C The sector.
+ * @param b Receives the LP view in b[0] and the HP view in b[1]. */
+static void tsc_vbanks(tscache_t* C, tsc_vbank_t b[2]) {
+    b[0] = (tsc_vbank_t){ C->lpV, &C->lpVprev, &C->lpVf, C->lpV ? C->nLpV : 0, C->s + 0x1C, "lp" };
+    b[1] = (tsc_vbank_t){ C->hpV, &C->hpVprev, &C->hpVf, C->hpV ? C->nHpV : 0,
+                          C->s + 0x1C + ((C->sig[4] >> 24) & 0xFF) * 4, "hp" };
+}
+
+/** @brief Tests whether a bank's previous-to-current step is a keyframe jump (tsc_vanim_jump).
+ *
+ * @param b The bank.
+ * @return 1 when the bank has a previous bank and some vertex jumped, else 0. */
+static int tsc_vbank_jumped(const tsc_vbank_t* b) {
+    return b->n && *b->prev && tsc_vanim_jump(*b->prev, b->cur, b->n);
+}
+
+/** @brief Tests whether a sector's previous banks snap to the current ones: a bank missing its previous copy, or a keyframe jump.
+ *
+ * @param b The LP and HP bank views.
+ * @return 1 when either bank snaps, else 0. */
+static int tsc_vbanks_snap(const tsc_vbank_t b[2]) {
+    for (int k = 0; k < 2; k++)
+        if (b[k].n && !*b[k].prev) return 1;
+    return tsc_vbank_jumped(&b[0]) || tsc_vbank_jumped(&b[1]);
+}
+
 /** @brief Adds one canonical roll's displacement to a sector's re-tag sums.
  *
  * rtD gains the largest Euclidean LP vertex move plus the largest HP vertex
@@ -7858,15 +7901,12 @@ static int tsc_vanim_jump(const tsvert_t* p, const tsvert_t* c, int n) {
  * records whether the roll moved a vertex without such a reset: the sub-tick
  * lerp between the two banks then moves the sector's geometry.
  * @param C The sector, rolled and re-decoded.
- * @param nLp Its LP vertex count, 0 without an LP bank.
- * @param nHp Its HP vertex count, 0 without an HP bank. */
-static void tsc_rt_roll(tscache_t* C, int nLp, int nHp) {
-    const int lpOk = !nLp || C->lpVprev, hpOk = !nHp || C->hpVprev;
-    const int reset = !lpOk || !hpOk || (nLp && tsc_vanim_jump(C->lpVprev, C->lpV, nLp)) ||
-                      (nHp && tsc_vanim_jump(C->hpVprev, C->hpV, nHp));
+ * @param b Its LP and HP bank views. */
+static void tsc_rt_roll(tscache_t* C, const tsc_vbank_t b[2]) {
+    const int reset = tsc_vbanks_snap(b);
     if (reset) tsc_rt_force(C);
-    const double mLp = (nLp && lpOk) ? tsc_bank_move(C->lpVprev, C->lpV, nLp) : 0.0;
-    const double mHp = (nHp && hpOk) ? tsc_bank_move(C->hpVprev, C->hpV, nHp) : 0.0;
+    const double mLp = (b[0].n && *b[0].prev) ? tsc_bank_move(*b[0].prev, b[0].cur, b[0].n) : 0.0;
+    const double mHp = (b[1].n && *b[1].prev) ? tsc_bank_move(*b[1].prev, b[1].cur, b[1].n) : 0.0;
     C->rtD += mLp + mHp;
     C->rtDhp += mHp;
     C->vanimMoved = !reset && mLp + mHp > 0.0;
@@ -7888,21 +7928,128 @@ static void tsc_vanim_lerp(const tsvert_t* p, const tsvert_t* c, int n,
         out[k*3+2] = (float)(p[k].z + ((double)c[k].z - p[k].z) * a);
     }
 }
+/** @brief Rolls one bank on a canonical build: the current bank becomes the previous one, then it is re-decoded from RAM.
+ *
+ * The previous bank is allocated on the first roll; a failed allocation
+ * leaves it absent and the roll still re-decodes.
+ * @param cpu The guest CPU state.
+ * @param C The sector.
+ * @param b The bank. */
+static void tsc_vbank_roll(CPUState* cpu, const tscache_t* C, const tsc_vbank_t* b) {
+    if (!b->n) return;
+    if (!*b->prev) *b->prev = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)b->n);
+    if (*b->prev) memcpy(*b->prev, b->cur, sizeof(tsvert_t) * (size_t)b->n);
+    tsc_decode_verts(&(twsrc_t){ cpu, NULL, 0u }, b->src, b->n, C->flat, b->cur);
+}
+
+/** @brief Fills a bank's float lerp bank at alpha, allocating it on first use.
+ *
+ * @param b The bank.
+ * @param a The interpolation alpha.
+ * @return 1 when filled, 0 without a previous bank or on a failed allocation. */
+static int tsc_vbank_fill(const tsc_vbank_t* b, double a) {
+    if (!b->n || !*b->prev) return 0;
+    if (!*b->frac) *b->frac = (float*)malloc(sizeof(float) * 3u * (size_t)b->n);
+    if (!*b->frac) return 0;
+    tsc_vanim_lerp(*b->prev, b->cur, b->n, a, *b->frac);
+    return 1;
+}
+
+/** @brief Folds a bank's decoded vertex bytes into an FNV-1a hash.
+ *
+ * @param h The running hash.
+ * @param b The bank.
+ * @return The updated hash. */
+static uint32_t tsc_vbank_hash(uint32_t h, const tsc_vbank_t* b) {
+    const uint8_t* p = (const uint8_t*)b->cur;
+    for (size_t n = sizeof(tsvert_t) * (size_t)b->n, j = 0; j < n; j++)
+        h = (h ^ p[j]) * 16777619u;
+    return h;
+}
+
+/** @brief Prints the first vertex of a sector's banks that moved this tick with its lerp, under OPENPETE_TERRAIN_VANIMDBG.
+ *
+ * @param idx The sector index.
+ * @param b The LP and HP bank views. */
+static void tsc_vbank_log_first_move(uint32_t idx, const tsc_vbank_t b[2]) {
+    for (int k = 0; k < 2; k++) {
+        const tsvert_t* P = *b[k].prev;
+        const tsvert_t* V = b[k].cur;
+        const float* F = *b[k].frac;
+        if (!P || !V || !F) continue;
+        for (int v = 0; v < b[k].n; v++) {
+            if (P[v].x == V[v].x && P[v].y == V[v].y && P[v].z == V[v].z) continue;
+            fprintf(stderr, "[vanim f=%u pres=%u] s=%u a=%.3f %sV[%d] (%d,%d,%d)->(%d,%d,%d) lerp=(%.2f,%.2f,%.2f)\n",
+                    openpete_frame, s_vanim_pres, idx, s_vanim_alpha, b[k].name, v,
+                    P[v].x, P[v].y, P[v].z, V[v].x, V[v].y, V[v].z,
+                    F[v*3], F[v*3+1], F[v*3+2]);
+            return;
+        }
+    }
+}
+
+/** @brief Rolls a sector's banks on a canonical build, once per build.
+ *
+ * Runs after the .s rewrote the vertices: each bank rolls (tsc_vbank_roll),
+ * then the keyframe and walker models apply, the re-tag sums advance
+ * (tsc_rt_roll), and vertGen steps when the hash of the decoded banks
+ * changed, so an anim-listed sector whose geometry held still keeps its GPU
+ * chunks. The roll pairs the current bank with the tick the interp spine
+ * committed, so the sub-tick lerp rides the camera's 1-tick-lag timeline.
+ * @param cpu The guest CPU state.
+ * @param C The sector.
+ * @param idx The sector index.
+ * @param sectorPtr The sector pointer table's guest address.
+ * @param sectorCnt The sector count. */
+static void tsc_vanim_roll_sector(CPUState* cpu, tscache_t* C, uint32_t idx,
+                                  uint32_t sectorPtr, uint32_t sectorCnt) {
+    if (C->vrollPres == s_vanim_pres) return;   /* named by both lists */
+    C->vrollPres = s_vanim_pres;
+    tsc_vbank_t b[2]; tsc_vbanks(C, b);
+    tsc_vbank_roll(cpu, C, &b[0]);
+    tsc_vbank_roll(cpu, C, &b[1]);
+    tsc_kf_apply(cpu, C);
+    tsc_envm_apply(cpu, C, (int)idx, sectorPtr, sectorCnt);
+    tsc_rt_roll(C, b);
+    uint32_t h = tsc_vbank_hash(tsc_vbank_hash(2166136261u, &b[0]), &b[1]);
+    if (h != C->vertHash) { C->vertHash = h; C->vertGen++; }
+}
+
+/** @brief Fills a sector's float lerp banks for a sub-tick present, once per build.
+ *
+ * Fractional floats: one LP local unit is 16 world units, so an int16 lerp
+ * would step on the 16-unit grid the fractional camera removes. A sector
+ * where either bank jumped (a teleport or keyframe reset) stays on the
+ * current bank. The walk consumes the banks only while vfracPres matches
+ * this build.
+ * @param C The sector.
+ * @param idx The sector index.
+ * @param dbg Nonzero to log the first moved vertex.
+ * @return 1 when a bank was filled, else 0. */
+static int tsc_vanim_fill_sector(tscache_t* C, uint32_t idx, int dbg) {
+    if (C->vfracPres == s_vanim_pres) return 0;
+    tsc_vbank_t b[2]; tsc_vbanks(C, b);
+    if (tsc_vbank_jumped(&b[0]) || tsc_vbank_jumped(&b[1])) return 0;   /* snap to cur */
+    int filled = tsc_vbank_fill(&b[0], s_vanim_alpha);
+    filled |= tsc_vbank_fill(&b[1], s_vanim_alpha);
+    if (!filled) return 0;
+    C->vfracPres = s_vanim_pres;
+    if (dbg) tsc_vbank_log_first_move(idx, b);
+    return 1;
+}
+
 /** @brief Refreshes the vertex banks of every decode-cached sector that a poly-anim descriptor names.
  *
  * Returns when sectorPtr is 0. For each vertex-kind registry entry whose
- * sector is in the decode cache, once per build (vrollPres, vfracPres): a
- * canonical build copies lpV and hpV into the previous banks (allocated on
- * the first roll), re-decodes them from RAM, and steps vertGen when the
- * hash of the decoded words changed. The walk covers every listed sector,
- * live or dormant; a dormant sector's HP bank takes the walker model
+ * sector is in the decode cache, once per build: a canonical build rolls
+ * the sector (tsc_vanim_roll_sector); a sub-tick build with a camera pair
+ * (s_vanim_on) fills its float lerp banks at s_vanim_alpha
+ * (tsc_vanim_fill_sector). The walk covers every listed sector, live or
+ * dormant; a dormant sector's HP bank takes the walker model
  * (tsc_envm_apply), after a canonical build steps the liveness snapshots
- * (envm_live_roll). A sub-tick build with a camera pair
- * (s_vanim_on) fills the float banks lpVf and hpVf with the previous-to-
- * current lerp at s_vanim_alpha, except for a sector where tsc_vanim_jump
- * fires, which stays on the current bank. A failed allocation leaves the
- * bank unfilled. Prints [vanim] lines under OPENPETE_TERRAIN_VANIMDBG; the
- * [vanim-scan] kf= count is the vertex entries that are keyframe descriptors.
+ * (envm_live_roll). Prints [vanim] lines under OPENPETE_TERRAIN_VANIMDBG;
+ * the [vanim-scan] kf= count is the vertex entries that are keyframe
+ * descriptors.
  * @param cpu The guest CPU state.
  * @param sectorPtr The sector pointer table's guest address.
  * @param sectorCnt The sector count. */
@@ -7912,110 +8059,30 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
     static int s_vdbg = -1;
     ENV_FLAG_LATCH(s_vdbg, "OPENPETE_TERRAIN_VANIMDBG");
     int dbg_desc = 0, dbg_kf = 0, dbg_cached = 0, dbg_prev = 0, dbg_filled = 0;
-    uint32_t dbg_seen = 0;
-    {
-        env_anim_iter_t it;
-        uint32_t idx; int kind;
-        env_anim_iter_init(&it, cpu, sectorCnt);
-        it.listed = 1;      /* dormant sectors animate through the walker model */
-        while (env_anim_iter_next(&it, &idx, &kind)) {
-            if (kind != ENV_ANIM_KIND_VERT) continue;   /* colours are read live */
-            uint32_t s = rd(cpu, sectorPtr + idx * 4);
-            if (!s) continue;
-            dbg_desc++;
-            dbg_kf += it.desc;
-            /* The entry's counts and offsets come from its signature, so it
-             * is refreshed only while that matches the header in RAM. */
-            tscache_t* C = tsc_find(cpu, s);
-            if (tsc_audit_on() && !s_vanim_sub) tsc_audit_refresh(cpu, s, C);
-            if (!C) continue;
-            dbg_cached++;
-            if (C->lpVprev) dbg_prev++;
-            int nLp = C->lpV ? C->nLpV : 0, nHp = C->hpV ? C->nHpV : 0;
-            if (!s_vanim_sub) {
-                /* Canonical build (once per tick, AFTER the .s ran its INTPL vert
-                 * rewrite): roll prev = last tick's decode, re-decode cur from RAM.
-                 * The roll pairs cur with the tick-N snapshot the interp spine
-                 * committed, so the sub-tick lerp below rides the same 1-tick-lag
-                 * timeline as the camera/mobys. */
-                if (C->vrollPres == s_vanim_pres) continue;   /* named by both lists */
-                C->vrollPres = s_vanim_pres;
-                if (nLp) {
-                    if (!C->lpVprev) C->lpVprev = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)nLp);
-                    if (C->lpVprev) memcpy(C->lpVprev, C->lpV, sizeof(tsvert_t) * (size_t)nLp);
-                    tsc_decode_verts(&(twsrc_t){ cpu, NULL, 0u }, C->s + 0x1C, nLp, C->flat, C->lpV);
-                }
-                if (nHp) {
-                    if (!C->hpVprev) C->hpVprev = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)nHp);
-                    if (C->hpVprev) memcpy(C->hpVprev, C->hpV, sizeof(tsvert_t) * (size_t)nHp);
-                    tsc_decode_verts(&(twsrc_t){ cpu, NULL, 0u }, C->s + 0x1C + ((C->sig[4] >> 24) & 0xFF) * 4,
-                                     nHp, C->flat, C->hpV);
-                }
-                tsc_kf_apply(cpu, C);
-                tsc_envm_apply(cpu, C, (int)idx, sectorPtr, sectorCnt);
-                tsc_rt_roll(C, nLp, nHp);
-                {   /* GPU-cache liveness: the re-decode is unconditional per tick,
-                     * so hash the decoded verts and bump vertGen only when the
-                     * geometry actually moved (else anim-listed sectors would
-                     * rebuild their GPU chunks every tick for nothing). */
-                    uint32_t h = 2166136261u;
-                    const uint8_t* hp = (const uint8_t*)C->lpV;
-                    for (size_t n = sizeof(tsvert_t) * (size_t)(C->lpV ? nLp : 0), j = 0; j < n; j++)
-                        h = (h ^ hp[j]) * 16777619u;
-                    hp = (const uint8_t*)C->hpV;
-                    for (size_t n = sizeof(tsvert_t) * (size_t)(C->hpV ? nHp : 0), j = 0; j < n; j++)
-                        h = (h ^ hp[j]) * 16777619u;
-                    if (h != C->vertHash) { C->vertHash = h; C->vertGen++; }
-                }
-            } else if (s_vanim_on) {
-                /* Sub-tick present: fill the fractional lerp banks prev->cur at the
-                 * spine's alpha. Fractional floats on purpose - 1 LP local unit is
-                 * 16 world units, so an int16 lerp would step the wall on the same
-                 * 16-unit grid the fractional-camera fix removed. The walk consumes
-                 * the banks only when vfracPres matches this build. */
-                if (C->vfracPres == s_vanim_pres) continue;
-                if ((nLp && C->lpVprev && tsc_vanim_jump(C->lpVprev, C->lpV, nLp)) ||
-                    (nHp && C->hpVprev && tsc_vanim_jump(C->hpVprev, C->hpV, nHp)))
-                    continue;                        /* teleport/keyframe reset: snap to cur */
-                int filled = 0;
-                if (nLp && C->lpVprev) {
-                    if (!C->lpVf) C->lpVf = (float*)malloc(sizeof(float) * 3u * (size_t)nLp);
-                    if (C->lpVf) { tsc_vanim_lerp(C->lpVprev, C->lpV, nLp, s_vanim_alpha, C->lpVf); filled = 1; }
-                }
-                if (nHp && C->hpVprev) {
-                    if (!C->hpVf) C->hpVf = (float*)malloc(sizeof(float) * 3u * (size_t)nHp);
-                    if (C->hpVf) { tsc_vanim_lerp(C->hpVprev, C->hpV, nHp, s_vanim_alpha, C->hpVf); filled = 1; }
-                }
-                if (filled) { C->vfracPres = s_vanim_pres; dbg_filled++; }
-                if (filled && s_vdbg) {
-                    /* first vert (either bank) that actually moved this tick */
-                    for (int bank = 0; bank < 2; bank++) {
-                        const tsvert_t* P = bank ? C->hpVprev : C->lpVprev;
-                        const tsvert_t* V = bank ? C->hpV : C->lpV;
-                        const float* F = bank ? C->hpVf : C->lpVf;
-                        int n = bank ? nHp : nLp;
-                        if (!P || !V || !F) continue;
-                        for (int v = 0; v < n; v++) {
-                            if (P[v].x != V[v].x || P[v].y != V[v].y || P[v].z != V[v].z) {
-                                fprintf(stderr, "[vanim f=%u pres=%u] s=%u a=%.3f %sV[%d] (%d,%d,%d)->(%d,%d,%d) lerp=(%.2f,%.2f,%.2f)\n",
-                                        openpete_frame, s_vanim_pres, idx, s_vanim_alpha,
-                                        bank ? "hp" : "lp", v,
-                                        P[v].x, P[v].y, P[v].z, V[v].x, V[v].y, V[v].z,
-                                        F[v*3], F[v*3+1], F[v*3+2]);
-                                bank = 2; break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        dbg_seen = it.seen;
+    env_anim_iter_t it;
+    uint32_t idx; int kind;
+    env_anim_iter_init(&it, cpu, sectorCnt);
+    it.listed = 1;      /* dormant sectors animate through the walker model */
+    while (env_anim_iter_next(&it, &idx, &kind)) {
+        if (kind != ENV_ANIM_KIND_VERT) continue;   /* colours are read live */
+        uint32_t s = rd(cpu, sectorPtr + idx * 4);
+        if (!s) continue;
+        dbg_desc++;
+        dbg_kf += it.desc;
+        /* The entry's counts and offsets come from its signature, so it
+         * is refreshed only while that matches the header in RAM. */
+        tscache_t* C = tsc_find(cpu, s);
+        if (tsc_audit_on() && !s_vanim_sub) tsc_audit_refresh(cpu, s, C);
+        if (!C) continue;
+        dbg_cached++;
+        if (C->lpVprev) dbg_prev++;
+        if (!s_vanim_sub) tsc_vanim_roll_sector(cpu, C, idx, sectorPtr, sectorCnt);
+        else if (s_vanim_on) dbg_filled += tsc_vanim_fill_sector(C, idx, s_vdbg);
     }
-    if (s_vdbg && dbg_seen)
+    if (s_vdbg && it.seen)
         fprintf(stderr, "[vanim-scan f=%u sub=%d on=%d entries=%u desc=%d kf=%d cached=%d prev=%d filled=%d]\n",
-                openpete_frame, s_vanim_sub, s_vanim_on, dbg_seen, dbg_desc, dbg_kf, dbg_cached, dbg_prev,
-                dbg_filled);
-}
+                openpete_frame, s_vanim_sub, s_vanim_on, it.seen, dbg_desc, dbg_kf, dbg_cached, dbg_prev,
+                dbg_filled);}
 
 /* Colour env-anim sub-tick interpolation. The colour sub-lists (Spyro 1
  * m_LowColorAnimations / m_HighColorAnimations, the Spyro 2 and Spyro 3 arena
@@ -13324,11 +13391,9 @@ static int tgpu_ring_sector(const tscache_t* SC) {
  * @param SC The decoded sector.
  * @return 1 to take the current banks as the previous ones. */
 static int tgpu_vsnap(const tscache_t* SC) {
-    const int nLp = (SC->lpV && SC->lpVprev) ? SC->nLpV : 0;
-    const int nHp = (SC->hpV && SC->hpVprev) ? SC->nHpV : 0;
-    const int havePrev = (!SC->lpV || SC->lpVprev) && (!SC->hpV || SC->hpVprev);
-    return !havePrev || (nLp && tsc_vanim_jump(SC->lpVprev, SC->lpV, nLp)) ||
-           (nHp && tsc_vanim_jump(SC->hpVprev, SC->hpV, nHp));
+    tsc_vbank_t b[2];
+    tsc_vbanks((tscache_t*)SC, b);   /* the views are only read here */
+    return tsc_vbanks_snap(b);
 }
 
 /** @brief Marks a face of a ring bake as reading the position ring and records its corners' bank indices.

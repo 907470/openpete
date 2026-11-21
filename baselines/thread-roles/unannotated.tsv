@@ -2481,8 +2481,13 @@ games/common/psyq/psyq_thunks.cpp	-	s_loop_counted_only	static	-
 games/common/psyq/psyq_thunks.cpp	-	s_loop_pre_anchor	static	-	
 games/common/psyq/psyq_thunks.cpp	-	s_masked_query_charges	static	-	
 games/common/psyq/psyq_thunks.cpp	-	s_masked_vsync_waits	static	-	
+games/common/psyq/psyq_thunks.cpp	-	s_ot_anchor_slots	static	-	function-local statics of psyq_DrawOTag moved to its walk helpers
 games/common/psyq/psyq_thunks.cpp	-	s_ot_base	static	-	
 games/common/psyq/psyq_thunks.cpp	-	s_ot_buf	static	-	
+games/common/psyq/psyq_thunks.cpp	-	s_ot_hist	static	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	-	s_ot_hist_calls	static	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	-	s_ot_hist_logged	static	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	-	s_ot_total_slots	static	-	function-local statics of psyq_DrawOTag moved to its walk helpers
 games/common/psyq/psyq_thunks.cpp	-	s_pad_buf0	static	-	
 games/common/psyq/psyq_thunks.cpp	-	s_pad_busy_vbls	static	-	
 games/common/psyq/psyq_thunks.cpp	-	s_pad_card_free_prev	static	-	
@@ -2518,29 +2523,23 @@ games/common/psyq/psyq_thunks.cpp	cd_sync_blocking	s_sync0_warned	local	-
 games/common/psyq/psyq_thunks.cpp	fast_boot_hold	s_hold	local	-	
 games/common/psyq/psyq_thunks.cpp	getlocp_ab_compare	s_on	local	-	
 games/common/psyq/psyq_thunks.cpp	invoke_psx_callback	s_cbdbg	local	once	= -1, one filler, first reference tests it
+games/common/psyq/psyq_thunks.cpp	ot_dump_file	s_dump_fp	local	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	ot_dump_file	s_dump_hi	local	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	ot_dump_file	s_dump_lo	local	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	ot_garbage_trace	s_on	local	once	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	ot_high_water	s_last_log_frame	local	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	ot_high_water	s_max_scratch	local	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	ot_high_water	s_max_slot_count	local	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	ot_truncate_limit	s_limit	local	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	ot_walk	s_dump_call	local	-	function-local statics of psyq_DrawOTag moved to its walk helpers
+games/common/psyq/psyq_thunks.cpp	ot_walk	s_otg_logs	local	-	function-local statics of psyq_DrawOTag moved to its walk helpers
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	calls	local	-	
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	cs_calls_this_frame	local	-	
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	cs_last_frame	local	-	
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	s_cs_limit	local	-	
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	s_cs_read	local	-	
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	s_poll_pos	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_anchor_slots	local	-	
 games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_calls	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_dump_call	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_dump_fp	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_dump_hi	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_dump_lo	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_hist	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_hist_calls	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_last_dump	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_last_frame	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_last_log_frame	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_max_scratch	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_max_slot_count	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_ot_truncate	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_otg_logs	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_otg_trace	local	-	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	s_total_slots	local	-	
 games/common/psyq/psyq_thunks.cpp	psyq_ResetCallback	s_intr_started	local	-	
 games/common/psyq/psyq_thunks.cpp	psyq_ResetGraph	s_selftest_done	local	-	
 games/common/psyq/psyq_thunks.cpp	psyq_SpuGetAllKeysStatus	s_last	local	-	

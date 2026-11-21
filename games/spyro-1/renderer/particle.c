@@ -331,6 +331,23 @@ static void streak_log(const char* fam, uint32_t slot,
             openpete_frame, fam, slot, ax, ay, bx, by);
 }
 
+/** @brief Computes an interp-objs slot's sub-tick phase alpha at the present clock.
+ *
+ * The snapshot interval is capped at one tick period; the alpha is
+ * (s_phase_now - curr_ns) / interval clamped to [PART_ALPHA_MIN, 1].
+ * @param o The slot's interp-objs entry.
+ * @param a Receives the alpha; unwritten on failure.
+ * @return 1 when the interval is positive, else 0. */
+static int part_slot_alpha(const openpete_interp_obj_t* o, double* a) {
+    op_time_t per = o->curr_ns - o->prev_ns;
+    if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
+    if (per <= 0) return 0;
+    double v = (double)(s_phase_now - o->curr_ns) / (double)per;
+    if (v < PART_ALPHA_MIN) v = PART_ALPHA_MIN; else if (v > 1.0) v = 1.0;
+    *a = v;
+    return 1;
+}
+
 /* The prev and curr interp-obj words A/B/C (+0x04, +0x08, +0x0C) of a
  * g_Particles slot and the slot's sub-tick alpha. */
 typedef struct { uint32_t A, B, C;      /* table-PREV words */
@@ -387,11 +404,8 @@ static int part_phase_prev(uint32_t pp, part_prev_t* out) {
      * ticks, so snapping it loses nothing visible - beyond this, lerping
      * only ever paints streaks. */
     if (d2 > 300.0*300.0) return 0;
-    op_time_t per = o->curr_ns - o->prev_ns;
-    if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
-    if (per <= 0) return 0;
-    double a = (double)(s_phase_now - o->curr_ns) / (double)per;
-    if (a < PART_ALPHA_MIN) a = PART_ALPHA_MIN; else if (a > 1.0) a = 1.0;
+    double a;
+    if (!part_slot_alpha(o, &a)) return 0;
     out->A = pA; out->B = pB; out->C = pC;
     out->cA = cA; out->cB = cB; out->cC = cC;
     out->alpha = a;
@@ -583,6 +597,20 @@ typedef struct {
 #define MAX_PLINE 1024
 static pline s_pline[MAX_PLINE]; static int s_pline_n;
 
+/** @brief Fills a quad's material as flat colour from a particle's +0x0C command word.
+ *
+ * The low 24 bits are the colour; STP (bit 1 of the GPU code byte) selects
+ * blend 1, else opaque. UVs and the VRAM material are zero.
+ * @param cmd The record's +0x0C word.
+ * @param q Receives the colour, blend and a zero texture material. */
+static void material_flat(uint32_t cmd, fquad* q) {
+    q->rgb = cmd & 0xFFFFFF;
+    q->textured = 0;
+    q->blend = ((cmd >> 24) & 0x02) ? 1 : 0;
+    for (int k = 0; k < 4; k++) { q->u[k] = q->v[k] = 0; }
+    q->tpx = q->tpy = q->clx = q->cly = q->bpp = 0;
+}
+
 /** @brief Decodes a particle's FT4 material from gamestate into a native quad.
  *
  * One idiom serves every FT4 class: the colour/command word at +0x0C (high
@@ -601,12 +629,7 @@ static void decode_material(CPUState* cpu, uint32_t pp, int mclass, fquad* q) {
     q->rgb = cmd & 0xFFFFFF;
     int stp = ((cmd >> 24) & 0x02) != 0;          /* GPU code STP bit */
     uint32_t texbase = cpu->read_word(D_PARTTEX + (uint32_t)mclass * 4);
-    if (!texbase) {                               /* no texture record -> flat */
-        q->textured = 0; q->blend = stp ? 1 : 0;
-        for (int k = 0; k < 4; k++) { q->u[k] = q->v[k] = 0; }
-        q->tpx = q->tpy = q->clx = q->cly = q->bpp = 0;
-        return;
-    }
+    if (!texbase) { material_flat(cmd, q); return; }   /* no texture record -> flat */
     uint32_t texrec = texbase + (cpu->read_word(pp + 0x10) & 0xFF) * 8u;
     uint32_t w4 = cpu->read_word(texrec + 4), w8 = cpu->read_word(texrec + 8);
     int u0 = (int)(w4 & 0xFF), v0 = (int)((w4 >> 8) & 0xFF), clut = (int)((w4 >> 16) & 0xFFFF);
@@ -651,307 +674,426 @@ static float sel4_bucket_depth(int sz3, uint32_t col1) {
     return (float)(((bucket > 0 ? bucket : 0) + 1) << 5);
 }
 
+/* The running particle build's view inputs, shared by every sel builder. */
+typedef struct {
+    CPUState* cpu;
+    const ngte_view* v;          /* s_pv */
+    ngte_view vc;                /* canonical view: the HUD bursts (sel 4, 5) */
+    int R[3][3];                 /* camera rotation */
+    double s7, t8, t9;           /* camera position / 4, fractional */
+    double ofx, ofy;             /* screen offset */
+    double H, Hc, qcap;          /* display H, the GTE's H, capped quotient */
+} part_ctx_t;
+
+/* One live g_Particles record as the build reads it. */
+typedef struct {
+    uint32_t pp;                 /* the record's guest address */
+    uint32_t A, B;               /* words +0x04, +0x08 */
+    int slot, sel, mclass;       /* pool index, dispatch byte, texture/clut index */
+    int texsub_hi;               /* high byte of the low halfword at +0x10 */
+    double VXb, VYb, VZb;        /* camera-relative centre: GTE Z, X, Y */
+} part_rec_t;
+
+/** @brief Clamps a view-space MAC3 to the GTE's SZ3 range [0, 65535].
+ *
+ * @param m3 The MAC3.
+ * @return The clamped value. */
+static double sz3_sat(double m3) { return m3 < 0 ? 0 : (m3 > 65535 ? 65535 : m3); }
+
+/** @brief Projects a particle record's centre through the camera, as the .s centre RTPS does.
+ *
+ * @param x The build's view inputs.
+ * @param r The record.
+ * @param c Receives the screen position and MACs. */
+static void part_centre(const part_ctx_t* x, const part_rec_t* r, projres* c) {
+    proj2(x->R, x->ofx, x->ofy, x->v, r->VYb, r->VZb, r->VXb, c);
+}
+
+/** @brief Projects GTE-space offsets about a translation through a diagonal scale and the capped quotient.
+ *
+ * Point k is MAC1 = TR0 + T[k][0] * kx, MAC2 = TR1 + T[k][1] * ky, each
+ * saturated to int16 and multiplied by qd, then offset by (ofx, ofy): the
+ * GPF projection the particle billboards (diag(4096, 2560, 4096), kx = 1,
+ * ky = 0.625) and the sparkle tips (diag(a3), kx = ky = a3 / 4096) share.
+ * @param T The offsets.
+ * @param n The point count.
+ * @param TR0 The translation's MAC1.
+ * @param TR1 The translation's MAC2.
+ * @param kx The X scale.
+ * @param ky The Y scale.
+ * @param qd The projection quotient.
+ * @param ofx The screen X offset.
+ * @param ofy The screen Y offset.
+ * @param sx Receives n screen X values.
+ * @param sy Receives n screen Y values. */
+static void affine_project(const double (*T)[2], int n, double TR0, double TR1,
+                           double kx, double ky, double qd, double ofx, double ofy,
+                           double* sx, double* sy) {
+    for (int k = 0; k < n; k++) {
+        sx[k] = ofx + clamp16(TR0 + T[k][0] * kx) * qd;
+        sy[k] = ofy + clamp16(TR1 + T[k][1] * ky) * qd;
+    }
+}
+
+/** @brief Returns a spinning particle's corner extents from its size byte and angle byte.
+ *
+ * The size is B byte 2 and the angle B byte 3, offset by ang_ofs sine-table
+ * entries (32 for the sel 2 and 5 billboards, 0 for sel >= 6). Integer path:
+ * the sine and cosine table entries scaled by size / div in float. While the
+ * slot's phase interpolates, the size is lerped and the angle wrap-lerped
+ * between the slot's snapshots and the sine and cosine taken in float,
+ * which equals the integer path at alpha 1.
+ * @param x The build's view inputs.
+ * @param r The record.
+ * @param ang_ofs The angle offset in table entries.
+ * @param div The extent divisor (1024 or 4096).
+ * @param dbg Nonzero to print the OPENPETE_PART_PHASE_DBG line.
+ * @param es Receives size * sin / div.
+ * @param ec Receives size * cos / div. */
+static void part_spin_extents(const part_ctx_t* x, const part_rec_t* r, int ang_ofs, double div,
+                              int dbg, double* es, double* ec) {
+    const uint32_t B = r->B;
+    int sizeB = (int)((B >> 16) & 0xFF);
+    int angIdx = (int)(((B >> 23) + (uint32_t)(2 * ang_ofs)) & 0x1FE);
+    part_prev_t pv;                              /* sub-tick spin/size sweep */
+    if (part_phase_prev(r->pp, &pv)) {
+        /* angle channel = B byte3 (angIdx == byte3 + ang_ofs entries - bit 23
+         * is cleared by the &0x1FE); wrap-lerp it, then float sin/cos. */
+        double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
+        double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha) + (double)ang_ofs;
+        double sf, cf; ngte_sincos_f(x->cpu, ef, &sf, &cf);
+        *es = szf * sf / div; *ec = szf * cf / div;
+        if (dbg && part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
+            fprintf(stderr, "[part-phase f=%u] slot=%d sel=%d lerp ang=%.2f sz=%.2f (raw %d/%d)\n",
+                    openpete_frame, r->slot, r->sel, ef, szf, (int)(B >> 24), sizeB); }
+        return;
+    }
+    int sinv = rd_s16(x->cpu, D_SIN_TABLE + (uint32_t)angIdx);
+    int cosv = rd_s16(x->cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
+    *es = (double)sizeB * sinv / div; *ec = (double)sizeB * cosv / div;  /* float, not a shift: sub-pixel extent */
+}
+
+/** @brief Fills a quad's corners for the affine sin/cos billboard of sel 2 and sel 5.
+ *
+ * The corners (-a2,-a3), (a3,-a2), (-a3,a2), (a2,a3) go through
+ * diag(4096, 2560, 4096) plus the translation and the capped quotient.
+ * @param x The build's view inputs.
+ * @param a2 The sine extent.
+ * @param a3 The cosine extent.
+ * @param TR0 The translation's MAC1.
+ * @param TR1 The translation's MAC2.
+ * @param TR2 The translation's MAC3, stored as each corner's depth.
+ * @param qd The projection quotient.
+ * @param q Receives the corner positions and depths. */
+static void part_affine_quad(const part_ctx_t* x, double a2, double a3,
+                             double TR0, double TR1, double TR2, double qd, fquad* q) {
+    const double C[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };
+    double sx[4], sy[4];
+    affine_project(C, 4, TR0, TR1, 1.0, 2560.0 / 4096.0, qd, x->ofx, x->ofy, sx, sy);
+    for (int k = 0; k < 4; k++) { q->sx[k] = (float)sx[k]; q->sy[k] = (float)sy[k]; q->sz[k] = (float)TR2; }
+}
+
+/** @brief Interpolates a line particle's far endpoint between the slot's snapshots.
+ *
+ * The slot's position guard covers only the base word, so the far endpoint
+ * has its own ceiling: a move over 300 units per tick (a cross-branch pair,
+ * or an unsigned decode straddling a wrap) snaps to the current snapshot.
+ * @param p The previous snapshot's endpoint.
+ * @param c The current snapshot's endpoint.
+ * @param a The sub-tick alpha.
+ * @param out Receives the endpoint. */
+static void far_endpoint_lerp(const double p[3], const double c[3], double a, double out[3]) {
+    double dx = c[0] - p[0], dy = c[1] - p[1], dz = c[2] - p[2];
+    if (dx*dx + dy*dy + dz*dz <= 300.0*300.0) {
+        out[0] = p[0] + dx * a; out[1] = p[1] + dy * a; out[2] = p[2] + dz * a;
+    } else {
+        out[0] = c[0]; out[1] = c[1]; out[2] = c[2];
+    }
+}
+
+/** @brief Appends a gouraud line between two projected endpoints to s_pline.
+ *
+ * @param pp The record's guest address, for the streak log.
+ * @param e0 The first endpoint's projection.
+ * @param e1 The second endpoint's projection.
+ * @param col0 The record's +0x10 word: EP0 colour, GPU code in the high byte.
+ * @param col1 The record's +0x14 word: EP1 colour.
+ * @param cz The line's depth.
+ * @param sel The record's sel (1 or 4).
+ * @param fam The streak-log family label. */
+static void part_push_line(uint32_t pp, const projres* e0, const projres* e1,
+                           uint32_t col0, uint32_t col1, float cz, int sel, const char* fam) {
+    pline* l = &s_pline[s_pline_n++];
+    l->ax=(float)e0->sx; l->ay=(float)e0->sy; l->bx=(float)e1->sx; l->by=(float)e1->sy;
+    l->rgb0 = col0 & 0xFFFFFF; l->rgb1 = col1 & 0xFFFFFF;
+    l->cz = cz;
+    l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;     /* code 0x50 -> opaque */
+    l->sel = sel;
+    if (streak_dbg()) streak_log(fam, pp, e0->sx, e0->sy, e1->sx, e1->sy);
+}
+
+/** @brief Builds a sel-0 particle: the 2x1-pixel dot the .s emits as a LINE_F (block_80057F98).
+ *
+ * Culls on the SZ window (SZ3 nonzero, below 8192), the centre's screen
+ * rect and the depth-cue LOD (s3 = 2); the .s draws (SX, SY) to (SX + 1,
+ * SY), whose two plotted endpoints cover 2x1 pixels.
+ * @param x The build's view inputs.
+ * @param r The record. */
+static void part_build_tile(const part_ctx_t* x, const part_rec_t* r) {
+    projres c; part_centre(x, r, &c);
+    int sz3 = (int)sz3_sat(c.m3);
+    if (sz3 == 0 || sz3 >= 8192) return;        /* SZ window (SZ3!=0 .. 8192) */
+    if (screen_rect_cull(c.sx, c.sy)) return;
+    int lod = (int)((r->B >> 16) & 0xFF);
+    if (((sz3 >> 5) - lod - 2) <= 0) return;    /* depth-cue LOD cull (s3=2) */
+    fquad q; q.sel = r->sel;
+    ngte_line_quad((float)c.sx, (float)c.sy, (float)(c.sx + 1.0), (float)c.sy,
+                   0.0f, q.sx, q.sy);
+    for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
+    q.cz = (float)c.m3 * PART_VZ_WORLD4;         /* world/4 -> full-world */
+    material_flat(x->cpu->read_word(r->pp + 0x0C), &q);   /* flat colour, no texture */
+    s_fq[s_fq_n++] = q;
+}
+
+/** @brief Builds a sel-1 gouraud motion streak, a LINE_G between two camera-relative world points (block_80057E7C).
+ *
+ * EP0 is the record's centre; EP1 is (B >> 16, C & 0xFFFF, C >> 16) with C
+ * the +0x0C word, decoded unsigned, under the same camera-relative /4
+ * swizzle. Culls on EP0's SZ window, screen rect and depth-cue LOD (s3 =
+ * 2, lod the high byte of +0x14). While the slot's phase interpolates, EP1
+ * is far_endpoint_lerp'ed; EP0 rides the position bracket.
+ * @param x The build's view inputs.
+ * @param r The record. */
+static void part_build_streak(const part_ctx_t* x, const part_rec_t* r) {
+    if (s_pline_n >= MAX_PLINE) return;
+    uint32_t C = x->cpu->read_word(r->pp + 0x0C);
+    double e1w[3] = { (double)(r->B >> 16), (double)(C & 0xFFFF), (double)(C >> 16) };
+    part_prev_t pv;
+    if (part_phase_prev(r->pp, &pv)) {
+        const double p[3] = { (double)(pv.B >> 16),  (double)(pv.C & 0xFFFF),  (double)(pv.C >> 16) };
+        const double c[3] = { (double)(pv.cB >> 16), (double)(pv.cC & 0xFFFF), (double)(pv.cC >> 16) };
+        far_endpoint_lerp(p, c, pv.alpha, e1w);
+    }
+    projres e0, e1;
+    part_centre(x, r, &e0);                                                          /* EP0 */
+    proj2(x->R, x->ofx, x->ofy, x->v, (x->t8 - e1w[1]), (x->t9 - e1w[2]), (e1w[0] - x->s7), &e1);   /* EP1 */
+    int sz3 = (int)sz3_sat(e0.m3);
+    if (sz3 == 0 || sz3 >= 8192) return;         /* EP0 SZ window */
+    if (screen_rect_cull(e0.sx, e0.sy)) return;  /* EP0 screen-rect */
+    uint32_t col0 = x->cpu->read_word(r->pp + 0x10), col1 = x->cpu->read_word(r->pp + 0x14);
+    int lod = (int)(col1 >> 24);
+    if (((sz3 >> 5) - lod - 2) <= 0) return;     /* EP0 depth-cue LOD (s3=2) */
+    part_push_line(r->pp, &e0, &e1, col0, col1, (float)e0.m3 * PART_VZ_WORLD4, 1, "line1");
+}
+
+/** @brief Builds a sel-2 affine sin/cos billboard FT4.
+ *
+ * Culls on the centre's screen rect and the SZ window and LOD; the corners
+ * are the spin extents (ang_ofs 32, div 1024) about TR = centre MAC << 2,
+ * projected at the capped quotient. Depth is the centre's view-Z.
+ * @param x The build's view inputs.
+ * @param r The record. */
+static void part_build_affine(const part_ctx_t* x, const part_rec_t* r) {
+    projres c; part_centre(x, r, &c);
+    if (screen_rect_cull(c.sx, c.sy)) return;
+    if (sz_and_lod_cull(c.m3, r->texsub_hi)) return;
+    double a2, a3;
+    part_spin_extents(x, r, 32, 1024.0, 1, &a2, &a3);
+    double TR0 = c.m1*4.0, TR1 = c.m2*4.0, TR2 = c.m3*4.0;
+    double sz3 = sz3_sat(TR2);
+    double qd = part_cap(sz3, x->Hc, x->H) ? x->qcap : x->H/sz3;
+    fquad q; q.sel = r->sel;
+    part_affine_quad(x, a2, a3, TR0, TR1, TR2, qd, &q);
+    q.cz = (float)c.m3 * PART_VZ_WORLD4;          /* world/4 -> full-world (centre depth, not TR2) */
+    decode_material(x->cpu, r->pp, r->mclass, &q);
+    s_fq[s_fq_n++] = q;
+}
+
+/** @brief Builds a sel-3 depth-cued screen rect FT4.
+ *
+ * Culls on the centre's screen rect and the SZ window and LOD. The half
+ * extents are the size (B byte 2) and alpha (B byte 3) bytes times the GTE
+ * reciprocal H / SZ3 capped at 1.0, kept in float where the .s truncates
+ * IR0 and the extents to whole pixels; the bytes are lerped while the slot's
+ * phase interpolates.
+ * @param x The build's view inputs.
+ * @param r The record. */
+static void part_build_rect(const part_ctx_t* x, const part_rec_t* r) {
+    projres c; part_centre(x, r, &c);
+    if (screen_rect_cull(c.sx, c.sy)) return;
+    if (sz_and_lod_cull(c.m3, r->texsub_hi)) return;
+    double sz3 = sz3_sat(c.m3);
+    double qd = sz3 <= 0.0 ? 0.0 : x->H / sz3;
+    double ir0 = qd < 0.0 ? 0.0 : (qd > 1.0 ? 1.0 : qd);   /* GTE caps the reciprocal at 1.0 */
+    int sizeB = (int)((r->B >> 16) & 0xFF), alphaB = (int)((r->B >> 24) & 0xFF);
+    double szf = (double)sizeB, alf = (double)alphaB;
+    part_prev_t pv;                              /* sub-tick half-extent sweep */
+    if (part_phase_prev(r->pp, &pv)) {
+        szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
+        alf = lerp_b((int)((pv.B >> 24) & 0xFF), (int)((pv.cB >> 24) & 0xFF), pv.alpha);
+        if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
+            fprintf(stderr, "[part-phase f=%u] slot=%d sel=3 lerp sz=%.2f al=%.2f (raw %d/%d)\n",
+                    openpete_frame, r->slot, szf, alf, sizeB, alphaB); }
+    }
+    double a2 = szf * ir0, a3 = alf * ir0;       /* halfW, halfH (sub-pixel) */
+    double cx = c.sx + a2 * 0.5, cy = c.sy + a3 * 0.5;   /* rect corners (screen) */
+    double X0 = cx - a2, X1 = cx, Y0 = cy - a3, Y1 = cy;
+    fquad q; q.sel = r->sel;
+    q.sx[0]=X0; q.sy[0]=Y0; q.sx[1]=X1; q.sy[1]=Y0;
+    q.sx[2]=X0; q.sy[2]=Y1; q.sx[3]=X1; q.sy[3]=Y1;
+    for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
+    q.cz = (float)c.m3 * PART_VZ_WORLD4;        /* world/4 -> full-world */
+    decode_material(x->cpu, r->pp, r->mclass, &q);
+    s_fq[s_fq_n++] = q;
+}
+
+/** @brief Builds a sel-4 HUD egg-tally sparkle, a LINE_G between two view-space points (block_80057954).
+ *
+ * The .s loads the stored coordinates as the GTE translation with vertex
+ * (0, 0, 0), so both endpoints project with no camera rotation through the
+ * canonical view: EP0 = (s16 A.lo, A.hi, B.lo), EP1 = (s16 B.hi, C.lo,
+ * C.hi). Culls on EP0's SZ window (64..2048) and screen rect; (SZ3 >> 5) -
+ * lod is the line's ordering-table bucket, clamped to 0 at 80057A30 and not
+ * a cull, which sel4_bucket_depth turns into the depth. EP1 is
+ * far_endpoint_lerp'ed (signed decode) while the slot's phase interpolates.
+ * @param x The build's view inputs.
+ * @param r The record. */
+static void part_build_egg_line(const part_ctx_t* x, const part_rec_t* r) {
+    if (s_pline_n >= MAX_PLINE) return;
+    const uint32_t A = r->A, B = r->B;
+    uint32_t C = x->cpu->read_word(r->pp + 0x0C);
+    double e1v[3] = { (double)(int16_t)(B >> 16), (double)(int16_t)(C & 0xFFFF), (double)(int16_t)(C >> 16) };
+    part_prev_t pv;
+    if (part_phase_prev(r->pp, &pv)) {
+        const double p[3] = { (double)(int16_t)(pv.B >> 16),  (double)(int16_t)(pv.C & 0xFFFF),
+                              (double)(int16_t)(pv.C >> 16) };
+        const double c[3] = { (double)(int16_t)(pv.cB >> 16), (double)(int16_t)(pv.cC & 0xFFFF),
+                              (double)(int16_t)(pv.cC >> 16) };
+        far_endpoint_lerp(p, c, pv.alpha, e1v);
+    }
+    projres e0, e1;
+    proj_view(x->ofx, x->ofy, &x->vc, (double)(int16_t)(A & 0xFFFF), (double)(int16_t)(A >> 16),
+              (double)(int16_t)(B & 0xFFFF), &e0);
+    proj_view(x->ofx, x->ofy, &x->vc, e1v[0], e1v[1], e1v[2], &e1);
+    int sz3 = (int)sz3_sat(e0.m3);
+    uint32_t col0 = x->cpu->read_word(r->pp + 0x10), col1 = x->cpu->read_word(r->pp + 0x14);
+    if (sz3 <= 64 || sz3 >= 2048) return;        /* sel-4 SZ window 64..2048 */
+    if (screen_rect_cull(e0.sx, e0.sy)) return;
+    part_push_line(r->pp, &e0, &e1, col0, col1, sel4_bucket_depth(sz3, col1), 4, "line4");
+}
+
+/** @brief Builds a sel-5 HUD key-collected burst, an affine FT4 about a view-space centre (block_80057750).
+ *
+ * The corners are sel 2's, about the direct view-space translation TRX =
+ * (s16 A.lo) * 4, TRY = (int32)A >> 14, TRZ = (s16 B.lo) * 4, projected
+ * through the canonical H. Culls on TRZ <= 0 and on (TRZ >> 7) - lod < 0,
+ * lod byte 1 of +0x10, which the .s takes to the loop tail.
+ * @param x The build's view inputs.
+ * @param r The record. */
+static void part_build_key_burst(const part_ctx_t* x, const part_rec_t* r) {
+    double TR0 = (double)((int32_t)(r->A << 16) >> 14);  /* X*4 */
+    double TR1 = (double)((int32_t)r->A >> 14);          /* ~Y*4 (combined) */
+    double TR2 = (double)((int32_t)(r->B << 16) >> 14);  /* Z*4 */
+    if (TR2 <= 0.0) return;
+    int sz3i = (int)(TR2 > 65535 ? 65535 : TR2);
+    int lod = (int)((x->cpu->read_word(r->pp + 0x10) >> 8) & 0xFF);
+    if (((sz3i >> 7) - lod) < 0) return;         /* sel-5 cull TRZ>>7 - lod */
+    double a2, a3;
+    part_spin_extents(x, r, 32, 1024.0, 0, &a2, &a3);
+    double sz3 = TR2 > 65535 ? 65535 : TR2;
+    /* HUD burst: canonical projection, the cap regime on the same H */
+    double qd = part_cap(sz3, x->Hc, x->Hc) ? NGTE_DIV_CAP : x->Hc/sz3;
+    fquad q; q.sel = r->sel;
+    part_affine_quad(x, a2, a3, TR0, TR1, TR2, qd, &q);
+    q.cz = (float)TR2;
+    decode_material(x->cpu, r->pp, r->mclass, &q);
+    s_fq[s_fq_n++] = q;
+}
+
+/** @brief Builds a sel >= 6 rotated-billboard FT4, the default particle class.
+ *
+ * The four corners are the centre plus the spin extents (ang_ofs 0, div
+ * 4096) rotated in the GTE X-Z plane, each projected through the camera.
+ * Culls on the corners' clamped SZ3 sum outside [512, 32768), on the LOD
+ * (sum >> 7) - texsub_hi < 0, and on clip4_cull; the depth is a quarter of
+ * the sum.
+ * @param x The build's view inputs.
+ * @param r The record. */
+static void part_build_rotated(const part_ctx_t* x, const part_rec_t* r) {
+    double eS, eC;
+    part_spin_extents(x, r, 0, 4096.0, 1, &eS, &eC);
+    const double cx[4] = { r->VYb-eS, r->VYb+eC, r->VYb-eC, r->VYb+eS };
+    const double cz[4] = { r->VXb+eC, r->VXb+eS, r->VXb-eS, r->VXb-eC };
+    fquad q; q.sel = r->sel;
+    double zsum = 0;
+    for (int k = 0; k < 4; k++) {
+        projres pr;
+        proj2(x->R, x->ofx, x->ofy, x->v, cx[k], r->VZb, cz[k], &pr);
+        q.sx[k] = (float)pr.sx; q.sy[k] = (float)pr.sy; q.sz[k] = (float)pr.m3;
+        zsum += sz3_sat(pr.m3);
+    }
+    if (zsum < 512.0 || zsum >= 32768.0) return;            /* depth-sum window */
+    if ((((int)zsum) >> 7) - r->texsub_hi < 0) return;      /* LOD cull */
+    if (clip4_cull(q.sx, q.sy)) return;                     /* 4-corner clip */
+    q.cz = (float)(zsum / 4.0) * PART_VZ_WORLD4;  /* world/4 -> full-world */
+    decode_material(x->cpu, r->pp, r->mclass, &q);
+    s_fq[s_fq_n++] = q;
+}
+
+/* A sel builder: projects, culls and appends one live record. */
+typedef void part_build_fn(const part_ctx_t* x, const part_rec_t* r);
+/* The builder per sel byte below 6; every higher sel is the default class. */
+static part_build_fn* const k_part_build[6] = {
+    part_build_tile, part_build_streak, part_build_affine,
+    part_build_rect, part_build_egg_line, part_build_key_burst,
+};
+
 /** @brief Rebuilds s_fq and s_pline from the g_Particles pool the .s walked.
  *
  * Walks up to 320 records of s_part_pool, 0x20 bytes each, stopping at a
- * sel byte 0xFF and skipping records with bit 7 set. Each sel is projected
- * in float under the running view s_pv with the .s cull tests of its
- * emitter (screen rect, SZ window, depth-cue LOD, four-corner clip) and
- * appended as a quad (sel 0, 2, 3, 5 and >= 6) or a line (sel 1, 4), until
- * MAX_FQUAD or MAX_PLINE. World-class centre depths are scaled by
- * PART_VZ_WORLD4. While s_phase_now is set, spin, size, half-extent and
- * far-endpoint channels are interpolated between the slot's snapshots.
- * Reads gamestate only.
+ * sel byte 0xFF and skipping records with bit 7 set, and hands each live
+ * record to its sel's builder (k_part_build, part_build_rotated for sel >=
+ * 6), which projects it in float under the running view s_pv with the .s
+ * cull tests of its emitter and appends a quad (sel 0, 2, 3, 5, >= 6) or a
+ * line (sel 1, 4), until MAX_FQUAD or MAX_PLINE. World-class centre depths
+ * are scaled by PART_VZ_WORLD4. While s_phase_now is set, spin, size,
+ * half-extent and far-endpoint channels are interpolated between the slot's
+ * snapshots. Reads gamestate only.
  * @param cpu The guest CPU state. */
 static void particle_build(CPUState* cpu) {
     s_fq_n = 0; s_pline_n = 0; s_ppdbg_done = 0;
     ngte_view_build(cpu, &s_pv);
-    const ngte_view* v = &s_pv;
-    int R[3][3]; memcpy(R, v->cam_M, sizeof R);
+    part_ctx_t x;
+    x.cpu = cpu;
+    x.v = &s_pv;
+    memcpy(x.R, s_pv.cam_M, sizeof x.R);
     /* Camera at FRACTIONAL /4 (not >>2): the particle positions (A/B) are int16
-     * world/4 gameplay storage we can't change, but flooring the CAMERA to /4
-     * added a camera-correlated step on EVERY particle under panning. Carrying the
-     * camera's low 2 bits (÷4.0) tracks the smooth sub-tick camera (the view
-     * holds the un-rounded interpolated camera when bracketed). */
-    double s7 = v->cam[0] / 4.0, t8 = v->cam[1] / 4.0, t9 = v->cam[2] / 4.0;
-    double ofx = v->ofx, ofy = v->ofy;
-    double H   = v->H_eff;
-    ngte_view vc; ngte_view_canon(v, &vc);   /* HUD bursts (sel 4/5) project where the game put them */
-    const double Hc = v->H_canon, qcap = NGTE_DIV_CAP * v->s;  /* GTE limit regime on the GTE's H; capped quotient scales with the view */
+     * world/4 gameplay storage, and flooring the camera to /4 adds a
+     * camera-correlated step to every particle under panning. Carrying the
+     * camera's low 2 bits tracks the sub-tick camera (the view holds the
+     * un-rounded interpolated camera when bracketed). */
+    x.s7 = s_pv.cam[0] / 4.0; x.t8 = s_pv.cam[1] / 4.0; x.t9 = s_pv.cam[2] / 4.0;
+    x.ofx = s_pv.ofx; x.ofy = s_pv.ofy;
+    x.H = s_pv.H_eff;
+    ngte_view_canon(&s_pv, &x.vc);   /* HUD bursts (sel 4/5) project where the game put them */
+    x.Hc = s_pv.H_canon;             /* GTE limit regime on the GTE's H */
+    x.qcap = NGTE_DIV_CAP * s_pv.s;  /* the capped quotient scales with the view */
 
     uint32_t pp = s_part_pool;                          /* pool the .s walked (hook-entry) */
     for (int i = 0; i < 320 && s_fq_n < MAX_FQUAD; i++, pp += 0x20) {
         uint32_t hdr = cpu->read_word(pp);
         int mtype = (int)((hdr >> 8) & 0xFF);           /* dispatch byte (sel) */
-        int mclass = (int)(hdr & 0xFF);                 /* texture/clut index */
         if (mtype == 0xFF) break;                       /* end of pool (gp>>8==-1) */
         if (mtype & 0x80) continue;                     /* inactive slot (skip, not stop) */
-        int sel = mtype;
-        uint32_t A = cpu->read_word(pp + 4), B = cpu->read_word(pp + 8);
-        double VXb = (double)(int)(A & 0xFFFF) - s7;    /* GTE-Z */
-        double VYb = t8 - (double)(int)(A >> 16);       /* GTE-X */
-        double VZb = t9 - (double)(int)(B & 0xFFFF);    /* GTE-Y */
-        int texsub_hi = (int)(cpu->read_word(pp + 0x10) & 0xFFFF) >> 8;
-        fquad q; q.sel = sel;
-
-        if (sel == 3) {                                 /* depth-cued screen rect */
-            projres c; proj2(R, ofx, ofy, v, (double)VYb, (double)VZb, (double)VXb, &c);
-            if (screen_rect_cull(c.sx, c.sy)) continue;
-            if (sz_and_lod_cull(c.m3, texsub_hi)) continue;
-            /* GTE reciprocal-Z, kept in DOUBLE for a sub-pixel billboard footprint.
-             * The .s quantizes it to the integer IR0 (1.12 fixed, capped at 1.0)
-             * and the half-extents to whole pixels (`(sizeB*IR0)>>12`), so the
-             * sprite size jumps in pixel steps with distance even though the centre
-             * (c.sx/c.sy) is sub-pixel. The native carries the float ratio so the
-             * footprint grows smoothly. Display-only (native renderer consumer). */
-            double sz3 = c.m3 < 0 ? 0 : (c.m3 > 65535 ? 65535 : c.m3);
-            double qd = sz3 <= 0.0 ? 0.0 : (double)H / sz3;
-            double ir0 = qd < 0.0 ? 0.0 : (qd > 1.0 ? 1.0 : qd);   /* GTE caps the reciprocal at 1.0 */
-            int sizeB = (int)((B >> 16) & 0xFF), alphaB = (int)((B >> 24) & 0xFF);
-            double szf = (double)sizeB, alf = (double)alphaB;
-            part_prev_t pv;                              /* sub-tick half-extent sweep */
-            if (part_phase_prev(pp, &pv)) {
-                szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
-                alf = lerp_b((int)((pv.B >> 24) & 0xFF), (int)((pv.cB >> 24) & 0xFF), pv.alpha);
-                if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
-                    fprintf(stderr, "[part-phase f=%u] slot=%d sel=3 lerp sz=%.2f al=%.2f (raw %d/%d)\n",
-                            openpete_frame, i, szf, alf, sizeB, alphaB); }
-            }
-            double a2 = szf * ir0, a3 = alf * ir0;       /* halfW, halfH (sub-pixel) */
-            double t0 = a2 * 0.5, t1 = a3 * 0.5;
-            double cx = c.sx + t0, cy = c.sy + t1;       /* rect corners (screen) */
-            double X0 = cx - a2, X1 = cx, Y0 = cy - a3, Y1 = cy;
-            q.sx[0]=X0; q.sy[0]=Y0; q.sx[1]=X1; q.sy[1]=Y0;
-            q.sx[2]=X0; q.sy[2]=Y1; q.sx[3]=X1; q.sy[3]=Y1;
-            for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
-            q.cz = (float)c.m3 * PART_VZ_WORLD4;        /* world/4 -> full-world */
-            decode_material(cpu, pp, mclass, &q);
-            s_fq[s_fq_n++] = q;
-        } else if (sel == 2) {                          /* affine sin/cos billboard */
-            projres c; proj2(R, ofx, ofy, v, (double)VYb, (double)VZb, (double)VXb, &c);
-            if (screen_rect_cull(c.sx, c.sy)) continue;
-            if (sz_and_lod_cull(c.m3, texsub_hi)) continue;
-            int sizeB = (int)((B >> 16) & 0xFF);
-            int angIdx = (int)(((B >> 23) + 64) & 0x1FE);
-            double a2, a3;                               /* corner extents (sub-pixel) */
-            part_prev_t pv;                              /* sub-tick spin/size sweep */
-            if (part_phase_prev(pp, &pv)) {
-                /* angle channel = B byte3 (angIdx == (byte3+32 entries) - the
-                 * bit-23 term is cleared by the &0x1FE); wrap-lerp it, then
-                 * float sin/cos. Identical to the integer path at alpha=1. */
-                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
-                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha) + 32.0;
-                double sf, cf; ngte_sincos_f(cpu, ef, &sf, &cf);
-                a2 = szf * sf / 1024.0; a3 = szf * cf / 1024.0;
-                if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
-                    fprintf(stderr, "[part-phase f=%u] slot=%d sel=2 lerp ang=%.2f sz=%.2f (raw %d/%d)\n",
-                            openpete_frame, i, ef, szf, (int)(B >> 24), sizeB); }
-            } else {
-                int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
-                int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
-                a2 = (double)sizeB * sinv / 1024.0; a3 = (double)sizeB * cosv / 1024.0;  /* float (not >>10): sub-pixel corner extent */
-            }
-            double C[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };
-            double TR0 = c.m1*4.0, TR1 = c.m2*4.0, TR2 = c.m3*4.0;
-            double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
-            double qd = part_cap(sz3, Hc, H) ? qcap : (double)H/sz3;
-            for (int k = 0; k < 4; k++) {                /* R'=diag(4096,2560,4096)+TR */
-                double m1 = C[k][0] + TR0;
-                double m2 = C[k][1]*2560.0/4096.0 + TR1;
-                q.sx[k] = (float)(ofx + clamp16(m1)*qd);
-                q.sy[k] = (float)(ofy + clamp16(m2)*qd);
-                q.sz[k] = (float)TR2;
-            }
-            q.cz = (float)c.m3 * PART_VZ_WORLD4;          /* world/4 -> full-world (centre depth, not TR2) */
-            decode_material(cpu, pp, mclass, &q);
-            s_fq[s_fq_n++] = q;
-        } else if (sel >= 6) {                          /* rotated-billboard FT4 default */
-            int sizeB = (int)((B >> 16) & 0xFF);
-            int angIdx = (int)((B >> 23) & 0x1FE);
-            double eS, eC;                               /* corner extents (sub-pixel) */
-            part_prev_t pv;                              /* sub-tick spin/size sweep */
-            if (part_phase_prev(pp, &pv)) {
-                /* angle channel = B byte3 (angIdx == byte3 entries - bit 23 is
-                 * cleared by the &0x1FE); wrap-lerp + float sin/cos. */
-                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
-                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha);
-                double sf, cf; ngte_sincos_f(cpu, ef, &sf, &cf);
-                eS = szf * sf / 4096.0; eC = szf * cf / 4096.0;
-                if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
-                    fprintf(stderr, "[part-phase f=%u] slot=%d sel=%d lerp ang=%.2f sz=%.2f (raw %d/%d)\n",
-                            openpete_frame, i, sel, ef, szf, (int)(B >> 24), sizeB); }
-            } else {
-                int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
-                int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
-                eS = (double)sizeB * sinv / 4096.0; eC = (double)sizeB * cosv / 4096.0;  /* float (not >>12): sub-pixel corner extent */
-            }
-            double cx[4] = { (double)VYb-eS, (double)VYb+eC, (double)VYb-eC, (double)VYb+eS };
-            double cz[4] = { (double)VXb+eC, (double)VXb+eS, (double)VXb-eS, (double)VXb-eC };
-            projres pr[4]; double zsum = 0;
-            for (int k = 0; k < 4; k++) {
-                proj2(R, ofx, ofy, v, cx[k], (double)VZb, cz[k], &pr[k]);
-                q.sx[k] = (float)pr[k].sx; q.sy[k] = (float)pr[k].sy; q.sz[k] = (float)pr[k].m3;
-                zsum += pr[k].m3 < 0 ? 0 : (pr[k].m3 > 65535 ? 65535 : pr[k].m3);
-            }
-            if (zsum < 512.0 || zsum >= 32768.0) continue;          /* depth-sum window */
-            if ((((int)zsum) >> 7) - texsub_hi < 0) continue;       /* LOD cull */
-            if (clip4_cull(q.sx, q.sy)) continue;                   /* 4-corner clip */
-            q.cz = (float)(zsum / 4.0) * PART_VZ_WORLD4;  /* world/4 -> full-world */
-            decode_material(cpu, pp, mclass, &q);
-            s_fq[s_fq_n++] = q;
-        } else if (sel == 0) {                          /* TILE / 1px dot (block_80057F98) */
-            projres c; proj2(R, ofx, ofy, v, (double)VYb, (double)VZb, (double)VXb, &c);
-            int sz3 = (int)(c.m3 < 0 ? 0 : (c.m3 > 65535 ? 65535 : c.m3));
-            if (sz3 == 0 || sz3 >= 8192) continue;      /* SZ window (SZ3!=0 .. 8192) */
-            if (screen_rect_cull(c.sx, c.sy)) continue;
-            int lod = (int)((B >> 16) & 0xFF);
-            if (((sz3 >> 5) - lod - 2) <= 0) continue;  /* depth-cue LOD cull (s3=2) */
-            /* The .s emits this as a LINE_F from (SX,SY) to (SX+1,SY): the GPU
-             * plots both endpoints, a 2x1 pixel footprint. */
-            ngte_line_quad((float)c.sx, (float)c.sy, (float)(c.sx + 1.0), (float)c.sy,
-                           0.0f, q.sx, q.sy);
-            for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
-            q.cz = (float)c.m3 * PART_VZ_WORLD4;         /* world/4 -> full-world */
-            uint32_t cmd = cpu->read_word(pp + 0x0C);    /* flat colour, no texture */
-            q.rgb = cmd & 0xFFFFFF; q.textured = 0;
-            q.blend = ((cmd >> 24) & 0x02) ? 1 : 0;
-            for (int k = 0; k < 4; k++) { q.u[k] = q.v[k] = 0; }
-            q.tpx = q.tpy = q.clx = q.cly = q.bpp = 0;
-            s_fq[s_fq_n++] = q;
-        } else if (sel == 1 && s_pline_n < MAX_PLINE) {  /* gouraud motion-streak LINE_G (block_80057E7C) */
-            /* EP0 = (X0=A&0xFFFF, Y0=A>>16, Z0=B&0xFFFF); the loop's VXb/VYb/VZb
-             * already hold EP0's swizzle (GTE-Z/X/Y). EP1 = (X1=B>>16,
-             * Y1=C&0xFFFF, Z1=C>>16). Same camera-rel /4 swizzle. */
-            uint32_t C = cpu->read_word(pp + 0x0C);
-            double X1 = (double)(B >> 16), Y1 = (double)(C & 0xFFFF), Z1 = (double)(C >> 16);
-            part_prev_t pv;              /* sub-tick FAR-endpoint sweep (EP0 rides the
-                                          * position bracket; EP1 was stepping) */
-            if (part_phase_prev(pp, &pv)) {
-                /* The FAR endpoint needs its own physics ceiling: the
-                 * part_phase_prev teleport guard covers only the BASE
-                 * position (A word), so a cross-branch pair with a stable
-                 * base but divergent far endpoint still lerped - and this
-                 * class decodes UNSIGNED, so a pair straddling any wrap
-                 * sweeps the LONG way across the coordinate space,
-                 * painting a line to a consistent screen side. Over the
-                 * ceiling: snap to table-CURR, never live RAM. */
-                double pX1 = (double)(pv.B >> 16),    cX1f = (double)(pv.cB >> 16);
-                double pY1 = (double)(pv.C & 0xFFFF), cY1f = (double)(pv.cC & 0xFFFF);
-                double pZ1 = (double)(pv.C >> 16),    cZ1f = (double)(pv.cC >> 16);
-                double dx = cX1f - pX1, dy = cY1f - pY1, dz = cZ1f - pZ1;
-                if (dx*dx + dy*dy + dz*dz <= 300.0*300.0) {
-                    X1 = pX1 + dx * pv.alpha;
-                    Y1 = pY1 + dy * pv.alpha;
-                    Z1 = pZ1 + dz * pv.alpha;
-                } else {
-                    X1 = cX1f; Y1 = cY1f; Z1 = cZ1f;
-                }
-            }
-            projres e0, e1;
-            proj2(R, ofx, ofy, v, (double)VYb, (double)VZb, (double)VXb, &e0);   /* EP0 */
-            proj2(R, ofx, ofy, v, (t8 - Y1), (t9 - Z1), (X1 - s7), &e1);         /* EP1 */
-            int sz3 = (int)(e0.m3 < 0 ? 0 : (e0.m3 > 65535 ? 65535 : e0.m3));
-            if (sz3 == 0 || sz3 >= 8192) continue;       /* EP0 SZ window */
-            if (screen_rect_cull(e0.sx, e0.sy)) continue; /* EP0 screen-rect */
-            uint32_t col0 = cpu->read_word(pp + 0x10), col1 = cpu->read_word(pp + 0x14);
-            int lod = (int)(col1 >> 24);
-            if (((sz3 >> 5) - lod - 2) <= 0) continue;    /* EP0 depth-cue LOD (s3=2) */
-            pline* l = &s_pline[s_pline_n++];
-            l->ax=(float)e0.sx; l->ay=(float)e0.sy; l->bx=(float)e1.sx; l->by=(float)e1.sy;
-            l->rgb0 = col0 & 0xFFFFFF; l->rgb1 = col1 & 0xFFFFFF;
-            l->cz = (float)e0.m3 * PART_VZ_WORLD4;         /* world/4 -> full-world */
-            l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;     /* code 0x50 -> opaque */
-            l->sel = 1;
-            if (streak_dbg()) streak_log("line1", pp, e0.sx, e0.sy, e1.sx, e1.sy);
-        } else if (sel == 4 && s_pline_n < MAX_PLINE) {  /* HUD egg-burst LINE_G (block_80057954) */
-            /* VALIDATED vs egg.bk2 (egg-collection HUD burst, level_11 f3579): 32/32
-             * count-exact, endpoint NN ~0.6-1.1px mean / ~2px worst. A gouraud LINE_G
-             * between two VIEW-SPACE points (HUD particle: the .s sets the GTE TR to
-             * the stored coords with vertex=(0,0,0), so they project directly - NO
-             * camera swizzle). EP0=(s16 A.lo, A.hi, B.lo); EP1=(s16 B.hi, C.lo, C.hi). */
-            uint32_t C = cpu->read_word(pp + 0x0C);
-            int X0=(int)(int16_t)(A&0xFFFF), Y0=(int)(int16_t)(A>>16), Z0=(int)(int16_t)(B&0xFFFF);
-            int X1=(int)(int16_t)(B>>16),    Y1=(int)(int16_t)(C&0xFFFF), Z1=(int)(int16_t)(C>>16);
-            double X1f = (double)X1, Y1f = (double)Y1, Z1f = (double)Z1;
-            part_prev_t pv;              /* sub-tick FAR-endpoint sweep (EP0 rides the
-                                          * position bracket; EP1 was stepping) */
-            if (part_phase_prev(pp, &pv)) {
-                /* Same far-endpoint ceiling as sel-1 (signed decode here):
-                 * the base-position guard doesn't cover these words. Over
-                 * the ceiling -> snap to table-curr. */
-                double pX1 = (double)(int16_t)(pv.B >> 16),    cX1s = (double)(int16_t)(pv.cB >> 16);
-                double pY1 = (double)(int16_t)(pv.C & 0xFFFF), cY1s = (double)(int16_t)(pv.cC & 0xFFFF);
-                double pZ1 = (double)(int16_t)(pv.C >> 16),    cZ1s = (double)(int16_t)(pv.cC >> 16);
-                double dx = cX1s - pX1, dy = cY1s - pY1, dz = cZ1s - pZ1;
-                if (dx*dx + dy*dy + dz*dz <= 300.0*300.0) {
-                    X1f = pX1 + dx * pv.alpha;
-                    Y1f = pY1 + dy * pv.alpha;
-                    Z1f = pZ1 + dz * pv.alpha;
-                } else {
-                    X1f = cX1s; Y1f = cY1s; Z1f = cZ1s;
-                }
-            }
-            projres e0, e1;
-            proj_view(ofx, ofy, &vc, (double)X0, (double)Y0, (double)Z0, &e0);
-            proj_view(ofx, ofy, &vc, X1f, Y1f, Z1f, &e1);
-            int sz3 = (int)(e0.m3 < 0 ? 0 : (e0.m3 > 65535 ? 65535 : e0.m3));
-            uint32_t col0 = cpu->read_word(pp + 0x10), col1 = cpu->read_word(pp + 0x14);
-            if (sz3 <= 64 || sz3 >= 2048) continue;      /* sel-4 SZ window 64..2048 */
-            if (screen_rect_cull(e0.sx, e0.sy)) continue;
-            /* (sz3>>5)-(col1>>24) is the line's ordering-table bucket (clamped to 0
-             * when negative at 80057A30, then linked at 80057A40 - NOT a cull); it
-             * places the line in the paint order, not in or out of view. */
-            pline* l = &s_pline[s_pline_n++];
-            l->ax=(float)e0.sx; l->ay=(float)e0.sy; l->bx=(float)e1.sx; l->by=(float)e1.sy;
-            l->rgb0 = col0 & 0xFFFFFF; l->rgb1 = col1 & 0xFFFFFF;
-            l->cz = sel4_bucket_depth(sz3, col1);
-            l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;
-            l->sel = 4;
-            if (streak_dbg()) streak_log("line4", pp, e0.sx, e0.sy, e1.sx, e1.sy);
-        } else if (sel == 5) {                           /* HUD key-burst affine FT4 (block_80057750) */
-            /* VALIDATED vs key.bk2 (key-collection HUD burst, level_11 f2435): 6/6
-             * count-exact, FT4 NN ~0.9-1.1px mean / ~1.8px worst, 0 over-emission
-             * (pure-sel-5 frames). Same affine sin/cos corner math as sel 2, but the
-             * centre TR is the DIRECT view-space packing (no centre RTPS/swizzle):
-             * TRX=(s16 A.lo)*4, TRZ=(s16 B.lo)*4, TRY=(int32)A>>14 (combined packing,
-             * confirmed against block_80057750 ctc2 sequence). LOD cull is real here
-             * (asm jumps to the loop tail), unlike sel-4 where it clamps to 0. */
-            double TR0 = (double)((int32_t)(A << 16) >> 14);  /* X*4 */
-            double TR1 = (double)((int32_t)A >> 14);          /* ~Y*4 (combined) */
-            double TR2 = (double)((int32_t)(B << 16) >> 14);  /* Z*4 */
-            if (TR2 <= 0.0) continue;
-            int sz3i = (int)(TR2 > 65535 ? 65535 : TR2);
-            int lod = (int)((cpu->read_word(pp + 0x10) >> 8) & 0xFF);
-            if (((sz3i >> 7) - lod) < 0) continue;       /* sel-5 cull TRZ>>7 - lod */
-            int sizeB = (int)((B >> 16) & 0xFF);
-            int angIdx = (int)(((B >> 23) + 64) & 0x1FE);
-            double a2, a3;                               /* corner extents (sub-pixel) */
-            part_prev_t pv;                              /* sub-tick spin/size sweep */
-            if (part_phase_prev(pp, &pv)) {
-                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
-                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha) + 32.0;
-                double sf, cf; ngte_sincos_f(cpu, ef, &sf, &cf);
-                a2 = szf * sf / 1024.0; a3 = szf * cf / 1024.0;
-            } else {
-                int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
-                int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
-                a2 = (double)sizeB * sinv / 1024.0; a3 = (double)sizeB * cosv / 1024.0;  /* float (not >>10): sub-pixel corner extent */
-            }
-            double Cc[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };  /* same as sel 2 */
-            double sz3 = TR2 > 65535 ? 65535 : TR2;
-            /* HUD burst: canonical projection, the cap regime on the same H */
-            double qd = part_cap(sz3, Hc, Hc) ? NGTE_DIV_CAP : (double)Hc/sz3;
-            for (int k = 0; k < 4; k++) {                /* diag(4096,2560,4096) + TR */
-                double m1 = Cc[k][0] + TR0;
-                double m2 = Cc[k][1]*2560.0/4096.0 + TR1;
-                q.sx[k] = (float)(ofx + clamp16(m1)*qd);
-                q.sy[k] = (float)(ofy + clamp16(m2)*qd);
-                q.sz[k] = (float)TR2;
-            }
-            q.cz = (float)TR2;
-            decode_material(cpu, pp, mclass, &q);
-            s_fq[s_fq_n++] = q;
-        }
+        part_rec_t r;
+        r.pp = pp; r.slot = i; r.sel = mtype;
+        r.mclass = (int)(hdr & 0xFF);                   /* texture/clut index */
+        r.A = cpu->read_word(pp + 4); r.B = cpu->read_word(pp + 8);
+        r.VXb = (double)(int)(r.A & 0xFFFF) - x.s7;     /* GTE-Z */
+        r.VYb = x.t8 - (double)(int)(r.A >> 16);        /* GTE-X */
+        r.VZb = x.t9 - (double)(int)(r.B & 0xFFFF);     /* GTE-Y */
+        r.texsub_hi = (int)(cpu->read_word(pp + 0x10) & 0xFFFF) >> 8;
+        (mtype < 6 ? k_part_build[mtype] : part_build_rotated)(&x, &r);
     }
 }
 
@@ -1297,18 +1439,15 @@ static void glow_build(CPUState* cpu) {
                 memcpy(&pcnt,  o->prev + 0x00, 4);
                 memcpy(&ptmpl, o->prev + 0x04, 4);
                 memcpy(&pmpp,  o->prev + 0x08, 4);
-                op_time_t per = o->curr_ns - o->prev_ns;
-                if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
                 uint32_t ccnt2, ctmpl2, cmpp2;
                 memcpy(&ccnt2,  o->curr + 0x00, 4);
                 memcpy(&ctmpl2, o->curr + 0x04, 4);
                 memcpy(&cmpp2,  o->curr + 0x08, 4);
                 /* Guards + forward endpoints from the TABLE pair (see the
                  * sparkle note): prev->table-curr, never prev->live. */
+                double a;
                 if (pcnt == ccnt2 && (int32_t)ccnt2 > 0 && ptmpl == ctmpl2 &&
-                    pmpp == cmpp2 && per > 0) {
-                    double a = (double)(s_phase_now - o->curr_ns) / (double)per;
-                    if (a < PART_ALPHA_MIN) a = PART_ALPHA_MIN; else if (a > 1.0) a = 1.0;
+                    pmpp == cmpp2 && part_slot_alpha(o, &a)) {
                     uint32_t pcol, psz, po14, po18, po1c;
                     uint32_t ccol, csz, co14, co18, co1c;
                     memcpy(&pcol, o->prev + 0x0C, 4);
@@ -1606,12 +1745,9 @@ static void sparkle_build(CPUState* cpu) {
                 int pAng  = (int)((pw3 >> 16) & 0xFF);
                 int cLife = (int)(cw3 & 0xFF), cSpeed = (int)((cw3 >> 8) & 0xFF);
                 int cAng  = (int)((cw3 >> 16) & 0xFF);
-                op_time_t per = o->curr_ns - o->prev_ns;
-                if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
-                if (pLife >= cLife && cLife > 0 && pSpeed == cSpeed && per > 0 &&
-                    pp0 == cp0 && pp1 == cp1 && pp2 == cp2) {
-                    double a = (double)(s_phase_now - o->curr_ns) / (double)per;
-                    if (a < PART_ALPHA_MIN) a = PART_ALPHA_MIN; else if (a > 1.0) a = 1.0;
+                double a;
+                if (pLife >= cLife && cLife > 0 && pSpeed == cSpeed &&
+                    pp0 == cp0 && pp1 == cp1 && pp2 == cp2 && part_slot_alpha(o, &a)) {
                     lifef = (double)pLife + ((double)cLife - (double)pLife) * a;
                     angf = lerp_wrap_b(pAng, cAng, a);
                     phase_interp = 1;
@@ -1669,31 +1805,23 @@ static void sparkle_build(CPUState* cpu) {
              * endpoints (same pulse+spin), waist points 45° between at
              * ~0.21R - a filled concave star instead of two lines. */
             double wc = (ec - es) * 0.2121, ws = (es + ec) * 0.2121;
-            double P[8][2] = {
+            const double P[8][2] = {
                 { ec,  es}, { wc,  ws}, {-es,  ec}, {-ws,  wc},
                 {-ec, -es}, {-wc, -ws}, { es, -ec}, { ws, -wc} };
             sstar* st = &s_sstar[s_sstar_n++];
             st->sx[0] = (float)(ofx + clamp16(TR0)*qd);   /* centre */
             st->sy[0] = (float)(ofy + clamp16(TR1)*qd);
-            for (int k = 0; k < 8; k++) {
-                double m1 = TR0 + a3 * P[k][0] / 4096.0;
-                double m2 = TR1 + a3 * P[k][1] / 4096.0;
-                st->sx[k+1] = (float)(ofx + clamp16(m1)*qd);
-                st->sy[k+1] = (float)(ofy + clamp16(m2)*qd);
-            }
+            double px[8], py[8];
+            affine_project(P, 8, TR0, TR1, a3 / 4096.0, a3 / 4096.0, qd, ofx, ofy, px, py);
+            for (int k = 0; k < 8; k++) { st->sx[k+1] = (float)px[k]; st->sy[k+1] = (float)py[k]; }
             st->cz = (float)c.m3 * PART_VZ_WORLD4;
             st->rgb = color;
             st->hue = hue;
             continue;
         }
-        double T[4][2] = { {-ec,-es}, {es,-ec}, {-es,ec}, {ec,es} };
+        const double T[4][2] = { {-ec,-es}, {es,-ec}, {-es,ec}, {ec,es} };
         double sx[4], sy[4];
-        for (int k = 0; k < 4; k++) {
-            double m1 = TR0 + a3 * T[k][0] / 4096.0;
-            double m2 = TR1 + a3 * T[k][1] / 4096.0;
-            sx[k] = ofx + clamp16(m1)*qd;
-            sy[k] = ofy + clamp16(m2)*qd;
-        }
+        affine_project(T, 4, TR0, TR1, a3 / 4096.0, a3 / 4096.0, qd, ofx, ofy, sx, sy);
         /* line 1 = T0->T3, line 2 = T1->T2 */
         sline* l0 = &s_sline[s_sline_n++];
         l0->ax=(float)sx[0]; l0->ay=(float)sy[0]; l0->bx=(float)sx[3]; l0->by=(float)sy[3];

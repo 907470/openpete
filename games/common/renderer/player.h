@@ -59,19 +59,17 @@ typedef struct {
     int8_t   pair2;              /* index in the list before that (via pair), -1 */
 } player_model_rec_t;
 
+/* A record of an auxiliary feeder (shadow, flame): its state block bound to
+ * the model record it renders under. */
 typedef struct {
-    uint8_t  sh[PLAYER_REC_AUX_MAX];   /* the shadow state at the hook */
+    uint8_t  st[PLAYER_REC_AUX_MAX];   /* the feeder's state at the hook: the list comparison key */
     uint8_t  src[PLAYER_REC_AUX_MAX];  /* the shown state, staged and lerped (led under --runahead) */
     int8_t   model;                    /* index of the model record it renders under */
     uint8_t  drawn;                    /* 1 = a hook call; 0 = pairing-only */
-} player_shadow_rec_t;
+} player_aux_rec_t;
 
-typedef struct {
-    uint8_t  fl[PLAYER_REC_AUX_MAX];   /* the flame state at the hook */
-    uint8_t  src[PLAYER_REC_AUX_MAX];  /* the shown state, staged and lerped (led under --runahead) */
-    int8_t   model;
-    uint8_t  drawn;
-} player_flame_rec_t;
+typedef player_aux_rec_t player_shadow_rec_t;
+typedef player_aux_rec_t player_flame_rec_t;
 
 /* ---- orchestrator inputs (set per record, read by the re-extract) ------ */
 

@@ -2844,12 +2844,341 @@ static int fast_boot_hold(unsigned prims) {
     return s_hold;
 }
 
+/* The payload longs PsyCross's primitive parser consumes per fixed-size GP0
+ * code, rows by the code's high nibble (0x00-0x70), columns by its low
+ * nibble; 0 is an unknown code, submitted as an anchor. Row 0x00: NOP 3,
+ * DR_MOVE 5. 0x20 flat polys: F3 4, FT3 7, F4 5, FT4 9. 0x30 gouraud
+ * polys: G3 6, GT3 9, G4 8, GT4 12. 0x40 flat lines: F2 3, F3 5, F4 6.
+ * 0x50 gouraud lines: G2 4, G3 7, G4 9. 0x60: TILE 3, SPRT 4, TILE_1 2.
+ * 0x70: TILE_8 2, SPRT_8 3, TILE_16 2, SPRT_16 3. DR_LOAD (0xA0) and the
+ * draw-environment packets (0xE0) are sized from the entry. */
+static const uint8_t k_ot_prim_longs[8][16] = {
+    /* 0x00 */ { 3, 5, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0 },
+    /* 0x10 */ { 0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0 },
+    /* 0x20 */ { 4, 4, 4, 4,  7, 7, 7, 7,  5, 5, 5, 5,  9, 9, 9, 9 },
+    /* 0x30 */ { 6, 6, 6, 6,  9, 9, 9, 9,  8, 8, 8, 8, 12,12,12,12 },
+    /* 0x40 */ { 3, 3, 0, 0,  0, 0, 0, 0,  5, 5, 0, 0,  6, 6, 0, 0 },
+    /* 0x50 */ { 4, 4, 0, 0,  0, 0, 0, 0,  7, 7, 0, 0,  9, 9, 0, 0 },
+    /* 0x60 */ { 3, 3, 3, 3,  4, 4, 4, 4,  2, 2, 2, 2,  0, 0, 0, 0 },
+    /* 0x70 */ { 2, 2, 2, 2,  3, 3, 3, 3,  2, 2, 2, 2,  3, 3, 3, 3 },
+};
+
+/** @brief The env codes of a draw-environment packet (0xE0) that PsyCross's ProcessDrawEnv consumes.
+ *
+ * ProcessDrawEnv walks the tag's length in longs or stops at the first
+ * word whose subtype is not 1..6, whichever comes first; PSYQ's macros
+ * over-allocate the length (setDrawMode sets 3 and writes two words), so
+ * the count of leading subtype-1..6 words, scanning at most 16, is the
+ * length the outer walker lands on. The packets are kept rather than
+ * dropped, so a DR_TPAGE or DR_MODE the game links mid-table still switches
+ * the texture page.
+ * @param host The entry, valid for 4 + plen * 4 bytes.
+ * @param plen The tag's length byte.
+ * @return The count. */
+static uint16_t ot_env_longs(const uint8_t* host, uint8_t plen) {
+    const uint32_t scan_max = plen > 16u ? 16u : (uint32_t)plen;
+    uint16_t n = 0u;
+    for (uint32_t i = 0; i < scan_max; ++i) {
+        uint32_t code_word;
+        std::memcpy(&code_word, host + 4 + i * 4u, 4);
+        const uint32_t sub = (code_word >> 24) & 0x0Fu;
+        if (sub == 0u || sub > 6u) break;
+        ++n;
+    }
+    return n;
+}
+
+/** @brief The length field PsyCross's walker needs for an OT entry, derived from its GP0 code.
+ *
+ * The non-singlePrimitive ParsePrimitivesLinkedList advances by the
+ * length its ProcessXxx returns and stops at the slot's length field; a
+ * field that disagrees with the code's own length short-circuits the slot
+ * or walks garbage as a fresh tag (a stray DR_LOAD crashes in LoadImage).
+ * The game's tag length sometimes differs from PsyCross's fixed length, so
+ * the field comes from the code byte: k_ot_prim_longs, the payload for
+ * DR_LOAD, ot_env_longs for 0xE0, 0 (an anchor) for an anchor entry or an
+ * unknown code.
+ * @param host The entry, valid for 4 + plen * 4 bytes.
+ * @param plen The tag's length byte.
+ * @param payload_bytes The entry's payload bytes (ot_payload_bytes).
+ * @return The length in longs, 0 for an anchor. */
+static uint16_t ot_prim_longs(const uint8_t* host, uint8_t plen, size_t payload_bytes) {
+    if (plen == 0u) return 0u;
+    const uint8_t code = host[7];
+    if (code < 0x80u) return k_ot_prim_longs[code >> 4][code & 0x0Fu];
+    if ((code & 0xF0u) == 0xA0u) return (uint16_t)(payload_bytes / 4u);
+    if ((code & 0xF0u) == 0xE0u) return ot_env_longs(host, plen);
+    return 0u;
+}
+
+/* Primitive-code census over DrawOTag walks, logged at debug level and
+ * reset once openpete_frame has advanced 60 since the last log: submitted
+ * prims per (code & 0xF0) >> 4 (polys 0x20/0x30, lines 0x40/0x50, sprites
+ * and tiles 0x60/0x70, DR_LOAD 0xA0, draw-env 0xE0), all submitted prims,
+ * and anchor slots. */
+static uint32_t s_ot_hist[16];
+static uint32_t s_ot_anchor_slots, s_ot_total_slots, s_ot_hist_calls, s_ot_hist_logged;
+
+/** @brief Logs the primitive-code census once 60 VBLs have passed since the last log, then resets it.
+ *
+ * Counts the call first. */
+static void ot_hist_log(void) {
+    s_ot_hist_calls++;
+    if (openpete_frame < s_ot_hist_logged + 60u) return;
+    s_ot_hist_logged = openpete_frame;
+    OPL_DEBUG_F("thunks",
+               "DrawOTag@f%u calls=%u prims=%u anchors=%u hist "
+               "0x:%u 1x:%u 2x:%u 3x:%u 4x:%u 5x:%u 6x:%u 7x:%u "
+               "8x:%u 9x:%u Ax:%u Bx:%u Cx:%u Dx:%u Ex:%u Fx:%u",
+               openpete_frame, s_ot_hist_calls, s_ot_total_slots, s_ot_anchor_slots,
+               s_ot_hist[0],  s_ot_hist[1],  s_ot_hist[2],  s_ot_hist[3],
+               s_ot_hist[4],  s_ot_hist[5],  s_ot_hist[6],  s_ot_hist[7],
+               s_ot_hist[8],  s_ot_hist[9],  s_ot_hist[10], s_ot_hist[11],
+               s_ot_hist[12], s_ot_hist[13], s_ot_hist[14], s_ot_hist[15]);
+    for (int i = 0; i < 16; i++) s_ot_hist[i] = 0;
+    s_ot_anchor_slots = 0;
+    s_ot_total_slots  = 0;
+    s_ot_hist_calls   = 0;
+}
+
+/** @brief The OT-dump file for the current VBL, or NULL outside the dumped range.
+ *
+ * OPENPETE_OT_DUMP_FRAMES=A-B (or A) arms the dump for openpete_frame in
+ * [A, B]; the file is OPENPETE_OT_DUMP_PATH (default /tmp/ot-dump.txt),
+ * opened with a header line on the first dumped call. Each dumped call
+ * steps *call. One row per slot: frame, slot, call, address, length, code
+ * and up to 16 payload words.
+ * @param call The dump's call counter.
+ * @return The file, or NULL. */
+static FILE* ot_dump_file(uint32_t* call) {
+    static int   s_dump_lo = -2;
+    static int   s_dump_hi = -1;
+    static FILE* s_dump_fp = nullptr;
+    if (s_dump_lo == -2) {
+        const char* env = std::getenv("OPENPETE_OT_DUMP_FRAMES");
+        s_dump_lo = -1;
+        s_dump_hi = -1;
+        int a = -1, b = -1;
+        if (env && std::sscanf(env, "%d-%d", &a, &b) >= 1) {
+            s_dump_lo = a;
+            s_dump_hi = (b >= a) ? b : a;
+        }
+        if (s_dump_lo >= 0)
+            OPL_INFO_F("thunks", "OT dump armed for frames [%d,%d]", s_dump_lo, s_dump_hi);
+    }
+    if (s_dump_lo < 0 || (int)openpete_frame < s_dump_lo || (int)openpete_frame > s_dump_hi)
+        return nullptr;
+    if (!s_dump_fp) {
+        const char* path = std::getenv("OPENPETE_OT_DUMP_PATH");
+        s_dump_fp = std::fopen(path ? path : "/tmp/ot-dump.txt", "w");
+        OPL_INFO_F("thunks", "OT dump opened path=%s fp=%p frame=%u",
+                   path ? path : "/tmp/ot-dump.txt", (void*)s_dump_fp, openpete_frame);
+        if (s_dump_fp)
+            std::fprintf(s_dump_fp, "# frame,slot,call,psx_addr,plen,code,payload_words(hex)\n");
+    }
+    if (s_dump_fp) ++*call;
+    return s_dump_fp;
+}
+
+/** @brief Writes one OT-dump row: frame, slot, call, address, length, code and up to 16 payload words.
+ *
+ * @param dump The dump file.
+ * @param slot The slot index.
+ * @param call The dump's call counter.
+ * @param addr The entry's guest address.
+ * @param host The entry.
+ * @param plen The tag's length byte.
+ * @param payload_bytes The entry's payload bytes. */
+static void ot_dump_row(FILE* dump, int slot, uint32_t call, uint32_t addr,
+                        const uint8_t* host, uint8_t plen, size_t payload_bytes) {
+    const uint8_t code_byte = (plen != 0u) ? host[7] : 0u;
+    std::fprintf(dump, "%u,%d,%u,0x%08X,%u,0x%02X",
+                 openpete_frame, slot, call, addr, (unsigned)plen, (unsigned)code_byte);
+    uint32_t nwords = (uint32_t)(payload_bytes / 4u);
+    if (nwords > 16u) nwords = 16u; /* cap; enough for poly_gt4 */
+    for (uint32_t w = 0; w < nwords; ++w) {
+        uint32_t word;
+        std::memcpy(&word, host + 4 + w * 4u, 4);
+        std::fprintf(dump, ",%08X", word);
+    }
+    std::fputc('\n', dump);
+}
+
+/** @brief Reports whether OPENPETE_OT_GARBAGE_TRACE enables the derailed-chain probe; read once.
+ *
+ * A chain that derails into non-OT memory yields a stray tag whose code
+ * byte 0x_1 is misparsed as DR_MOVE, an unbounded VRAM copy; the probe logs
+ * up to 80 tags longer than 32 longs (the largest real primitive, POLY_GT4,
+ * is 12) with the link that led to them.
+ * @return 1 when set and not "0". */
+static int ot_garbage_trace(void) {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* e = getenv("OPENPETE_OT_GARBAGE_TRACE");
+        s_on = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return s_on;
+}
+
+/** @brief The OPENPETE_OT_TRUNCATE slot limit, or -1 when unset; read once.
+ *
+ * With N set, a walk submits OT-dump slots 0..N-1 only, so an -og capture
+ * shows what the PsyCross walk painted up to any slot.
+ * @return The limit, or -1. */
+static int ot_truncate_limit(void) {
+    static int s_limit = -2;
+    if (s_limit == -2) {
+        const char* e = std::getenv("OPENPETE_OT_TRUNCATE");
+        s_limit = (e && *e) ? std::atoi(e) : -1;
+        if (s_limit >= 0)
+            OPL_INFO_F("thunks", "OT truncate armed: submitting first %d slots only", s_limit);
+    }
+    return s_limit;
+}
+
+/** @brief Reports whether --render-paths drops an OT entry: a geometry prim of a path not selected.
+ *
+ * Presentation only: the prim is not submitted and the OT is not modified.
+ * Control and environment entries (length 0, or codes outside 0x20-0x7F)
+ * always pass, so the draw environment and image loads still apply.
+ * @param addr The entry's guest address.
+ * @param host The entry.
+ * @param plen The tag's length byte.
+ * @return 1 when dropped. */
+static int ot_render_path_drops(uint32_t addr, const uint8_t* host, uint8_t plen) {
+    if (plen == 0u || !psyq_game_render_paths_active()) return 0;
+    const uint8_t hi = host[7] & 0xF0u;
+    return hi >= 0x20u && hi <= 0x70u && !psyq_game_render_path_addr_visible(addr);
+}
+
+/** @brief Copies one OT entry into the next host scratch slot with the length field PsyCross's walker expects.
+ *
+ * The slot is a 12-byte PsyCross P_TAG (host link, filled by
+ * ot_link_slots; length; PGXP index 0xFFFF, none) followed by the payload
+ * verbatim. A known code counts toward openpete_primitives_drawn, the
+ * census and, for codes 0x20-0x7F, *draw_prims; an unknown code or an
+ * empty payload is an anchor.
+ * @param B The scratch being built.
+ * @param addr The entry's guest address.
+ * @param host The entry.
+ * @param plen The tag's length byte.
+ * @param payload_bytes The entry's payload bytes.
+ * @param draw_prims Counts the drawing prims submitted.
+ * @return 0 when the scratch is full, else 1. */
+static int ot_copy_slot(saved_ot_t* B, uint32_t addr, const uint8_t* host, uint8_t plen,
+                        size_t payload_bytes, unsigned* draw_prims) {
+    const size_t slot_size = 12u + payload_bytes;
+    if (B->scratch_used + slot_size > OT_SCRATCH_SZ) {
+        OPL_WARN_F("thunks", "DrawOTag scratch overflow at slot %d (PSX 0x%08X)",
+                   B->slot_count, addr);
+        return 0;
+    }
+    uint8_t* out = B->scratch + B->scratch_used;
+    B->scratch_used += slot_size;
+    B->slots[B->slot_count++] = out;
+
+    const uint16_t lenField = ot_prim_longs(host, plen, payload_bytes);
+    /* No PGXP per-primitive index is supplied; 0xFFFF marks none. A
+     * content-keyed (sx,sy)->index map collides for vertices at the same
+     * pixel, so an index needs a per-vertex PGXP memory. */
+    const uint16_t pgxpField = 0xFFFFu;
+    std::memcpy(out + 8,  &lenField,  2);
+    std::memcpy(out + 10, &pgxpField, 2);
+    if (payload_bytes == 0u || lenField == 0u) {
+        if (payload_bytes != 0u) std::memcpy(out + 12, host + 4, payload_bytes);
+        s_ot_anchor_slots++;
+        return 1;
+    }
+    std::memcpy(out + 12, host + 4, payload_bytes);
+    const uint8_t code_byte = host[7];
+    openpete_primitives_drawn++;
+    s_ot_hist[(code_byte & 0xF0u) >> 4u]++;
+    s_ot_total_slots++;
+    if (code_byte >= 0x20u && code_byte < 0x80u) (*draw_prims)++;
+    return 1;
+}
+
+/** @brief Links each host slot to the next one's host address, the last to PsyCross's prim_terminator.
+ *
+ * @param B The scratch built this walk. */
+static void ot_link_slots(saved_ot_t* B) {
+    for (int i = 0; i < B->slot_count; i++) {
+        uintptr_t next_host = (i + 1 < B->slot_count)
+            ? (uintptr_t)B->slots[i + 1]
+            : (uintptr_t)&prim_terminator;
+        std::memcpy(B->slots[i], &next_host, sizeof(uintptr_t));
+    }
+}
+
+/** @brief Logs the high-water slot count and scratch use at most once per 1000 VBLs, for sizing saved_ot_t.
+ *
+ * @param B The scratch built this walk. */
+static void ot_high_water(const saved_ot_t* B) {
+    static int      s_max_slot_count = 0;
+    static size_t   s_max_scratch    = 0;
+    static unsigned s_last_log_frame = 0;
+    if (B->slot_count > s_max_slot_count) s_max_slot_count = B->slot_count;
+    if (B->scratch_used > s_max_scratch)  s_max_scratch    = B->scratch_used;
+    if (openpete_frame >= s_last_log_frame + 1000u) {
+        s_last_log_frame = openpete_frame;
+        OPL_INFO_F("thunks", "OT high-water: max_slots=%d max_scratch=%zu KB",
+                   s_max_slot_count, s_max_scratch / 1024);
+    }
+}
+
+/** @brief Walks the guest OT chain from addr into the host scratch, one slot per entry.
+ *
+ * Stops at the terminator (next 0xFFFFFF), a zero address, an entry that
+ * does not map, a DR_LOAD whose image runs past its region, a full scratch,
+ * OT_MAX_SLOTS, or the OPENPETE_OT_TRUNCATE limit. Guest RAM is only read.
+ * @param B The scratch, emptied by the caller.
+ * @param addr The first entry's guest address.
+ * @param draw_prims Counts the drawing prims submitted.
+ * @param filtered_prims Counts the geometry prims --render-paths dropped. */
+static void ot_walk(saved_ot_t* B, uint32_t addr, unsigned* draw_prims, unsigned* filtered_prims) {
+    static uint32_t s_dump_call = 0;
+    static int s_otg_logs = 0;
+    FILE* dump = ot_dump_file(&s_dump_call);
+    const int truncate = ot_truncate_limit();
+    uint32_t prev_addr = 0u, prev_tag = 0u;
+    while (B->slot_count < (int)OT_MAX_SLOTS && !(truncate >= 0 && B->slot_count >= truncate) && addr != 0u) {
+        uint32_t tag;
+        const uint8_t* host = ot_entry_host(addr, &tag);
+        if (!host) break;
+        const uint8_t  plen = (uint8_t)((tag >> 24) & 0xFFu);
+        const uint32_t next = tag & 0x00FFFFFFu;
+        if (plen > 32u && ot_garbage_trace() && s_otg_logs < 80) {
+            s_otg_logs++;
+            OPL_WARN_F("thunks",
+                "OT-garbage f=%u slot=%d addr=0x%08X tag=0x%08X plen=%u "
+                "code=0x%02X next=0x%06X <- prev addr=0x%08X tag=0x%08X",
+                openpete_frame, B->slot_count, addr, tag, (unsigned)plen,
+                (unsigned)host[7], next, prev_addr, prev_tag);
+        }
+        if (ot_render_path_drops(addr, host, plen)) {
+            (*filtered_prims)++;
+        } else {
+            const size_t payload_bytes = ot_payload_bytes(addr, host, plen);
+            if (payload_bytes == OT_PAYLOAD_UNMAPPED) break;
+            if (!ot_copy_slot(B, addr, host, plen, payload_bytes, draw_prims)) break;
+            if (dump) ot_dump_row(dump, B->slot_count - 1, s_dump_call, addr, host, plen, payload_bytes);
+            prev_addr = addr;
+            prev_tag  = tag;
+        }
+        if (next == 0x00FFFFFFu) break;
+        addr = next | 0x80000000u;
+    }
+    if (dump) std::fflush(dump);
+}
+
 /** @brief DrawOTag thunk: copy the guest ordering-table chain into host slots and submit it to PsyCross.
  *
- * Walks the chain from a0, one slot per entry (at most OT_MAX_SLOTS), each a
- * host copy of the tag and its payload with the length field PsyCross's
- * walker expects for the primitive code; the walk stops at the terminator,
- * an unmapped entry, or a full scratch. Guest RAM is only read.
+ * Walks the chain from a0 (ot_walk), one slot per entry, each a host copy
+ * of the tag and its payload with the length field PsyCross's walker
+ * expects for the primitive code (ot_prim_longs), links the slots, and,
+ * while PsyCross renders, walks them through its parser. Ends fast boot at
+ * the first table with more than one drawing primitive. Guest RAM is only
+ * read.
  * @param cpu Guest CPU; a0 holds the first OT entry. */
 void psyq_DrawOTag(CPUState* cpu) {
     /* The OT rebuild is openpete's own work on the game fiber, so it lands
@@ -2859,59 +3188,13 @@ void psyq_DrawOTag(CPUState* cpu) {
      * last PutDrawEnv's env. */
     openpete_native_note_draw_otag();
     saved_ot_t* B = g_ot_cur;
-    uint8_t*  g_ot_scratch      = B->scratch;
-    size_t&   g_ot_scratch_used = B->scratch_used;
-    uint8_t** g_ot_slot_host    = B->slots;
-    int&      g_ot_slot_count   = B->slot_count;
-    g_ot_scratch_used = 0;
-    g_ot_slot_count = 0;
+    B->scratch_used = 0;
+    B->slot_count = 0;
 
     /* The 2D chokepoint: verify the batch already released for this table, and
      * release one still pending (see ui_sprite_ot_draw_begin). */
     ui_sprite_ot_verify();
     ui_sprite_ot_draw_begin();
-
-    /* OPENPETE_OT_DUMP_FRAMES=A-B -> for openpete_frame in [A,B], dump every
-     * DrawOTag call's slot list to OPENPETE_OT_DUMP_PATH (default
-     * /tmp/ot-dump.txt). One row per slot, with frame as the leading column. */
-    static int   s_dump_lo    = -2;
-    static int   s_dump_hi    = -1;
-    static FILE* s_dump_fp    = nullptr;
-    static uint32_t s_dump_call = 0;
-    if (s_dump_lo == -2) {
-        const char* env = std::getenv("OPENPETE_OT_DUMP_FRAMES");
-        s_dump_lo = -1;
-        s_dump_hi = -1;
-        if (env) {
-            int a = -1, b = -1;
-            if (std::sscanf(env, "%d-%d", &a, &b) >= 1) {
-                s_dump_lo = a;
-                s_dump_hi = (b >= a) ? b : a;
-            }
-        }
-        if (s_dump_lo >= 0) {
-            OPL_INFO_F("thunks", "OT dump armed for frames [%d,%d]",
-                       s_dump_lo, s_dump_hi);
-        }
-    }
-    FILE* dump = nullptr;
-    if (s_dump_lo >= 0 &&
-        (int)openpete_frame >= s_dump_lo &&
-        (int)openpete_frame <= s_dump_hi) {
-        if (!s_dump_fp) {
-            const char* path = std::getenv("OPENPETE_OT_DUMP_PATH");
-            s_dump_fp = std::fopen(path ? path : "/tmp/ot-dump.txt", "w");
-            OPL_INFO_F("thunks", "OT dump opened path=%s fp=%p frame=%u",
-                       path ? path : "/tmp/ot-dump.txt",
-                       (void*)s_dump_fp, openpete_frame);
-            if (s_dump_fp) {
-                std::fprintf(s_dump_fp,
-                    "# frame,slot,call,psx_addr,plen,code,payload_words(hex)\n");
-            }
-        }
-        dump = s_dump_fp;
-    }
-    if (dump) ++s_dump_call;
 
     static uint32_t s_calls = 0;
     ++s_calls;
@@ -2920,261 +3203,19 @@ void psyq_DrawOTag(CPUState* cpu) {
                    s_calls, cpu->a0, cpu->ra);
     }
 
-    /* Per-OT primitive-code histogram, indexed by (code & 0xF0) >> 4: polys
-     * (0x20/0x30), lines (0x40/0x50), sprites and tiles (0x60/0x70), DR_LOAD
-     * (0xA0), draw-env (0xE0). Logged and reset once openpete_frame has
-     * advanced 60 since the last log. */
-    /* Drawing primitives (codes 0x20-0x7F: polygons, lines, sprites) emitted
-     * by THIS walk. Attribute commands (0xE0) and the terminator do not
-     * count. A game that draws its loading screen emits exactly one -- the
-     * background fill -- so this is what separates "rendering" from "still
-     * loading" for the fast-boot anchor below. */
-    unsigned draw_prims_this_call = 0;
-    /* Geometry prims the --render-paths filter dropped from this walk. The
-     * fast-boot anchor counts them with the submitted ones, so the anchor
-     * reads the guest's OT, not the filtered submission. */
-    unsigned filtered_prims_this_call = 0;
-
-    static uint32_t s_hist[16] = {0};
-    static uint32_t s_anchor_slots = 0;
-    static uint32_t s_total_slots  = 0;
-    static uint32_t s_hist_calls   = 0;
-    static uint32_t s_last_frame   = 0xFFFFFFFFu;
-    static uint32_t s_last_dump    = 0;
-
-    if (openpete_frame != s_last_frame) {
-        s_last_frame = openpete_frame;
-    }
-
     /* The ordering table this walk starts from. The 2D feeder needs the same
      * traversal to rank its primitives, and it runs a tick before the walk of
      * the table it is feeding, so the last PSYQ_OT_BASE_RING bases are kept,
      * newest first. The tables alternate, and the pending batch is linked
      * into one the newest walk did not use. The feeder walks every kept base
      * and ranks its primitives by first sighting across the chains. */
-    uint32_t addr = cpu->a0;
+    const uint32_t addr = cpu->a0;
     ot_base_note(addr);
-    /* Probe (OPENPETE_OT_GARBAGE_TRACE=1, inert otherwise): a chain that
-     * derails into non-OT memory yields a stray tag whose code byte 0x_1 is
-     * misparsed as DR_MOVE, an unbounded VRAM copy. Logs, up to 80 times, any
-     * tag whose plen exceeds 32 (the largest real primitive, POLY_GT4, is 12
-     * longs) with the link that led to it, which shows where the chain
-     * jumps. */
-    static int s_otg_trace = -1;
-    if (s_otg_trace < 0) {
-        const char* e = getenv("OPENPETE_OT_GARBAGE_TRACE");
-        s_otg_trace = (e && *e && *e != '0') ? 1 : 0;
-    }
-    static int s_otg_logs = 0;
-    /* OPENPETE_OT_TRUNCATE=N (inert otherwise): stop
-     * submitting the OT chain after N slots, keeping exactly OT-dump slots
-     * 0..N-1 (the dump's slot column is g_ot_slot_count-1, so the indices
-     * line up 1:1 with OPENPETE_OT_DUMP_FRAMES rows). Lets an -og capture
-     * show what the PsyCross walk has painted "so far" at any slot cutoff -
-     * the decisive probe for whether a pixel's final color comes from slots
-     * before or after the cutoff. */
-    static int s_ot_truncate = -2;
-    if (s_ot_truncate == -2) {
-        const char* e = std::getenv("OPENPETE_OT_TRUNCATE");
-        s_ot_truncate = (e && *e) ? std::atoi(e) : -1;
-        if (s_ot_truncate >= 0)
-            OPL_INFO_F("thunks", "OT truncate armed: submitting first %d slots only",
-                       s_ot_truncate);
-    }
-    uint32_t prev_addr = 0u, prev_tag = 0u;
-    while (g_ot_slot_count < (int)OT_MAX_SLOTS) {
-        if (s_ot_truncate >= 0 && g_ot_slot_count >= s_ot_truncate) break;
-        if (addr == 0u) break;
-        uint32_t tag;
-        uint8_t* host = ot_entry_host(addr, &tag);
-        if (!host) break;
-
-        uint8_t  plen = (uint8_t)((tag >> 24) & 0xFFu);
-        uint32_t next = tag & 0x00FFFFFFu;
-
-        if (s_otg_trace && plen > 32u && s_otg_logs < 80) {
-            s_otg_logs++;
-            OPL_WARN_F("thunks",
-                "OT-garbage f=%u slot=%d addr=0x%08X tag=0x%08X plen=%u "
-                "code=0x%02X next=0x%06X <- prev addr=0x%08X tag=0x%08X",
-                openpete_frame, g_ot_slot_count, addr, tag, (unsigned)plen,
-                (unsigned)host[7], next, prev_addr, prev_tag);
-        }
-
-        /* --render-paths: drop geometry prims belonging to a non-selected render
-         * path. Presentation-only - we just don't submit the prim; game RAM is
-         * untouched (the OT itself is never modified), so gameplay state is
-         * unaffected. Control/env prims (plen==0, or code 0xE0/0xA0/0x00) always
-         * pass so the draw-env / image loads still set up the framebuffer. */
-        if (psyq_game_render_paths_active()) {
-            uint8_t cb = (plen != 0u) ? host[7] : 0u;
-            uint8_t hi = cb & 0xF0u;
-            bool is_geom = (plen != 0u) && (hi >= 0x20u && hi <= 0x70u);
-            if (is_geom && !psyq_game_render_path_addr_visible(addr)) {
-                filtered_prims_this_call++;
-                if (next == 0x00FFFFFFu) break;
-                addr = next | 0x80000000u;
-                continue;
-            }
-        }
-
-        const size_t payload_bytes = ot_payload_bytes(addr, host, plen);
-        if (payload_bytes == OT_PAYLOAD_UNMAPPED) break;
-
-        size_t slot_size = 12u + payload_bytes;
-        if (g_ot_scratch_used + slot_size > OT_SCRATCH_SZ) {
-            OPL_WARN_F("thunks", "DrawOTag scratch overflow at slot %d (PSX 0x%08X)",
-                       g_ot_slot_count, addr);
-            break;
-        }
-        uint8_t* out = g_ot_scratch + g_ot_scratch_used;
-        g_ot_scratch_used += slot_size;
-        g_ot_slot_host[g_ot_slot_count++] = out;
-
-        /* Decide whether this PSX entry encodes a real GP0 primitive. The
-         * non-singlePrimitive ParsePrimitivesLinkedList walker walks the slot
-         * via `currentPacket += (primLength + P_LEN) * 4` where primLength is
-         * what `ProcessXxx` returned, and stops only at `endPacket =
-         * basePacket + (lenField + P_LEN) * 4`. If lenField doesn't equal the
-         * expected primLength for this code, the walker either short-circuits
-         * (skipping payload) or overshoots and parses garbage as a fresh
-         * P_TAG - which has crashed runs by interpreting random bytes as a
-         * DR_LOAD (0xA0) and SEGV'ing inside `LoadImage`.
-         *
-         * Spyro's PSX-side `plen` (high byte of P_TAG) sometimes diverges
-         * from PsyCross's hardcoded primLength - so derive lenField from the
-         * code byte itself, falling back to lenField=0 (anchor / skip) for
-         * unknown codes. */
-        uint8_t  code_byte = (plen != 0u) ? host[7] : 0u;
-        uint16_t expected_longs = 0u;
-        if (plen != 0u) {
-            uint8_t hi = code_byte & 0xF0u;
-            uint8_t sub = code_byte & 0x0Cu;
-            switch (hi) {
-                case 0x00:
-                    if ((code_byte & 0x0Fu) == 0x00u) expected_longs = 3u;       /* NOP */
-                    else if ((code_byte & 0x0Fu) == 0x01u) expected_longs = 5u;  /* DR_MOVE */
-                    break;
-                case 0x20: /* flat polys */
-                    if      (sub == 0x0u) expected_longs = 4u;   /* POLY_F3 */
-                    else if (sub == 0x4u) expected_longs = 7u;   /* POLY_FT3 */
-                    else if (sub == 0x8u) expected_longs = 5u;   /* POLY_F4 */
-                    else if (sub == 0xCu) expected_longs = 9u;   /* POLY_FT4 */
-                    break;
-                case 0x30: /* gouraud polys */
-                    if      (sub == 0x0u) expected_longs = 6u;   /* POLY_G3 */
-                    else if (sub == 0x4u) expected_longs = 9u;   /* POLY_GT3 */
-                    else if (sub == 0x8u) expected_longs = 8u;   /* POLY_G4 */
-                    else if (sub == 0xCu) expected_longs = 12u;  /* POLY_GT4 */
-                    break;
-                case 0x40: /* flat lines */
-                    /* 0x40 LineF2=3, 0x48 LineF3=5, 0x4C LineF4=6 */
-                    if      ((code_byte & 0x0Eu) == 0x00u) expected_longs = 3u;
-                    else if ((code_byte & 0x0Eu) == 0x08u) expected_longs = 5u;
-                    else if ((code_byte & 0x0Eu) == 0x0Cu) expected_longs = 6u;
-                    break;
-                case 0x50: /* gouraud lines */
-                    if      ((code_byte & 0x0Eu) == 0x00u) expected_longs = 4u;  /* LineG2 */
-                    else if ((code_byte & 0x0Eu) == 0x08u) expected_longs = 7u;  /* LineG3 */
-                    else if ((code_byte & 0x0Eu) == 0x0Cu) expected_longs = 9u;  /* LineG4 */
-                    break;
-                case 0x60: /* TILE / SPRT free-size */
-                    /* 0x60=TILE(3), 0x64=SPRT(4), 0x68=TILE_1(2), 0x6C=SPRT(4) */
-                    if      ((code_byte & 0x0Cu) == 0x0u) expected_longs = 3u;
-                    else if ((code_byte & 0x0Cu) == 0x4u) expected_longs = 4u;
-                    else if ((code_byte & 0x0Cu) == 0x8u) expected_longs = 2u;
-                    break;
-                case 0x70: /* TILE_8/16, SPRT_8/16 */
-                    /* 0x70=TILE_8(2), 0x74=SPRT_8(3), 0x78=TILE_16(2), 0x7C=SPRT_16(3) */
-                    if      ((code_byte & 0x0Cu) == 0x0u) expected_longs = 2u;
-                    else if ((code_byte & 0x0Cu) == 0x4u) expected_longs = 3u;
-                    else if ((code_byte & 0x0Cu) == 0x8u) expected_longs = 2u;
-                    else if ((code_byte & 0x0Cu) == 0xCu) expected_longs = 3u;
-                    break;
-                case 0xA0: /* DR_LOAD - variable; getlen returns slot's lenField */
-                    expected_longs = (uint16_t)(payload_bytes / 4u);
-                    break;
-                case 0xE0: {
-                    /* DR_TPAGE / DR_MODE / DR_TWIN / DR_AREA / DR_OFFSET / DR_STP
-                     * - variable-length env packets. PSYQ's macros sometimes
-                     * over-allocate `plen`: e.g. `setDrawMode` calls
-                     * `setlen(p, 3)` while only writing `code[0]=E1xxxxx` and
-                     * `code[1]=E2xxxxx` (code[2] is uninitialized memory).
-                     * PsyCross's `ProcessDrawEnv` walks `polyTag->len` longs OR
-                     * stops at the first subtype-0 long, whichever comes first;
-                     * the OUTER walker then expects `primLength == tagLength`
-                     * to land on `endPacket`.
-                     *
-                     * To make those match we mimic ProcessDrawEnv's stop-rule
-                     * here and set `lenField` to the actual count of valid env
-                     * codes (subtypes 1..6). Anything else (subtype-0,
-                     * uninitialized 0xFF padding, etc.) terminates the walk.
-                     *
-                     * The 0xE0 packets are kept rather than dropped as
-                     * anchors: dropping them would lose any DR_TPAGE/DR_MODE
-                     * the game injects mid-frame to switch texture pages. */
-                    uint32_t env_count = 0u;
-                    uint32_t scan_max  = (uint32_t)plen;
-                    if (scan_max > 16u) scan_max = 16u;
-                    for (uint32_t i = 0; i < scan_max; ++i) {
-                        uint32_t code_word;
-                        std::memcpy(&code_word, host + 4 + i * 4u, 4);
-                        uint32_t sub = (code_word >> 24) & 0x0Fu;
-                        if (sub == 0u || sub > 6u) break;
-                        ++env_count;
-                    }
-                    expected_longs = (uint16_t)env_count;
-                    break;
-                }
-                default:
-                    break;
-            }
-        }
-
-        bool is_known_prim = (expected_longs != 0u);
-        uint16_t lenField  = is_known_prim ? expected_longs : 0u;
-        /* No PGXP per-primitive index is supplied; 0xFFFF marks none. A
-         * content-keyed (sx,sy)->index map collides for vertices at the same
-         * pixel, so an index needs a per-vertex PGXP memory. */
-        uint16_t pgxpField = 0xFFFFu;
-        std::memcpy(out + 8,  &lenField,  2);
-        std::memcpy(out + 10, &pgxpField, 2);
-
-        if (payload_bytes != 0u) {
-            std::memcpy(out + 12, host + 4, payload_bytes);
-            if (is_known_prim) {
-                openpete_primitives_drawn++;
-                s_hist[(code_byte & 0xF0u) >> 4u]++;
-                s_total_slots++;
-                if (code_byte >= 0x20u && code_byte < 0x80u)
-                    draw_prims_this_call++;
-            } else {
-                s_anchor_slots++;
-            }
-        } else {
-            s_anchor_slots++;
-        }
-
-        if (dump) {
-            std::fprintf(dump, "%u,%d,%u,0x%08X,%u,0x%02X",
-                         openpete_frame, g_ot_slot_count - 1, s_dump_call,
-                         addr, (unsigned)plen, (unsigned)code_byte);
-            uint32_t nwords = (uint32_t)(payload_bytes / 4u);
-            if (nwords > 16u) nwords = 16u; /* cap; enough for poly_gt4 */
-            for (uint32_t w = 0; w < nwords; ++w) {
-                uint32_t word;
-                std::memcpy(&word, host + 4 + w * 4u, 4);
-                std::fprintf(dump, ",%08X", word);
-            }
-            std::fputc('\n', dump);
-        }
-
-        prev_addr = addr;
-        prev_tag  = tag;
-        if (next == 0x00FFFFFFu) break;
-        addr = next | 0x80000000u;
-    }
-    if (dump) std::fflush(dump);
+    /* Drawing primitives (codes 0x20-0x7F) this walk submitted, and the
+     * geometry prims --render-paths dropped; a loading screen emits exactly
+     * one, its background fill. */
+    unsigned draw_prims_this_call = 0, filtered_prims_this_call = 0;
+    ot_walk(B, addr, &draw_prims_this_call, &filtered_prims_this_call);
 
     /* --render-paths: the per-path polybuf intervals were recorded during this
      * frame's render pass and consumed by the walk above. The "canon drawn" mask
@@ -3182,17 +3223,9 @@ void psyq_DrawOTag(CPUState* cpu) {
      * host present loop (core/runtime/run.c), once per canonical present, so they
      * survive the planned removal of this PsyCross OT submission (the feeder hooks
      * that record the intervals fire on the render functions, independent of
-     * DrawOTag). The walk above has already consumed this frame's intervals; the
-     * present loop snapshots + clears them before the next frame records fresh. */
+     * DrawOTag). */
 
-    /* Patch each slot's addr to point at the next slot's host pointer; last
-     * slot terminates with `prim_terminator`. */
-    for (int i = 0; i < g_ot_slot_count; i++) {
-        uintptr_t next_host = (i + 1 < g_ot_slot_count)
-            ? (uintptr_t)g_ot_slot_host[i + 1]
-            : (uintptr_t)&prim_terminator;
-        std::memcpy(g_ot_slot_host[i], &next_host, sizeof(uintptr_t));
-    }
+    ot_link_slots(B);
 
     /* Walk the host-side chain in non-singlePrimitive mode and let PsyCross
      * batch splits across slots; a DrawPrim per slot would force
@@ -3202,21 +3235,8 @@ void psyq_DrawOTag(CPUState* cpu) {
      * matches the primLength returned by ProcessGouraudPoly/ProcessFlatPoly,
      * so the inner `(primLength + P_LEN) * 4` advance lands cleanly on the
      * next slot - no over-walk into scratch. */
-    if (g_ot_slot_count > 0) {
-        /* Sizing probe - track high-water marks for OT memory to size
-         * the saved-prev buffers correctly. */
-        {
-            static int      s_max_slot_count = 0;
-            static size_t   s_max_scratch    = 0;
-            static unsigned s_last_log_frame = 0;
-            if (g_ot_slot_count > s_max_slot_count) s_max_slot_count = g_ot_slot_count;
-            if (g_ot_scratch_used > s_max_scratch)  s_max_scratch    = g_ot_scratch_used;
-            if (openpete_frame >= s_last_log_frame + 1000u) {
-                s_last_log_frame = openpete_frame;
-                OPL_INFO_F("thunks", "OT high-water: max_slots=%d max_scratch=%zu KB",
-                           s_max_slot_count, s_max_scratch / 1024);
-            }
-        }
+    if (B->slot_count > 0) {
+        ot_high_water(B);
         /* When the native Vulkan renderer is the sole display (pure --renderer vk),
          * PsyCross does not rasterize the OT at all - the native renderer draws
          * everything from gamestate. Skip the GL walk entirely (and don't open a
@@ -3259,23 +3279,7 @@ void psyq_DrawOTag(CPUState* cpu) {
                    SDL_GetAtomicInt(&openpete_vbl), guest_draw_prims);
     }
 
-    s_hist_calls++;
-    if (openpete_frame >= s_last_dump + 60u) {
-        s_last_dump = openpete_frame;
-        OPL_DEBUG_F("thunks",
-                   "DrawOTag@f%u calls=%u prims=%u anchors=%u hist "
-                   "0x:%u 1x:%u 2x:%u 3x:%u 4x:%u 5x:%u 6x:%u 7x:%u "
-                   "8x:%u 9x:%u Ax:%u Bx:%u Cx:%u Dx:%u Ex:%u Fx:%u",
-                   openpete_frame, s_hist_calls, s_total_slots, s_anchor_slots,
-                   s_hist[0],  s_hist[1],  s_hist[2],  s_hist[3],
-                   s_hist[4],  s_hist[5],  s_hist[6],  s_hist[7],
-                   s_hist[8],  s_hist[9],  s_hist[10], s_hist[11],
-                   s_hist[12], s_hist[13], s_hist[14], s_hist[15]);
-        for (int i = 0; i < 16; i++) s_hist[i] = 0;
-        s_anchor_slots = 0;
-        s_total_slots  = 0;
-        s_hist_calls   = 0;
-    }
+    ot_hist_log();
 }
 
 /* --- libpad -------------------------------------------------------------- */

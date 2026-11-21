@@ -1412,16 +1412,37 @@ void player_reextract(CPUState* cpu) { player_reextract_record(cpu, 0); }
  *  The per-call record store                                                *
  * ======================================================================== */
 
+/* The auxiliary feeders, PLAYER_REC_SHADOW and PLAYER_REC_FLAME: auxiliary
+ * index a is feeder PLAYER_REC_SHADOW + a. */
+#define PLAYER_AUX_FEEDERS (PLAYER_REC_FEEDERS - PLAYER_REC_SHADOW)
+#define AUX_OF(f) ((f) - PLAYER_REC_SHADOW)
+
 typedef struct {
     int      n;
     uint32_t stamp;     /* canon epoch of the first append */
     uint32_t frame;     /* openpete_frame of the first append */
     player_model_rec_t r[PLAYER_REC_MAX];
-    int      nsh;
-    player_shadow_rec_t sh[PLAYER_REC_MAX];
-    int      nfl;
-    player_flame_rec_t  fl[PLAYER_REC_MAX];
+    int      naux[PLAYER_AUX_FEEDERS];
+    player_aux_rec_t aux[PLAYER_AUX_FEEDERS][PLAYER_REC_MAX];
 } rec_list_t;
+
+/** @brief Empties a list's model and auxiliary records.
+ *
+ * @param L The list. */
+static void list_clear(rec_list_t* L) {
+    L->n = 0;
+    for (int a = 0; a < PLAYER_AUX_FEEDERS; a++) L->naux[a] = 0;
+}
+
+/** @brief Reports whether a list holds no model and no auxiliary record.
+ *
+ * @param L The list.
+ * @return 1 when empty, else 0. */
+static int list_empty(const rec_list_t* L) {
+    if (L->n) return 0;
+    for (int a = 0; a < PLAYER_AUX_FEEDERS; a++) if (L->naux[a]) return 0;
+    return 1;
+}
 
 static rec_list_t s_list;             /* accumulating: the committed tick's hook calls */
 static rec_list_t s_led;              /* accumulating: the speculative fires of one led frame */
@@ -1436,8 +1457,8 @@ static uint32_t   s_cap_refused_epoch, s_spec_refused_epoch, s_led_fires_epoch;
  * to the cap. */
 static void list_open(void) {
     uint32_t stamp = spyro_native_canon_epoch_stamp();
-    int empty = (s_list.n == 0 && s_list.nsh == 0 && s_list.nfl == 0);
-    if (!empty && (s_list.stamp != stamp || s_list.frame != openpete_frame)) { s_list.n = 0; s_list.nsh = 0; s_list.nfl = 0; empty = 1; }
+    int empty = list_empty(&s_list);
+    if (!empty && (s_list.stamp != stamp || s_list.frame != openpete_frame)) { list_clear(&s_list); empty = 1; }
     if (empty) { s_list.stamp = stamp; s_list.frame = openpete_frame; }
 }
 
@@ -1447,7 +1468,7 @@ static void list_open(void) {
  * among them is the ring's capture tick. The list is emptied when the VBL
  * count differs from the one it holds. */
 static void led_open(void) {
-    if (s_led.frame != openpete_frame) { s_led.n = 0; s_led.nsh = 0; s_led.nfl = 0; s_led.frame = openpete_frame; }
+    if (s_led.frame != openpete_frame) { list_clear(&s_led); s_led.frame = openpete_frame; }
     s_led_fires_epoch++;
 }
 
@@ -1583,6 +1604,23 @@ int player_records_model_append(CPUState* cpu, uint32_t rp_start, uint32_t rp_en
     return L->n++;
 }
 
+/** @brief Appends a pairing-only model record copied from a state block.
+ *
+ * The record is zeroed, takes the state as both its key and its shown
+ * state, and is unpaired, undrawn and the player's; the caller checks the
+ * cap.
+ * @param L The list.
+ * @param state The player state block, PL.rec_len bytes.
+ * @return The record's index. */
+static int pairing_model_push(rec_list_t* L, const uint8_t* state) {
+    player_model_rec_t* r = &L->r[L->n];
+    memset(r, 0, sizeof *r);
+    memcpy(r->spyro, state, PL.rec_len);
+    memcpy(r->src,   state, PL.rec_len);
+    r->drawn = 0; r->pair = -1; r->pair2 = -1; r->is_player = 1;
+    return L->n++;
+}
+
 /** @brief The model record an auxiliary record renders under.
  *
  * The newest model record whose position words equal the live ones is
@@ -1597,54 +1635,54 @@ static int bind_model(rec_list_t* L, const uint8_t* sp) {
     for (int k = L->n - 1; k >= 0; k--)
         if (memcmp(L->r[k].spyro + PL.pos_off, sp + PL.pos_off, 12) == 0) return k;
     if (L->n >= PLAYER_REC_MAX) { s_cap_refused_epoch++; return -1; }
-    player_model_rec_t* r = &L->r[L->n];
-    memset(r, 0, sizeof *r);
-    memcpy(r->spyro, sp, PL.rec_len);
-    memcpy(r->src,   sp, PL.rec_len);
-    r->drawn = 0; r->pair = -1; r->pair2 = -1; r->is_player = 1;
     if (L == &s_list) s_pairing_only++;
-    return L->n++;
+    return pairing_model_push(L, sp);
 }
 
-int player_records_shadow_append(CPUState* cpu) {
-    (void)cpu;
-    if (!PL.shadow_base) return -1;
+/** @brief Appends an auxiliary record of feeder index a to a list.
+ *
+ * The state and shown-state copies both take `state`; the caller checks the
+ * cap.
+ * @param L The list.
+ * @param a The auxiliary index.
+ * @param state The feeder's state block.
+ * @param model The model record it renders under.
+ * @param drawn 1 for a hook call, 0 for pairing-only. */
+static void aux_push(rec_list_t* L, int a, const uint8_t* state, int model, int drawn) {
+    const uint32_t len = s_reg[PLAYER_REC_SHADOW + a].len;
+    player_aux_rec_t* d = &L->aux[a][L->naux[a]++];
+    memcpy(d->st,  state, len);
+    memcpy(d->src, state, len);
+    d->model = (int8_t)model; d->drawn = (uint8_t)drawn;
+}
+
+/** @brief Records one call of an auxiliary feeder's hook, bound to the model record it renders under.
+ *
+ * A speculative call goes to the led list, a committed one to the epoch
+ * list.
+ * @param f The feeder, PLAYER_REC_SHADOW or PLAYER_REC_FLAME.
+ * @return The model record's index, or -1 when the layout has no block for
+ *         the feeder, a list is at the cap, or a block does not map. */
+static int aux_append(int f) {
+    reg_init();
+    const int a = AUX_OF(f);
+    if (!s_reg[f].addr) return -1;
     rec_list_t* L = openpete_speculative ? &s_led : &s_list;
     if (openpete_speculative) led_open();
-    else { if (player_records_dbg()) observe(PLAYER_REC_SHADOW); list_open(); }
-    if (L->nsh >= PLAYER_REC_MAX) { s_cap_refused_epoch++; return -1; }
+    else { if (player_records_dbg()) observe(f); list_open(); }
+    if (L->naux[a] >= PLAYER_REC_MAX) { s_cap_refused_epoch++; return -1; }
     const uint8_t* sp = (const uint8_t*)openpete_psx_to_host_span(PL.base, PL.rec_len);
-    const uint8_t* sh = (const uint8_t*)openpete_psx_to_host_span(PL.shadow_base, PL.shadow_len);
-    if (!sp || !sh) return -1;
+    const uint8_t* st = (const uint8_t*)openpete_psx_to_host_span(s_reg[f].addr, s_reg[f].len);
+    if (!sp || !st) return -1;
     int m = bind_model(L, sp);
     if (m < 0) return -1;
-    player_shadow_rec_t* d = &L->sh[L->nsh];
-    memcpy(d->sh,  sh, PL.shadow_len);
-    memcpy(d->src, sh, PL.shadow_len);
-    d->model = (int8_t)m; d->drawn = 1;
-    L->nsh++;
+    aux_push(L, a, st, m, 1);
     return m;
 }
 
-int player_records_flame_append(CPUState* cpu) {
-    (void)cpu;
-    if (!PL.flame_base) return -1;
-    rec_list_t* L = openpete_speculative ? &s_led : &s_list;
-    if (openpete_speculative) led_open();
-    else { if (player_records_dbg()) observe(PLAYER_REC_FLAME); list_open(); }
-    if (L->nfl >= PLAYER_REC_MAX) { s_cap_refused_epoch++; return -1; }
-    const uint8_t* sp = (const uint8_t*)openpete_psx_to_host_span(PL.base, PL.rec_len);
-    const uint8_t* fl = (const uint8_t*)openpete_psx_to_host_span(PL.flame_base, PL.flame_len);
-    if (!sp || !fl) return -1;
-    int m = bind_model(L, sp);
-    if (m < 0) return -1;
-    player_flame_rec_t* d = &L->fl[L->nfl];
-    memcpy(d->fl,  fl, PL.flame_len);
-    memcpy(d->src, fl, PL.flame_len);
-    d->model = (int8_t)m; d->drawn = 1;
-    L->nfl++;
-    return m;
-}
+int player_records_shadow_append(CPUState* cpu) { (void)cpu; return aux_append(PLAYER_REC_SHADOW); }
+
+int player_records_flame_append(CPUState* cpu) { (void)cpu; return aux_append(PLAYER_REC_FLAME); }
 
 /** @brief Whether two record lists differ in any byte the store compares.
  *
@@ -1664,14 +1702,15 @@ static int lists_differ(const rec_list_t* a, const rec_list_t* b) {
         if (x->drawn && (memcmp(x->seg, y->seg, PL.part_block_len) != 0 ||
                          memcmp(x->sxy, y->sxy, PL.sxy_len) != 0)) return 1;
     }
-    if (a->nsh != b->nsh) return 1;
-    for (int j = 0; j < a->nsh; j++)
-        if (a->sh[j].model != b->sh[j].model || a->sh[j].drawn != b->sh[j].drawn ||
-            memcmp(a->sh[j].sh, b->sh[j].sh, PL.shadow_len) != 0) return 1;
-    if (a->nfl != b->nfl) return 1;
-    for (int j = 0; j < a->nfl; j++)
-        if (a->fl[j].model != b->fl[j].model || a->fl[j].drawn != b->fl[j].drawn ||
-            memcmp(a->fl[j].fl, b->fl[j].fl, PL.flame_len) != 0) return 1;
+    reg_init();
+    for (int f = 0; f < PLAYER_AUX_FEEDERS; f++) {
+        const uint32_t len = s_reg[PLAYER_REC_SHADOW + f].len;
+        if (a->naux[f] != b->naux[f]) return 1;
+        for (int j = 0; j < a->naux[f]; j++) {
+            const player_aux_rec_t *x = &a->aux[f][j], *y = &b->aux[f][j];
+            if (x->model != y->model || x->drawn != y->drawn || memcmp(x->st, y->st, len) != 0) return 1;
+        }
+    }
     return 0;
 }
 
@@ -1734,186 +1773,263 @@ static void summary(void) {
         s_maxB_single, s_maxB_multi, s_minsep);
 }
 
+/** @brief The ring snapshot's bytes of a feeder's registered region, or NULL when the ring has no row for it.
+ *
+ * @param curr The ring's current snapshot.
+ * @param f The feeder.
+ * @return The host bytes. */
+static const uint8_t* ring_block(const openpete_interp_snapshot_t* curr, int f) {
+    const int fr = reg_region(f);
+    return fr >= 0 ? curr->data + curr->region_offsets[fr] : NULL;
+}
+
+/** @brief Invalidates the store and the latched ring stamp when the interp ring reset.
+ *
+ * A savestate load, rewind or runahead depth switch steps the ring's reset
+ * generation; the store's history then describes the pre-jump timeline. */
+static void epoch_reset_on_ring_reset(void) {
+    uint32_t gen = openpete_interp_reset_generation();
+    if (gen == s_reset_gen_seen) return;
+    s_reset_gen_seen = gen;
+    for (int i = 0; i < 3; i++) s_store[i].valid = 0;
+    s_latched_ring_ns = 0;
+    s_resets++;
+}
+
+/** @brief Counts the commit against its VBL and keeps the most commits seen in one VBL. */
+static void epoch_count_vbl(void) {
+    if (openpete_frame == s_last_commit_frame) s_epochs_this_vbl++;
+    else { s_epochs_this_vbl = 1; s_last_commit_frame = openpete_frame; }
+    if (s_epochs_this_vbl > s_max_epochs_vbl) s_max_epochs_vbl = s_epochs_this_vbl;
+}
+
+/** @brief Takes each record's shown state from the led list under --runahead.
+ *
+ * The hooks fire on the committed tick and on the speculative ticks; the
+ * ring and the canonical present hold the led one. Every model record takes
+ * src (and, drawn, seg and sxy) from the led list index for index when the
+ * led list is of a later VBL no later than the ring's tick, of the same
+ * length and the same drawn flags; each auxiliary feeder's records take
+ * src when its counts match. The committed bytes stay the pairing key. A
+ * mismatched led list leaves the records committed and is counted.
+ * @param epoch The committed list.
+ * @param curr The ring's current snapshot. */
+static void epoch_take_led(rec_list_t* epoch, const openpete_interp_snapshot_t* curr) {
+    int led_ok = (s_led.frame > epoch->frame &&
+                  s_led.frame <= curr->tick && s_led.n == epoch->n);
+    for (int k = 0; led_ok && k < epoch->n; k++)
+        if (s_led.r[k].drawn != epoch->r[k].drawn) led_ok = 0;
+    if (!led_ok) { s_led_miss++; return; }
+    for (int k = 0; k < epoch->n; k++) {
+        memcpy(epoch->r[k].src, s_led.r[k].spyro, PL.rec_len);
+        if (epoch->r[k].drawn) {
+            memcpy(epoch->r[k].seg, s_led.r[k].seg, PL.part_block_len);
+            memcpy(epoch->r[k].sxy, s_led.r[k].sxy, PL.sxy_len);
+        }
+    }
+    for (int a = 0; a < PLAYER_AUX_FEEDERS; a++) {
+        if (s_led.naux[a] != epoch->naux[a]) continue;
+        for (int j = 0; j < epoch->naux[a]; j++)
+            memcpy(epoch->aux[a][j].src, s_led.aux[a][j].st, s_reg[PLAYER_REC_SHADOW + a].len);
+    }
+    s_led_match++;
+}
+
+/** @brief Appends pairing-only auxiliary records for the ring's avatar whose hooks did not fire.
+ *
+ * The ring's avatar is the newest model record whose shown position equals
+ * the ring's. Each auxiliary feeder with a ring row and no record bound to
+ * it gets one from the ring's tick-end bytes (the anchor and the ribbon
+ * state are written every tick, drawn or not), so a record that appears
+ * next tick lerps from them. Never rendered.
+ * @param epoch The committed list.
+ * @param curr The ring's current snapshot.
+ * @param ring The ring's model bytes. */
+static void epoch_add_pairing_aux(rec_list_t* epoch, const openpete_interp_snapshot_t* curr,
+                                  const uint8_t* ring) {
+    int rk = -1;
+    for (int k = epoch->n - 1; k >= 0; k--)
+        if (memcmp(epoch->r[k].src + PL.pos_off, ring + PL.pos_off, 12) == 0) { rk = k; break; }
+    if (rk < 0) return;
+    for (int a = 0; a < PLAYER_AUX_FEEDERS; a++) {
+        int has = 0;
+        for (int j = 0; j < epoch->naux[a]; j++) if (epoch->aux[a][j].model == rk) { has = 1; break; }
+        const uint8_t* rb = ring_block(curr, PLAYER_REC_SHADOW + a);
+        if (!has && epoch->naux[a] < PLAYER_REC_MAX && rb) aux_push(epoch, a, rb, rk, 0);
+    }
+}
+
+/** @brief Adds the pairing-only records the ring's tick needs to the committed list.
+ *
+ * A model record is appended from the ring's bytes when no hook observed the
+ * ring's tick-end position (the avatar was not drawn this tick, or the
+ * epoch had no call); under --runahead with led fires the led list supplies
+ * the shown state instead (epoch_take_led) and no model record is added.
+ * Then the ring's avatar's missing auxiliary records are added
+ * (epoch_add_pairing_aux).
+ * @param epoch The committed list.
+ * @param curr The ring's current snapshot. */
+static void epoch_add_pairing(rec_list_t* epoch, const openpete_interp_snapshot_t* curr) {
+    const uint8_t* ring = ring_block(curr, PLAYER_REC_MODEL);
+    if (!ring) return;
+    int seen = 0;
+    for (int k = 0; k < epoch->n; k++)
+        if (memcmp(epoch->r[k].spyro + PL.pos_off, ring + PL.pos_off, 12) == 0) { seen = 1; break; }
+    if (openpete_runahead_get() > 0 && epoch->n > 0 && s_led_fires_epoch > 0) {
+        epoch_take_led(epoch, curr);
+        seen = 1;
+    }
+    if (!seen && epoch->n < PLAYER_REC_MAX) {
+        pairing_model_push(epoch, ring);
+        s_pairing_only++;
+    }
+    epoch_add_pairing_aux(epoch, curr, ring);
+}
+
+/** @brief Rolls the committed list into the store, or drops it as a duplicate.
+ *
+ * The list becomes the newest store entry, paired against the previous one,
+ * when the ring rolled or the list differs from the newest. Its clock is
+ * the ring's stamp when the ring rolled; a record-only roll stamps the
+ * store's own grid (previous + one period) under deterministic capture,
+ * else the tick stamp (the VBL under the PLL), or `ns` when that is 0.
+ * @param epoch The committed list.
+ * @param ring_rolled Nonzero when the ring's tick stamp changed.
+ * @param ns The ring's current tick stamp.
+ * @return Nonzero when the list differs from the newest store entry. */
+static int store_roll(const rec_list_t* epoch, int ring_rolled, op_time_t ns) {
+    int rec_changed = !s_store[0].valid || lists_differ(epoch, &s_store[0].list);
+    if (ring_rolled && rec_changed) s_roll_both++;
+    else if (ring_rolled)           s_roll_ring++;
+    else if (rec_changed)           s_roll_records++;
+    else                            s_dedupe++;
+    s_store_rolled = 0;
+    if (!ring_rolled && !rec_changed) return rec_changed;
+    s_store_rolled = 1;
+    s_store[2] = s_store[1];
+    s_store[1] = s_store[0];
+    s_store[0].list = *epoch;
+    s_store[0].valid = 1;
+    if (ring_rolled) s_store[0].ns = ns;
+    else if (openpete_interp_deterministic() && s_store[1].valid)
+        s_store[0].ns = s_store[1].ns + openpete_interp_det_period();
+    else s_store[0].ns = g_openpete_tick_stamp ? g_openpete_tick_stamp : ns;
+    pair_lists(&s_store[0].list, s_store[1].valid ? &s_store[1].list : NULL);
+    return rec_changed;
+}
+
+/** @brief Compares each feeder's last observed block with the ring's and folds the mismatches into the census.
+ *
+ * @param curr The ring's current snapshot, or NULL.
+ * @param mm Receives 1 per feeder whose block differs from the ring's.
+ * @return The model's position delta to the ring on a model mismatch, else 0. */
+static double recdbg_ring_mismatch(const openpete_interp_snapshot_t* curr, int mm[PLAYER_REC_FEEDERS]) {
+    double model_delta = 0.0;
+    for (int f = 0; f < PLAYER_REC_FEEDERS; f++) {
+        mm[f] = 0;
+        if (!curr || !s_obs[f].last_ok) continue;
+        const uint8_t* ring = ring_block(curr, f);
+        if (!ring) continue;
+        mm[f] = memcmp(s_obs[f].last, ring, s_reg[f].len) != 0;
+        if (mm[f]) s_mismatch[f]++;
+        if (f == PLAYER_REC_MODEL && mm[f]) {
+            int32_t rp[3]; memcpy(rp, ring + PL.pos_off, 12);
+            model_delta = dist3(s_obs[f].pos[s_obs[f].n - 1], rp);
+            if (model_delta > s_max_model_delta) s_max_model_delta = model_delta;
+        }
+    }
+    return model_delta;
+}
+
+/** @brief The largest move of an observed model position from the previous epoch's same-index one, folded into the census maximum.
+ *
+ * Kept per single and multiple records.
+ * @param m This epoch's model observations.
+ * @return The move, 0 when the counts differ or nothing was observed. */
+static double recdbg_model_move(const feeder_obs_t* m) {
+    double B = 0.0;
+    if (m->n <= 0 || m->n != s_prev_model.n) return B;
+    for (int k = 0; k < m->n; k++) { double d = dist3(m->pos[k], s_prev_model.pos[k]); if (d > B) B = d; }
+    double* maxB = m->n == 1 ? &s_maxB_single : &s_maxB_multi;
+    if (B > *maxB) *maxB = B;
+    return B;
+}
+
+/** @brief The smallest distance between two of this epoch's observed model positions, folded into the census minimum.
+ *
+ * @param m This epoch's model observations.
+ * @return The separation, -1 with fewer than two positions. */
+static double recdbg_model_sep(const feeder_obs_t* m) {
+    double sep = -1.0;
+    for (int i = 0; i < m->n; i++)
+        for (int j = i + 1; j < m->n; j++) { double d = dist3(m->pos[i], m->pos[j]); if (sep < 0.0 || d < sep) sep = d; }
+    if (sep >= 0.0 && (s_minsep < 0.0 || sep < s_minsep)) s_minsep = sep;
+    return sep;
+}
+
+/** @brief Prints one [recdbg] line for the commit: calls, ring agreement, bounds, store pairs and bindings.
+ *
+ * @param curr The ring's current snapshot, or NULL.
+ * @param ring_rolled Nonzero when the ring's tick stamp changed.
+ * @param rec_changed Nonzero when the list differed from the newest store entry. */
+static void recdbg_epoch_line(const openpete_interp_snapshot_t* curr, int ring_rolled, int rec_changed) {
+    static const char* const aux_label[PLAYER_AUX_FEEDERS] = { "shadows", "flames" };
+    const feeder_obs_t* m = &s_obs[PLAYER_REC_MODEL];
+    int mm[PLAYER_REC_FEEDERS];
+    double model_delta = recdbg_ring_mismatch(curr, mm);
+    const double B = recdbg_model_move(m), sep = recdbg_model_sep(m);
+    for (int f = 0; f < PLAYER_REC_FEEDERS; f++)
+        if (s_obs[f].n + s_obs[f].over > s_max_calls[f]) s_max_calls[f] = s_obs[f].n + s_obs[f].over;
+    const rec_list_t* L = &s_store[0].list;
+    fprintf(stderr, "[recdbg f=%u e=%u] calls m=%d s=%d f=%d spec=%u led=%d@%u cap=%u epochs_vbl=%d ring=%d recchg=%d "
+            "mm=%d/%d/%d mdelta=%.0f B=%.0f sep=%.0f store=%d pos=",
+            openpete_feed_key_now(), s_epochs, m->n + m->over, s_obs[1].n + s_obs[1].over, s_obs[2].n + s_obs[2].over,
+            s_spec_refused_epoch, s_led_fires_epoch ? s_led.n : 0, s_led_fires_epoch ? s_led.frame : 0u,
+            s_cap_refused_epoch, s_epochs_this_vbl, ring_rolled, rec_changed,
+            mm[0], mm[1], mm[2], model_delta, B, sep, L->n);
+    for (int k = 0; k < m->n; k++)
+        fprintf(stderr, "%s(%d,%d,%d)c%u", k ? ";" : "", m->pos[k][0], m->pos[k][1], m->pos[k][2], m->cf[k]);
+    fprintf(stderr, " pairs=");
+    for (int k = 0; k < L->n; k++)
+        fprintf(stderr, "%s%d%s", k ? "," : "", L->r[k].pair, L->r[k].drawn ? "" : "p");
+    for (int a = 0; a < PLAYER_AUX_FEEDERS; a++) {
+        fprintf(stderr, " %s=", aux_label[a]);
+        for (int j = 0; j < L->naux[a]; j++)
+            fprintf(stderr, "%s%d%s", j ? "," : "", L->aux[a][j].model, L->aux[a][j].drawn ? "" : "p");
+    }
+    fputc('\n', stderr);
+    s_prev_model = *m;
+}
+
 void player_records_epoch_commit(void) {
     if (!PL.base) return;
+    reg_init();
     const int dbg = player_records_dbg();
     static int armed = 0;
     if (dbg && !armed) { armed = 1; atexit(summary); }
     s_epochs++;
-
-    /* Reset wherever the ring reset (savestate load, rewind, a runahead depth
-     * switch): the store's history describes the pre-jump timeline. */
-    uint32_t gen = openpete_interp_reset_generation();
-    if (gen != s_reset_gen_seen) {
-        s_reset_gen_seen = gen;
-        for (int i = 0; i < 3; i++) s_store[i].valid = 0;
-        s_latched_ring_ns = 0;
-        s_resets++;
-    }
-
-    if (openpete_frame == s_last_commit_frame) s_epochs_this_vbl++;
-    else { s_epochs_this_vbl = 1; s_last_commit_frame = openpete_frame; }
-    if (s_epochs_this_vbl > s_max_epochs_vbl) s_max_epochs_vbl = s_epochs_this_vbl;
+    epoch_reset_on_ring_reset();
+    epoch_count_vbl();
 
     static rec_list_t epoch;
-    if ((s_list.n || s_list.nsh || s_list.nfl) && spyro_native_canon_epoch_fresh(s_list.stamp)) epoch = s_list;
-    else { epoch.n = 0; epoch.nsh = 0; epoch.nfl = 0; }
-    s_list.n = 0; s_list.nsh = 0; s_list.nfl = 0;
+    if (!list_empty(&s_list) && spyro_native_canon_epoch_fresh(s_list.stamp)) epoch = s_list;
+    else list_clear(&epoch);
+    list_clear(&s_list);
 
     const openpete_interp_snapshot_t* curr = openpete_interp_curr_snapshot();
     op_time_t ns = openpete_interp_curr_tick_ns();
     int ring_rolled = (ns != 0 && ns != s_latched_ring_ns);
     s_latched_ring_ns = ns;
     if (!curr) s_no_ring++;
+    if (curr) epoch_add_pairing(&epoch, curr);
 
-    /* Pairing-only record: no hook observed the ring's tick-end position - the
-     * avatar was not drawn this tick (hidden, blink) or the epoch had no call
-     * at all. Appended last, never rendered; shadow and flame records bind to
-     * it and the next drawn record pairs with it. */
-    if (curr && reg_region(PLAYER_REC_MODEL) >= 0) {
-        const uint8_t* ring = curr->data + curr->region_offsets[reg_region(PLAYER_REC_MODEL)];
-        int seen = 0;
-        for (int k = 0; k < epoch.n; k++)
-            if (memcmp(epoch.r[k].spyro + PL.pos_off, ring + PL.pos_off, 12) == 0) { seen = 1; break; }
-        /* --runahead: the hooks fire on the committed tick and on the
-         * speculative ticks; the ring and the canonical present hold the led
-         * one. Every record takes its shown state (src, seg, sxy) from the
-         * led list, the speculative fires of the ring's capture tick, index for
-         * index; the committed bytes stay the pairing key. A led list from
-         * another frame or of another shape leaves the records committed and
-         * is counted. */
-        if (openpete_runahead_get() > 0 && epoch.n > 0 && s_led_fires_epoch > 0) {
-            int led_ok = (s_led.frame > epoch.frame &&
-                          s_led.frame <= curr->tick && s_led.n == epoch.n);
-            for (int k = 0; led_ok && k < epoch.n; k++)
-                if (s_led.r[k].drawn != epoch.r[k].drawn) led_ok = 0;
-            if (led_ok) {
-                for (int k = 0; k < epoch.n; k++) {
-                    memcpy(epoch.r[k].src, s_led.r[k].spyro, PL.rec_len);
-                    if (epoch.r[k].drawn) {
-                        memcpy(epoch.r[k].seg, s_led.r[k].seg, PL.part_block_len);
-                        memcpy(epoch.r[k].sxy, s_led.r[k].sxy, PL.sxy_len);
-                    }
-                }
-                if (s_led.nsh == epoch.nsh)
-                    for (int j = 0; j < epoch.nsh; j++) memcpy(epoch.sh[j].src, s_led.sh[j].sh, PL.shadow_len);
-                if (s_led.nfl == epoch.nfl)
-                    for (int j = 0; j < epoch.nfl; j++) memcpy(epoch.fl[j].src, s_led.fl[j].fl, PL.flame_len);
-                s_led_match++;
-            } else s_led_miss++;
-            seen = 1;
-        }
-        if (!seen && epoch.n < PLAYER_REC_MAX) {
-            player_model_rec_t* r = &epoch.r[epoch.n++];
-            memset(r, 0, sizeof *r);
-            memcpy(r->spyro, ring, PL.rec_len);
-            memcpy(r->src,   ring, PL.rec_len);
-            r->drawn = 0; r->pair = -1; r->pair2 = -1; r->is_player = 1;
-            s_pairing_only++;
-        }
-        /* The ring's avatar's shadow and flame records when their hooks did
-         * not fire this tick: pairing-only, the ring's tick-end bytes (the
-         * anchor and the ribbon state are written every tick, drawn or not),
-         * so one that appears next tick lerps from them. Never rendered. */
-        int rk = -1;
-        for (int k = epoch.n - 1; k >= 0; k--)
-            if (memcmp(epoch.r[k].src + PL.pos_off, ring + PL.pos_off, 12) == 0) { rk = k; break; }
-        if (rk >= 0) {
-            int has_sh = 0, has_fl = 0;
-            for (int j = 0; j < epoch.nsh; j++) if (epoch.sh[j].model == rk) { has_sh = 1; break; }
-            for (int j = 0; j < epoch.nfl; j++) if (epoch.fl[j].model == rk) { has_fl = 1; break; }
-            if (!has_sh && epoch.nsh < PLAYER_REC_MAX && reg_region(PLAYER_REC_SHADOW) >= 0) {
-                player_shadow_rec_t* d = &epoch.sh[epoch.nsh++];
-                const uint8_t* rb = curr->data + curr->region_offsets[reg_region(PLAYER_REC_SHADOW)];
-                memcpy(d->sh, rb, PL.shadow_len); memcpy(d->src, rb, PL.shadow_len);
-                d->model = (int8_t)rk; d->drawn = 0;
-            }
-            if (!has_fl && epoch.nfl < PLAYER_REC_MAX && reg_region(PLAYER_REC_FLAME) >= 0) {
-                player_flame_rec_t* d = &epoch.fl[epoch.nfl++];
-                const uint8_t* rb = curr->data + curr->region_offsets[reg_region(PLAYER_REC_FLAME)];
-                memcpy(d->fl, rb, PL.flame_len); memcpy(d->src, rb, PL.flame_len);
-                d->model = (int8_t)rk; d->drawn = 0;
-            }
-        }
-    }
-
-    /* Roll or dedupe. */
-    int rec_changed = !s_store[0].valid || lists_differ(&epoch, &s_store[0].list);
-    if (ring_rolled && rec_changed) s_roll_both++;
-    else if (ring_rolled)           s_roll_ring++;
-    else if (rec_changed)           s_roll_records++;
-    else                            s_dedupe++;
-    s_store_rolled = 0;
-    if (ring_rolled || rec_changed) {
-        s_store_rolled = 1;
-        s_store[2] = s_store[1];
-        s_store[1] = s_store[0];
-        s_store[0].list = epoch;
-        s_store[0].valid = 1;
-        /* One clock per store: the ring's stamp when it rolled (the store
-         * carries the ring's grid exactly, PLL and deterministic alike); a
-         * record-only roll stamps the VBL under the PLL and the store's own
-         * grid, prev + P, under deterministic capture. */
-        if (ring_rolled) s_store[0].ns = ns;
-        else if (openpete_interp_deterministic() && s_store[1].valid)
-            s_store[0].ns = s_store[1].ns + openpete_interp_det_period();
-        else s_store[0].ns = g_openpete_tick_stamp ? g_openpete_tick_stamp : ns;
-        pair_lists(&s_store[0].list, s_store[1].valid ? &s_store[1].list : NULL);
-    }
+    int rec_changed = store_roll(&epoch, ring_rolled, ns);
     s_store_epoch = spyro_native_canon_epoch_stamp() - 1u;
 
     s_led_fires += s_led_fires_epoch;
     s_spec_refused += s_spec_refused_epoch;
     s_cap_refused  += s_cap_refused_epoch;
-    if (dbg) {
-        feeder_obs_t* m = &s_obs[PLAYER_REC_MODEL];
-        int mm[PLAYER_REC_FEEDERS] = { 0, 0, 0 };
-        double model_delta = 0.0;
-        for (int f = 0; f < PLAYER_REC_FEEDERS; f++) {
-            if (!curr || !s_obs[f].last_ok) continue;
-            const int fr = reg_region(f);
-            if (fr < 0) continue;
-            const uint8_t* ring = curr->data + curr->region_offsets[fr];
-            mm[f] = memcmp(s_obs[f].last, ring, s_reg[f].len) != 0;
-            if (mm[f]) s_mismatch[f]++;
-            if (f == PLAYER_REC_MODEL && mm[f]) {
-                int32_t rp[3]; memcpy(rp, ring + PL.pos_off, 12);
-                model_delta = dist3(s_obs[f].pos[s_obs[f].n - 1], rp);
-                if (model_delta > s_max_model_delta) s_max_model_delta = model_delta;
-            }
-        }
-        double B = 0.0, sep = -1.0;
-        if (m->n > 0 && m->n == s_prev_model.n) {
-            for (int k = 0; k < m->n; k++) { double d = dist3(m->pos[k], s_prev_model.pos[k]); if (d > B) B = d; }
-            if (m->n == 1) { if (B > s_maxB_single) s_maxB_single = B; }
-            else           { if (B > s_maxB_multi)  s_maxB_multi  = B; }
-        }
-        for (int i = 0; i < m->n; i++)
-            for (int j = i + 1; j < m->n; j++) { double d = dist3(m->pos[i], m->pos[j]); if (sep < 0.0 || d < sep) sep = d; }
-        if (sep >= 0.0 && (s_minsep < 0.0 || sep < s_minsep)) s_minsep = sep;
-        for (int f = 0; f < PLAYER_REC_FEEDERS; f++)
-            if (s_obs[f].n + s_obs[f].over > s_max_calls[f]) s_max_calls[f] = s_obs[f].n + s_obs[f].over;
-
-        fprintf(stderr, "[recdbg f=%u e=%u] calls m=%d s=%d f=%d spec=%u led=%d@%u cap=%u epochs_vbl=%d ring=%d recchg=%d "
-                "mm=%d/%d/%d mdelta=%.0f B=%.0f sep=%.0f store=%d pos=",
-                openpete_feed_key_now(), s_epochs, m->n + m->over, s_obs[1].n + s_obs[1].over, s_obs[2].n + s_obs[2].over,
-                s_spec_refused_epoch, s_led_fires_epoch ? s_led.n : 0, s_led_fires_epoch ? s_led.frame : 0u,
-                s_cap_refused_epoch, s_epochs_this_vbl, ring_rolled, rec_changed,
-                mm[0], mm[1], mm[2], model_delta, B, sep, s_store[0].list.n);
-        for (int k = 0; k < m->n; k++)
-            fprintf(stderr, "%s(%d,%d,%d)c%u", k ? ";" : "", m->pos[k][0], m->pos[k][1], m->pos[k][2], m->cf[k]);
-        fprintf(stderr, " pairs=");
-        for (int k = 0; k < s_store[0].list.n; k++)
-            fprintf(stderr, "%s%d%s", k ? "," : "", s_store[0].list.r[k].pair, s_store[0].list.r[k].drawn ? "" : "p");
-        fprintf(stderr, " shadows=");
-        for (int j = 0; j < s_store[0].list.nsh; j++)
-            fprintf(stderr, "%s%d%s", j ? "," : "", s_store[0].list.sh[j].model, s_store[0].list.sh[j].drawn ? "" : "p");
-        fprintf(stderr, " flames=");
-        for (int j = 0; j < s_store[0].list.nfl; j++)
-            fprintf(stderr, "%s%d%s", j ? "," : "", s_store[0].list.fl[j].model, s_store[0].list.fl[j].drawn ? "" : "p");
-        fputc('\n', stderr);
-        s_prev_model = *m;
-    }
+    if (dbg) recdbg_epoch_line(curr, ring_rolled, rec_changed);
     memset(s_obs, 0, sizeof s_obs);
     s_spec_refused_epoch = 0;
     s_led_fires_epoch = 0;
@@ -2004,51 +2120,66 @@ int player_records_model_drawn(int k) {
     return (k >= 0 && k < L->n && L->r[k].drawn) ? 1 : 0;
 }
 
-int player_records_shadow_count(void) { return s_pres_n ? s_store[s_pres_b].list.nsh : 0; }
-const player_shadow_rec_t* player_records_shadow_curr(int j) {
-    return (s_pres_n && j >= 0 && j < s_store[s_pres_b].list.nsh) ? &s_store[s_pres_b].list.sh[j] : NULL;
+/** @brief The auxiliary record count of the open present.
+ *
+ * @param a The auxiliary index.
+ * @return The count, 0 when no present is open. */
+static int aux_count(int a) { return s_pres_n ? s_store[s_pres_b].list.naux[a] : 0; }
+
+/** @brief The newest store entry's auxiliary record j of the open present.
+ *
+ * @param a The auxiliary index.
+ * @param j The record index.
+ * @return The record, or NULL when `j` is out of range or no present is open. */
+static const player_aux_rec_t* aux_curr(int a, int j) {
+    return (s_pres_n && j >= 0 && j < s_store[s_pres_b].list.naux[a]) ? &s_store[s_pres_b].list.aux[a][j] : NULL;
 }
-const player_shadow_rec_t* player_records_shadow_prev(int j) {
-    const player_shadow_rec_t* d = player_records_shadow_curr(j);
+
+/** @brief The previous list's auxiliary record bound to the model record that record j's model pairs with.
+ *
+ * @param a The auxiliary index.
+ * @param j The record index.
+ * @return The record, or NULL when `j` does not exist, its model record is
+ *         unpaired, or the previous list has no record bound to the pair. */
+static const player_aux_rec_t* aux_prev(int a, int j) {
+    const player_aux_rec_t* d = aux_curr(a, j);
     const player_model_rec_t* m = d ? player_records_curr(d->model) : NULL;
     const store_slot_t* p = pres_slot(1);
     if (!m || m->pair < 0 || !p) return NULL;
     const rec_list_t* prv = &p->list;
-    for (int i = 0; i < prv->nsh; i++)
-        if (prv->sh[i].model == m->pair) return &prv->sh[i];
+    for (int i = 0; i < prv->naux[a]; i++)
+        if (prv->aux[a][i].model == m->pair) return &prv->aux[a][i];
     return NULL;
 }
+
+/** @brief Prints one auxiliary record's binding and lerp state to stderr under OPENPETE_PLAYER_RECDBG.
+ *
+ * @param a The auxiliary index.
+ * @param j The record index.
+ * @param name The feeder's label in the line.
+ * @param pos_name The staged position's label in the line.
+ * @param staged The staged position's three words, or NULL to print zeros. */
+static void aux_note(int a, int j, const char* name, const char* pos_name, const int32_t* staged) {
+    if (!player_records_dbg()) return;
+    const player_aux_rec_t* d = aux_curr(a, j);
+    if (!d) return;
+    const player_aux_rec_t* p = aux_prev(a, j);
+    fprintf(stderr, "[recdbg %s f=%u j=%d] model=%d drawn=%d lerp=%d %s=(%d,%d,%d)\n",
+            name, openpete_feed_key_now(), j, d->model, d->drawn, player_records_lerps(d->model) && p != NULL,
+            pos_name, staged ? staged[0] : 0, staged ? staged[1] : 0, staged ? staged[2] : 0);
+}
+
+int player_records_shadow_count(void) { return aux_count(AUX_OF(PLAYER_REC_SHADOW)); }
+const player_shadow_rec_t* player_records_shadow_curr(int j) { return aux_curr(AUX_OF(PLAYER_REC_SHADOW), j); }
+const player_shadow_rec_t* player_records_shadow_prev(int j) { return aux_prev(AUX_OF(PLAYER_REC_SHADOW), j); }
 void player_records_shadow_note(int j, const int32_t* staged_anchor) {
-    if (!player_records_dbg()) return;
-    const player_shadow_rec_t* d = player_records_shadow_curr(j);
-    if (!d) return;
-    const player_shadow_rec_t* p = player_records_shadow_prev(j);
-    fprintf(stderr, "[recdbg shadow f=%u j=%d] model=%d drawn=%d lerp=%d anchor=(%d,%d,%d)\n",
-            openpete_feed_key_now(), j, d->model, d->drawn, player_records_lerps(d->model) && p != NULL,
-            staged_anchor ? staged_anchor[0] : 0, staged_anchor ? staged_anchor[1] : 0, staged_anchor ? staged_anchor[2] : 0);
+    aux_note(AUX_OF(PLAYER_REC_SHADOW), j, "shadow", "anchor", staged_anchor);
 }
-int player_records_flame_count(void) { return s_pres_n ? s_store[s_pres_b].list.nfl : 0; }
-const player_flame_rec_t* player_records_flame_curr(int j) {
-    return (s_pres_n && j >= 0 && j < s_store[s_pres_b].list.nfl) ? &s_store[s_pres_b].list.fl[j] : NULL;
-}
-const player_flame_rec_t* player_records_flame_prev(int j) {
-    const player_flame_rec_t* d = player_records_flame_curr(j);
-    const player_model_rec_t* m = d ? player_records_curr(d->model) : NULL;
-    const store_slot_t* p = pres_slot(1);
-    if (!m || m->pair < 0 || !p) return NULL;
-    const rec_list_t* prv = &p->list;
-    for (int i = 0; i < prv->nfl; i++)
-        if (prv->fl[i].model == m->pair) return &prv->fl[i];
-    return NULL;
-}
+int player_records_flame_count(void) { return aux_count(AUX_OF(PLAYER_REC_FLAME)); }
+const player_flame_rec_t* player_records_flame_curr(int j) { return aux_curr(AUX_OF(PLAYER_REC_FLAME), j); }
+const player_flame_rec_t* player_records_flame_prev(int j) { return aux_prev(AUX_OF(PLAYER_REC_FLAME), j); }
 void player_records_flame_note(int j, const int32_t* staged_origin) {
-    if (!player_records_dbg()) return;
-    const player_flame_rec_t* d = player_records_flame_curr(j);
-    if (!d) return;
-    const player_flame_rec_t* p = player_records_flame_prev(j);
-    fprintf(stderr, "[recdbg flame f=%u j=%d] model=%d drawn=%d lerp=%d origin=(%d,%d,%d)\n",
-            openpete_feed_key_now(), j, d->model, d->drawn, player_records_lerps(d->model) && p != NULL,
-            staged_origin ? staged_origin[0] : 0, staged_origin ? staged_origin[1] : 0, staged_origin ? staged_origin[2] : 0);
+    aux_note(AUX_OF(PLAYER_REC_FLAME), j, "flame", "origin", staged_origin);
 }
 void player_records_present_note(int k, const int32_t* staged_pos) {
     if (!player_records_dbg()) return;
