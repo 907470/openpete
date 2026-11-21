@@ -386,24 +386,155 @@ static int mc_speculative_suppressed(int slot)
     return 1;
 }
 
-/** @brief Write the slot's card image to its file atomically and apply the modset tag rule for a write.
+/* --- two processes on one card file ---------------------------------------
  *
- * Called after every mutation, so the file is written through. No-op when
- * the slot is not loaded or the tick is speculative. On a refused or failed
- * write the in-memory image is restored to the last persisted one, so the
- * card the game sees stays the card on disk.
- * @param slot Card slot, 0 or 1.
- * @return 0 when the image is on disk (or nothing was due), -1 when the write failed. */
-static int mc_flush(int slot)
+ * Every flush holds "<image>.lock" (openpete_paths_lock_wait: flock on
+ * POSIX, LockFileEx on Windows) across re-reading the file and writing it.
+ * The file is compared with s_disk, the image this process last wrote or
+ * read: a frame that differs was written by another process since. A
+ * differing frame this write also touches refuses the write and the
+ * process takes the whole file as its card; every other differing frame is
+ * taken into s_card and s_disk and the write proceeds. One process alone
+ * on its card finds the file equal to s_disk and changes nothing. */
+
+/* The longest wait for the card lock, in milliseconds: another process
+ * holds it for one 128 KiB read and one write. */
+#define MC_LOCK_WAIT_MS 1000
+/* The retry interval while another process holds the card lock, in
+ * milliseconds. */
+#define MC_LOCK_POLL_MS 5u
+
+enum { MC_MERGE_OK = 0, MC_MERGE_CLASH = 1, MC_MERGE_LOCKED_OUT = 2 };
+
+/* The merge's scratch image and counters. */
+static struct {
+    uint8_t  file[MC_CARD_SIZE];          /* the file as re-read under the lock */
+    unsigned flushes;                     /* flushes that re-read the file */
+    unsigned adopted;                     /* frames taken from the file */
+    unsigned refused;                     /* frames whose clash refused a write */
+    unsigned locked_out;                  /* writes refused: the lock stayed held */
+    int      nolock_warned[2];
+    int      summary_armed;
+} s_mg;
+
+/** @brief Log the card merge counters at process exit (atexit handler). */
+static void mc_merge_summary(void)
 {
-    if (!s_loaded[slot]) return 0;
-    int failed = mc_write_refused(slot);
-    if (!failed && mc_speculative_suppressed(slot)) return 0;
-    if (!failed && op_atomic_write_file(s_path[slot], s_card[slot], MC_CARD_SIZE) != 0) {
-        mc_mark_write_failed(slot);
-        failed = 1;
+    OPL_INFO_F("memcard", "card merge: flushes=%u adopted frames=%u refused frames=%u "
+               "lock refusals=%u", s_mg.flushes, s_mg.adopted, s_mg.refused, s_mg.locked_out);
+}
+
+void openpete_memcard_merge_counts(unsigned* flushes, unsigned* adopted, unsigned* refused,
+                                   unsigned* locked_out)
+{
+    if (flushes) *flushes = s_mg.flushes;
+    if (adopted) *adopted = s_mg.adopted;
+    if (refused) *refused = s_mg.refused;
+    if (locked_out) *locked_out = s_mg.locked_out;
+}
+
+/** @brief Read the slot's file into s_mg.file when it is a raw 128 KiB image.
+ *
+ * @param slot Card slot, 0 or 1.
+ * @return 1 when s_mg.file holds the file, 0 when the file is absent, unreadable or another size. */
+static int mc_reread_file(int slot)
+{
+    FILE* f = fopen(s_path[slot], "rb");
+    if (!f) return 0;
+    const int ok = fseek(f, 0, SEEK_END) == 0 && ftell(f) == MC_CARD_SIZE &&
+                   fseek(f, 0, SEEK_SET) == 0 &&
+                   fread(s_mg.file, 1, MC_CARD_SIZE, f) == MC_CARD_SIZE;
+    fclose(f);
+    return ok;
+}
+
+/** @brief Fold the frames another process wrote to the slot's file into s_card and s_disk.
+ *
+ * A frame is touched by the pending write when it lies in [lo, hi) or
+ * s_card differs from s_disk there. No touched frame clashing: every
+ * differing frame is taken into both images. A clash: the whole file
+ * becomes s_card and s_disk, so the refused write's retry starts from the
+ * card on disk.
+ * @param slot Card slot, 0 or 1.
+ * @param lo First byte the write touches.
+ * @param hi One past the last byte the write touches; equal to lo for none.
+ * @return MC_MERGE_OK or MC_MERGE_CLASH. */
+static int mc_merge_file(int slot, size_t lo, size_t hi)
+{
+    unsigned adopted = 0, clashes = 0;
+    for (size_t at = 0; at < MC_CARD_SIZE; at += MC_SECTOR_SIZE) {
+        if (memcmp(s_mg.file + at, s_disk[slot] + at, MC_SECTOR_SIZE) == 0) continue;
+        const int touched = (at + MC_SECTOR_SIZE > lo && at < hi) ||
+                            memcmp(s_card[slot] + at, s_disk[slot] + at, MC_SECTOR_SIZE) != 0;
+        if (touched) clashes++;
+        else adopted++;
+        if (!touched) memcpy(s_card[slot] + at, s_mg.file + at, MC_SECTOR_SIZE);
     }
-    if (failed) {
+    s_mg.adopted += adopted;
+    s_mg.refused += clashes;
+    if (clashes) {
+        memcpy(s_card[slot], s_mg.file, MC_CARD_SIZE);
+        memcpy(s_disk[slot], s_mg.file, MC_CARD_SIZE);
+        OPL_WARN_F("memcard", "card %d: %u frame(s) this save writes were changed in %s by "
+                   "another program; the save is refused and the card reread", slot, clashes,
+                   s_path[slot]);
+        return MC_MERGE_CLASH;
+    }
+    if (adopted) {
+        memcpy(s_disk[slot], s_mg.file, MC_CARD_SIZE);
+        OPL_INFO_F("memcard", "card %d: took %u frame(s) another program wrote to %s",
+                   slot, adopted, s_path[slot]);
+    }
+    return MC_MERGE_OK;
+}
+
+/** @brief Take the slot's card lock and merge the file's changes from other processes before a write.
+ *
+ * A lock that cannot be created or taken for a reason other than another
+ * holder (a file system without locks) is logged once and the write
+ * proceeds unlocked, as a single process would.
+ * @param slot Card slot, 0 or 1.
+ * @param lo First byte the write touches.
+ * @param hi One past the last byte the write touches.
+ * @param lk Receives the lock handle.
+ * @param locked Set to 1 when the lock is held and must be released.
+ * @return MC_MERGE_OK, MC_MERGE_CLASH, or MC_MERGE_LOCKED_OUT when another process held the lock for the whole wait. */
+static int mc_merge_begin(int slot, size_t lo, size_t hi, intptr_t* lk, int* locked)
+{
+    char lp[sizeof s_path[0] + 8];
+    snprintf(lp, sizeof lp, "%s.lock", s_path[slot]);
+    *locked = 0;
+    const int lr = openpete_paths_lock_wait(lp, lk, MC_LOCK_WAIT_MS, MC_LOCK_POLL_MS,
+                                            NULL, NULL, NULL);
+    if (lr == -1) {
+        s_mg.locked_out++;
+        OPL_ERROR_F("memcard", "card %d: %s is held by another program; this save is refused",
+                    slot, lp);
+        return MC_MERGE_LOCKED_OUT;
+    }
+    if (lr >= 0) *locked = 1;
+    else if (!s_mg.nolock_warned[slot]) {
+        s_mg.nolock_warned[slot] = 1;
+        OPL_WARN_F("memcard", "card %d: %s cannot be locked; saves are written unlocked", slot, lp);
+    }
+    if (!s_mg.summary_armed) {
+        s_mg.summary_armed = 1;
+        atexit(mc_merge_summary);
+    }
+    s_mg.flushes++;
+    return mc_reread_file(slot) ? mc_merge_file(slot, lo, hi) : MC_MERGE_OK;
+}
+
+/** @brief Replace the slot's file with its card image atomically, the card lock already held.
+ *
+ * On a failed write the slot is marked failing and s_card is restored from
+ * s_disk.
+ * @param slot Card slot, 0 or 1.
+ * @return 0 when the image is on disk, -1 when the write failed. */
+static int mc_write_image(int slot)
+{
+    if (op_atomic_write_file(s_path[slot], s_card[slot], MC_CARD_SIZE) != 0) {
+        mc_mark_write_failed(slot);
         memcpy(s_card[slot], s_disk[slot], MC_CARD_SIZE);
         return -1;
     }
@@ -413,17 +544,54 @@ static int mc_flush(int slot)
     return 0;
 }
 
-/** @brief Write one 128-byte frame of the slot's card image in place and apply the modset tag rule for a write.
+/** @brief Write the slot's card image to its file atomically under the card lock and apply the modset tag rule for a write.
+ *
+ * Called after every mutation, so the file is written through. No-op when
+ * the slot is not loaded or the tick is speculative. Frames another
+ * process wrote are merged first (mc_merge_begin); a clash with the bytes
+ * [lo, hi) or with another pending change refuses the write. On a refused
+ * or failed write the in-memory image is restored to the last persisted
+ * one, so the card the game sees stays the card on disk.
+ * @param slot Card slot, 0 or 1.
+ * @param lo First byte the caller wrote.
+ * @param hi One past the last byte the caller wrote; equal to lo for none.
+ * @return 0 when the image is on disk (or nothing was due), -1 when the write failed or was refused. */
+static int mc_flush_range(int slot, size_t lo, size_t hi)
+{
+    if (!s_loaded[slot]) return 0;
+    if (mc_write_refused(slot)) {
+        memcpy(s_card[slot], s_disk[slot], MC_CARD_SIZE);
+        return -1;
+    }
+    if (mc_speculative_suppressed(slot)) return 0;
+    intptr_t lk = 0;
+    int locked = 0;
+    const int mg = mc_merge_begin(slot, lo, hi, &lk, &locked);
+    int rc = -1;
+    if (mg == MC_MERGE_OK) rc = mc_write_image(slot);
+    else memcpy(s_card[slot], s_disk[slot], MC_CARD_SIZE);
+    if (locked) openpete_paths_unlock(lk);
+    return rc;
+}
+
+/** @brief Write the slot's card image as mc_flush_range does, with no byte range of its own.
+ *
+ * @param slot Card slot, 0 or 1.
+ * @return 0 when the image is on disk (or nothing was due), -1 when the write failed or was refused. */
+static int mc_flush(int slot) { return mc_flush_range(slot, 0, 0); }
+
+/** @brief Write one 128-byte frame of the slot's card image in place under the card lock and apply the modset tag rule for a write.
  *
  * The BIOS card path changes the image one frame per command; a frame is
  * smaller than a device sector, so it is written where it lies instead of
- * rewriting the 128 KiB image. A file that cannot take the in-place write
- * (missing, or replaced by another program) falls back to the whole-image
- * atomic write. On a refused or failed write the frame is restored from
- * the last persisted image.
+ * rewriting the 128 KiB image. Frames another process wrote are merged
+ * first (mc_merge_begin); a clash on this frame refuses the write. A file
+ * that cannot take the in-place write (missing, or replaced by another
+ * program) falls back to the whole-image atomic write. On a refused or
+ * failed write the frame is restored from the last persisted image.
  * @param slot Card slot, 0 or 1.
  * @param frame Frame number, 0 to 1023.
- * @return 0 when the frame is on disk (or nothing was due), -1 when the write failed. */
+ * @return 0 when the frame is on disk (or nothing was due), -1 when the write failed or was refused. */
 static int mc_flush_frame(int slot, int frame)
 {
     if (!s_loaded[slot]) return 0;
@@ -433,12 +601,21 @@ static int mc_flush_frame(int slot, int frame)
         return -1;
     }
     if (mc_speculative_suppressed(slot)) return 0;
-    if (op_file_write_at(s_path[slot], (long)at, s_card[slot] + at, MC_SECTOR_SIZE) != 0)
-        return mc_flush(slot);
-    memcpy(s_disk[slot] + at, s_card[slot] + at, MC_SECTOR_SIZE);
-    s_commit_epoch++;
-    mc_modset_on_write(slot);
-    return 0;
+    intptr_t lk = 0;
+    int locked = 0;
+    int rc = -1;
+    if (mc_merge_begin(slot, at, at + MC_SECTOR_SIZE, &lk, &locked) != MC_MERGE_OK) {
+        memcpy(s_card[slot] + at, s_disk[slot] + at, MC_SECTOR_SIZE);
+    } else if (op_file_write_at(s_path[slot], (long)at, s_card[slot] + at, MC_SECTOR_SIZE) != 0) {
+        rc = mc_write_image(slot);
+    } else {
+        memcpy(s_disk[slot] + at, s_card[slot] + at, MC_SECTOR_SIZE);
+        s_commit_epoch++;
+        mc_modset_on_write(slot);
+        rc = 0;
+    }
+    if (locked) openpete_paths_unlock(lk);
+    return rc;
 }
 
 /* Headered card-image containers: a fixed header, then the raw 128 KiB
@@ -919,7 +1096,8 @@ int openpete_memcard_write(int chan, const char* name, const void* src_host,
         return MC_ERR_FILE_NOT_EXIST;
     }
     memcpy(&s_card[slot][blk * MC_BLOCK_SIZE + ofs], src_host, (size_t)bytes);
-    int rslt = mc_flush(slot) == 0 ? MC_ERR_NONE : MC_ERR_CARD_INVALID;
+    const size_t lo = (size_t)blk * MC_BLOCK_SIZE + (size_t)ofs;
+    int rslt = mc_flush_range(slot, lo, lo + (size_t)bytes) == 0 ? MC_ERR_NONE : MC_ERR_CARD_INVALID;
     openpete_modsave_card_write(slot, name, &s_card[slot][blk * MC_BLOCK_SIZE],
                                 (size_t)(MC_CARD_SIZE - blk * MC_BLOCK_SIZE), ofs, bytes,
                                 rslt == MC_ERR_NONE);
@@ -977,7 +1155,7 @@ int openpete_memcard_format(int chan)
     if (!s_present[slot]) return MC_ERR_CARD_NOT_EXIST;
     mc_ensure_loaded(slot);
     mc_format_image(s_card[slot]);
-    if (mc_flush(slot) != 0) return MC_ERR_CARD_INVALID;
+    if (mc_flush_range(slot, 0, MC_CARD_SIZE) != 0) return MC_ERR_CARD_INVALID;
     openpete_modsave_card_format(slot);
     return MC_ERR_NONE;
 }
@@ -1028,8 +1206,8 @@ unsigned openpete_memcard_commit_epoch(void)
 /** @brief Fault injection: OPENPETE_MEMCARD_FAULT_EDIT=<frame>:<slot>:<offset> inverts one byte of a slot's card image at the first sector read on or after that VBL frame, once.
  *
  * Stands for the card being changed by another program while the game
- * runs: the in-memory image and its last persisted copy both change, the
- * file on disk does not.
+ * runs: the in-memory image, its last persisted copy and the file all
+ * change, so the next write's re-read finds the file equal to s_disk.
  * @param slot The slot being read. */
 static void mc_fault_edit(int slot)
 {
@@ -1046,6 +1224,8 @@ static void mc_fault_edit(int slot)
     s_state = 0;
     s_card[slot][s_ofs] ^= 0xFFu;
     s_disk[slot][s_ofs] ^= 0xFFu;
+    if (!s_mem_only[slot] && !s_readonly[slot])
+        (void)op_file_write_at(s_path[slot], s_ofs, &s_disk[slot][s_ofs], 1);
     OPL_WARN_F("memcard", "fault injected: card %d byte 0x%lX inverted at frame %u", slot, s_ofs, openpete_frame);
 }
 

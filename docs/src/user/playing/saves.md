@@ -20,6 +20,15 @@ while OpenPete is closed, or name it with `--card1`. A DexDrive `.gme`, VGS
 `.mem` or PSP/PS3 `.vmp` image loads read-only
 ([OP-E-CARD-READONLY](../help/troubleshooting.md#op-e-card-readonly)).
 
+Two OpenPete windows can run on the same card, for example Spyro 1 and
+Spyro 2 side by side. Each save first takes in what the other window saved
+since, so saves to different save slots both stay on the card; a window
+reads the other window's saves only after its own next save. When both
+windows save to the same save slot, the second save fails with the game's
+own save-failed message and the card keeps the first; saving again from
+the second window then succeeds and replaces it. A save also fails when
+the other window holds the card for more than a second.
+
 | Setting | Effect |
 | --- | --- |
 | `--card-dir PATH` <!-- id: knob:card_dir --> | Use another folder for both cards |

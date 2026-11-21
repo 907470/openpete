@@ -239,6 +239,15 @@ int  openpete_memcard_held_path(int slot, char* out, size_t cap);
  * @return The count. */
 unsigned openpete_memcard_commit_epoch(void);
 
+/** @brief Report the counters of the card merge every flush runs under the card lock.
+ *
+ * @param flushes Receives the flushes that re-read the card file; may be NULL.
+ * @param adopted Receives the frames taken from a file another process wrote; may be NULL.
+ * @param refused Receives the frames whose clash with another process's write refused a save; may be NULL.
+ * @param locked_out Receives the saves refused because another process held the lock for the whole wait; may be NULL. */
+void openpete_memcard_merge_counts(unsigned* flushes, unsigned* adopted, unsigned* refused,
+                                   unsigned* locked_out);
+
 /** @brief Enable the OSD toast at a load whose save was written under another modset (--save-mismatch-toast); the log line is unconditional.
  * @param on Nonzero enables the toast. */
 void openpete_memcard_set_mismatch_toast(int on);

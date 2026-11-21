@@ -23,11 +23,19 @@
  *           keep its inode (written in place) and hold the new frames.
  *           Run alone (`memcard_test DIR frames`) under strace to count
  *           the bytes written per frame.
+ *   merge   two instances on one card file: a forked child stands for a
+ *           second process that loaded the same card. Saves to different
+ *           files and to different BIOS frames merge, each instance taking
+ *           the other's frames; a save to the file or frame the other
+ *           instance changed is refused (McErrCardInvalid, -1 for the
+ *           frame) and its retry succeeds; a card lock held past the wait
+ *           refuses the save without refusing the one after the release.
  */
 
 #include "openpete_atomic_file.h"
 #include "openpete_memcard.h"
 #include "openpete.h"
+#include "openpete_paths.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -311,6 +319,121 @@ static int case_frames(void) {
     return rc;
 }
 
+/** @brief Run fn in a forked child that stands for a second instance holding the same card state, and wait for it.
+ * @return 0 when the child returned 0. */
+static int other_instance(int (*fn)(void)) {
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0) _exit(fn());
+    int st = 0;
+    waitpid(pid, &st, 0);
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+}
+
+/** @brief Fill an 8 KiB buffer with v and write it to the named file through MemCardWriteFile.
+ * @return The libmcrd result. */
+static int save_fill(const char* name, int v) {
+    unsigned char buf[8192];
+    memset(buf, v, sizeof buf);
+    return openpete_memcard_write(0x00, name, buf, 0, sizeof buf);
+}
+
+/** @brief Second instance: create and fill "BFILE". */
+static int b_new_file(void) {
+    return openpete_memcard_create(0x00, "BFILE", 1) != 0 || save_fill("BFILE", 0x44) != 0;
+}
+/** @brief Second instance: overwrite "TESTFILE". */
+static int b_same_file(void) { return save_fill("TESTFILE", 0x22) != 0; }
+/* The fill byte the second instance writes to frame 200. */
+static int s_b_fill = 0x55;
+/** @brief Second instance: write BIOS frame 200 filled with s_b_fill. */
+static int b_frame_200(void) {
+    unsigned char fr[128];
+    memset(fr, s_b_fill, sizeof fr);
+    return openpete_memcard_write_frame(0, 200, fr) != 0;
+}
+
+/** @brief Read byte 0 of the named file through MemCardReadFile, or -1. */
+static int first_byte(const char* name) {
+    unsigned char b[1];
+    return openpete_memcard_read(0x00, name, b, 0, 1) == 0 ? b[0] : -1;
+}
+
+/** @brief Two instances on one card: different files and frames merge, the same file or frame refuses then retries, a held lock refuses without poisoning.
+ * @return 0 when every verdict holds. */
+static int case_merge(void) {
+    char dir[600], path[700], lockp[720];
+    fresh_dir(dir, sizeof dir);
+    snprintf(path, sizeof path, "%s/card1.mcr", dir);
+    snprintf(lockp, sizeof lockp, "%s.lock", path);
+    if (seed_card() != 0) return fail("merge: seeding the card failed");
+    int rc = 0;
+    unsigned fl0, ad, rf, lo;
+
+    /* Different files: B creates BFILE, A then saves TESTFILE. */
+    if (other_instance(b_new_file) != 0) return fail("merge: second instance save failed");
+    const int a_diff = save_fill("TESTFILE", 0x33);
+    long n = 0;
+    unsigned char* img = slurp(path, &n);
+    const int both = img && n == CARD_SIZE && img[8192] == 0x33 && img[2 * 8192] == 0x44;
+    free(img);
+    openpete_memcard_merge_counts(&fl0, &ad, &rf, &lo);
+    printf("merge: different files: save=%d file holds both=%d read BFILE=0x%02x adopted=%u refused=%u\n",
+           a_diff, both, first_byte("BFILE") & 0xFF, ad, rf);
+    if (a_diff != 0 || !both || first_byte("BFILE") != 0x44 || ad == 0 || rf != 0)
+        rc |= fail("merge: saves to different files did not merge");
+
+    /* Same file: B overwrites TESTFILE, A's save of it is refused, the retry lands. */
+    if (other_instance(b_same_file) != 0) return fail("merge: second instance same-file save failed");
+    const int a_same = save_fill("TESTFILE", 0x66);
+    const int seen = first_byte("TESTFILE");
+    const int retry = save_fill("TESTFILE", 0x66);
+    img = slurp(path, &n);
+    const int landed = img && n == CARD_SIZE && img[8192] == 0x66 && img[2 * 8192] == 0x44;
+    free(img);
+    openpete_memcard_merge_counts(NULL, NULL, &rf, NULL);
+    printf("merge: same file: save=%d then reads 0x%02x, retry=%d landed=%d refused frames=%u\n",
+           a_same, seen & 0xFF, retry, landed, rf);
+    if (a_same != 2 || seen != 0x22 || retry != 0 || !landed || rf == 0)
+        rc |= fail("merge: a save to a file the other instance changed was not refused then retried");
+
+    /* BIOS frames: B writes frame 200; A's frame 201 merges, A's frame 200 refuses then retries. */
+    unsigned char fr[128], back[128];
+    memset(fr, 0x77, sizeof fr);
+    if (other_instance(b_frame_200) != 0) return fail("merge: second instance frame write failed");
+    const int f201 = openpete_memcard_write_frame(0, 201, fr);
+    openpete_memcard_read_frame(0, 200, back);
+    const int took200 = back[0] == 0x55;
+    s_b_fill = 0x56;
+    if (other_instance(b_frame_200) != 0) return fail("merge: second instance frame write failed");
+    fr[0] = 0x78;
+    const int f200 = openpete_memcard_write_frame(0, 200, fr);
+    const int f200r = openpete_memcard_write_frame(0, 200, fr);
+    img = slurp(path, &n);
+    const int frames_ok = img && n == CARD_SIZE && img[200 * 128] == 0x78 && img[201 * 128] == 0x77;
+    free(img);
+    printf("merge: frames: other frame=%d took B's frame=%d same frame=%d retry=%d on disk=%d\n",
+           f201, took200, f200, f200r, frames_ok);
+    if (f201 != 0 || !took200 || f200 != -1 || f200r != 0 || !frames_ok)
+        rc |= fail("merge: BIOS frame writes did not merge, refuse and retry");
+
+    /* A lock held past the wait refuses the save; after release the next save lands. */
+    intptr_t held = 0;
+    if (openpete_paths_lock(lockp, &held) != 0) return fail("merge: could not take the card lock");
+    const int locked = save_fill("TESTFILE", 0x88);
+    openpete_paths_unlock(held);
+    const int after = save_fill("TESTFILE", 0x99);
+    img = slurp(path, &n);
+    const int after_ok = img && n == CARD_SIZE && img[8192] == 0x99;
+    free(img);
+    openpete_memcard_merge_counts(NULL, NULL, NULL, &lo);
+    printf("merge: lock held: save=%d lock refusals=%u, after release save=%d on disk=%d\n",
+           locked, lo, after, after_ok);
+    if (locked != 2 || lo != 1 || after != 0 || !after_ok)
+        rc |= fail("merge: a held lock did not refuse, or poisoned the next save");
+    return rc;
+}
+
 /** @brief A --card1 path in a missing folder fails the startup check; one in an existing folder passes.
  * @return 0 when both verdicts hold. */
 static int case_folder(void) {
@@ -420,6 +543,7 @@ int main(int argc, char** argv) {
     rc |= run_case(case_frames);
     rc |= run_case(case_folder);
     rc |= run_case(case_guard);
+    rc |= run_case(case_merge);
     printf(rc ? "memcard_test: FAILED\n" : "memcard_test: ok\n");
     return rc;
 }
