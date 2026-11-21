@@ -14431,13 +14431,18 @@ static void tgpu_face_coltab(tgpu_face_t* T, const uint16_t co[4], uint32_t n, i
  * replaced by a model slot's words (tgpu_model_cols); the previous ones from
  * the set's colour-anim slot (tgpu_prev_cols), equal to the current ones
  * without a slot. A face of a set with a slot takes its colour-table
- * indices (tgpu_face_coltab).
+ * indices (tgpu_face_coltab). A triangle of a game whose C colour is slot 2
+ * (hq_tri_c_col) reads slot 3 at slot 2's offset: its face word 1 byte 0 is
+ * no colour index there and may point past the sector's colour array at
+ * bytes another structure rewrites, which no re-bake would track. The LP
+ * bake likewise gives a triangle's slot 3 no colour of its own.
  * @param cpu The guest CPU state.
  * @param S The face set.
  * @param F The face.
  * @param T Receives nearC, farC, pnearC and pfarC, and ci and rf. */
 static void tgpu_hp_face_cols(CPUState* cpu, const tgpu_hpset* S, const tsface_t* F, tgpu_face_t* T) {
-    const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
+    const int c3_unused = !F->quad && game_layout.terrain.hq_tri_c_col != 3;
+    const uint16_t co[4] = { F->c0, F->c1, F->c2, c3_unused ? F->c2 : F->c3 };
     for (int q = 0; q < 4; q++) {
         T->nearC[q] = (S->nearCol ? t_le32(S->nearCol + co[q]) : rd(cpu, S->nearBase + co[q])) & 0xFFFFFFu;
         T->farC[q]  = (S->farCol  ? t_le32(S->farCol  + co[q]) : rd(cpu, S->farBase  + co[q])) & 0xFFFFFFu;
