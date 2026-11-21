@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 3cf1436c2bf4a265139ecc63a2c2643a555102d6
+# head: 831a4fb3ebcdb3ee72206a74fefff81ab94a6d35
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -147,7 +147,7 @@ games/spyro-1/mods/mod_level_ops.c	leveltext_hook	75	0
 games/spyro-1/mods/mod_wad_overlay.c	mod_wad_apply	87	0	
 games/spyro-1/mods/mod_wad_overlay.c	wad_find_override	28	0	
 games/spyro-1/renderer/interp_regions.c	game_interp_moby_key	44	0	
-games/spyro-1/renderer/interp_regions.c	spyro_interp_extra_pools	38	0	
+games/spyro-1/renderer/interp_regions.c	spyro_interp_extra_pools	34	0	
 games/spyro-1/renderer/moby_game.c	s1_decode_faces	39	0	
 games/spyro-1/renderer/particle.c	dragonstar_compare	40	0	
 games/spyro-1/renderer/particle.c	glow_build	56	0	

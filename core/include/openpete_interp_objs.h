@@ -68,6 +68,8 @@ typedef struct {
     uint8_t  curr_unshown;  /* 1 iff curr was captured from a record that was not shown */
     uint8_t  prev_unshown;  /* curr_unshown of the state prev holds, copied when curr rolls into prev */
     uint16_t blob_len;   /* valid bytes in prev/curr/prev2 (<= the registered size) */
+    uint16_t curr_serial_off;  /* offset of the serial word the capture declared in curr, 0 = none */
+    uint16_t prev_serial_off;  /* curr_serial_off of the state prev holds, copied when curr rolls into prev */
     /* The three blobs, each the registered blob size, carved out of the
      * table's own allocation: the entry never owns storage, so its slot owns
      * the bytes and a rehash copies them rather than aliasing them. */
@@ -173,19 +175,25 @@ int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t 
 
 /** @brief Record object @p key's current blob, whose 4 bytes at @p serial_off name the record the key holds.
  *
- * openpete_interp_objs_capture_shown, except that a tracked key whose curr
- * holds other bytes at @p serial_off is a new record under the old key: the
- * tracked entry moves to the evicted set at its curr state (as an end_tick
- * eviction does) and the blob is recorded as a spawn. @p serial_off 0, or a
- * blob too short to hold the 4 bytes, compares nothing.
+ * openpete_interp_objs_capture_shown, except that the entry records
+ * @p serial_off as the offset of the serial its curr carries
+ * (curr_serial_off; rolled into prev_serial_off), and, when @p respawn is
+ * nonzero, a tracked key whose curr carries a serial at the same offset with
+ * other bytes is a new record under the old key: the tracked entry moves to
+ * the evicted set at its curr state (as an end_tick eviction does) and the
+ * blob is recorded as a spawn. A blob byte-identical to curr under another
+ * serial offset is a changed blob. @p serial_off 0, or a blob too short to
+ * hold the 4 bytes, declares no serial; bytes past a record that a capture
+ * without a declared serial copies never count as one.
  * @param key Object identity; 0 is ignored.
  * @param data The object's current bytes.
  * @param len Bytes to record, clamped to the registered blob size.
  * @param shown Nonzero when the record was shown on this tick.
  * @param serial_off Offset of the record's serial word in the blob, or 0.
+ * @param respawn Nonzero to make a changed serial a despawn and a spawn.
  * @return 1 when the blob replaced an unshown spawn's curr, else 0. */
 int openpete_interp_objs_capture_serial(uint32_t key, const void* data, uint32_t len, int shown,
-                                        uint32_t serial_off);
+                                        uint32_t serial_off, int respawn);
 
 /** @brief Return the captures since startup that found a tracked key's serial changed (openpete_interp_objs_capture_serial).
  *

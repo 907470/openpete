@@ -407,8 +407,9 @@ static int view_set_has(uint32_t m) {
 
 /** @brief Whether a changed moby slot serial makes the capture a despawn and a spawn: game_layout.moby.alloc_respawn and OPENPETE_MOBY_REUSE_SPAWN (default on, read once).
  *
- * Off, the serial is still appended to the blob, and the pair spans the two
- * records a reused slot held (moby_pair_reborn names it).
+ * Off, the serial is still appended to the blob and declared to the store,
+ * and the pair spans the two records a reused slot held (moby_pair_reborn
+ * names it).
  * @return 1 when on, else 0. */
 static int moby_reuse_spawn_on(void) {
     static int v = -1;
@@ -424,7 +425,8 @@ static int moby_reuse_spawn_on(void) {
  * parked unshown by both and placed into view on a later tick snaps on its
  * first shown tick. When the layout names a moby allocator and the store's
  * blob has room, the slot's allocation serial (moby_slot_serial) follows the
- * record's bytes, and, where the layout sets alloc_respawn, a serial other
+ * record's bytes and is declared to the store at that offset, and, where the
+ * layout sets alloc_respawn, a serial other
  * than the tracked one's makes the capture a despawn of the tracked record and
  * a spawn of this one. With
  * OPENPETE_INTERP_OBJS_KEYLOG a replacement prints the moby, its class and
@@ -447,14 +449,22 @@ static void capture_moby_shown(uint32_t m, const uint8_t* host, const void* src,
         memcpy(buf + blob, &serial, 4u);
         src = buf;
         len = blob + 4u;
-        serial_off = moby_reuse_spawn_on() ? blob : 0u;
+        serial_off = blob;
     }
-    if (!openpete_interp_objs_capture_serial(key, src, len, shown, serial_off) || !openpete_interp_objs_keylog())
+    if (!openpete_interp_objs_capture_serial(key, src, len, shown, serial_off, moby_reuse_spawn_on()) ||
+        !openpete_interp_objs_keylog())
         return;
     uint16_t cls;
     memcpy(&cls, host + game_layout.moby.class_off, 2);
     fprintf(stderr, "[interp-objs] f=%u unshown-replace m=%08x cls=%03x native=%d\n",
             openpete_frame, m, cls, native);
+}
+
+const uint8_t* game_interp_capture_moby_record(uint32_t key, uint32_t m) {
+    const uint32_t len = moby_blob_bytes();
+    const uint8_t* host = (const uint8_t*)openpete_psx_to_host_span(m, len);
+    if (host && len) openpete_interp_objs_capture(key, host, len);
+    return host;
 }
 
 void game_interp_capture_moby_array(void) {

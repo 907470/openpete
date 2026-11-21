@@ -115,7 +115,8 @@ int moby_serial_on_alloc(CPUState* cpu, uint32_t addr) {
 
 int moby_pair_reborn(const openpete_interp_obj_t* o) {
     const uint32_t so = game_layout.moby.array_stride;
-    if (!moby_serial_enabled() || !o->have_prev || o->blob_len < so + 4u) return 0;
+    if (!moby_serial_enabled() || !o->have_prev || o->curr_serial_off != so || o->prev_serial_off != so)
+        return 0;
     return memcmp(o->prev + so, o->curr + so, 4u) != 0;
 }
 

@@ -48,9 +48,12 @@ int moby_serial_on_alloc(CPUState* cpu, uint32_t addr);
 
 /** @brief Whether a moby's interp pair spans two allocations of its slot: both states carry a slot serial and the two differ.
  *
+ * A state carries the serial when its capture declared it at
+ * game_layout.moby.array_stride (curr_serial_off, prev_serial_off): the
+ * moby-array walk does, a capture of a record outside the array does not.
  * @param o The moby's interp pair.
- * @return 1 when the serials differ, else 0 (no allocator hooked, or a blob
- *         too short to carry the serial). */
+ * @return 1 when the serials differ, else 0 (no allocator hooked, or either
+ *         state captured without a serial). */
 int moby_pair_reborn(const openpete_interp_obj_t* o);
 
 /** @brief Count one present's verdict on a moby pair for the allocation census (OPENPETE_MOBY_SERIAL_CENSUS=1).

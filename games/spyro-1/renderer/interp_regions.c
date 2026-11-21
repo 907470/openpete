@@ -299,11 +299,8 @@ static uint32_t rd32(uint32_t addr) {
 static void capture_glow_owner_mobys(void) {
     uint32_t owners[16];
     const int on = particle_glow_owner_mobys(owners);
-    for (int k = 0; k < on; ++k) {
-        const void* host = openpete_psx_to_host_span(owners[k], openpete_interp_objs_blob_bytes());
-        if (host) openpete_interp_objs_capture(game_interp_moby_key(owners[k]), host,
-                                               openpete_interp_objs_blob_bytes());
-    }
+    for (int k = 0; k < on; ++k)
+        (void)game_interp_capture_moby_record(game_interp_moby_key(owners[k]), owners[k]);
 }
 
 /** @brief The captured state outside g_LevelMobys.
@@ -322,9 +319,8 @@ static void spyro_interp_extra_pools(void) {
      * spine can lerp the spin (else it steps at the tick rate while the rest is smooth).
      * Always present (no sentinel) - capture all 12; inactive ones don't render. */
     for (uint32_t i = 0; i < G_HUD_COUNT; ++i) {
-        uint32_t m = G_HUD_ICONS + i * MOBY_STRIDE;
-        const void* host = openpete_psx_to_host_span(m, openpete_interp_objs_blob_bytes());
-        if (host) openpete_interp_objs_capture(m, host, openpete_interp_objs_blob_bytes());
+        const uint32_t m = G_HUD_ICONS + i * MOBY_STRIDE;
+        (void)game_interp_capture_moby_record(m, m);
     }
 
     /* g_Particles pool (smoke / triangles / line particles around the flame and
@@ -394,9 +390,7 @@ static void spyro_interp_extra_pools(void) {
     for (uint32_t i = 0; i < 256u; ++i) {
         uint32_t m = rd32(G_SCRATCH + 0x2400u + i * 4u);
         if (m < 0x80000000u) break;
-        const void* host = openpete_psx_to_host_span(m, openpete_interp_objs_blob_bytes());
-        if (host) openpete_interp_objs_capture(game_interp_moby_key(m), host,
-                                               openpete_interp_objs_blob_bytes());
+        (void)game_interp_capture_moby_record(game_interp_moby_key(m), m);
     }
 
     /* REGULAR/SPECULAR render set (the mobys the canonical cull records point at):
@@ -410,10 +404,9 @@ static void spyro_interp_extra_pools(void) {
         const uint32_t* drawn = NULL;
         int drawn_n = moby_native_canon_drawn_mobys(&drawn);
         for (int i = 0; i < drawn_n; ++i) {
-            const uint8_t* host = (const uint8_t*)openpete_psx_to_host_span(drawn[i], openpete_interp_objs_blob_bytes());
+            const uint8_t* host = (const uint8_t*)openpete_psx_to_host_span(drawn[i], MOBY_STRIDE);
             if (!host || host[MOBY_STATE_OFF] >= 0x80) continue;   /* dead / unmapped */
-            openpete_interp_objs_capture(game_interp_moby_key(drawn[i]), host,
-                                         openpete_interp_objs_blob_bytes());
+            (void)game_interp_capture_moby_record(game_interp_moby_key(drawn[i]), drawn[i]);
             cut_jump_census_capture(game_interp_moby_key(drawn[i]));
         }
     }

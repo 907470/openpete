@@ -98,6 +98,18 @@ int game_interp_row_index(const char* name);
  * openpete_interp_objs_end_tick(); game_interp_register_common() does. */
 void game_interp_capture_moby_array(void);
 
+/** @brief Capture the moby record at @p m under @p key without a slot serial: one record and no bytes of the next.
+ *
+ * For a capture source outside the moby-array walk (a HUD pool, a render
+ * list): the blob is the lesser of the store's blob size and
+ * game_layout.moby.array_stride, and the store records no serial for it, so
+ * moby_pair_reborn never pairs it as a reused slot. Read-only against guest
+ * RAM.
+ * @param key The record's interp key.
+ * @param m The moby's PSX address.
+ * @return The record's host bytes, or NULL when @p m does not map. */
+const uint8_t* game_interp_capture_moby_record(uint32_t key, uint32_t m);
+
 /** @brief Open the draw-time moby stash for the current canonical-render epoch.
  *
  * A game's draw hook calls this, then game_interp_moby_stash_put per moby the

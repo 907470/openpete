@@ -247,26 +247,27 @@ unsigned long openpete_interp_objs_reborn_count(void) { return s_reborn; }
 
 /* ---- one entry's transitions, applied by a capture ----------------------- */
 
-/** @brief Whether an entry's curr holds exactly the @p len bytes at @p data.
+/** @brief Whether an entry's curr holds exactly the @p len bytes at @p data under the same serial offset.
  *
  * @param e The entry.
  * @param data The bytes captured.
  * @param len Their length.
- * @return 1 when curr is byte-identical, else 0. */
-static int entry_curr_equals(const openpete_interp_obj_t* e, const void* data, uint32_t len) {
-    return e->blob_len == (uint16_t)len && memcmp(e->curr, data, len) == 0;
+ * @param serial_off The capture's serial offset, 0 for none.
+ * @return 1 when curr is byte-identical and declared the same serial offset, else 0. */
+static int entry_curr_equals(const openpete_interp_obj_t* e, const void* data, uint32_t len,
+                             uint32_t serial_off) {
+    return e->blob_len == (uint16_t)len && e->curr_serial_off == serial_off &&
+           memcmp(e->curr, data, len) == 0;
 }
 
-/** @brief Whether a tracked entry's key now names another record: its curr holds other bytes at @p serial_off than the capture.
+/** @brief Whether a tracked entry's key now names another record: its curr declared a serial at @p serial_off that differs from the capture's.
  *
  * @param e The tracked entry.
  * @param data The bytes captured.
- * @param len Their length.
- * @param serial_off Offset of the serial word, or 0 for none.
- * @return 1 when both blobs hold the word and it differs, else 0. */
-static int entry_serial_changed(const openpete_interp_obj_t* e, const void* data, uint32_t len,
-                                uint32_t serial_off) {
-    if (!serial_off || serial_off + 4u > len || e->blob_len < serial_off + 4u) return 0;
+ * @param serial_off Offset of the capture's serial word (validated), or 0 for none.
+ * @return 1 when both captures declared the serial at @p serial_off and it differs, else 0. */
+static int entry_serial_changed(const openpete_interp_obj_t* e, const void* data, uint32_t serial_off) {
+    if (!serial_off || e->curr_serial_off != serial_off) return 0;
     return memcmp(e->curr + serial_off, (const uint8_t*)data + serial_off, 4u) != 0;
 }
 
@@ -295,6 +296,7 @@ static void entry_spawn(openpete_interp_obj_t* e, uint32_t key) {
     e->have_prev    = 0;
     e->have_prev2   = 0;
     e->prev_unshown = 0;
+    e->prev_serial_off = 0;
     e->prev_ns      = 0;
     e->prev_seen_ns = 0;
     e->curr_ns      = objs_tick_stamp();
@@ -317,6 +319,7 @@ static void entry_roll(openpete_interp_obj_t* e) {
     memcpy(e->prev, e->curr, e->blob_len);
     e->have_prev    = 1;
     e->prev_unshown = e->curr_unshown;
+    e->prev_serial_off = e->curr_serial_off;
     e->prev_ns      = e->curr_ns;
     e->prev_seen_ns = e->curr_seen_ns;
     e->curr_ns      = objs_tick_stamp();
@@ -338,14 +341,15 @@ static void entry_unshown_replace(openpete_interp_obj_t* e) {
 }
 
 int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t len, int shown) {
-    return openpete_interp_objs_capture_serial(key, data, len, shown, 0u);
+    return openpete_interp_objs_capture_serial(key, data, len, shown, 0u, 0);
 }
 
 int openpete_interp_objs_capture_serial(uint32_t key, const void* data, uint32_t len, int shown,
-                                        uint32_t serial_off) {
+                                        uint32_t serial_off, int respawn) {
     if (key == 0 || !data) return 0;
     if (!objs_alloc()) return 0;
     if (len > BLOB) len = BLOB;
+    if (serial_off + 4u > len) serial_off = 0u;   /* no room for the word: no serial */
 
     int found;
     uint32_t i = probe(key, &found);
@@ -362,14 +366,14 @@ int openpete_interp_objs_capture_serial(uint32_t key, const void* data, uint32_t
 
     /* The key now names another record: the tracked one despawns at its curr
      * state (the evicted set) and the new one spawns in its slot. */
-    if (found && entry_serial_changed(e, data, len, serial_off)) {
+    if (found && respawn && entry_serial_changed(e, data, serial_off)) {
         entry_reborn(e);
         found = 0;
     }
     int replaced = 0;
     if (!found) {
         entry_spawn(e, key);
-    } else if (entry_curr_equals(e, data, len)) {
+    } else if (entry_curr_equals(e, data, len, serial_off)) {
         /* Dedupe at capture (mirrors openpete_interp_capture): a blob
          * byte-identical to last tick's curr means the game logic did not
          * advance the object (30 Hz logic on a 60 Hz VBL), so prev stays
@@ -386,6 +390,7 @@ int openpete_interp_objs_capture_serial(uint32_t key, const void* data, uint32_t
     }
     memcpy(e->curr, data, len);
     e->blob_len     = (uint16_t)len;
+    e->curr_serial_off = (uint16_t)serial_off;
     e->curr_unshown = shown ? 0 : 1;
     e->seen         = 1;
     e->curr_seen_ns = e->curr_ns;
@@ -417,6 +422,7 @@ static void evicted_keep(const openpete_interp_obj_t* e) {
     memset(d, 0, sizeof *d);
     d->key = e->key;
     d->blob_len = e->blob_len;
+    d->curr_serial_off = e->curr_serial_off;
     d->curr_unshown = e->curr_unshown;
     d->curr_ns = e->curr_ns;
     d->curr_seen_ns = e->curr_seen_ns;
