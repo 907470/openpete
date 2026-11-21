@@ -2,6 +2,7 @@
 
 #include "openpete_paths.h"
 #include "openpete_log.h"
+#include "openpete_thread_roles.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -33,10 +34,15 @@
 
 #define OPP_PATH_MAX 1024
 
-/* -1 = platform default, else the openpete.toml directive. */
-static int s_pref = -1;
-/* Memoized openpete_paths_portable(): -1 = not yet resolved. */
-static int s_resolved = -1;
+/* -1 = platform default, else the openpete.toml directive. Atomic: the
+ * config reader stores it while another thread may resolve the layout. */
+static OP_ROLE_ATOMIC(int) s_pref = -1;
+/* Memoized openpete_paths_portable(): -1 = not yet resolved. Filled once per
+ * resolution by compare-and-swap, so two first resolvers agree on one value;
+ * openpete_paths_set_portable and openpete_paths_set_sandbox store -1. */
+static OP_ONCE_INT s_resolved = -1;
+/* Per-process sequence of write-probe names (dir_writable). */
+static OP_ROLE_ATOMIC(unsigned) s_probe_seq;
 /* The sandbox (openpete_paths_sandbox), written at boot before any thread
  * starts: root is latched once from OPENPETE_SANDBOX and replaced by
  * openpete_paths_set_sandbox ("" = none); from_env is 1 when the variable
@@ -209,10 +215,18 @@ static int dir_exists(const char* p) {
  *
  * A permission bit cannot answer this portably (Windows ACLs, the Program
  * Files virtualization store, read-only mounts), so the probe
- * ".openpete-write-probe" is written and removed. */
+ * ".openpete-write-probe-<pid>-<seq>" is written and removed. The name is
+ * unique per process and per call, so a concurrent caller (another thread or
+ * another process probing the same directory) never removes this caller's
+ * probe between its create and its remove.
+ * @param dir The directory.
+ * @return 1 when the probe was created, else 0. */
 static int dir_writable(const char* dir) {
-    char probe[OPP_PATH_MAX + 32];
-    openpete_paths_join(probe, sizeof probe, dir, ".openpete-write-probe");
+    char leaf[64];
+    char probe[OPP_PATH_MAX + 64];
+    snprintf(leaf, sizeof leaf, ".openpete-write-probe-%lld-%u", openpete_process_id(),
+             atomic_fetch_add_explicit(&s_probe_seq, 1u, memory_order_relaxed));
+    openpete_paths_join(probe, sizeof probe, dir, leaf);
     FILE* f = fopen(probe, "wb");
     if (!f) return 0;
     fclose(f);
@@ -225,33 +239,40 @@ static int dir_writable(const char* dir) {
 /* ------------------------------------------------------------------ */
 
 void openpete_paths_set_portable(int tri) {
-    s_pref = (tri < 0) ? -1 : (tri != 0);
-    s_resolved = -1;
+    atomic_store_explicit(&s_pref, (tri < 0) ? -1 : (tri != 0), memory_order_release);
+    atomic_store_explicit(&s_resolved, -1, memory_order_release);
 }
 
-int openpete_paths_portable(void) {
-    if (s_resolved >= 0) return s_resolved;
-    if (openpete_paths_sandbox()) { s_resolved = 0; return 0; }
+/** @brief Resolve the layout without the memo: 1 portable, 0 user.
+ *
+ * Logs the degrade warning when the portable layout was asked for but the
+ * executable directory cannot be located or written.
+ * @return 1 for the portable layout, 0 for the user layout. */
+static int portable_resolve(void) {
+    if (openpete_paths_sandbox()) return 0;
 
-    int want = (s_pref >= 0) ? s_pref : OPP_PORTABLE_DEFAULT;
-    if (!want) { s_resolved = 0; return 0; }
+    const int pref = atomic_load_explicit(&s_pref, memory_order_acquire);
+    int want = (pref >= 0) ? pref : OPP_PORTABLE_DEFAULT;
+    if (!want) return 0;
 
     char exedir[OPP_PATH_MAX];
     if (openpete_exe_dir(exedir, sizeof exedir) != 0) {
         OPL_WARN_F("paths", "%s",
                    "cannot locate the executable; using the per-user directories");
-        s_resolved = 0;
         return 0;
     }
     if (!dir_writable(exedir)) {
         OPL_WARN_F("paths",
                    "%s is not writable; config, cards and savestates go to the "
                    "per-user directories instead", exedir);
-        s_resolved = 0;
         return 0;
     }
-    s_resolved = 1;
     return 1;
+}
+
+int openpete_paths_portable(void) {
+    const int v = op_once_int_get(&s_resolved);
+    return v >= 0 ? v : op_once_int_fill(&s_resolved, portable_resolve());
 }
 
 /** @brief Take the canonical form of a sandbox root into out, creating nothing.
@@ -283,7 +304,7 @@ const char* openpete_paths_sandbox(void) {
 
 int openpete_paths_set_sandbox(const char* root) {
     (void)openpete_paths_sandbox();
-    s_resolved = -1;
+    atomic_store_explicit(&s_resolved, -1, memory_order_release);
     s_sb.root[0] = '\0';
     s_sb.bad = 0;
     if (!root || !*root) return 0;

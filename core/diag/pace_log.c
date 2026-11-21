@@ -731,7 +731,9 @@ void openpete_pace_pad_read(void)
          * Counting it in `pad_reads` would break the "exactly one per VBL"
          * result, and measuring its offset would place it in a period it
          * never ran in. Recorded, so it is visible, and excluded. */
+        census_lock();
         s_census.pad_reads_unattributed++;
+        census_unlock();
         if (!pace_sink_on()) return;
         pace_rec_t ur = {0};
         ur.type  = OP_PACE_PAD_READ;
@@ -744,6 +746,7 @@ void openpete_pace_pad_read(void)
 
     const unsigned n = ++s_vbl_pad_reads;
 
+    census_lock();
     s_census.pad_reads++;
     if (n == 1) {
         s_census.pad_read_vbls++;
@@ -761,6 +764,7 @@ void openpete_pace_pad_read(void)
                 s_census.pad_read_age_max_ns = age;
         }
     }
+    census_unlock();
 
     if (!pace_sink_on()) return;
     pace_rec_t r = {0};
@@ -799,6 +803,7 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
                               OP_PACE_F_REWIND | OP_PACE_F_NOT_LIVE |
                               OP_PACE_F_SLIPPED;
 
+    census_lock();
     s_census.vbls++;
     if (paced) {
         s_census.vbls_paced++;
@@ -831,6 +836,7 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
             }
         }
     }
+    census_unlock();
 
     /* Close the bracket here, not below the log-file check: the census must
      * classify reads identically whether or not a log is being written, or
@@ -1035,7 +1041,9 @@ void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
 void openpete_pace_shed(uint8_t kind, uint16_t reason,
                         int64_t predicted_cost_ns, int64_t deadline_margin_ns)
 {
+    census_lock();
     s_census.sheds++;
+    census_unlock();
     if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_SHED;
@@ -1074,8 +1082,10 @@ void openpete_pace_flip(uint64_t id, int64_t t_ns, int64_t waited_ns)
 void openpete_pace_slip(uint8_t kind, int64_t periods, int64_t behind_ns)
 {
     const unsigned k = (kind == OP_PACE_SLIP_RENDER) ? 1u : 0u;
+    census_lock();
     s_census.slip_events[k]++;
     s_census.slip_periods[k] += (uint64_t)(periods > 0 ? periods : 0);
+    census_unlock();
     if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_SLIP;
@@ -1088,7 +1098,9 @@ void openpete_pace_slip(uint8_t kind, int64_t periods, int64_t behind_ns)
 void openpete_pace_input_edge(int64_t sample_ns, unsigned seq, uint16_t bits,
                               uint16_t bits_delta, int analog_delta)
 {
+    census_lock();
     s_census.input_edges++;
+    census_unlock();
     if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_INPUT_EDGE;
@@ -1110,11 +1122,13 @@ void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns)
     const int64_t over   = wake_ns - from;
     const int64_t behind = (request_ns > target_ns) ? request_ns - target_ns : 0;
 
+    census_lock();
     if (over > s_census.wake_overshoot_max_ns)
         s_census.wake_overshoot_max_ns = over;
     if (behind > s_census.wake_behind_max_ns)
         s_census.wake_behind_max_ns = behind;
     s_census.wakes++;
+    census_unlock();
     if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_WAKE;
@@ -1267,12 +1281,17 @@ void openpete_pace_window(uint16_t id, int begin)
 
 void openpete_pace_census_get(openpete_pace_census_t* out)
 {
-    if (out) *out = s_census;
+    if (!out) return;
+    census_lock();
+    *out = s_census;
+    census_unlock();
 }
 
 void openpete_pace_census_format(char* buf, unsigned buf_bytes)
 {
-    const openpete_pace_census_t* c = &s_census;
+    openpete_pace_census_t snap;
+    openpete_pace_census_get(&snap);
+    const openpete_pace_census_t* c = &snap;
 
     if (c->vbls_paced == 0 || c->vbls_clean == 0) {
         /* No VBL ran against a wall deadline (headless fast-forward, Tab,

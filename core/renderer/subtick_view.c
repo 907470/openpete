@@ -133,14 +133,15 @@ static uint32_t s_stat_unaligned_reads;
  * producer whose span is staged publishes into the copy, so the write never
  * reaches gameplay memory; counting them separately keeps s_stat_writes
  * meaning "stores no span covered, which were dropped", and a run-wide total is what
- * says the redirect executed at all. */
-static uint32_t s_stat_writes_staged;
+ * says the redirect executed at all. Atomic: the walk workers store into
+ * staged spans concurrently. */
+static _Atomic uint32_t s_stat_writes_staged;
 
 /* Bytes a poke could route neither to a staged span nor to a span it could
  * stage. They are dropped rather than written to guest memory, so the present
  * shows canonical bytes for that range -- visible as a stale region, never as
- * a gameplay-state write. */
-static uint32_t s_stat_poke_dropped;
+ * a gameplay-state write. Atomic, as s_stat_writes_staged. */
+static _Atomic uint32_t s_stat_poke_dropped;
 
 /* stage() refusals. Every caller falls back to writing guest RAM when staging
  * is unavailable, which is correct but silent -- a producer that never manages
@@ -225,11 +226,12 @@ void openpete_subtick_view_report_writes(void)
                    "%u stage() refusal(s) -- that many producer writes went to "
                    "guest RAM instead of the view",
                    s_stat_stage_fail);
-    if (s_stat_poke_dropped)
+    const uint32_t poke_dropped = atomic_load_explicit(&s_stat_poke_dropped, memory_order_relaxed);
+    if (poke_dropped)
         OPL_WARN_F("subtick-view",
                    "%u byte(s) of producer output could not be staged and were "
                    "DROPPED -- that range shows canonical bytes this present",
-                   s_stat_poke_dropped);
+                   poke_dropped);
     if (s_stat_unaligned_reads)
         OPL_WARN_F("subtick-view",
                    "%u unaligned load(s) hit a staged span and read CANONICAL "
@@ -308,7 +310,7 @@ static int sv_staged_store(uint32_t addr, uint32_t n, const void* src)
     const sv_span_t* sp = &s_span[hit];
     if (sp->len - (addr - sp->addr) < n) return 0;
     memcpy(s_arena + sp->off + (addr - sp->addr), src, n);
-    s_stat_writes_staged++;
+    atomic_fetch_add_explicit(&s_stat_writes_staged, 1u, memory_order_relaxed);
     return 1;
 }
 
@@ -533,8 +535,14 @@ void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
     if (out_writes) *out_writes = s_stat_writes;
 }
 
-uint32_t openpete_subtick_view_staged_writes(void) { return s_stat_writes_staged; }
-uint32_t openpete_subtick_view_poke_drops(void)    { return s_stat_poke_dropped; }
+uint32_t openpete_subtick_view_staged_writes(void)
+{
+    return atomic_load_explicit(&s_stat_writes_staged, memory_order_relaxed);
+}
+uint32_t openpete_subtick_view_poke_drops(void)
+{
+    return atomic_load_explicit(&s_stat_poke_dropped, memory_order_relaxed);
+}
 
 /** @brief Find the staged span covering a guest address.
  *
@@ -639,7 +647,10 @@ uint32_t openpete_subtick_view_poke(uint32_t addr, const void* src, uint32_t len
      * write, so the whole window is reported dropped rather than landing
      * anywhere. The span index still holds the last present's entries, so it
      * must not be consulted either. */
-    if (!s_active) { s_stat_poke_dropped += len; return len; }
+    if (!s_active) {
+        atomic_fetch_add_explicit(&s_stat_poke_dropped, len, memory_order_relaxed);
+        return len;
+    }
     while (len) {
         int hit = sv_find(addr);
         if (hit >= 0) {
@@ -647,7 +658,7 @@ uint32_t openpete_subtick_view_poke(uint32_t addr, const void* src, uint32_t len
             uint32_t avail = sp->len - (addr - sp->addr);
             uint32_t n = avail < len ? avail : len;
             memcpy(s_arena + sp->off + (addr - sp->addr), p, n);
-            s_stat_writes_staged++;
+            atomic_fetch_add_explicit(&s_stat_writes_staged, 1u, memory_order_relaxed);
             addr += n; p += n; len -= n;
             continue;
         }
@@ -662,7 +673,10 @@ uint32_t openpete_subtick_view_poke(uint32_t addr, const void* src, uint32_t len
         }
         uint8_t* st = (uint8_t*)openpete_subtick_view_stage(addr, run);
         if (st) memcpy(st, p, run);
-        else { dropped += run; s_stat_poke_dropped += run; }
+        else {
+            dropped += run;
+            atomic_fetch_add_explicit(&s_stat_poke_dropped, run, memory_order_relaxed);
+        }
         addr += run; p += run; len -= run;
     }
     return dropped;

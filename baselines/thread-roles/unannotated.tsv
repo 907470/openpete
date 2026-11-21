@@ -50,8 +50,6 @@ core/config/knob_registry.c	-	s_registry_inited	static	-	owed: declared with no 
 core/config/options.c	-	s_parse_neutral	static	atomic	1 storing function(s), none reads it
 core/config/options.c	-	s_strict_values	static	atomic	1 storing function(s), none reads it
 core/config/options.c	player_pose_add	list	local	-	owed: declared with no form and no row before the new-global refusal
-core/config/paths.c	-	s_pref	static	-	
-core/config/paths.c	-	s_resolved	static	-	
 core/config/paths.c	-	s_sb	static	-	owed: declared with no form and no row before the new-global refusal
 core/config/paths.c	hint_legacy_state	s_hinted	local	-	
 core/config/paths.c	hint_legacy_state	s_hinted_n	local	-	
@@ -1089,8 +1087,6 @@ core/psx/psx_bios.c	-	s_xf_held	static	-
 core/psx/psx_bios.c	-	s_xf_ref_timed	static	-	
 core/psx/psx_region.c	-	s_region_count	static	-	
 core/psx/psx_region.c	-	s_regions	static	-	
-core/psx/vstream.c	-	s_census	static	-	
-core/psx/vstream.c	-	s_fatal	static	-	
 core/psx/vstream.c	-	s_table	static	-	
 core/record/bk2_feed.c	-	s_feed	static	-	
 core/record/bk2_feed.c	-	s_feed_hold	static	atomic	1 storing function(s), none reads it
@@ -1910,7 +1906,6 @@ core/renderer/openpete_interp.c	-	s_head_is_dup	static	-
 core/renderer/openpete_interp.c	-	s_initialized	static	-	
 core/renderer/openpete_interp.c	-	s_last_tick	static	-	
 core/renderer/openpete_interp.c	-	s_last_tick_seen	static	-	
-core/renderer/openpete_interp.c	-	s_present_target	static	atomic	1 storing function(s), none reads it
 core/renderer/openpete_interp.c	-	s_region_count	static	-	
 core/renderer/openpete_interp.c	-	s_regions	static	-	
 core/renderer/openpete_interp.c	-	s_reset_gen	static	-	
@@ -1977,13 +1972,11 @@ core/renderer/subtick_view.c	-	s_orig_write_word	static	-
 core/renderer/subtick_view.c	-	s_prev_segv	static	-	
 core/renderer/subtick_view.c	-	s_span	static	-	
 core/renderer/subtick_view.c	-	s_span_count	static	-	
-core/renderer/subtick_view.c	-	s_stat_poke_dropped	static	-	
 core/renderer/subtick_view.c	-	s_stat_spans	static	-	
 core/renderer/subtick_view.c	-	s_stat_stage_fail	static	-	
 core/renderer/subtick_view.c	-	s_stat_unaligned_reads	static	-	
 core/renderer/subtick_view.c	-	s_stat_writes	static	-	
 core/renderer/subtick_view.c	-	s_stat_writes_dropped	static	-	
-core/renderer/subtick_view.c	-	s_stat_writes_staged	static	-	
 core/renderer/subtick_view.c	-	s_trace	static	-	
 core/renderer/subtick_view.c	-	s_warned_full	static	-	
 core/renderer/subtick_view.c	-	s_wset	static	-	

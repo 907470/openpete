@@ -177,12 +177,20 @@ int openpete_interp_enabled(void) {
     return s_enabled;
 }
 
-/* Virtual present clock - see the header note. */
-static op_time_t s_present_target = 0;
-void openpete_interp_set_present_target(op_time_t t) { s_present_target = t; }
-op_time_t openpete_interp_present_target(void) { return s_present_target; }
+/* Virtual present clock - see the header note. Atomic: the owner (the thread
+ * that re-extracts) stores it, and the walk workers it dispatches read it, so
+ * the release store before the dispatch is visible to every worker's acquire
+ * load. */
+static OP_ROLE_ATOMIC(op_time_t) s_present_target = 0;
+void openpete_interp_set_present_target(op_time_t t) {
+    atomic_store_explicit(&s_present_target, t, memory_order_release);
+}
+op_time_t openpete_interp_present_target(void) {
+    return atomic_load_explicit(&s_present_target, memory_order_acquire);
+}
 op_time_t openpete_interp_present_now(void) {
-    return s_present_target ? s_present_target : op_now(); /* clock-guard: wall */ /* inline presents: display instant == now */
+    const op_time_t t = atomic_load_explicit(&s_present_target, memory_order_acquire);
+    return t ? t : op_now(); /* clock-guard: wall */ /* inline presents: display instant == now */
 }
 
 /* Deterministic capture - see the header note. */
