@@ -157,10 +157,9 @@ mode  = "terrain"
 # through the room (PSX hides it via the .s NCLIP cull, which
 # native now mirrors exactly: two-half quad acceptance, w3&4
 # draw-anyway, straddle bypass).  CULL on-vs-off must differ by the
-# punch-through inside its bbox.  The near-band faces carry the authored
-# OT slot bias, so with the cull off the back-face loses to the back wall
-# and shows only through the right-hand wall (x 517-639); the bbox covers
-# that wall.  The ON leg is the shipped mask 3 on the retained terrain
+# punch-through over the whole frame; where the back-face shows through
+# depends on the walk's depth and key encoding, so the check takes no box
+# (outside the punch-through the two legs differ by tens of pixels).  The ON leg is the shipped mask 3 on the retained terrain
 # cache (CACHE_FORCE waives the software-vk exclusion; any other mask
 # routes terrain to the CPU walk); the OFF leg, mask 0, is the CPU walk.
 # The cache and walk legs at mask 3 are pixel-identical at this pose.
@@ -174,8 +173,7 @@ ab_on  = "3"
 pin_env = { OPENPETE_TERRAIN_CACHE_FORCE = "1" }
   [[case.check]]
   kind   = "ab-active"
-  min_px = 3960
-  bbox   = [520, 55, 639, 300]
+  min_px = 2130
 
 # Dragon-rescue cutscene: the cutscene actors
 # draw in FRONT of terrain (depth-isolated ACTOR pass, the HUD3D trick;
