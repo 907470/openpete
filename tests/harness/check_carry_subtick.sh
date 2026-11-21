@@ -101,7 +101,7 @@ run_alpha() {
     local -a vbls=("$@") bk2_arg=()
     [[ -n "$movie" ]] && bk2_arg=(--bk2 "$movie")
     mkdir -p "$dir"
-    find "$dir" -maxdepth 1 -name '*.png' -delete
+    find "${dir:?}" -maxdepth 1 -name '*.png' -delete
     rm -f "$log" "$log.part"
     PG_CAPTURE_ENV=(OPENPETE_CARRY_CENSUS=1 OPENPETE_INTERMEDIATE_ALPHA="$alpha")
     PG_CAPTURE_TIMEOUT=600

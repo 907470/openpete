@@ -138,7 +138,7 @@ remote() {
     local a
     for a in $ARMS; do x scp -q -r "$host:$r/split-$tag/$a" "$REC/$leg/" || return 1; done
     # The raw dumps are hundreds of MB; the split keeps the per-pipeline programs.
-    x ssh "$host" "rm -rf $r/cap-$tag $r/split-$tag $r/spv-$tag"
+    x ssh "$host" "rm -rf -- \"${r:?}/cap-${tag:?}\" \"${r:?}/split-${tag:?}\" \"${r:?}/spv-${tag:?}\""
 }
 
 # calib LEG: the contraction features of each arm's vertex programs.
@@ -173,7 +173,7 @@ for leg in "${LEGS[@]}"; do
         teardown)
             for name in "$RADV_HOST" "$ANV_HOST"; do
                 h=$(host_of "$name")
-                x ssh "$h" "rm -rf $RROOT" || fail=1
+                x ssh "$h" "rm -rf -- \"${RROOT:?}\"" || fail=1
             done;;
         llpc)
             needs_spv

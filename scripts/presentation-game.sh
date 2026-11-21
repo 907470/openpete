@@ -452,7 +452,7 @@ pg_crash_init() {
   export PG_CRASH_DIR PG_CRASH_LIST
   [[ -d "$1" ]] || return 0
   rm -f -- "${1:?}/crashes.txt"
-  find "$1" -maxdepth 1 -type f -name '*.crash.log' -delete
+  find "${1:?}" -maxdepth 1 -type f -name '*.crash.log' -delete
 }
 
 # Make a leg's scratch directory and print its path. The leg logs to

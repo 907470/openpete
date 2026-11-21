@@ -86,7 +86,7 @@ run_alpha() {
     local alpha="$1" tag="$2" movie="$3" vbls="$4" last="$5"
     local dir="$OUT/$tag-a$alpha"
     mkdir -p "$dir"
-    find "$dir" -maxdepth 1 -name '*.png' -delete
+    find "${dir:?}" -maxdepth 1 -name '*.png' -delete
     PG_CAPTURE_ENV=(OPENPETE_PLAYER_POSTRACE=1 OPENPETE_PLAYER_RECDBG=1 OPENPETE_CUT_CENSUS=1
                     OPENPETE_INTERMEDIATE_ALPHA="$alpha")
     PG_CAPTURE_TIMEOUT=600

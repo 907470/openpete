@@ -145,7 +145,7 @@ run_alpha() {
     local dir="$OUT/$tag-a$alpha" log="$OUT/$tag-a$alpha.log"
     local -a vbls=("$@")
     mkdir -p "$dir"
-    find "$dir" -maxdepth 1 -name '*.png' -delete
+    find "${dir:?}" -maxdepth 1 -name '*.png' -delete
     rm -f "$log" "$log.part"
     # The moby occlusion cull is off: the harness measures pose continuity
     # of every moby, and the pose trace is printed only for mobys the cull
