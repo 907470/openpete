@@ -1262,7 +1262,6 @@ static openpete_frame_time_log_t* s_eager_ftl;
 static void eager_present_cb(void *ctx, int kind, double alpha, int paired)
 {
     OP_ROLE_ASSERT(present);
-    OP_ROLE_ASSERT(present);
     (void)ctx; (void)alpha; (void)paired;
     present_record_shown(s_eager_ftl, kind);
 }

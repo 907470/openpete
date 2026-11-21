@@ -237,7 +237,6 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:sfx_pack.c@F@sfx_decode_worker", "arg:SDL_CreateThreadRuntime", "sfxdec") /* thread-roles: the sfx_decode_worker thread entry binds sfxdec */ \
     ROW("c:texture_pack.c@F@tp_decode_main", "arg:SDL_CreateThreadRuntime", "texdec") /* thread-roles: the tp_decode_main thread entry binds texdec */ \
     ROW("c:work_pool.c@F@wp_thread_main", "arg:SDL_CreateThreadRuntime", "workpool") /* thread-roles: the wp_thread_main thread entry binds workpool */ \
-    ROW("c:eager.c@F@eager_present_cb", "arg:openpete_present_thread_set_callback", "present") /* thread-roles: run by present_thread_main */ \
     ROW("c:bash_demo_egg.c@F@on_call", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:crash_demo_woah.c@F@on_crash_demo_launch", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:crash_demo_woah.c@F@on_kill_sounds_and_music", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
