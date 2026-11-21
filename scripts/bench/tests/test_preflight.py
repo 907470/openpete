@@ -5,11 +5,14 @@ the verdict line. No game, ssh or Windows tool is run: every reader is
 replaced by a fake. The game binaries are named as strings only:
 rumble-guard: no-launch, input-lock-guard: no-launch, xvfb-guard: no-launch,
 sandbox-guard: no-launch, wslenv-guard: no-launch"""
+import fcntl
 import io
 import os
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -206,6 +209,96 @@ class ReadingsTest(unittest.TestCase):
         self.assertFalse(free.waitable())
         self.assertTrue(held.waitable())
         self.assertTrue(preflight.Check("idle-linux", "FAIL", "1 busy").waitable())
+
+
+class WaitBeforeWindowTest(unittest.TestCase):
+    """`leg --wait` waits holding no window, takes it once its waitable
+    checks clear, and never holds it while waiting on a golden lock."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="preflight-wait.")
+        self.old = {k: os.environ.get(k) for k in ("OPENPETE_BENCH_DIR", timing_lock.TOKEN_ENV)}
+        os.environ["OPENPETE_BENCH_DIR"] = self.dir
+        os.environ.pop(timing_lock.TOKEN_ENV, None)
+        self.golden = os.path.join(self.dir, "golden.lock")
+        open(self.golden, "w").close()
+        self.calls = []
+        patches = [mock.patch.object(preflight, "run_checks", self._checks),
+                   mock.patch.object(preflight, "WAIT_POLL_S", 0.05),
+                   mock.patch.object(sys, "stdout", io.StringIO())]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def tearDown(self):
+        preflight._release_window()
+        for k, v in self.old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _golden_held(self):
+        fd = os.open(self.golden, os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            return False
+        except OSError:
+            return True
+        finally:
+            os.close(fd)
+
+    def _checks(self, *_a, **_k):
+        """The lock check and a golden-lock check read from a real flock;
+        records whether the window was held at each read."""
+        self.calls.append(timing_lock.state()["held"])
+        held = self._golden_held() or getattr(self, "fail_when_held", False) and \
+            timing_lock.state()["held"]
+        return [preflight.check_lock(None),
+                preflight.Check("golden-lock", "FAIL" if held else "PASS", "probe")]
+
+    def test_waits_unheld_then_takes_the_window(self):
+        fd = os.open(self.golden, os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        out = {}
+        t = threading.Thread(target=lambda: out.setdefault("bad", preflight.preflight(
+            "local", wait=True, take_window="test leg")))
+        t.start()
+        time.sleep(0.5)
+        self.assertTrue(t.is_alive())
+        self.assertFalse(timing_lock.state()["held"], "the window is held while waiting")
+        self.assertGreater(len(self.calls), 2)
+        self.assertNotIn(True, self.calls)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        t.join(10)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(out["bad"], [])
+        st = timing_lock.state()
+        self.assertTrue(st["held"] and st["mine"])
+        self.assertEqual(st["lock"]["purpose"], "test leg")
+
+    def test_recheck_failure_releases_and_is_bounded(self):
+        self.fail_when_held = True
+        bad = preflight.preflight("local", wait=True, take_window="test leg")
+        self.assertEqual(bad, ["golden-lock"])
+        self.assertEqual(self.calls.count(True), preflight.WINDOW_TRIES)
+        self.assertFalse(timing_lock.state()["held"])
+        self.assertIsNone(os.environ.get(timing_lock.TOKEN_ENV))
+
+    def test_caller_held_window_refuses_golden_wait_at_once(self):
+        h = timing_lock.try_acquire("runner")
+        os.environ[timing_lock.TOKEN_ENV] = h.token
+        fd = os.open(self.golden, os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            bad = preflight.preflight("local", wait=True, take_window="test leg")
+        finally:
+            os.close(fd)
+            h.release()
+        self.assertEqual(bad, ["golden-lock"])
+        self.assertEqual(len(self.calls), 1)
 
 
 MON_OUT = ("idle_ms=1200000\r\nvideoidle_ac=900\r\n"

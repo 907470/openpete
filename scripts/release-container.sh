@@ -35,6 +35,11 @@
 # Pass `--out` relative to the tree: the packager runs inside the
 # container, where only /src (this tree) is mounted.
 #
+# The image build and the container run each first wait out another job's
+# timing window (scripts/lib/timing_gate.sh); with
+# OPENPETE_TIMING_GATE_TIMEOUT=<seconds> set the script exits 75 at the limit
+# without launching.
+#
 # Engine detection and the uid mapping come from scripts/lib/container.sh.
 # Rootless podman on a btrfs home has no overlay driver, and `podman build`
 # overlay-mounts its context even when the context is empty. There, set
@@ -63,11 +68,14 @@ DOCKERFILE=packaging/linux-release.Dockerfile
 IMAGE="${OPENPETE_RELEASE_IMAGE:-openpete-linux-release:$(sha256sum "$DOCKERFILE" | cut -c1-12)}"
 # shellcheck source=scripts/lib/container.sh
 source scripts/lib/container.sh
+# shellcheck source=scripts/lib/timing_gate.sh
+source scripts/lib/timing_gate.sh
 ctr_engine release
 ENGINE="$CTR_ENGINE"
 
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "[release] building $IMAGE"
+    op_timing_gate "release-container image" >&2 || exit $?
     "$ENGINE" build -f "$DOCKERFILE" -t "$IMAGE" docs
 fi
 
@@ -154,6 +162,7 @@ for d in third_party/psxrecomp/build:psxrecomp \
     [[ -L "${d%%:*}" ]] && dst=$(realpath "${d%%:*}")
     mounts+=(-v "$PWD/$PRIV/${d#*:}:$dst")
 done
+op_timing_gate "release-container build" >&2 || exit $?
 "$ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
     cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
           -G Ninja -DCMAKE_BUILD_TYPE=Release

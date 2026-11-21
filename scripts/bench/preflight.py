@@ -17,6 +17,20 @@ last line names it. `--wait` re-reads the checks a running job can clear
 (another holder, idle, load, golden lock) every 30 s instead of refusing on
 them; it never launches while one fails.
 
+`leg --wait` run outside a timing window takes the window itself and never
+holds it while it waits: it waits with no window held until every check but
+`lock` passes or only waitable ones fail, takes the window (blocking while
+another job holds it, still holding nothing), holds the Windows display on
+the windows target, and re-reads every check once. A waitable failure then
+releases the window and the display and waits again, at most WINDOW_TRIES
+times in all; the last refusal names the failing checks. The window and its
+token (OPENPETE_TIMING_TOKEN, inherited by CMD) stay held until this process
+exits. A paused golden capture holds the golden lock while it waits on the
+window, so a holder waiting on that lock never returns. Under a window the
+caller already holds (`timing_lock.py run -- ... leg --wait`), which this
+process cannot release, golden-lock and idle-linux refuse at once instead of
+waiting.
+
 Every leg declares its metric class (--class); the class decides what the
 leg's arguments, the display and the finished leg's logs must show:
   cost     throughput, work per present or tick, a speed-up's size: --vsync 0
@@ -134,6 +148,13 @@ WAIT_POLL_S = 30
 # lock check is waitable only while another job holds the window.
 WAITABLE = {"idle-linux", "idle-windows", "load-linux", "load-windows",
             "golden-lock", "idle", "load"}
+# Checks a golden capture paused at the timing gate keeps failing (it holds
+# the golden lock, and its conmon and podman processes stay alive): never
+# waited on while this job holds the window.
+HELD_BY_A_PAUSED_GOLDEN = {"golden-lock", "idle-linux"}
+# Window takes per `leg --wait`: a take whose re-check finds a waitable
+# failure releases the window and waits again, up to this many takes.
+WINDOW_TRIES = 3
 
 # Exact Linux process names (15-character comm) that load the machine: game
 # processes, the emulator, compilers and linkers, the build drivers, and
@@ -1029,17 +1050,88 @@ def report(target, checks, stream=sys.stdout):
     return bad
 
 
+def _lock_host(target):
+    """The timing_lock host of a preflight target (None: this machine)."""
+    return None if target in ("local", "windows") else target
+
+
 def preflight(target, exe=None, args=(), env=None, source_exe=None, decl=None,
-              accepts=(), wait=False):
+              accepts=(), wait=False, take_window=None):
     """Run and print the checks; with `wait`, re-read while only waitable
-    checks block. Returns the list of blocking check names."""
+    checks block. With `wait` and `take_window` (the purpose to hold the
+    window under) outside a window this process already holds, wait holding
+    nothing, then take the window and re-check (_wait_then_take). Returns
+    the list of blocking check names."""
+    if wait and take_window and not timing_lock.state(_lock_host(target))["mine"]:
+        return _wait_then_take(target, exe, args, env, source_exe, decl, accepts,
+                               take_window)
+    held = wait and timing_lock.state(_lock_host(target))["mine"]
     while True:
         checks = apply_accepts(run_checks(target, exe, args, env, source_exe, decl),
                                set(accepts))
         bad = report(target, checks)
-        if not bad or not wait or not all(c.waitable() for c in checks if c.blocks()):
+        blocking = [c for c in checks if c.blocks()]
+        if not bad or not wait or not all(c.waitable() for c in blocking):
+            return bad
+        if held and any(c.name in HELD_BY_A_PAUSED_GOLDEN for c in blocking):
+            sys.stdout.write("preflight[%s]: refused without waiting: this job holds the "
+                             "timing window, and a golden paused on it would keep %s failing\n"
+                             % (target, ", ".join(sorted(HELD_BY_A_PAUSED_GOLDEN))))
             return bad
         time.sleep(WAIT_POLL_S)
+
+
+# The window and display this process took in _wait_then_take; held until exit.
+_WINDOW = None
+_DISPLAY = None
+
+
+def _release_window():
+    """Release the display hold and the window _wait_then_take took."""
+    global _WINDOW, _DISPLAY
+    timing_lock.release_display(_DISPLAY)
+    _DISPLAY = None
+    if _WINDOW is not None:
+        _WINDOW.release()
+        _WINDOW = None
+    os.environ.pop(timing_lock.TOKEN_ENV, None)
+
+
+def _wait_then_take(target, exe, args, env, source_exe, decl, accepts, purpose):
+    """Wait with no window held until no check but `lock` blocks (a
+    non-waitable failure refuses), take the window, hold the display on the
+    windows target, and re-read every check; a waitable failure releases
+    both and starts over, at most WINDOW_TRIES takes. Returns the blocking
+    check names; on [] the window stays held."""
+    global _WINDOW, _DISPLAY
+    host = _lock_host(target)
+    bad = []
+    for _ in range(WINDOW_TRIES):
+        while True:
+            checks = apply_accepts(run_checks(target, exe, args, env, source_exe, decl),
+                                   set(accepts))
+            blocking = [c for c in checks if c.blocks() and c.name != "lock"]
+            if not blocking:
+                break
+            bad = report(target + " unheld", checks)
+            if not all(c.waitable() for c in blocking):
+                return bad
+            time.sleep(WAIT_POLL_S)
+        _WINDOW = timing_lock.acquire(purpose, host)
+        os.environ[timing_lock.TOKEN_ENV] = _WINDOW.token
+        if target == "windows":
+            _DISPLAY = timing_lock.hold_display()
+        checks = apply_accepts(run_checks(target, exe, args, env, source_exe, decl),
+                               set(accepts))
+        bad = report(target, checks)
+        if not bad:
+            return bad
+        _release_window()
+        if not all(c.waitable() for c in checks if c.blocks()):
+            return bad
+    sys.stdout.write("preflight[%s]: REFUSED after %d window takes (%s)\n"
+                     % (target, WINDOW_TRIES, ", ".join(bad)))
+    return bad
 
 
 # ---- post: the finished leg's log and pace log --------------------------------
@@ -1245,6 +1337,8 @@ def main(argv=None):
         p.add_argument("--accept", action="append", default=[],
                        help="a check name whose FAIL/UNCHECKED is accepted (reported)")
         p.add_argument("--wait", action="store_true")
+        p.add_argument("--purpose", default=None,
+                       help="leg --wait: the purpose the window is taken under")
         _decl_args(p)
         p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("post")
@@ -1267,7 +1361,10 @@ def main(argv=None):
     target = _target_for(a.target, exe)
     win = _flag(args, "--window")
     expect = a.expect_window or (win if parse_wxh(win) else None)
-    bad = preflight(target, exe, args, env, a.source_exe, decl, a.accept, a.wait)
+    take = None
+    if a.cmd_name == "leg":
+        take = a.purpose or "preflight leg %s" % os.path.basename(exe or "?")
+    bad = preflight(target, exe, args, env, a.source_exe, decl, a.accept, a.wait, take)
     if bad:
         return EXIT_REFUSED
     if a.cmd_name == "check":

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for scripts/bench/timing_lock.py, scripts/lib/timing_gate.sh and the
-gate's use in scripts/golden-capture-container.sh.
+gate's use in scripts/golden-capture-container.sh, scripts/container.sh and
+scripts/release-container.sh.
 
 Every test runs against a private OPENPETE_BENCH_DIR, so no real timing
 window is read, created or removed."""
@@ -189,6 +190,19 @@ class TimingLockTest(unittest.TestCase):
         self.assertIn("rc=0", inside.stdout, inside.stderr)
         h.release()
 
+    def _fake_engine(self, label=""):
+        """Write a stub container engine that answers `image inspect` (with
+        `label` for a Labels query) and logs every other call; its path."""
+        engine = os.path.join(self.dir, "fake-engine")
+        self.engine_log = os.path.join(self.dir, "engine.log")
+        with open(engine, "w") as f:
+            f.write('#!/bin/bash\n'
+                    'if [[ "$1 $2" == "image inspect" ]]; then\n'
+                    '  [[ "$*" == *Labels* ]] && echo %s || echo sha256:0\n'
+                    'else echo "$*" >>%s; fi\n' % (label, self.engine_log))
+        os.chmod(engine, 0o755)
+        return engine
+
     def _capture_container(self, *args, env_extra=None):
         """Start scripts/golden-capture-container.sh against a stub engine
         that logs each `run` and a throwaway tree, fleet root and store."""
@@ -199,14 +213,7 @@ class TimingLockTest(unittest.TestCase):
         recipe = os.path.join(ROOT, "tests", "harness", "linux-capture.Dockerfile")
         with open(recipe, "rb") as f:
             recipe_hash = hashlib.sha256(f.read()).hexdigest()
-        engine = os.path.join(d, "fake-engine")
-        self.engine_log = os.path.join(d, "engine.log")
-        with open(engine, "w") as f:
-            f.write('#!/bin/bash\n'
-                    'if [[ "$1 $2" == "image inspect" ]]; then\n'
-                    '  [[ "$*" == *Labels* ]] && echo %s || echo sha256:0\n'
-                    'else echo "$*" >>%s; fi\n' % (recipe_hash, self.engine_log))
-        os.chmod(engine, 0o755)
+        engine = self._fake_engine(recipe_hash)
         env = dict(os.environ, OPENPETE_CONTAINER_ENGINE=engine, OPENPETE_CAPTURE_TREE=tree,
                    OPENPETE_FLEET_ROOT=fleet, OPENPETE_GOLDEN_REF_DIR=store)
         env.pop("OPENPETE_GOLDEN_LOCK_HELD", None)
@@ -254,6 +261,105 @@ class TimingLockTest(unittest.TestCase):
             h.release()
         self.assertEqual(refused.returncode, timing_lock.EXIT_TIMEOUT, err)
         self.assertEqual(self._launches(), [])
+
+    def test_capture_container_mounts_timing_dir(self):
+        """The container gets the host's timing-window directory read-write
+        at its own path and OPENPETE_BENCH_DIR naming it, so the per-capture
+        gate inside probes the host's flock; a holder's token is passed."""
+        proc = self._capture_container("run", "--", "true",
+                                       env_extra={timing_lock.TOKEN_ENV: "tok.1"})
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, err)
+        (line,) = self._launches()
+        argv = line.split()
+        bench = os.path.realpath(self.dir)
+        self.assertIn("%s:%s" % (bench, bench), [argv[i + 1] for i, a in enumerate(argv) if a == "-v"])
+        envs = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+        self.assertIn("OPENPETE_BENCH_DIR=" + bench, envs)
+        self.assertIn("%s=tok.1" % timing_lock.TOKEN_ENV, envs)
+
+    def _scratch_tree(self, files):
+        """A throwaway git tree holding copies of the repo files in
+        files["copy"] and an exit-0 script at each path in files["stub"];
+        its path."""
+        tree = os.path.join(self.dir, "tree")
+        for rel in files["copy"]:
+            dst = os.path.join(tree, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(os.path.join(ROOT, rel), dst)
+        for rel in files["stub"]:
+            dst = os.path.join(tree, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "w") as f:
+                f.write("#!/bin/bash\nexit 0\n")
+            os.chmod(dst, 0o755)
+        subprocess.run(["git", "init", "-q", tree], check=True)
+        return tree
+
+    def _assert_launch_waits(self, argv, env, want_runs):
+        """Run argv free (want_runs engine runs), held (no run until the
+        window closes, then want_runs) and held with a 1 s gate timeout
+        (exit 75, no run); the free run's engine lines."""
+        def launch(extra=None):
+            return subprocess.Popen(argv, env=dict(env, **(extra or {})), text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        free = launch()
+        out, err = free.communicate(timeout=60)
+        self.assertEqual(free.returncode, 0, out + err)
+        first = self._launches()
+        self.assertEqual(len(first), want_runs, out + err)
+        os.remove(self.engine_log)
+
+        h = timing_lock.try_acquire("timing leg")
+        try:
+            proc = launch()
+            time.sleep(3)
+            self.assertIsNone(proc.poll())
+            self.assertEqual(self._launches(), [])
+        finally:
+            h.release()
+        out, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 0, out + err)
+        self.assertEqual(len(self._launches()), want_runs, out + err)
+        self.assertIn("timing leg", err)
+
+        os.remove(self.engine_log)
+        h = timing_lock.try_acquire("timing leg")
+        try:
+            refused = launch({"OPENPETE_TIMING_GATE_TIMEOUT": "1"})
+            out, err = refused.communicate(timeout=60)
+        finally:
+            h.release()
+        self.assertEqual(refused.returncode, timing_lock.EXIT_TIMEOUT, out + err)
+        self.assertEqual(self._launches(), [])
+        return first
+
+    def test_dev_container_launch_waits_for_window(self):
+        tree = self._scratch_tree({
+            "copy": ["scripts/container.sh", "scripts/lib/container.sh",
+                     "scripts/lib/conmon-no-session-bus", "scripts/lib/timing_gate.sh",
+                     "scripts/bench/timing_lock.py", "packaging/dev-image.Dockerfile",
+                     "packaging/dev-image.sh", "packaging/dev-image-packages.txt"],
+            "stub": []})
+        env = dict(os.environ, OPENPETE_CONTAINER_ENGINE=self._fake_engine())
+        (line,) = self._assert_launch_waits(
+            ["bash", os.path.join(tree, "scripts", "container.sh"), "shell", "true"], env, 1)
+        bench = os.path.realpath(self.dir)
+        self.assertIn("-v %s:%s " % (bench, bench), line)
+        self.assertIn("-e OPENPETE_BENCH_DIR=%s " % bench, line)
+
+    def test_release_container_launch_waits_for_window(self):
+        tree = self._scratch_tree({
+            "copy": ["scripts/release-container.sh", "scripts/lib/container.sh",
+                     "scripts/lib/conmon-no-session-bus", "scripts/lib/timing_gate.sh",
+                     "scripts/lib/tools_dir.sh", "scripts/lib/release_archive.sh",
+                     "scripts/bench/timing_lock.py", "packaging/linux-release.Dockerfile"],
+            "stub": ["scripts/setup_linux_clang.sh", "scripts/setup_appimagetool.sh"]})
+        env = dict(os.environ, OPENPETE_CONTAINER_ENGINE=self._fake_engine(),
+                   OPENPETE_DIST_VERSION="x-test", OPENPETE_TOOLS_DIR=os.path.join(self.dir, "tools"))
+        self._assert_launch_waits(["bash", os.path.join(tree, "scripts", "release-container.sh"),
+                                   "--test", "--out", "dist"], env, 1)
 
     def test_display_hold_beats_and_reads_held(self):
         """The holder re-asserts on every beat and rewrites its record; the

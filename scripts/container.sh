@@ -53,8 +53,15 @@
 # database variables, passes the host's git identity as GIT_AUTHOR_* and
 # GIT_COMMITTER_* and runs scripts/setup.sh once (it arms the hooks).
 #
+# Timing window: every image build and container run first waits out
+# another job's timing window (scripts/lib/timing_gate.sh); with
+# OPENPETE_TIMING_GATE_TIMEOUT=<seconds> set it gives up at the limit and the
+# script exits 75 without launching. The host's timing-window directory is
+# mounted into every container (ctr_timing_env), so a gated launch inside it
+# (the oracle's sandboxed runs) waits on the same window.
+#
 # Exit: 0 pass; 1 a step or check failed; 64 usage or a missing input,
-# named on stderr.
+# named on stderr; 75 the timing gate's timeout.
 #
 # The OPENPETE_* variables go to Linux processes in the container with -e;
 # the Windows exe is linked and its import table read, never launched -
@@ -64,6 +71,8 @@ cd "$(dirname "$0")/.."
 TREE="$PWD"
 # shellcheck source=scripts/lib/container.sh
 source scripts/lib/container.sh
+# shellcheck source=scripts/lib/timing_gate.sh
+source scripts/lib/timing_gate.sh
 
 usage() {
     sed -n '2,/^set -euo/s/^# \{0,1\}//p' "$0" | sed '$d' >&2
@@ -72,6 +81,9 @@ usage() {
 refuse() { echo "[container] refused: $*" >&2; exit 64; }
 fail() { echo "[container] FAIL: $*" >&2; exit 1; }
 say() { echo "[container] $*"; }
+# Wait out another job's timing window before a build or launch; exit with
+# the gate's status (75) when OPENPETE_TIMING_GATE_TIMEOUT is reached.
+timing_gate() { op_timing_gate "container $form${game:+ $game}" >&2 || exit $?; }
 
 form="${1:-}"; shift || true
 game="" oracle=0
@@ -113,6 +125,7 @@ dev_images() {
     if ctr_image_exists "$DEV_IMAGE" && { (( ! want_mingw )) || ctr_image_exists "$MINGW_IMAGE"; }; then
         return
     fi
+    timing_gate
     ctx="$(mktemp -d)"
     cp packaging/dev-image.sh packaging/dev-image-packages.txt "$ctx/"
     local t0=$SECONDS
@@ -132,6 +145,7 @@ dev_images() {
 ctr_tree_mounts "$TREE"
 mkdir -p "$BUILD"
 ctr_home_env "$BUILD/home" "$BUILD/home"
+ctr_timing_env
 CTR_ENV+=(-e OPENPETE_VIBRATION=0
           -e "OPENPETE_COMPLEXITY_DB=$BUILD/linux-release/compile_commands.json"
           -e "OPENPETE_DOCS_DB=$BUILD/linux-release/compile_commands.json"
@@ -143,6 +157,7 @@ in_image() {
     local image="$1" net="$2"; shift 2
     local netopt=()
     [[ "$net" == none ]] && netopt=(--network=none)
+    timing_gate
     "$CTR_ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm "${netopt[@]}" "${CTR_MOUNTS[@]}" "${CTR_ENV[@]}" \
         "${CTR_UIDMAP[@]}" -w "$TREE" "$image" bash -euo pipefail -c "$@"
 }
@@ -227,6 +242,7 @@ form_decomp() {
     image="openpete-decomp-$game:$hash"
     if ! ctr_image_exists "$image"; then
         say "building $image"
+        timing_gate
         ctx="$(mktemp -d)"
         ctr_build_image "$dir/Dockerfile" "$ctx" "$image" ""
         rm -rf "$ctx"
@@ -241,6 +257,7 @@ form_decomp() {
         sed 's#^\([0-9A-Fa-f]* \)build\.wad/#\1build/wad/#' sha256sum.txt >/tmp/sha256sum.txt
         sha256sum -c /tmp/sha256sum.txt"
     t0=$SECONDS
+    timing_gate
     "$CTR_ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm --network=none "${CTR_MOUNTS[@]}" "${CTR_ENV[@]}" "${CTR_UIDMAP[@]}" \
         -w "$TREE/$dir" "$image" bash -euo pipefail -c "$build_cmd" \
         || fail "decomp $game build or hash check failed"
@@ -363,6 +380,7 @@ form_shell() {
     [[ -t 0 ]] && tty=(-it)
     local cmd='scripts/setup.sh || echo "[container] scripts/setup.sh exited $?"; exec bash'
     (( $# )) && cmd='scripts/setup.sh >/dev/null || true; exec "$@"'
+    timing_gate
     "$CTR_ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm "${tty[@]}" "${CTR_MOUNTS[@]}" "${CTR_ENV[@]}" "${CTR_UIDMAP[@]}" \
         -w "$TREE" "$DEV_IMAGE" bash -c "$cmd" _ "$@"
 }

@@ -28,6 +28,16 @@
 #   ctr_home_env HOME_HOST HOME_CTR
 #                              create HOME_HOST and append HOME and the XDG
 #                              directories under HOME_CTR to CTR_ENV
+#   ctr_timing_env             the timing window's directory (OPENPETE_BENCH_DIR,
+#                              else ~/.local/share/openpete/bench; created)
+#                              mounted read-write at its host path, with
+#                              OPENPETE_BENCH_DIR naming it in CTR_ENV, and
+#                              OPENPETE_TIMING_TOKEN and
+#                              OPENPETE_TIMING_GATE_TIMEOUT passed when set:
+#                              a timing gate inside the container
+#                              (scripts/lib/timing_gate.sh) then probes the
+#                              host's flock on the same inode, and a launch
+#                              made inside the holder's own window passes
 #   ctr_image_exists IMAGE
 #   ctr_build_image DOCKERFILE CONTEXT IMAGE [STAGE [BASE_STAGE=IMAGE...]]
 #                              build one stage; under podman with the vfs
@@ -134,6 +144,19 @@ ctr_home_env() {
     CTR_ENV+=(-e "HOME=$ctr" -e "XDG_CONFIG_HOME=$ctr/.config"
               -e "XDG_CACHE_HOME=$ctr/.cache" -e "XDG_DATA_HOME=$ctr/.local/share"
               -e "XDG_RUNTIME_DIR=$ctr/run")
+}
+
+ctr_timing_env() {
+    local d="${OPENPETE_BENCH_DIR:-$HOME/.local/share/openpete/bench}"
+    mkdir -p "$d"
+    d="$(cd "$d" && pwd -P)"
+    ctr_mount "$d" "$d"
+    CTR_ENV+=(-e "OPENPETE_BENCH_DIR=$d")
+    local v
+    for v in OPENPETE_TIMING_TOKEN OPENPETE_TIMING_GATE_TIMEOUT; do
+        [[ -n "${!v:-}" ]] && CTR_ENV+=(-e "$v=${!v}")
+    done
+    return 0
 }
 
 ctr_image_exists() {

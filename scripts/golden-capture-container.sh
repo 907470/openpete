@@ -37,7 +37,11 @@
 #
 # Timing window. Every container launch and image build waits first, after
 # any lock wait, while another job holds the timing window
-# (scripts/bench/timing_lock.py, through scripts/lib/timing_gate.sh).
+# (scripts/bench/timing_lock.py, through scripts/lib/timing_gate.sh). The
+# host's timing-window directory is mounted read-write into the container
+# with OPENPETE_BENCH_DIR naming it (ctr_timing_env), so each sandboxed
+# capture inside it (scripts/lib/sandbox.sh) probes the host's flock and
+# waits on a window opened after the container started.
 #
 # The image is labelled with the SHA-256 of the recipe it was built from and
 # carries the recipe at /etc/openpete/capture.Dockerfile. An image whose label
@@ -184,6 +188,7 @@ env_args=(-e OPENPETE_NO_COMMITS=1 -e OPENPETE_VIBRATION=0
 # and PulseAudio's runtime cookie resolve relative to the working directory,
 # the tree. A home under the container build directory keeps them out of it.
 ctr_home_env "$TREE/build/linux-release-container/home" "$CTREE/build/linux-release-container/home"
+ctr_timing_env
 env_args+=("${CTR_ENV[@]}")
 # The reference store resolves as scripts/presentation-blessed.py resolves it,
 # and the container gets it by an explicit path: the container's home is not
