@@ -26,6 +26,22 @@ static const char* const k_capture = "mod_material_link_vk.stderr";
  * shadow_decal_tex_pc (native_render.c, 128 B). */
 enum { PC_MATERIAL = 80, PC_TERRAIN = 116, PC_DECAL = 128 };
 
+/* The retained-terrain arena families in OPENPETE_MATERIAL_TER_VARIANTS
+ * order (plain, anim, near, anim cell records, near cell records) and each
+ * family's vertex stage: k_tc_vert row 0 and k_tc_vert_dspec in
+ * native_terrain_cache.c, the stage a library-linked create takes and the
+ * one a whole create compiles. */
+enum { TER_VARIANTS = 5, MAX_DESCS = 2 * TER_VARIANTS };
+static const char* const k_ter_vert[TER_VARIANTS] = {
+    "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
+    "terrain_cells_anim.vert.spv", "terrain_cells_near.vert.spv",
+};
+static const char* const k_ter_vert_whole[TER_VARIANTS] = {
+    "terrain_dspec.vert.spv", "terrain_anim_dspec.vert.spv", "terrain_near_dspec.vert.spv",
+    "terrain_cells_anim_dspec.vert.spv", "terrain_cells_near_dspec.vert.spv",
+};
+static int s_cell_pipes;
+
 /** @brief Redirect stderr to the capture file. */
 static void capture_begin(void) {
 #ifndef _WIN32
@@ -126,13 +142,19 @@ static int descs_for(int contract, int profile, rhi_pipeline_desc* d) {
         d[1].stencil = RHI_STENCIL_MARK;
         return 2;
     }
-    if (profile == 1) {
-        d[0] = d[1] = d[2] = d[3] = k_terrain;
-        d[1].blend = RHI_BLEND_ALPHA; d[1].depth_write_off = true;
-        d[2].vert_spv = d[3].vert_spv = "terrain_near.vert.spv";
-        d[2].terrain_near = d[3].terrain_near = true;
-        d[3].blend = RHI_BLEND_ALPHA; d[3].depth_write_off = true;
-        return 4;
+    if (profile == 1) {             /* openpete_tercache_material_pipe: each variant, slots 0 and 3 */
+        for (int v = 0; v < TER_VARIANTS; v++) {
+            rhi_pipeline_desc* o = &d[2 * v];
+            o[0] = k_terrain;
+            o[0].vert_spv = k_ter_vert[v];
+            o[0].vert_spv_whole = k_ter_vert_whole[v];
+            o[0].terrain_anim = v == 1 || v == 3;
+            o[0].terrain_near = v == 2 || v == 4;
+            o[0].terrain_cells = v >= 3;
+            o[1] = o[0];
+            o[1].blend = RHI_BLEND_ALPHA; o[1].depth_write_off = true;
+        }
+        return MAX_DESCS;
     }
     d[0] = d[1] = d[2] = d[3] = k_scene;
     d[1].blend = RHI_BLEND_ADD; d[1].depth_write_off = true;
@@ -145,7 +167,7 @@ int link_vk_pipelines(const uint32_t* w, size_t n, int contract, int profile, in
                       int* errors) {
     *made = *errors = 0;
     if (!s_dev) return -1;
-    rhi_pipeline_desc d[4];
+    rhi_pipeline_desc d[MAX_DESCS];
     const int count = descs_for(contract, profile, d);
     int rc = 0;
     capture_begin();
@@ -156,12 +178,17 @@ int link_vk_pipelines(const uint32_t* w, size_t n, int contract, int profile, in
             continue;
         }
         (*made)++;
+        s_cell_pipes += d[i].terrain_cells;
         rhi_destroy_pipeline(s_dev, (rhi_pipeline*)slot);
     }
     char* txt = capture_end();
     *errors = count_errors(txt);
     free(txt);
     return rc;
+}
+
+int link_vk_cell_pipelines(void) {
+    return s_cell_pipes;
 }
 
 void link_vk_close(void) {

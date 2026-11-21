@@ -515,6 +515,24 @@ static void scratch_names(void) {
     snprintf(s_spv, sizeof s_spv, "mod_material_link_test.%ld.spv", pid);
 }
 
+/** @brief Fail VACUOUS on every engagement counter of the run still at zero, then print the summary line.
+ *
+ * One row per counter: the combined modules built, and under --vk the
+ * pipelines created under the validation layer and the cell-record terrain
+ * pipelines among them. A row that does not apply to the run is skipped. */
+static void judge_engagement(void) {
+    const int cells = link_vk_cell_pipelines();
+    const struct { int applies, n; const char* none; } need[] = {
+        { 1, s_modules, "no combined module was built" },
+        { s_vk, s_vk_pipes, "no pipeline was created under the validation layer" },
+        { s_vk, cells, "no cell-record terrain pipeline was created under the validation layer" },
+    };
+    for (size_t i = 0; i < sizeof need / sizeof need[0]; i++)
+        if (need[i].applies && !need[i].n) fail("VACUOUS", need[i].none);
+    printf("mod_material_link: %d entr%s, %d module(s), %d pipeline(s) (%d cell-record), "
+           "%d failure(s)\n", s_n, s_n == 1 ? "y" : "ies", s_modules, s_vk_pipes, cells, s_fail);
+}
+
 /** @brief Run the census and fixture checks the command line names and report the failures.
  *
  * @param argc Argument count.
@@ -559,9 +577,6 @@ int main(int argc, char** argv) {
     openpete_mod_link_ctx_free(s_ctx);
     if (s_vk) link_vk_close();
     remove(s_log);
-    if (!s_modules) fail("VACUOUS", "no combined module was built");
-    if (s_vk && !s_vk_pipes) fail("VACUOUS", "no pipeline was created under the validation layer");
-    printf("mod_material_link: %d entr%s, %d module(s), %d pipeline(s), %d failure(s)\n", s_n,
-           s_n == 1 ? "y" : "ies", s_modules, s_vk_pipes, s_fail);
+    judge_engagement();
     return s_fail ? 1 : 0;
 }
