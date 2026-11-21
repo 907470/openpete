@@ -14799,13 +14799,16 @@ static int moby_jump_hold_enabled(void) {
  * an open present or before the moby pass reads no hold. The alpha is the
  * present clock past the current stamp over the pair's interval capped at one
  * tick, the clock moby_record_pair sweeps. A game whose sub-tick view stages
- * its moby records (host_reveal) holds them in its own walk, so every channel
- * here already reads tick N-1, and this returns 0.
+ * its moby records (host_reveal) takes the verdict in its own walk, staging a
+ * held record's tick N-1 state through the view; this returns that verdict
+ * (cut_obj_held), so the channels that read the snapshot pair rather than the
+ * view (the euler sweep) hold with the position.
  * @param moby The moby's PSX address.
  * @param o The moby's interp pair; NULL yields 0.
  * @return 1 when the record holds, else 0. */
 static int moby_jump_held(uint32_t moby, const openpete_interp_obj_t* o) {
-    if (moby_game.host_reveal || !o || !o->have_prev || o->curr_ns <= o->prev_ns) return 0;
+    if (!o || !o->have_prev || o->curr_ns <= o->prev_ns) return 0;
+    if (moby_game.host_reveal) return cut_obj_held(moby) == 1;
     const uint32_t po = game_layout.moby.pos_off;
     const int rolled = cut_held_rolled(o);
     if (rolled == 0) return 0;
@@ -14876,11 +14879,13 @@ static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t);
  * interval capped at one tick period and the phase floored at
  * CUT_PHASE_FLOOR, so on a present before the curr stamp the angles
  * extrapolate back along the last turn with the position, and the jump hold
- * pins both at 0. lerp_byte_angle takes the shorter way round at every
- * phase, and the sine table lookup wraps an angle below 0 or past 256. A
+ * pins both at 0, the snap verdict at 1. lerp_byte_angle takes the shorter
+ * way round at every phase, and the sine table lookup wraps an angle below 0 or past 256. A
  * facing reversal (moby_mirror_hold) steps instead of sweeping, holding the
  * previous tick's angles through the interval and taking this tick's at
- * alpha 1, the schedule the shape channel takes for the same verdict.
+ * alpha 1, the schedule the shape channel takes for the same verdict; a
+ * record with a cut verdict on this present (cut_obj_held) keeps the
+ * verdict's phase instead, the one its position takes.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param t_out Receives the phase, 0 at the previous tick and 1 at this one.
@@ -14890,7 +14895,8 @@ static const openpete_interp_obj_t* record_euler_pair(CPUState* cpu, uint32_t mo
     double t = 1.0;
     const openpete_interp_obj_t* o = moby_record_pair(moby, &t);
     if (!o) return NULL;
-    if (t < 1.0 && moby_mirror_hold(cpu, moby)) t = moby_hold_expired(o) ? 1.0 : 0.0;
+    if (t < 1.0 && cut_obj_held(moby) < 0 && moby_mirror_hold(cpu, moby))
+        t = moby_hold_expired(o) ? 1.0 : 0.0;
     *t_out = t;
     return o;
 }
@@ -17914,8 +17920,11 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
  * t = 1, and clamped to [CUT_PHASE_FLOOR, 1], the camera bracket's range, so
  * on a present before the curr stamp the object extrapolates back along its
  * last motion with the camera. On a held camera cut it is 1 for an object
- * that did not roll at the cut's tick (cut_held_rolled), and 0 for a record
- * moby_jump_held holds.
+ * that did not roll at the cut's tick (cut_held_rolled). The present's cut
+ * verdict on the record overrides the phase: 0 for a record moby_jump_held
+ * holds at tick N-1, 1 for one the verdict snapped to tick N (cut_obj_held 0).
+ * Every term built on this pair (position, euler angles, size, ground
+ * height) so shows the state the record's position shows.
  *
  * A pair whose prev state was last observed more than 1.5 ticks before curr
  * (cut_pair_is_tick) is stale: the object was not captured in between, so the
@@ -17942,6 +17951,7 @@ static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t) {
     *t = ph < CUT_PHASE_FLOOR ? CUT_PHASE_FLOOR : (ph > 1.0 ? 1.0 : ph);
     if (cut_held_rolled(o) == 0) *t = 1.0;
     if (moby_jump_held(moby, o)) *t = 0.0;
+    else if (cut_obj_held(moby) == 0) *t = 1.0;   /* the present's verdict snapped it to tick N */
     return o;
 }
 
