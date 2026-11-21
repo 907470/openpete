@@ -69,7 +69,7 @@ import bench_guard  # noqa: E402
 import game_conf  # noqa: E402
 import pacelog  # noqa: E402
 from _opp_reader import read_opp, OppTraceError  # noqa: E402
-from hostenv import child_env, sw_render_env, xvfb_prefix  # noqa: E402
+from hostenv import child_env, sandbox, sw_render_env, xvfb_prefix  # noqa: E402
 
 ROW = "s1_h0_r1"
 GAME = "spyro-1"
@@ -243,6 +243,7 @@ def main():
     if not os.path.isfile(game_conf.resolve(ROOT, GAME)["disc"]):
         print("[present-cadence] SKIP: no %s disc" % GAME)
         return EXIT_SKIP
+    sandbox()
     opp, pace, log = run_row(a.platform, exe, a.out, a.frames,
                              prefix if a.platform == "linux" else ())
     return analyze(opp, pace, log, a.tol_us)

@@ -67,7 +67,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
 import game_conf  # noqa: E402
-from hostenv import child_env, sw_render_env, xvfb_prefix  # noqa: E402
+from hostenv import child_env, sandbox, sw_render_env, xvfb_prefix  # noqa: E402
 
 ROW = "s3_sunrise_high"
 GAME = "spyro-3"
@@ -251,6 +251,7 @@ def main():
     if not os.path.isfile(os.path.join(ROOT, game_conf.resolve(ROOT, GAME)["disc"])):
         print("[record-cfr-complete] SKIP: no %s disc" % GAME)
         return EXIT_SKIP
+    sandbox()
     log, clip, rc = run_row(a.platform, exe, a.out, a.frames,
                             a.window or WINDOW[a.platform], a.ssaa, a.record_frames,
                             prefix if a.platform == "linux" else ())

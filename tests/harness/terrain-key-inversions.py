@@ -131,6 +131,9 @@ except ImportError:
     sys.exit(64)
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
+from hostenv import sandbox_run_root  # noqa: E402
+
 GAMES = ["spyro-1", "spyro-2", "spyro-3"]
 FREECAM_START = {"spyro-1": 1900, "spyro-2": 2473, "spyro-3": 2473}
 SLOT_CONTEST = {"spyro-1": False, "spyro-2": True, "spyro-3": True}
@@ -254,6 +257,9 @@ def run_leg(job):
     env = dict(os.environ)
     env.update(swenv)
     env["OPENPETE_VIBRATION"] = "0"
+    sbroot = sandbox_run_root()
+    env["OPENPETE_SANDBOX"] = sbroot
+    env["OPENPETE_CARD_DIR"] = os.path.join(sbroot, "cards")
     env["OPENPETE_TERRAIN_TRIDUMP"] = "+".join(str(f) for f in row["frames"]) + "," + \
         os.path.join(ddir, base + "__{n}.txt")
     if leg == "cache":

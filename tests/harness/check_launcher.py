@@ -143,6 +143,8 @@ Usage: tests/harness/check_launcher.py CASE [--build-dir DIR] [--out DIR]
            [--calibration PATH]
 Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary or xvfb-run missing).
 """
+# sandbox-guard: intentional new user boot: each case is its own XDG_CONFIG_HOME,
+# XDG_STATE_HOME and XDG_DATA_HOME root, and the cases test that resolution.
 import argparse
 import json
 import os

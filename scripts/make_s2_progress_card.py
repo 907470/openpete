@@ -40,6 +40,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from hostenv import sandbox  # noqa: E402
+
 FILE_NAME = b"BASCUS-94425SP2RR"
 BLOCK = 0x2000
 HEADER = 0x200
@@ -70,6 +73,7 @@ def make_base(binary, disc, out):
            "--renderer", "vk", "--mute", "1", "--vibration", "0",
            "--card1", out, "--no-card2", "--bk2", "games/spyro-2/bk2/s2-create-save.bk2",
            "--frame-limit", str(CREATE_LIMIT)]
+    sandbox()
     env = dict(os.environ, OPENPETE_VIBRATION="0")
     r = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

@@ -59,7 +59,7 @@ except ModuleNotFoundError:  # Python < 3.11
     import tomli as tomllib
 
 sys.path.insert(0, os.path.join(config.ROOT, "scripts", "lib"))
-from hostenv import child_env  # noqa: E402
+from hostenv import child_env, sandbox  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The capture's exact rate: --record-cfr 60 is two presents a tick, 2250000/37609 Hz.
@@ -127,6 +127,7 @@ def cmd_capture(tab, a):
         log.write("knobs " + " ".join(f"{k}={v}" for k, v in sorted(knobs.items())) + "\n")
         log.write("argv " + " ".join(cmd) + "\n")
         log.flush()
+        sandbox()
         rc = subprocess.call(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, env=child_env(knobs))
     missing = [f for f in ("clip.mkv", "audio.raw", "audio.raw.idx") if not os.path.exists(os.path.join(out, f))]
     if rc or missing:

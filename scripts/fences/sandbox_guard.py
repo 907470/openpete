@@ -15,8 +15,14 @@ scripts/lib/game.sh, and any other shell file found sourcing one of them);
 a Python launcher calls hostenv's sandbox(), sandbox_run_root() or
 scratch_cards(); either may set OPENPETE_SANDBOX itself.
 
-Scope: every file that launches the game binary (rumble_guard's `launches`),
-whatever its name, since a sandbox is owed by every scripted run.
+Scope: every file that launches the game binary, whatever its name, since a
+sandbox is owed by every scripted run: rumble_guard's `launches` (the binary
+named by path), and a Python file that spawns a process and builds an argv
+list or tuple holding two or more of the game's own flags (GAME_FLAGS), which
+catches the launchers that take the binary from --exe/--bin or join it from a
+build directory. A file holding one such flag is not counted: the DuckStation
+measurement tools pass a lone --disc or --bk2 to the reference emulator, and
+a driver hands a lone --bk2 to a sandboxed sub-harness.
 
 Escape: `sandbox-guard: intentional <reason>` for a script that needs the
 player's real state or a fresh-user boot (a first-boot check, a bench on the
@@ -30,6 +36,7 @@ wslenv-guard: no-launch, rumble-guard: no-launch, input-lock-guard: no-launch
 Run: python3 scripts/fences/sandbox_guard.py [root ...]
 Exit: 0 clean, 65 a launcher runs outside a sandbox.
 """
+import ast
 import os
 import re
 import sys
@@ -52,6 +59,48 @@ PY_CALL = re.compile(r"\b(?:sandbox|sandbox_run_root|scratch_cards)\(")
 
 # The reason is required: a bare marker is not a decision anyone wrote down.
 EXEMPT = re.compile(r"sandbox-guard:\s*(?:intentional[\s#:(-]*\w+(?:[\s#]+[\w']+)+|no-launch)")
+
+
+# Flags only the game binary takes; two distinct ones in argv literals mark
+# a Python launcher.
+GAME_FLAGS = frozenset((
+    "--headless", "--skip-to-level", "--frame-limit", "--bk2", "--screenshot-on-frame",
+    "--screenshot-on-tick", "--freecam-pose", "--freecam-path", "--no-config", "--disc",
+    "--record-cfr"))
+# Calls that start a process: subprocess.run/call/check_call/check_output/
+# Popen and the os.exec*/os.spawn* families, by attribute or bare name.
+SPAWN_CALLS = frozenset(("run", "call", "check_call", "check_output", "Popen", "execv",
+                         "execve", "execvp", "execvpe", "spawnv", "spawnve", "spawnvp",
+                         "spawnvpe"))
+
+
+def py_launches(text):
+    """True when Python source spawns a process and its list and tuple
+    literals hold at least two distinct GAME_FLAGS. Argparse definitions
+    (`add_argument("--disc")`) and membership tests (`"--card1" in argv`)
+    are not list literals, so a script's own options never count."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return False
+    spawn, flags = False, set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            spawn = spawn or name in SPAWN_CALLS
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            flags.update(e.value for e in node.elts
+                         if isinstance(e, ast.Constant) and e.value in GAME_FLAGS)
+    return spawn and len(flags) >= 2
+
+
+def launches(name, text):
+    """True when the file starts the game: rumble_guard's path match, or a
+    Python file py_launches accepts."""
+    if rumble_guard.launches(name, text):
+        return True
+    return name.endswith(".py") and py_launches(text)
 
 
 def source_re(names):
@@ -113,7 +162,7 @@ def sandboxed(name, text, provs=None):
 
 def offends(name, text, provs=None):
     """True when the file launches the game and never enters a sandbox."""
-    if not rumble_guard.launches(name, text):
+    if not launches(name, text):
         return False
     if EXEMPT.search(text):
         return False

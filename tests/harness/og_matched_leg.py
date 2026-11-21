@@ -110,6 +110,10 @@ from scipy import ndimage
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import og_align  # noqa: E402
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                                "scripts", "lib"))
+from hostenv import sandbox_run_root  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 CUES = {"spyro-1": "games/spyro-1/spyro-1/build/SCUS-94228.cue",
@@ -120,8 +124,11 @@ LVP = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
 
 def leg_env(extra):
     """Environment of one leg: the CPU rasteriser pin of swrender.sh, no
-    rumble, plus the leg's own K=V pairs."""
+    rumble, a sandbox run root of its own, plus the leg's own K=V pairs."""
     env = dict(os.environ)
+    root = sandbox_run_root()
+    env["OPENPETE_SANDBOX"] = root
+    env["OPENPETE_CARD_DIR"] = os.path.join(root, "cards")
     if os.path.exists(LVP):
         env["VK_ICD_FILENAMES"] = LVP
     env["LIBGL_ALWAYS_SOFTWARE"] = "1"

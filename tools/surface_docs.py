@@ -49,6 +49,8 @@ Subcommands
 Exit codes: 0 pass, 1 refusal or VACUOUS, 2 usage or macro error, 64 skip.
 """
 
+# sandbox-guard: intentional new user boot: --config-report runs in a scratch HOME and
+# XDG roots with every OPENPETE_* variable removed, to read a snippet as a player's config.
 import argparse
 import json
 import os

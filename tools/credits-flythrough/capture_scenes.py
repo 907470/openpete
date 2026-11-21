@@ -26,7 +26,7 @@ import clipmap
 import config
 
 sys.path.insert(0, os.path.join(config.ROOT, "scripts", "lib"))
-from hostenv import child_env  # noqa: E402
+from hostenv import child_env, sandbox_run_root  # noqa: E402
 
 # Capture-log knobs clipmap reads, set on every scene.
 LOG_KNOBS = {"OPENPETE_CUT_CENSUS": "1", "OPENPETE_FCPATH_LOG": "1", "OPENPETE_ALPHA_LOG": "1",
@@ -90,7 +90,10 @@ def capture(cfg, sc, a):
         log.write("knobs " + " ".join(f"{k}={v}" for k, v in sorted(knobs.items())) + "\n")
         log.write("argv " + " ".join(cmd) + "\n")
         log.flush()
-        rc = subprocess.call(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, env=child_env(knobs))
+        root = sandbox_run_root()
+        base = dict(os.environ, OPENPETE_SANDBOX=root, OPENPETE_CARD_DIR=os.path.join(root, "cards"))
+        rc = subprocess.call(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
+                             env=child_env(knobs, base=base))
     line = f"scene {i:02d} {sc['level']} engage={sc['engage_vbl']} limit={lim} rc={rc}"
     clip = os.path.join(out_dir, "clip.mkv")
     if rc or not os.path.exists(clip):

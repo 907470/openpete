@@ -58,6 +58,8 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "scripts" / "lib"))
+from hostenv import sandbox_run_root  # noqa: E402
 
 ARR_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
@@ -234,6 +236,11 @@ def run_one(mod_dir: Path, game, verbose: bool, emit,
         mode = test["expect_oracle"]
         env = dict(os.environ)
         env["OPENPETE_VIBRATION"] = "0"
+        # A sandbox root per mod run; the oracle harness keeps an inherited
+        # root under the sandbox parent.
+        sbroot = sandbox_run_root()
+        env["OPENPETE_SANDBOX"] = sbroot
+        env["OPENPETE_CARD_DIR"] = os.path.join(sbroot, "cards")
         if mode in ("pass", "fail"):
             env["OPENPETE_FRAME_LIMIT"] = frames
             if concurrent_run and env.get("OPENPETE_ORACLE_LOG"):

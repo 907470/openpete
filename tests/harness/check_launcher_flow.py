@@ -191,6 +191,7 @@ Cases:
 Usage: tests/harness/check_launcher_flow.py CASE [--build-dir DIR] [--out DIR] [--measure]
 Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary, xvfb-run or a disc image missing).
 """
+# sandbox-guard: intentional new user boot through check_launcher's per-case XDG roots.
 import argparse
 import fcntl
 import glob

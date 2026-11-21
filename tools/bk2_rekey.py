@@ -47,6 +47,8 @@ import zipfile
 os.environ.setdefault("OPENPETE_VIBRATION", "0")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
+from hostenv import sandbox  # noqa: E402
 KEY_PREFIX = "OpenpeteFeedKey "
 NEW_KEY = "consume"
 COLS = {"frame": 0, "vbl": 1, "consume": 2}
@@ -98,6 +100,7 @@ def cmd_map(a):
         if a.bk2:
             cmd += ["--bk2", a.bk2, "--bk2-stop-on-end"]
         cmd += a.args
+        sandbox()
         env = dict(os.environ, OPENPETE_FEED_MAP=mlog)
         r = subprocess.run(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if not os.path.exists(mlog):

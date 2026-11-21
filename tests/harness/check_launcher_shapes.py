@@ -42,6 +42,7 @@ Cases:
 Usage: tests/harness/check_launcher_shapes.py CASE [--build-dir DIR] [--out DIR] [--levels N] [--domes DIR]
 Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary, xvfb-run or the disc image missing).
 """
+# sandbox-guard: intentional new user boot through check_launcher's per-case XDG roots.
 import argparse
 import math
 import os

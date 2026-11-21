@@ -26,7 +26,7 @@ except ModuleNotFoundError:
     sys.exit(64)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "lib"))
-from hostenv import sw_render_env  # noqa: E402
+from hostenv import sandbox_run_root, sw_render_env  # noqa: E402
 
 
 def run_game(binary, disc, case, gapfill, outdir, tag):
@@ -43,6 +43,9 @@ def run_game(binary, disc, case, gapfill, outdir, tag):
     for k, v in case.get("pin_env", {}).items():
         env[str(k)] = str(v)
     sw_render_env(env)                    # deterministic software raster
+    root = sandbox_run_root()             # a sandbox root per run
+    env["OPENPETE_SANDBOX"] = root
+    env["OPENPETE_CARD_DIR"] = os.path.join(root, "cards")
     if case.get("pose"):
         env["OPENPETE_FREECAM_POSE"] = case["pose"]
     args = [binary, "--headless", "--disc", disc, "--disc-cache", "0",

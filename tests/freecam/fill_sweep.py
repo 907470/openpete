@@ -45,7 +45,7 @@ except ModuleNotFoundError:
     sys.exit(64)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "lib"))
-from hostenv import sw_render_env  # noqa: E402
+from hostenv import sandbox_run_root, sw_render_env  # noqa: E402
 
 FRAME = 2101
 MIN_M3 = 4.0        # walk units: skip faces with a corner nearer than 64 world units
@@ -53,7 +53,13 @@ MIN_OV = 16         # px of need_data overlap to become a candidate
 
 
 def base_env():
-    return sw_render_env(dict(os.environ))
+    """The environment of one capture: the software rasterizer pin and a
+    sandbox run root of its own."""
+    env = sw_render_env(dict(os.environ))
+    root = sandbox_run_root()
+    env["OPENPETE_SANDBOX"] = root
+    env["OPENPETE_CARD_DIR"] = os.path.join(root, "cards")
+    return env
 
 
 def run_leg(binary, disc, level, pose, leg, outdir, frame=FRAME):
