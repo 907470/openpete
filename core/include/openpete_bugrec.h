@@ -217,6 +217,33 @@ void openpete_bugrec_taint_since(const openpete_bugrec_anchor_t* a, uint64_t out
  * @return A static string. */
 const char* openpete_bugrec_taint_name(openpete_bugrec_taint_t kind);
 
+/* Dev-overlay warp requests the warps ring keeps (warps.txt). */
+#define OPENPETE_BUGREC_WARPS 256u
+
+/** @brief Record a dev-overlay warp request at the tick its queue drained.
+ *
+ * The drain is the warp's only host input: every later step reads guest
+ * state, so a replay that queues the same request on the same tick
+ * reproduces the warp. Entries past a rewind target are dropped; a
+ * savestate load clears the ring.
+ * @param id The Warp button row's id ("warp_go", "warp_area_go").
+ * @param target The target number the request carried. */
+void openpete_bugrec_warp(const char* id, int target);
+
+/** @brief Write warps.txt: a header, then one `warp` line (frame, vbl, feed key, row id, target) per held request.
+ *
+ * @return The text on the heap (free with free()), or NULL when allocation failed. */
+char* openpete_bugrec_warps_text(void);
+
+/** @brief Hold or release an anchor hold: while any hold is set, no anchor is taken.
+ *
+ * A host feature whose state spans ticks outside every savestate (a
+ * dev-overlay warp in flight) holds anchors, since a replay from one taken
+ * mid-flight starts without that state.
+ * @param bit The holder's bit, 0 to 31.
+ * @param on Nonzero sets it. */
+void openpete_bugrec_hold(unsigned bit, int on);
+
 /** @brief Return a held anchor by age.
  *
  * @param i 0 for the newest, 1 for the one before it.

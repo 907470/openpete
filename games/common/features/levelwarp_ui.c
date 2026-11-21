@@ -5,6 +5,8 @@
 #include "features/levelwarp_ui.h"
 
 #include "game_extras.h"    /* game_set_skip_to_level (title-screen route) */
+#include "openpete_bugrec.h" /* openpete_bugrec_warp, openpete_bugrec_hold */
+#include "openpete_bugreport_replay.h" /* openpete_bugreport_replay_warp_take */
 #include "openpete_fiber.h" /* openpete_speculative, openpete_frame */
 #include "openpete_freecam.h"
 #include "openpete_log.h"
@@ -206,6 +208,18 @@ static void test_trigger_tick(levelwarp_t* w) {
     w->pending    = 1;
 }
 
+/** @brief Queue the bundle's recorded request of this warp due at the current tick, under --bug-report-replay.
+ *
+ * The recording logged the request at the tick its queue drained; queued
+ * here, before the drain, it drains on that tick again.
+ * @param w The warp. */
+static void replay_trigger_tick(levelwarp_t* w) {
+    int target = 0;
+    if (!openpete_bugreport_replay_warp_take(w->game->rows[1].id, &target)) return;
+    w->pending_id = target;
+    w->pending    = 1;
+}
+
 /* ---- entry points ------------------------------------------------------ */
 
 void levelwarp_register(levelwarp_t* w) {
@@ -216,7 +230,9 @@ void levelwarp_register(levelwarp_t* w) {
     w->sel = w->sel_touched = w->pending = 0;
     w->route   = LEVELWARP_ROUTE_NONE;
     w->refused = NULL;
-    s_warps[s_warps[0] && s_warps[0] != w ? 1 : 0] = w;
+    w->title_hold = 0;
+    w->slot    = s_warps[0] && s_warps[0] != w ? 1 : 0;
+    s_warps[w->slot] = w;
     register_rows(w);
     test_trigger_init(w);
 }
@@ -310,12 +326,14 @@ static void drain(levelwarp_t* w, CPUState* cpu, int target) {
     const levelwarp_game_t* g = w->game;
     if (w->route == LEVELWARP_ROUTE_TITLE) {
         title_route(g, target);
+        w->title_hold = 1;
         OPL_INFO_F(g->log_tag, "queued title-screen boot into %s %d", g->unit, target);
     } else if (w->route == LEVELWARP_ROUTE_DEMO) {
         /* The demo's own end returns the game to the title, where the
          * armed title route takes the target. */
         g->demo_end(cpu);
         title_route(g, target);
+        w->title_hold = 1;
         OPL_INFO_F(g->log_tag, "ending the attract demo for %s %d", g->unit, target);
     } else if (w->route == LEVELWARP_ROUTE_LEVEL && !w->refused) {
         /* The free camera freezes the player update and replaces the camera
@@ -352,8 +370,13 @@ static int ui_tick(levelwarp_t* w, CPUState* cpu) {
     /* The harness request queues before anything reads `pending`, so it
      * lands where a click lands: set between ticks, drained on the next. */
     test_trigger_tick(w);
+    replay_trigger_tick(w);
 
     w->route   = route_of(g, cpu);
+    /* The title and demo routes leave the game's level skip armed with the
+     * warp idle; that host state lasts until gameplay in a level. */
+    if (w->title_hold && (w->route == LEVELWARP_ROUTE_LEVEL || ++w->title_hold > WARP_STUCK_CALLS))
+        w->title_hold = 0;
     w->refused = refusal_of(w, cpu, g->table->levels[w->sel].number);
 
     if (!w->sel_touched && w->phase == LEVELWARP_IDLE) {
@@ -364,6 +387,7 @@ static int ui_tick(levelwarp_t* w, CPUState* cpu) {
     if (!w->pending) return 0;
     if (w->phase != LEVELWARP_IDLE) return 1;   /* drain when idle */
     w->pending = 0;
+    openpete_bugrec_warp(g->rows[1].id, w->pending_id);
     w->refused = refusal_of(w, cpu, w->pending_id);
     drain(w, cpu, w->pending_id);
     return 1;
@@ -389,7 +413,11 @@ static void arrive(levelwarp_t* w, CPUState* cpu) {
     w->ticks = 0;
 }
 
-void levelwarp_on_tick(levelwarp_t* w, CPUState* cpu) {
+/** @brief Run the tick's front half, then advance an in-flight warp one step.
+ *
+ * @param w The warp.
+ * @param cpu The guest CPU state. */
+static void warp_tick(levelwarp_t* w, CPUState* cpu) {
     const levelwarp_game_t* g = w->game;
     if (ui_tick(w, cpu)) return;
     if (w->phase == LEVELWARP_IDLE || w->phase == LEVELWARP_QUEUED) return;
@@ -408,4 +436,12 @@ void levelwarp_on_tick(levelwarp_t* w, CPUState* cpu) {
         return;
     }
     if (g->arrived ? g->arrived(cpu) : g->live(cpu)) arrive(w, cpu);
+}
+
+void levelwarp_on_tick(levelwarp_t* w, CPUState* cpu) {
+    warp_tick(w, cpu);
+    /* The phase, the target and the games' own warp state live outside
+     * every savestate, so no bug-report anchor is taken while they are set. */
+    if (!openpete_speculative)
+        openpete_bugrec_hold((unsigned)w->slot, w->phase != LEVELWARP_IDLE || w->title_hold);
 }

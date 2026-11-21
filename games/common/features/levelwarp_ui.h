@@ -110,6 +110,9 @@ struct levelwarp {
                             * refusal on the in-level route, the pause
                             * menu with no route; NULL otherwise */
     int         test_frame, test_id;
+    int         slot;        /* the warp's index among the registered ones */
+    uint32_t    title_hold;  /* nonzero from a title or demo route drain until
+                              * the in-level route opens: calls counted */
 };
 
 /* The level warp's two rows ("warp_level", "warp_go"). */
@@ -132,8 +135,12 @@ void levelwarp_surface(struct openpete_surface_sink* sink,
 /** @brief Run one tick: drain a queued request, then follow an in-flight warp to arrival.
  *
  * Runs every tick, even with no warp pending, so the button's route stays
- * current. A speculative tick does nothing. A due scripted request queues
- * first, so it lands where a click lands. The dropdown follows the current
+ * current. A speculative tick does nothing. A due scripted request, then a
+ * --bug-report-replay bundle's recorded request of this tick, queue first,
+ * so they land where a click lands. A drained request is recorded for the
+ * bug-report bundle (openpete_bugrec_warp). While a warp is in flight, or a
+ * title or demo route's level skip has not yet reached a level, the warp
+ * holds bug-report anchors (openpete_bugrec_hold). The dropdown follows the current
  * target until the user picks one. A queued request drains once no warp is
  * in flight: the title route through game_set_skip_to_level, the demo route
  * through demo_end and then the title route, the in-level route through the

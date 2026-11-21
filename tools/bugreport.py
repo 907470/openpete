@@ -12,7 +12,8 @@ Subcommands:
       The summary a reader starts from: first the knobs changed live after
       boot (knobs.txt: id, value, the session time and tick of the last
       change, boot value, default, replay class) and the knobs whose value
-      differs from the declared default, then build, commit, exe SHA-256, game,
+      differs from the declared default, the dev-overlay warp requests
+      (warps.txt), then build, commit, exe SHA-256, game,
       disc, ROM stamp, codegen stamp and march, mods, the press and anchor
       counters and the anchor's age, the state summary, taint counts, the
       member list with sizes and the hash check, redaction findings, a pace
@@ -1029,6 +1030,20 @@ def knobs_lines(b):
     return out
 
 
+def warps_line(b):
+    """The `info` line of warps.txt: each dev-overlay warp request with its drain tick, which the replay queues again."""
+    text = b.text("warps.txt")
+    if text is None:
+        return "warps: no warps.txt (written before the member): a dev-overlay warp in the window is not replayed"
+    reqs = [f.split("\t") for f in text.splitlines() if f.startswith("warp\t")]
+    reqs = [f for f in reqs if len(f) >= 6]
+    if not reqs:
+        return "warps: none"
+    anchor = (b.manifest.get("anchor") or {}).get("frame") or 0
+    return "warps: " + ", ".join(f"{f[4]} to {f[5]} at frame {f[1]}" + ("" if int(f[1]) > anchor else " (before the anchor)")
+                                 for f in reqs)
+
+
 def note_line(b, m):
     """The tester's note, or why there is none."""
     txt = b.text("notes.txt")
@@ -1326,6 +1341,7 @@ def cmd_info(args):
         w(f"trigger {trig}: written at a fatal exit on the {m.get('exit_thread') or '?'} thread; "
           "no press.state or screen.png; hang/ holds that run's dump")
     o.extend(knobs_lines(b))
+    w(warps_line(b))
     w(note_line(b, m))
     w(f"build {m.get('build_version')} tagged={m.get('build_tagged')} commit {m.get('build_commit')}")
     w(f"exe_sha256 {m.get('exe_sha256')}")

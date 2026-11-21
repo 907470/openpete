@@ -1004,6 +1004,7 @@ static void add_press_members(br_members_t* m, br_job_t* j)
     if (j->env) br_members_add_copy(m, "env.txt", j->env, strlen(j->env), BRM_TEXT);
     add_stage_file(m, j, "config.txt", "config.txt", BRM_TEXT);
     if (j->knobs) br_members_add_copy(m, "knobs.txt", j->knobs, strlen(j->knobs), BRM_TEXT);
+    if (j->warps) br_members_add_copy(m, "warps.txt", j->warps, strlen(j->warps), BRM_TEXT);
     add_stage_file(m, j, "keymap.txt", "keymap.txt", BRM_TEXT);
     if (SDL_GetAtomicInt(&j->main_facts) == BR_DONE)
         add_stage_file(m, j, "devices.txt", "devices.txt", BRM_TEXT);
@@ -1133,6 +1134,7 @@ void br_job_free(br_job_t* j)
     free(j->summary);
     free(j->env);
     free(j->knobs);
+    free(j->warps);
     free(j->display_txt);
     free(j->main_txt);
     for (int i = 0; i < j->argc; i++) free(j->argv[i]);

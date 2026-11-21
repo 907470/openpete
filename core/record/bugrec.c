@@ -45,10 +45,11 @@ enum {
     DEF_CD,           /* the CD command queue holds a pending read */
     DEF_CARD,         /* a speculative card write is pending */
     DEF_REWOUND,      /* a rewind seek ran this iteration */
+    DEF_HOLD,         /* a host feature holds anchors (openpete_bugrec_hold) */
     DEF_N
 };
 static const char* const k_def_names[DEF_N] = {
-    "boot", "speculative", "site", "cd-queue", "card-pending", "rewound",
+    "boot", "speculative", "site", "cd-queue", "card-pending", "rewound", "hold",
 };
 
 /* Why a held anchor was dropped. */
@@ -60,6 +61,15 @@ static const char* const k_taint_names[BUGREC_TAINT_N] = {
 };
 
 static _Atomic uint64_t s_taint[BUGREC_TAINT_N];
+
+/* One dev-overlay warp request, at the tick its queue drained. */
+typedef struct {
+    unsigned frame;     /* openpete_frame at the drain */
+    int      vbl;
+    unsigned feed_key;
+    char     id[32];    /* the Warp button row's id */
+    int      target;
+} warp_rec_t;
 
 #define CAPTURE_SAMPLES 4096u
 
@@ -83,6 +93,10 @@ static struct {
     size_t    rows_n, rows_cap, stride;
     unsigned long long rows_total, rows_trimmed;
     uint64_t  hash_ns_total, hash_ns_max, hash_ticks;
+    /* The warps ring: [warp_n - OPENPETE_BUGREC_WARPS, warp_n) live when full. */
+    warp_rec_t warp[OPENPETE_BUGREC_WARPS];
+    uint64_t   warp_n;
+    uint32_t   hold;      /* openpete_bugrec_hold bits */
 } s_br = { .deferring = -1, .dump_at = -1 };
 
 /** @brief Return the slot index holding the newest valid anchor, or -1. */
@@ -136,6 +150,7 @@ static void retention_apply(void) OP_REQUIRES(sim) {
  * retention pass, which finds no anchor held. */
 static void bugrec_on_discontinuity(void) {
     openpete_bugrec_taint(BUGREC_TAINT_STATE_LOAD);
+    s_br.warp_n = 0;
     for (int i = 0; i < OPENPETE_BUGREC_SLOTS; i++) anchor_drop(&s_br.slot[i], DROP_DISCONTINUITY);
     s_br.rows_trimmed += s_br.rows_n;
     s_br.rows_n = 0;
@@ -204,6 +219,7 @@ static int admission_refusal(int rewound) {
     if (!site_admitted()) return DEF_SITE;
     if (PsyX_CD_QueuePending() > 0) return DEF_CD;
     if (openpete_memcard_spec_pending()) return DEF_CARD;
+    if (s_br.hold) return DEF_HOLD;
     return -1;
 }
 
@@ -352,6 +368,7 @@ uint64_t openpete_bugrec_hash_tick(unsigned frame, int vbl, const uint64_t** per
 
 void openpete_bugrec_rewound(unsigned frame) OP_REQUIRES(sim) {
     openpete_bugrec_taint(BUGREC_TAINT_REWIND);
+    while (s_br.warp_n && s_br.warp[(s_br.warp_n - 1) % OPENPETE_BUGREC_WARPS].frame > frame) s_br.warp_n--;
     for (int i = 0; i < OPENPETE_BUGREC_SLOTS; i++)
         if (s_br.slot[i].valid && s_br.slot[i].frame > frame) anchor_drop(&s_br.slot[i], DROP_REWIND);
     while (s_br.rows_n && s_br.rows[(s_br.rows_n - 1) * s_br.stride] > frame) s_br.rows_n--;
@@ -360,6 +377,38 @@ void openpete_bugrec_rewound(unsigned frame) OP_REQUIRES(sim) {
     input_log_unlock();
     retention_apply();
     if (newest_slot() < 0) s_br.next_due = frame;
+}
+
+void openpete_bugrec_warp(const char* id, int target) {
+    warp_rec_t* r = &s_br.warp[s_br.warp_n++ % OPENPETE_BUGREC_WARPS];
+    r->frame = openpete_frame;
+    r->vbl = SDL_GetAtomicInt(&openpete_vbl);
+    r->feed_key = openpete_feed_key_now();
+    snprintf(r->id, sizeof r->id, "%s", id ? id : "?");
+    r->target = target;
+}
+
+char* openpete_bugrec_warps_text(void) {
+    const uint64_t kept = s_br.warp_n < OPENPETE_BUGREC_WARPS ? s_br.warp_n : OPENPETE_BUGREC_WARPS;
+    const size_t cap = 512u + (size_t)kept * 96u;
+    char* t = (char*)malloc(cap);
+    if (!t) return NULL;
+    int n = snprintf(t, cap, "# warps.txt v1: each dev-overlay warp request, at the tick its queue drained.\n"
+                             "# warp\tframe\tvbl\tfeed_key\tid\ttarget\n"
+                             "session\trequests=%llu\tkept=%llu\n",
+                     (unsigned long long)s_br.warp_n, (unsigned long long)kept);
+    for (uint64_t i = s_br.warp_n - kept; i < s_br.warp_n && n > 0 && (size_t)n < cap; i++) {
+        const warp_rec_t* r = &s_br.warp[i % OPENPETE_BUGREC_WARPS];
+        n += snprintf(t + n, cap - (size_t)n, "warp\t%u\t%d\t%u\t%s\t%d\n", r->frame, r->vbl, r->feed_key, r->id,
+                      r->target);
+    }
+    return t;
+}
+
+void openpete_bugrec_hold(unsigned bit, int on) {
+    if (bit >= 32u) return;
+    if (on) s_br.hold |= 1u << bit;
+    else    s_br.hold &= ~(1u << bit);
 }
 
 void openpete_bugrec_taint(openpete_bugrec_taint_t kind) {
@@ -637,15 +686,15 @@ void openpete_bugrec_report(void) OP_REQUIRES(sim) {
     int held = 0;
     for (int i = 0; i < OPENPETE_BUGREC_SLOTS; i++) held += s_br.slot[i].valid;
     OPL_INFO_F("bugrec", "anchors taken=%llu held=%d; deferred final yields: boot=%llu speculative=%llu "
-               "site=%llu cd-queue=%llu card-pending=%llu rewound=%llu (episodes: site=%llu cd-queue=%llu "
-               "card-pending=%llu); dropped: discontinuity=%llu rewind=%llu age=%llu alloc=%llu; "
+               "site=%llu cd-queue=%llu card-pending=%llu rewound=%llu hold=%llu (episodes: site=%llu cd-queue=%llu "
+               "card-pending=%llu hold=%llu); dropped: discontinuity=%llu rewind=%llu age=%llu alloc=%llu; "
                "capture us p50=%u p99=%u max=%llu (n=%u)",
                s_br.taken, held,
                s_br.deferred_yields[DEF_BOOT], s_br.deferred_yields[DEF_SPECULATIVE],
                s_br.deferred_yields[DEF_SITE], s_br.deferred_yields[DEF_CD],
-               s_br.deferred_yields[DEF_CARD], s_br.deferred_yields[DEF_REWOUND],
+               s_br.deferred_yields[DEF_CARD], s_br.deferred_yields[DEF_REWOUND], s_br.deferred_yields[DEF_HOLD],
                s_br.deferred_episodes[DEF_SITE], s_br.deferred_episodes[DEF_CD],
-               s_br.deferred_episodes[DEF_CARD],
+               s_br.deferred_episodes[DEF_CARD], s_br.deferred_episodes[DEF_HOLD],
                s_br.dropped[DROP_DISCONTINUITY], s_br.dropped[DROP_REWIND], s_br.dropped[DROP_AGE],
                s_br.dropped[DROP_ALLOC], n ? sorted[n / 2] : 0u, n ? sorted[(n * 99u) / 100u] : 0u,
                (unsigned long long)s_br.capture_max_us, n);

@@ -123,6 +123,7 @@ typedef struct br_job {
     char*    summary;
     char*    env;               /* every set OPENPETE_* variable */
     char*    knobs;             /* knobs.txt: the knob registry's values and live changes */
+    char*    warps;             /* warps.txt: the dev-overlay warp requests */
     char     pace_env[2048];    /* the pacing environment block at the press */
     br_mod_t* mods;
     int      nmods;

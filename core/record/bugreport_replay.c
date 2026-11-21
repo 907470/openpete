@@ -263,6 +263,14 @@ typedef struct {
     int col;        /* the bundle's column (0 = total), -1 when the bundle has none */
 } rp_col_t;
 
+/* One `warp` line of warps.txt: the drain tick, the row id and the target. */
+typedef struct {
+    unsigned frame;
+    char     id[32];
+    int      target;
+    int      taken;
+} rp_warp_t;
+
 static struct {
     int      on;              /* a replay was prepared */
     char     bundle[RP_PATH];
@@ -314,6 +322,11 @@ static struct {
     int      launch_keep;
     char     launch_why[160];
     char     launch_flags[400];   /* the launch flags of the tester's argv, with values */
+    /* warps.txt: the recorded dev-overlay warp requests. */
+    int      warps_loaded;    /* the bundle holds the member */
+    rp_warp_t* warps;
+    size_t   nwarps;
+    unsigned warps_queued, warps_late;
 } R;
 
 /** @brief Record a refusal reason (the first one wins) and print it on stderr.
@@ -990,7 +1003,8 @@ static int rp_dev_args(rp_argv_t* a, int argc, char** argv)
 
 /* env.txt variables the replay does not set: the harness triggers that
  * would write a bundle, set a knob (knobs.txt carries the change and its
- * tick), take extra anchors, dump the ring, exec a handoff or end the run
+ * tick), queue a warp (warps.txt carries the request and its tick), take
+ * extra anchors, dump the ring, exec a handoff or end the run
  * early, the injected host input (the movie carries the
  * pad it produced), the config file the tiers replace, and the tester's
  * sandbox root (the replay sets its own). */
@@ -999,6 +1013,7 @@ static const char* const k_env_drop[] = {
     "OPENPETE_BUGREC_DUMP_DIR", "OPENPETE_HANDOFF_AT", "OPENPETE_FRAME_LIMIT", "OPENPETE_CONFIG",
     "OPENPETE_LOG_FILE", "OPENPETE_MOUSE_INJECT", "OPENPETE_MOUSE_INJECT_RAW",
     "OPENPETE_DEVUI_INJECT_MOUSE", "OPENPETE_BUGREPORT_KNOB_AT", "OPENPETE_SANDBOX",
+    "OPENPETE_LEVELWARP_TEST", "OPENPETE_AREAWARP_TEST",
 };
 
 /** @brief Report whether a variable is one of k_env_drop's harness triggers. */
@@ -1764,6 +1779,87 @@ static unsigned rp_beyond(void)
     return R.fatal && R.beyond < 1u ? 1u : R.beyond;
 }
 
+/* ---- warps.txt ---------------------------------------------------------- */
+
+/** @brief Parse one `warp` line into the list; other lines are skipped.
+ * @param line The line. */
+static void rp_warp_line(const char* line)
+{
+    unsigned frame = 0, key = 0;
+    int vbl = 0, target = 0;
+    char id[32];
+    if (sscanf(line, "warp\t%u\t%d\t%u\t%31[^\t]\t%d", &frame, &vbl, &key, id, &target) != 5) return;
+    rp_warp_t* g = (rp_warp_t*)realloc(R.warps, (R.nwarps + 1) * sizeof *g);
+    if (!g) return;
+    R.warps = g;
+    R.warps[R.nwarps] = (rp_warp_t){ .frame = frame, .target = target };
+    snprintf(R.warps[R.nwarps].id, sizeof R.warps[R.nwarps].id, "%s", id);
+    R.nwarps++;
+}
+
+/** @brief Read the bundle's warps.txt at the anchor load; the requests after the anchor wait for openpete_bugreport_replay_warp_take.
+ *
+ * A bundle without the member is printed.
+ * @param scratch The replay's scratch directory.
+ * @param anchor_frame The anchor's tick.
+ * @return 1 when the bundle holds no warps.txt (the replay is labelled
+ *   warps-unrecorded), else 0. */
+static int rp_warps_load(const char* scratch, unsigned anchor_frame)
+{
+    char p[RP_PATH];
+    rp_join(p, sizeof p, scratch, "warps.txt");
+    size_t len = 0;
+    uint8_t* d = NULL;
+    if (br_read_file(p, &d, &len) != 0) {
+        fprintf(stderr, "bug-report-replay: warps: the bundle has no warps.txt (written before the member): a "
+                "dev-overlay warp in the window is not replayed and diverges at its tick\n");
+        return 1;
+    }
+    R.warps_loaded = 1;
+    for (char* line = (char*)d; line && *line;) {
+        char* nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        rp_warp_line(line);
+        line = nl ? nl + 1 : NULL;
+    }
+    free(d);
+    size_t after = 0;
+    for (size_t i = 0; i < R.nwarps; i++) {
+        if (R.warps[i].frame <= anchor_frame) R.warps[i].taken = 1;
+        else after++;
+    }
+    fprintf(stderr, "bug-report-replay: warps: %zu request(s) after the anchor (frame %u), %zu before it\n", after,
+            anchor_frame, R.nwarps - after);
+    return 0;
+}
+
+int openpete_bugreport_replay_warp_take(const char* id, int* target)
+{
+    if (!R.warps_loaded) return 0;
+    for (size_t i = 0; i < R.nwarps; i++) {
+        rp_warp_t* w = &R.warps[i];
+        if (w->taken || w->frame > openpete_frame || strcmp(w->id, id) != 0) continue;
+        w->taken = 1;
+        R.warps_queued++;
+        if (w->frame != openpete_frame) R.warps_late++;
+        fprintf(stderr, "bug-report-replay: warp %s to %d queued at frame %u (drained at frame %u in the "
+                "recording)\n", w->id, w->target, openpete_frame, w->frame);
+        *target = w->target;
+        return 1;
+    }
+    return 0;
+}
+
+/** @brief Print the warp summary line: requests queued, queued past their frame, not reached; nothing without the member. */
+static void rp_warps_report(void)
+{
+    if (!R.warps_loaded) return;
+    unsigned unclaimed = 0;
+    for (size_t i = 0; i < R.nwarps; i++) unclaimed += !R.warps[i].taken;
+    fprintf(stderr, "bug-report-replay: warps: %u queued (%u past their frame), %u not reached\n", R.warps_queued,
+            R.warps_late, unclaimed);
+}
+
 /** @brief Take the end-state compare at the end frame (the press frame, or a fatal bundle's last hash row) and print the window the run goes on for past it. */
 static void rp_reach_end(const CPUState* cpu) OP_REQUIRES(sim)
 {
@@ -1798,6 +1894,7 @@ void openpete_bugreport_replay_step(const CPUState* cpu) OP_REQUIRES(sim)
         bk2_feed_hold(0);
         rp_cards_restore();
         if (br_knobs_replay_load(R.scratch, R.anchor_frame)) rp_label("knobs-partial");
+        if (rp_warps_load(R.scratch, R.anchor_frame)) rp_label("warps-unrecorded");
         OPL_INFO_F("bugreport", "replay: anchor loaded at frame %u after %u park-site and %u CD-queue "
                    "wait(s); the segment plays from consume %u", openpete_frame, R.load_site_waits,
                    R.load_cd_waits, R.anchor_consume);
@@ -1897,6 +1994,7 @@ static int rp_print_diverged(const rp_line_t* L)
 static int rp_verdict(void)
 {
     br_knobs_replay_report();
+    rp_warps_report();
     rp_line_t L;
     rp_line_fill(&L);
     if (R.refused) {
