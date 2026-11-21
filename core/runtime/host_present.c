@@ -26,6 +26,7 @@
 #include "openpete_profile.h"
 #include "openpete_record.h"
 #include "openpete_run_capture.h"
+#include "openpete_subtick_view.h"
 #include "openpete_terrain_cache.h"
 #include "openpete_ticker.h"
 #include "openpete_time.h"
@@ -783,6 +784,79 @@ static void present_inline_between(host_session_t* S, const host_iter_t* it, op_
     present_inline_intermediate(S, it, native_re);
 }
 
+/* ---- headless forced re-extract -------------------------------------------
+ * Headless never starts eager production or the inline intermediate present,
+ * so the oracle never ran the re-extract body (the guest render code the
+ * sub-tick view brackets) against gameplay RAM. With
+ * OPENPETE_HEADLESS_REEXTRACT=1 every non-drawing VBL of a headless run
+ * re-extracts the scene at alpha 0.5 of the newest tick through the
+ * registered re-extract (the view's open, body and restore that eager and
+ * the inline present run) and then makes the mods' sub-tick present flush,
+ * with no present thread and no render. The world-liveness bound is the
+ * windowed one, 6 VBLs since the last canonical present, counted in VBLs so
+ * the run is the same on every host. */
+static OP_ONCE_INT s_hrx_on = -1;
+/* VBLs since the last canonical present; starts past the bound, so nothing
+ * runs before the first drawn tick. */
+static _Atomic uint32_t s_hrx_since_canon = 1000u;
+/* Re-extracts run, and those the interpolation ring bracketed. */
+static _Atomic uint32_t s_hrx_rex;
+static _Atomic uint32_t s_hrx_paired;
+#define HRX_LIVE_VBLS 6u
+
+bool host_headless_reextract_on(void)
+{
+    int on = op_once_int_get(&s_hrx_on);
+    if (on < 0) {
+        const char* e = getenv("OPENPETE_HEADLESS_REEXTRACT");
+        on = op_once_int_fill(&s_hrx_on, (e && *e && *e != '0') ? 1 : 0);
+    }
+    return on > 0;
+}
+
+/** @brief Re-extract the scene at alpha 0.5 on a headless non-drawing VBL, then flush the mods' sub-tick present.
+ *
+ * Runs on a headless iteration that ran the game fiber and presented
+ * nothing, while the world is live (a canonical present within
+ * HRX_LIVE_VBLS VBLs) and outside a skip fast-forward. The present target is
+ * the ring's newest stamp plus half a tick, the instant the deterministic
+ * ring maps to alpha 0.5.
+ * @param S The session: the options.
+ * @param it The iteration.
+ * @param re The registered re-extract, or NULL. */
+static void headless_forced_reextract(const host_session_t* S, const host_iter_t* it,
+                                      openpete_native_reextract_fn re) OP_REQUIRES(sim)
+{
+    if (it->did_present) { s_hrx_since_canon = 0; return; }
+    if (!it->yield_now) return;
+    if (s_hrx_since_canon < 1000u) s_hrx_since_canon++;
+    if (!S->opts->headless || !re || openpete_skip_present_until_level ||
+        s_hrx_since_canon > HRX_LIVE_VBLS)
+        return;
+    openpete_interp_set_present_target(openpete_interp_curr_tick_ns() +
+                                       g_openpete_tick_period_ns / 2);
+    { OP_PROF_FLAGS_SCOPE("scene", OP_PROF_F_INTERMEDIATE);
+      re(&g_game.cpu); }
+    openpete_interp_set_present_target(0);
+    s_hrx_rex++;
+    if (openpete_pace_last_alpha_paired()) s_hrx_paired++;
+    openpete_mods_present_flush(&g_game.cpu, 0);
+}
+
+/** @brief Log the headless forced re-extract's exit row when OPENPETE_HEADLESS_REEXTRACT is set.
+ *
+ * `headless-rex: re-extracts=R paired=P view_opens=O view_restores=V
+ * spans=S`: a gate reads R, O, V and S (the spans producers staged into the
+ * view) as its engagement counts. */
+static void headless_reextract_report(void)
+{
+    if (!host_headless_reextract_on()) return;
+    OPL_INFO_F("headless-rex", "re-extracts=%u paired=%u view_opens=%u view_restores=%u spans=%u",
+               atomic_load(&s_hrx_rex), atomic_load(&s_hrx_paired),
+               openpete_subtick_view_opens(), openpete_subtick_view_restores(),
+               openpete_subtick_view_spans_total());
+}
+
 /** @brief Fill the display between canonical presents: the eager disengage check, then eager production or the inline intermediate present, then the paused repaint.
  *
  * The present deadline is the next sim deadline the pacer will step to (on
@@ -810,6 +884,8 @@ static void present_between(host_session_t* S, const host_iter_t* it) OP_REQUIRE
             host_trace_present(HT_P_EAGER_PRODUCE);
     } else if (native_intermediate) {
         present_inline_between(S, it, deadline, native_re);
+    } else if (host_headless_reextract_on()) {
+        headless_forced_reextract(S, it, native_re);
     }
     /* Paused repaint: no tick runs, so no other present fires. */
     if (S->paused && !S->step_one && !it->did_present) {
@@ -831,6 +907,7 @@ void host_present(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
 void host_present_exit_report(void)
 {
     eager_exit_report(s_inline_rex);
+    headless_reextract_report();
 }
 
 #endif /* OPENPETE_HAS_PSYCROSS */

@@ -234,5 +234,14 @@ void present_record_shown(openpete_frame_time_log_t* ftl, int kind);
 /** @brief Raise the player screenshot request the next canonical present takes. */
 void host_present_request_screenshot(void);
 
-/** @brief Log the eager-production totals and the count of sub-tick re-extracts presented, eager and inline. */
+/** @brief Log the eager-production totals, the count of sub-tick re-extracts presented, eager and inline, and the headless forced re-extract's row. */
 void host_present_exit_report(void);
+
+/** @brief Report whether OPENPETE_HEADLESS_REEXTRACT asks a headless run to re-extract at every non-drawing VBL.
+ *
+ * A harness variable: the oracle's re-extract row sets it, so the guest
+ * render code the sub-tick view brackets runs against gameplay RAM in a
+ * headless run. The pacer enables the deterministic interpolation ring
+ * under it.
+ * @return true when the variable is set to a value not starting with '0'. */
+bool host_headless_reextract_on(void);

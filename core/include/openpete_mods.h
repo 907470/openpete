@@ -999,6 +999,10 @@ const char* openpete_mods_modset_tag(void);
  * openpete_mods_shutdown), lays out the committed
  * tick texts and this present's texts through the game's text emitter,
  * and passes the vertices to openpete_native_set_mod_overlay.
+ * Everything after the tick boundary runs inside
+ * openpete_subtick_guard_window_begin's RAM guard window, so under
+ * OPENPETE_SUBTICK_RAM_GUARD a store into guest RAM from a present hook or
+ * the text emitter is logged and counted as a guard hit.
  * @param cpu the game CPU, passed to the tick boundary.
  * @param canonical 1 for a tick's canonical present, 0 for a sub-tick
  *        present. */

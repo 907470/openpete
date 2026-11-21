@@ -229,6 +229,7 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:audio_consumer.c@F@ac_thread_main", "arg:SDL_CreateThreadRuntime", "audio") /* thread-roles: the audio feed's consumer thread entry binds audio */ \
     ROW("c:screenshot.c@F@png_writer_main", "arg:SDL_CreateThreadRuntime", "shotpng") /* thread-roles: the screenshot PNG writer thread entry binds shotpng */ \
     ROW("c:present_thread.c@F@present_thread_main", "arg:SDL_CreateThreadRuntime", "present") /* thread-roles: the present_thread_main thread entry binds present */ \
+    ROW("c:present_ram_assert_test.c@F@present_stub_main", "arg:pthread_create", "present") /* thread-roles: the present-thread write refusal's unit test stands in for present_thread_main */ \
     ROW("c:record.c@F@rec_thread_main", "arg:SDL_CreateThreadRuntime", "record") /* thread-roles: the rec_thread_main thread entry binds record */ \
     ROW("c:rhi_vulkan.c@F@pcache_save_worker", "arg:SDL_CreateThreadRuntime|direct:", "pcache") /* thread-roles: the pcache_save_worker thread entry binds pcache */ \
     ROW("c:rhi_vulkan.c@F@pool_worker", "arg:SDL_CreateThreadRuntime", "compile") /* thread-roles: the pool_worker thread entry binds compile */ \

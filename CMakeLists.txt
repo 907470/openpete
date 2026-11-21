@@ -2422,6 +2422,28 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}")
 
+    # The headless re-extract row, one per game: the full golden headless
+    # with OPENPETE_ORACLE_REEXTRACT=1, so every non-drawing VBL re-extracts
+    # the scene through the sub-tick view and makes the mods' present flush
+    # with the RAM guard armed. It runs the re-extract body against gameplay
+    # RAM at headless speed with no display. FAIL on a divergence or any
+    # `GUEST RAM WRITTEN` line; VACUOUS at zero re-extracts, view opens, view
+    # restores, staged spans, armed presents or armed windows. Negative controls:
+    # OPENPETE_SUBTICK_FAULT_STORE=1 (a store inside the view) and
+    # OPENPETE_MODS_FLUSH_FAULT_STORE=1 (a store inside the flush) must fail it.
+    foreach(_g spyro-1 spyro-2 spyro-3)
+        openpete_game_bin(${_g} _gbin _gargs)
+        add_test(NAME psx_oracle_reextract_${_g}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh --game ${_g})
+        set_tests_properties(psx_oracle_reextract_${_g} PROPERTIES
+            LABELS "slow;oracle;subtick"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            ENVIRONMENT "OPENPETE_BIN=${_gbin};OPENPETE_ORACLE_REEXTRACT=1")
+    endforeach()
+
     # Letterbox edge row: Spyro 2 windowed on a private Xvfb display at
     # 641x600 AUTO (bars top and bottom) and 1280x720 --aspect 4:3 (bars
     # left and right); no lit pixel of the live present may lie outside the

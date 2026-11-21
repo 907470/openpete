@@ -37,10 +37,14 @@
 #include "../ui/openpete_imgui_guard.h" /* hook-owner attribution */
 #include "mod_vec.h"
 #include "game_extras.h"      /* game_get_id: unsupported-surface lines */
+#include "openpete_psx.h"         /* openpete_psx_get_ram: the fault injection */
+#include "openpete_subtick_view.h" /* the RAM guard window */
+#include "openpete_thread_roles.h"  /* OP_ONCE_INT */
 
 #include <SDL3/SDL.h>   /* SDL_GetCurrentThreadID - the single-owner check */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Texts a command buffer allocates up front; it grows past this. */
@@ -338,28 +342,13 @@ static int emit_buf(const cmd_buf_t* b, int n) {
     return n;
 }
 
-void openpete_mods_present_flush(CPUState* cpu, int canonical) {
-    /* Per-mod time report window: every 512 sim ticks (~17 s at 29.913),
-     * counted at the canonical commit. ABOVE the draw gates - tick-hook
-     * timing must report in headless runs too.
-     *
-     * Gate on mods LOADED, not openpete_mods_active (= a chain is
-     * registered): the tick boundary drains the live-toggle queue, and
-     * under deferred-entry load-all the very first enable can happen
-     * while no mod owns a chain yet - an active-gated boundary would
-     * never drain the queue, bricking every toggle. Zero mods loaded
-     * still skips everything (pristine modless run). After the exit
-     * pass no boundary runs, so no toggle or reload calls mod code. */
-    if (canonical && openpete_mods_count() > 0 && !openpete_mods_api_closed()) {
-        static unsigned s_canonical_ticks = 0;
-        static unsigned s_report_ticks = 0;
-        openpete_mods_tick_boundary(cpu, ++s_canonical_ticks);
-        if (++s_report_ticks >= 512) {
-            openpete_mods_time_report(s_report_ticks);
-            s_report_ticks = 0;
-        }
-    }
-
+/** @brief Run the draw half of a present flush: the tick-buffer commit, the present hooks and the overlay layout.
+ *
+ * Everything openpete_mods_present_flush does after the tick boundary; its
+ * caller brackets it in the RAM guard window.
+ * @param canonical 1 for a tick's canonical present, 0 for a sub-tick
+ *        present. */
+static void present_flush_draw(int canonical) {
     if (!s_any_draw) return;
 
     /* Commit the tick buffer once per canonical present: the sim tick
@@ -373,9 +362,9 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
      * calls fail) and the whole backlog would replay at once if the
      * renderer came up.
      *
-     * Live toggle: the apply above runs BEFORE this commit, so a mod
-     * disabled at this boundary still displays the tick it drew while
-     * enabled - then goes quiet. Its hooks no longer run, staging stays
+     * Live toggle: the caller's tick boundary applies before this commit,
+     * so a mod disabled at this boundary still displays the tick it drew
+     * while enabled - then goes quiet. Its hooks no longer run, staging stays
      * empty, and the next canonical commit clears the display set;
      * nothing of a disabled mod survives past that one tick. */
     if (canonical) {
@@ -393,13 +382,14 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
      * same values through openpete_mods_present_ctx, hooks or not. */
     buf_clear(&s_present);
     {
-        static op_time_t s_prev_present_ns = 0;
+        static _Atomic(op_time_t) s_prev_present_ns = 0;
         const op_time_t now = openpete_interp_present_now();
         openpete_present_ctx_t ctx;
         ctx.tick   = openpete_frame;
         ctx.alpha  = 0.0f;
-        ctx.dt     = (s_prev_present_ns && now > s_prev_present_ns)
-                       ? (float)((double)(now - s_prev_present_ns) / 1e9)
+        const op_time_t prev_ns = s_prev_present_ns;
+        ctx.dt     = (prev_ns && now > prev_ns)
+                       ? (float)((double)(now - prev_ns) / 1e9)
                        : 0.0f;
         ctx.aspect = openpete_native_overlay_aspect();
         s_prev_present_ns = now;
@@ -449,11 +439,67 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
     openpete_native_set_mod_overlay(s_verts, n);
 
     /* One-shot diagnostics: confirm the pipeline end-to-end on first use. */
-    static int s_logged_first = 0;
+    static atomic_int s_logged_first;
     if (!s_logged_first && n > 0) {
         s_logged_first = 1;
         OPL_INFO_F("mods", "draw service live: %d overlay verts "
                    "(%d tick texts, %d present texts)",
                    n, buf_count(s_tick_committed), buf_count(&s_present));
     }
+}
+
+/** @brief Fault injection: rewrite one guest word through a host pointer inside the flush's guard window.
+ *
+ * Reads OPENPETE_MODS_FLUSH_FAULT_STORE on the first call and does nothing
+ * unless it is set. The word at RAM offset 0x10000 is stored with the value
+ * it holds, the shape of a mod hook that writes gameplay memory and restores
+ * it: no hashed byte changes, so the oracle passes, and the RAM guard must
+ * report the store. */
+static void present_flush_fault_store(void) {
+    static OP_ONCE_INT s_fault = -1;
+    int on = op_once_int_get(&s_fault);
+    if (on < 0) {
+        const char* e = getenv("OPENPETE_MODS_FLUSH_FAULT_STORE");
+        on = op_once_int_fill(&s_fault, (e && *e && *e != '0') ? 1 : 0);
+        if (on)
+            OPL_WARN_F("mods", "%s", "fault injection: every present flush rewrites guest word [80010000]");
+    }
+    if (!on) return;
+    uint8_t* ram = openpete_psx_get_ram();
+    if (!ram) return;
+    volatile uint32_t* w = (volatile uint32_t*)(void*)(ram + 0x10000u);
+    *w = *w;
+}
+
+void openpete_mods_present_flush(CPUState* cpu, int canonical) {
+    /* Per-mod time report window: every 512 sim ticks (~17 s at 29.913),
+     * counted at the canonical commit. ABOVE the draw gates - tick-hook
+     * timing must report in headless runs too.
+     *
+     * Gate on mods LOADED, not openpete_mods_active (= a chain is
+     * registered): the tick boundary drains the live-toggle queue, and
+     * under deferred-entry load-all the very first enable can happen
+     * while no mod owns a chain yet - an active-gated boundary would
+     * never drain the queue, bricking every toggle. Zero mods loaded
+     * still skips everything (pristine modless run). After the exit
+     * pass no boundary runs, so no toggle or reload calls mod code. */
+    if (canonical && openpete_mods_count() > 0 && !openpete_mods_api_closed()) {
+        static unsigned s_canonical_ticks = 0;
+        static unsigned s_report_ticks = 0;
+        openpete_mods_tick_boundary(cpu, ++s_canonical_ticks);
+        if (++s_report_ticks >= 512) {
+            openpete_mods_time_report(s_report_ticks);
+            s_report_ticks = 0;
+        }
+    }
+
+    /* The draw half runs mod present hooks and the game's text emitter,
+     * neither of which may store into guest RAM: under
+     * OPENPETE_SUBTICK_RAM_GUARD the window maps guest RAM read-only for its
+     * duration. The tick boundary above stays outside it: a live toggle may
+     * run a mod's enable or disable, which writes gameplay state by design. */
+    openpete_subtick_guard_window_begin("the mods' present flush");
+    present_flush_draw(canonical);
+    present_flush_fault_store();
+    openpete_subtick_guard_window_end();
 }

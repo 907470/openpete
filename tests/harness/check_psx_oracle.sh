@@ -95,6 +95,16 @@
 #                         the run paces to the display, and with
 #                         `-- --render-fps N` above the tick rate so
 #                         intermediate presents are planned at all
+#   OPENPETE_ORACLE_REEXTRACT=1 re-extract row: headless, with
+#                         OPENPETE_HEADLESS_REEXTRACT=1 (every non-drawing VBL
+#                         re-extracts the scene through the sub-tick view, then
+#                         makes the mods' present flush) and
+#                         OPENPETE_SUBTICK_RAM_GUARD=1 (guest RAM read-only in
+#                         the view and the flush); FAIL on a `GUEST RAM
+#                         WRITTEN` line or a guard hit, VACUOUS at zero
+#                         re-extracts, view opens, view restores, staged
+#                         spans, armed presents or armed windows; not with
+#                         OPENPETE_ORACLE_WINDOWED
 #   OPENPETE_FRAME_LIMIT (default 200000 - safety belt; psxtrace-eof exits
 #                         first; a smaller value makes a smoke run that
 #                         cannot PASS as a full run)
@@ -124,13 +134,16 @@
 #
 # Exit codes:
 #   0   bit-identical hashes for every traced frame
-#   2   divergence (openpete ran fine but a hash mismatched)
+#   2   divergence (openpete ran fine but a hash mismatched); or the
+#       re-extract row's RAM guard logged a store into guest RAM
 #   3   the GTE hash row is VACUOUS: the golden has a <trace>.gte sidecar
 #       and the run hashed zero GTE instructions or printed no row; or the
 #       clock row delivered no in-work VBLANK or charged no libspu call or
 #       SPU register access; or a vk run printed no `native-feed:` row or fed
 #       no scene; or a run with OPENPETE_TERRAIN_CACHE_FORCE printed no
-#       `tercache:` row or one with bakes=0
+#       `tercache:` row or one with bakes=0; or the re-extract row counted
+#       zero re-extracts, view opens, view restores, staged spans, armed
+#       presents or armed windows
 #   64  prerequisites missing (trace / binary / disc) - ctest treats as SKIP
 #   *   build/runtime error
 set -euo pipefail
@@ -146,6 +159,9 @@ export OPENPETE_VIBRATION=0
 # A failed thread-role check (openpete_thread_roles.h) aborts the run, so a
 # role or seal violation on a gated path fails the gate instead of a log line.
 export OPENPETE_THREAD_ROLE_FATAL=1
+# A store into guest RAM through a pointer the present thread resolved
+# aborts the run (core/psx/cpu.c); only a windowed row starts that thread.
+export OPENPETE_PRESENT_RAM_ASSERT=1
 
 cd "$(dirname "$0")/../.."
 # The player's memory cards are never opened: runs boot on scratch cards.
@@ -465,6 +481,21 @@ if [[ "$WINDOWED" != "0" ]]; then
     echo "[psx-oracle] windowed: native renderer under llvmpipe, present thread active"
 fi
 
+# OPENPETE_ORACLE_REEXTRACT=1: the re-extract row. Headless never runs the
+# re-extract body (the guest render code the sub-tick view brackets) or the
+# mods' sub-tick present flush; this row runs both at every non-drawing VBL
+# with the RAM guard armed, at headless speed.
+REEXTRACT="${OPENPETE_ORACLE_REEXTRACT:-0}"
+if [[ "$REEXTRACT" != "0" ]]; then
+    if [[ "$WINDOWED" != "0" ]]; then
+        echo "[psx-oracle] OPENPETE_ORACLE_REEXTRACT is a headless row; unset OPENPETE_ORACLE_WINDOWED" >&2
+        exit 64
+    fi
+    export OPENPETE_HEADLESS_REEXTRACT=1
+    export OPENPETE_SUBTICK_RAM_GUARD=1
+    echo "[psx-oracle] re-extract: every non-drawing VBL re-extracts through the sub-tick view, RAM guard armed"
+fi
+
 set +e
 # --mute 1 sits before PASSTHRU so a forwarded `-- --mute 0` still wins
 # (the options parser takes the last occurrence).
@@ -629,6 +660,32 @@ if [[ "$WINDOWED" != "0" && "$rc" == "0" ]]; then
         rc=2
     else
         echo "[psx-oracle] windowed: $REX sub-tick re-extract(s) presented"
+    fi
+fi
+
+# Re-extract engagement and the guard's verdict: the guard logs a store
+# into guest RAM and lets it through, so a write-and-restore passes the
+# oracle and fails only here.
+if [[ "$REEXTRACT" != "0" ]]; then
+    HRX_ROW=$(grep -o 'headless-rex: re-extracts=.*' "$LOG" | tail -1 || true)
+    HRX_REX=$(sed -n 's/.*re-extracts=\([0-9]*\).*/\1/p' <<<"$HRX_ROW")
+    HRX_OPENS=$(sed -n 's/.* view_opens=\([0-9]*\).*/\1/p' <<<"$HRX_ROW")
+    HRX_RESTORES=$(sed -n 's/.* view_restores=\([0-9]*\).*/\1/p' <<<"$HRX_ROW")
+    HRX_SPANS=$(sed -n 's/.* spans=\([0-9]*\).*/\1/p' <<<"$HRX_ROW")
+    GUARD_ROW=$(grep -o 'RAM guard: armed_presents=.*' "$LOG" | tail -1 || true)
+    G_ARMED=$(sed -n 's/.*armed_presents=\([0-9]*\).*/\1/p' <<<"$GUARD_ROW")
+    G_WINDOWS=$(sed -n 's/.* armed_windows=\([0-9]*\).*/\1/p' <<<"$GUARD_ROW")
+    G_HITS=$(sed -n 's/.* hits=\([0-9]*\).*/\1/p' <<<"$GUARD_ROW")
+    G_LINES=$(grep -c 'GUEST RAM WRITTEN' "$LOG" || true)
+    echo "[psx-oracle] re-extract: ${HRX_ROW:-no headless-rex: exit row}; ${GUARD_ROW:-no RAM guard row}; guard_lines=$G_LINES"
+    if (( G_LINES > 0 )) || [[ -n "$G_HITS" && "$G_HITS" != 0 ]]; then
+        echo "[psx-oracle] re-extract: guest RAM written inside a guarded window:" >&2
+        grep -m 5 'GUEST RAM WRITTEN' "$LOG" | sed 's/^/    /' >&2 || true
+        [[ "$rc" == 0 || "$rc" == 3 ]] && rc=2
+    elif [[ "${HRX_REX:-0}" == 0 || "${HRX_OPENS:-0}" == 0 || "${HRX_RESTORES:-0}" == 0 ||
+            "${HRX_SPANS:-0}" == 0 || "${G_ARMED:-0}" == 0 || "${G_WINDOWS:-0}" == 0 ]]; then
+        echo "[psx-oracle] re-extract: an engagement count is zero; VACUOUS" >&2
+        [[ "$rc" == 0 ]] && rc=3
     fi
 fi
 

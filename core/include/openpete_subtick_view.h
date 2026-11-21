@@ -169,6 +169,34 @@ void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
  * @return Lifetime open count. */
 uint32_t openpete_subtick_view_opens(void);
 
+/** @brief Return the number of times a close restored the CPU callbacks an open displaced.
+ *
+ * Equals openpete_subtick_view_opens() when every open was given a CPU and
+ * closed; a gate reads both as the view's engagement and pairing counts.
+ * @return Lifetime restore count. */
+uint32_t openpete_subtick_view_restores(void);
+
+/** @brief Return the number of spans producers staged over the run.
+ *
+ * Zero means no producer staged interpolated state into any view, so a
+ * re-extract ran the view without exercising its redirect.
+ * @return Lifetime staged-span count. */
+uint32_t openpete_subtick_view_spans_total(void);
+
+/** @brief Arm the RAM guard for work that runs outside the view on the sim thread.
+ *
+ * Under OPENPETE_SUBTICK_RAM_GUARD maps guest RAM read-only until
+ * openpete_subtick_guard_window_end(), so a host-pointer store into guest
+ * RAM inside the window logs `GUEST RAM WRITTEN during <what>` and counts a
+ * guard hit, as a store inside the view does. Each window armed counts in
+ * the exit row's `armed_windows`, apart from `armed_presents`. Does nothing
+ * without the variable, on a platform without mprotect, or while a view or
+ * another window holds the guard.
+ * @param what The bracketed work, a string literal naming it in each hit. */
+void openpete_subtick_guard_window_begin(const char* what);
+/** @brief Disarm the RAM guard a window armed; does nothing while a view is open. */
+void openpete_subtick_guard_window_end(void);
+
 /** @brief Return the run's count of writes absorbed by staged spans.
  *
  * Counts CPU stores a staged span absorbed and each chunk a poke copied
@@ -191,7 +219,8 @@ uint32_t openpete_subtick_view_poke_drops(void);
  * guest address a dropped store named is listed with its hit count (256
  * addresses at most, overflow noted). These cover CPU-path stores only; a producer
  * that writes through a host pointer is found by the RAM guard
- * (OPENPETE_SUBTICK_RAM_GUARD), whose row `RAM guard: armed_presents=N hits=M`
+ * (OPENPETE_SUBTICK_RAM_GUARD), whose row
+ * `RAM guard: armed_presents=N armed_windows=W hits=M`
  * this logs first when the guard is on, followed by the store count of the
  * OPENPETE_SUBTICK_FAULT_STORE fault injection when that is set. */
 void openpete_subtick_view_report_writes(void);

@@ -8,6 +8,9 @@
 // identification bytes and root counter 2's count; IRQ/GPU/SPU live in
 // PsyCross.
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE   /* memfd_create */
+#endif
 #include "openpete_psx.h"
 #include "openpete_cdrom_mmio.h"
 #include "openpete_memcard.h"
@@ -18,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "openpete_thread_roles.h"
 
 #define RAM_SIZE      OPENPETE_PSX_RAM_SIZE
@@ -53,7 +57,129 @@ static inline uint32_t ram_alias_segment(uint32_t addr) {
 uint8_t g_ram[RAM_SIZE] __attribute__((aligned(4096)));
 static uint8_t g_scratch[SCRATCH_SIZE];
 
-uint8_t* openpete_psx_get_ram(void)     { return g_ram; }
+/* --- Present-thread write refusal (OPENPETE_PRESENT_RAM_ASSERT) ----------
+ * The present thread runs beside the sim thread and may read the guest RAM
+ * a scene was built from, never write it: a store there races the game and
+ * reaches gameplay state. Protection is per process, so no mprotect can
+ * refuse one thread's stores while the sim thread writes. Under
+ * OPENPETE_PRESENT_RAM_ASSERT=1 (Linux) main RAM is instead backed by a
+ * memfd mapped twice: read-write at g_ram, the array every other path
+ * uses, and read-only at a second address. Every host pointer into main RAM
+ * the resolvers hand to a thread whose role mask holds `present`
+ * (openpete_thread_roles.h) points into the read-only view, so a load reads
+ * the same bytes and a store through it faults; the SIGSEGV handler names
+ * the guest address and aborts. Scope: pointers resolved on the present
+ * thread through openpete_psx_get_ram, openpete_psx_to_host_span,
+ * openpete_psx_to_host_ptr and openpete_psx_to_host_str (and through them
+ * openpete_subtick_host_span); a pointer resolved on another thread and
+ * handed over is not translated, and the scratchpad is not covered. */
+#if defined(__linux__)
+#include <signal.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+/* The read-only view, or NULL while the refusal is off. Stored once on the
+ * thread that runs openpete_psx_runtime_init, before any thread that reads
+ * it exists. */
+static _Atomic(uint8_t*) s_ram_ro;
+/* Set once the SIGSEGV handler is installed, by the first translation. */
+static atomic_int s_ro_handler;
+static struct sigaction s_ro_prev_segv;
+
+/** @brief SIGSEGV handler of the present-thread refusal: abort on a store into the read-only view, else chain.
+ *
+ * Writes the named message with write(2), which is async-signal-safe, then
+ * aborts. A fault anywhere else goes to the handler installed before this
+ * one, or exits with status 139.
+ * @param sig Signal number.
+ * @param si Signal info; si_addr is the faulting address.
+ * @param uc Signal context, passed on when chaining. */
+static void present_ro_segv(int sig, siginfo_t* si, void* uc) {
+    const uint8_t* fa = (const uint8_t*)si->si_addr;
+    const uint8_t* ro = atomic_load_explicit(&s_ram_ro, memory_order_relaxed);
+    if (ro && fa >= ro && fa < ro + RAM_SIZE) {
+        static const char hex[] = "0123456789abcdef";
+        static const char head[] = "[thread-roles] present thread wrote guest RAM [";
+        static const char tail[] = "] through a host pointer; aborting (OPENPETE_PRESENT_RAM_ASSERT=1)\n";
+        char addr[8];
+        uint32_t a = OPENPETE_PSX_KSEG0_BASE + (uint32_t)(fa - ro);
+        for (int i = 7; i >= 0; i--) { addr[i] = hex[a & 0xFu]; a >>= 4; }
+        ssize_t w = write(2, head, sizeof head - 1);
+        w = write(2, addr, sizeof addr);
+        w = write(2, tail, sizeof tail - 1);
+        (void)w;
+        abort();
+    }
+    if (s_ro_prev_segv.sa_flags & SA_SIGINFO) s_ro_prev_segv.sa_sigaction(sig, si, uc);
+    else if (s_ro_prev_segv.sa_handler != SIG_DFL && s_ro_prev_segv.sa_handler != SIG_IGN)
+        s_ro_prev_segv.sa_handler(sig);
+    else _exit(139);
+}
+
+/** @brief Back main RAM with a memfd mapped read-write at g_ram and read-only elsewhere, under OPENPETE_PRESENT_RAM_ASSERT=1.
+ *
+ * Runs once, from openpete_psx_runtime_init, before any other thread
+ * exists. The current bytes of g_ram are copied into the memfd before the
+ * read-write mapping replaces the array's pages at the same address. Any
+ * failure leaves the refusal off and logs why. */
+static void present_ro_init(void) {
+    static OP_ONCE_INT s_read = -1;
+    if (op_once_int_get(&s_read) >= 0) return;
+    const char* e = getenv("OPENPETE_PRESENT_RAM_ASSERT");
+    if (!op_once_int_fill(&s_read, (e && *e && *e != '0') ? 1 : 0)) return;
+    const int fd = memfd_create("openpete-guest-ram", 0);
+    if (fd < 0) { OPL_WARN_F("present-ram", "%s", "memfd_create failed: write refusal off"); return; }
+    if (ftruncate(fd, RAM_SIZE) != 0 || pwrite(fd, g_ram, RAM_SIZE, 0) != (ssize_t)RAM_SIZE) {
+        OPL_WARN_F("present-ram", "%s", "memfd fill failed: write refusal off");
+        close(fd);
+        return;
+    }
+    void* ro = mmap(NULL, RAM_SIZE, PROT_READ, MAP_SHARED, fd, 0);
+    void* rw = (ro == MAP_FAILED) ? MAP_FAILED
+             : mmap(g_ram, RAM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+    close(fd);
+    if (ro == MAP_FAILED || rw != (void*)g_ram) {
+        OPL_ERROR_F("present-ram", "%s", "mapping guest RAM twice failed: write refusal off");
+        if (rw == MAP_FAILED) abort();   /* g_ram may be unmapped: no safe continuation */
+        return;
+    }
+    atomic_store_explicit(&s_ram_ro, (uint8_t*)ro, memory_order_release);
+    OPL_INFO_F("present-ram", "%s", "write refusal armed: the present thread resolves guest RAM read-only");
+}
+
+/** @brief Translate a host pointer into main RAM to the read-only view when the calling thread holds `present`.
+ *
+ * Installs the SIGSEGV handler on the first translation, after every
+ * boot-time handler, so it runs first and chains to them.
+ * @param p A host pointer, possibly NULL or outside main RAM.
+ * @return p, or its image in the read-only view. */
+static uint8_t* present_ro_view(uint8_t* p) {
+    uint8_t* const ro = atomic_load_explicit(&s_ram_ro, memory_order_relaxed);
+    if (!ro || !p || p < g_ram || p >= g_ram + RAM_SIZE) return p;
+    if (!(op_role_mask() & OP_ROLE_BIT_present)) return p;
+    int expect = 0;
+    if (atomic_compare_exchange_strong(&s_ro_handler, &expect, 1)) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_sigaction = present_ro_segv;
+        sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+        sigaction(SIGSEGV, &sa, &s_ro_prev_segv);
+    }
+    return ro + (p - g_ram);
+}
+#else
+/** @brief Off on this platform: no memfd.
+ *
+ * Does nothing. */
+static void present_ro_init(void) {}
+/** @brief Off on this platform: return the pointer unchanged.
+ *
+ * @param p A host pointer.
+ * @return p. */
+static uint8_t* present_ro_view(uint8_t* p) { return p; }
+#endif
+
+uint8_t* openpete_psx_get_ram(void)     { return present_ro_view(g_ram); }
 uint8_t* openpete_psx_get_scratch(void) { return g_scratch; }
 
 /* --- Above-RAM access census (OPENPETE_ARENA_CENSUS) ----------------------
@@ -326,7 +452,7 @@ void* openpete_psx_to_host_span(uint32_t addr, uint32_t len) {
     if (addr == 0u) return NULL;
     uint8_t* p = span_ptr(addr, len, MA_HOST);
     if ((addr & 0x1FFFFFFFu) >= RAM_SIZE) census_note(addr, p ? CK_HOST_HIT : CK_HOST_MISS);
-    return p;
+    return present_ro_view(p);
 }
 
 void* openpete_psx_to_host_ptr(uint32_t addr) {
@@ -360,7 +486,7 @@ static uint8_t* region_room(uint32_t addr, uint32_t* room) {
 
 const char* openpete_psx_to_host_str(uint32_t addr, uint32_t max, uint32_t* len_out) {
     uint32_t room = 0;
-    const uint8_t* p = (addr == 0u) ? NULL : region_room(addr, &room);
+    uint8_t* p = (addr == 0u) ? NULL : region_room(addr, &room);
     if (p == NULL) return NULL;
     const uint32_t scan = (max < room) ? max : room;
     const uint8_t* nul = (const uint8_t*)memchr(p, 0, scan);
@@ -369,7 +495,7 @@ const char* openpete_psx_to_host_str(uint32_t addr, uint32_t max, uint32_t* len_
     else if (max <= room) len = max;
     else return NULL;
     if (len_out != NULL) *len_out = len;
-    return (const char*)p;
+    return (const char*)present_ro_view(p);
 }
 
 /** @brief Map a PSX access of @p n bytes to a host pointer for the bus callbacks; NULL when unmapped.
@@ -700,6 +826,7 @@ static void census_init(void) {
 
 void openpete_psx_runtime_init(CPUState* cpu) {
     census_init();
+    present_ro_init();
     memset(cpu, 0, sizeof(*cpu));
     memset(g_ram, 0, sizeof(g_ram));
     memset(g_scratch, 0, sizeof(g_scratch));

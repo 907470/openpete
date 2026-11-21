@@ -661,8 +661,6 @@ core/mods/mod_draw.c	assert_one_owner	s_reported	local	-
 core/mods/mod_draw.c	note_text_unsupported	s_noted	local	-	
 core/mods/mod_draw.c	note_text_unsupported	s_noted_n	local	-	
 core/mods/mod_draw.c	openpete_mods_present_flush	s_canonical_ticks	local	-	
-core/mods/mod_draw.c	openpete_mods_present_flush	s_logged_first	local	-	
-core/mods/mod_draw.c	openpete_mods_present_flush	s_prev_present_ns	local	-	
 core/mods/mod_draw.c	openpete_mods_present_flush	s_report_ticks	local	-	
 core/mods/mod_draw.c	warn_glyph_overflow	s_warned	local	-	
 core/mods/mod_draw.c	warn_glyph_overflow	s_warned_n	local	-	
@@ -900,6 +898,7 @@ core/psx/cpu.c	-	s_mc_dropped	static	-	owed: declared with no form and no row be
 core/psx/cpu.c	-	s_mc_host	static	-	owed: declared with no form and no row before the new-global refusal
 core/psx/cpu.c	-	s_mc_on	static	-	owed: declared with no form and no row before the new-global refusal
 core/psx/cpu.c	-	s_probe_running	static	-	owed: declared with no form and no row before the new-global refusal
+core/psx/cpu.c	-	s_ro_prev_segv	static	-	the SIGSEGV handler present_ro_segv chains to; stored once by the compare-and-swap winner in present_ro_view before sigaction installs the handler that reads it
 core/psx/cpu.c	-	s_root_counter2	static	atomic	1 storing function(s), none reads it
 core/psx/cpu.c	-	s_root_counter2_reader	static	-	
 core/psx/cpu.c	-	s_unmapped	static	-	owed: declared with no form and no row before the new-global refusal

@@ -333,6 +333,27 @@ add_test(NAME psx_span_test_nomirror COMMAND psx_span_test_nomirror)
 set_tests_properties(psx_span_test_nomirror PROPERTIES WILL_FAIL TRUE)
 set_tests_properties(psx_span_test psx_span_test_nomirror PROPERTIES LABELS "mirror")
 
+# present_ram_assert_test - the present-thread write refusal
+# (OPENPETE_PRESENT_RAM_ASSERT, core/psx/cpu.c): a thread bound to `present`
+# reads guest RAM through the resolvers, and a store through its pointer
+# aborts a forked child with the named message (the negative control).
+# Linux only: the refusal maps a memfd twice.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Threads REQUIRED)
+    add_executable(present_ram_assert_test
+        ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c
+        present_ram_assert_test.c
+        ${CMAKE_SOURCE_DIR}/core/psx/cpu.c
+        ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
+    target_include_directories(present_ram_assert_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+    target_link_libraries(present_ram_assert_test PRIVATE Threads::Threads)
+    set_target_properties(present_ram_assert_test PROPERTIES C_STANDARD 11)
+    add_test(NAME present_ram_assert_test COMMAND present_ram_assert_test)
+    set_tests_properties(present_ram_assert_test PROPERTIES LABELS "thread-roles" TIMEOUT 30)
+endif()
+
 # s2_grid_relink_test - Spyro 2's moby grid relink (func_80041538), its
 # recompiled body copied verbatim from the generated C, run on the bus of
 # psx_span_test against a RAM image holding only the grid pointer, the

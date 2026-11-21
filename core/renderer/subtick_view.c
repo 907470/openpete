@@ -108,6 +108,8 @@ static uint32_t s_stat_spans;
 /* Atomic: the walk workers serve staged reads concurrently. */
 static _Atomic uint32_t s_stat_served;
 static uint32_t s_stat_writes;
+/* Spans staged over the run: the producers' engagement across presents. */
+static _Atomic uint32_t s_spans_total;
 
 /* The CPU callbacks displaced for the duration of the view. */
 static uint32_t (*s_orig_read_word)(uint32_t);
@@ -261,12 +263,19 @@ void openpete_subtick_view_report_writes(void)
  * nothing - the view resolves every address to real memory until a producer
  * stages a span, so "no pixels changed" is its expected output either way. */
 static uint32_t s_opens;
+/* Lifetime count of closes that put the displaced CPU callbacks back. */
+static _Atomic uint32_t s_restores;
+/* Presents the RAM guard mapped guest RAM read-only for: the guard's
+ * engagement count. A zero-hit run with zero arms tested nothing. */
+static _Atomic uint32_t s_guard_arms;
 
 uint32_t openpete_subtick_view_opens(void) { return s_opens; }
+uint32_t openpete_subtick_view_restores(void) { return atomic_load(&s_restores); }
+uint32_t openpete_subtick_view_spans_total(void) { return atomic_load(&s_spans_total); }
 
 /* Index of the span covering `addr`, or -1. Declared ahead of the callbacks. */
 static int sv_find(uint32_t addr);
-static void sv_guard_begin(void);
+static int sv_guard_begin(const char* what);
 static void sv_guard_end(void);
 
 /** @brief Copy `n` bytes at `addr` from the staged span that covers them, when the view is active.
@@ -478,7 +487,7 @@ void openpete_subtick_view_begin(CPUState* cpu)
         const char* e = getenv("OPENPETE_SUBTICK_WRITE_TRACE");
         s_trace = (e && *e && *e != '0');
     }
-    sv_guard_begin();
+    if (sv_guard_begin("a sub-tick present")) s_guard_arms++;
 
     if (!cpu) return;
     s_orig_read_word  = cpu->read_word;
@@ -520,6 +529,7 @@ void openpete_subtick_view_end(CPUState* cpu)
     cpu->lwl        = s_orig_lwl;
     cpu->lwr        = s_orig_lwr;
     s_orig_read_word = NULL;
+    s_restores++;
 }
 
 int openpete_subtick_view_active(void)
@@ -629,6 +639,7 @@ void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
     sp->off  = s_arena_used;
     s_arena_used += len;
     s_stat_spans++;
+    s_spans_total++;
 
     for (uint32_t b = addr >> SV_BLOCK_SHIFT;
          b <= (addr + len - 1u) >> SV_BLOCK_SHIFT; b++)
@@ -764,9 +775,11 @@ void* openpete_subtick_host_ptr(uint32_t addr)
 static int  s_guard = -1;
 static int  s_guard_armed;
 static uint32_t s_guard_hits;
-/* Presents the guard mapped guest RAM read-only for: the guard's engagement
- * count. A zero-hit run with zero arms tested nothing. */
-static uint32_t s_guard_arms;
+/* Windows the RAM guard armed through openpete_subtick_guard_window_begin:
+ * work outside the view, such as the mods' present flush. */
+static _Atomic uint32_t s_guard_windows;
+/* What the armed window brackets, named in each hit's log line. */
+static _Atomic(const char*) s_guard_what = "a sub-tick present";
 static struct sigaction s_prev_segv;
 
 /** @brief Make guest RAM writable again and disarm the guard.
@@ -795,9 +808,10 @@ static void sv_segv(int sig, siginfo_t* si, void* uc)
     if (s_guard_armed && ram && fa >= ram && fa < ram + OPENPETE_PSX_RAM_SIZE) {
         s_guard_hits++;
         OPL_WARN_F("subtick-view",
-                   "GUEST RAM WRITTEN during a sub-tick present: [%08x] "
+                   "GUEST RAM WRITTEN during %s: [%08x] "
                    "(host %p) - a producer is still publishing through "
                    "gameplay memory",
+                   atomic_load(&s_guard_what),
                    OPENPETE_PSX_KSEG0_BASE + (uint32_t)(fa - ram), (void*)fa);
         /* Let it through: the point is to enumerate every writer in one run,
          * not to halt at the first. */
@@ -809,11 +823,13 @@ static void sv_segv(int sig, siginfo_t* si, void* uc)
     else                                   _exit(139);
 }
 
-/** @brief Arm the RAM guard for a present: map guest RAM read-only.
+/** @brief Arm the RAM guard for a window: map guest RAM read-only.
  *
  * On the first call reads OPENPETE_SUBTICK_RAM_GUARD and, when set, installs
- * sv_segv for SIGSEGV. Does nothing while the guard is disabled. */
-static void sv_guard_begin(void)
+ * sv_segv for SIGSEGV. Does nothing while the guard is disabled.
+ * @param what The bracketed work, named in a hit's log line.
+ * @return 1 when the guard armed, else 0. */
+static int sv_guard_begin(const char* what)
 {
     if (s_guard < 0) {
         const char* e = getenv("OPENPETE_SUBTICK_RAM_GUARD");
@@ -828,12 +844,12 @@ static void sv_guard_begin(void)
                        "RAM guard armed: guest RAM is read-only during presents");
         }
     }
-    if (!s_guard) return;
+    if (!s_guard) return 0;
+    s_guard_what = what;
     uint8_t* ram = openpete_psx_get_ram();
-    if (ram && mprotect(ram, OPENPETE_PSX_RAM_SIZE, PROT_READ) == 0) {
-        s_guard_armed = 1;
-        s_guard_arms++;
-    }
+    if (!ram || mprotect(ram, OPENPETE_PSX_RAM_SIZE, PROT_READ) != 0) return 0;
+    s_guard_armed = 1;
+    return 1;
 }
 
 /** @brief Disarm the RAM guard at the end of a present: restore write access to guest RAM.
@@ -853,6 +869,17 @@ static void sv_guard_end(void)
  * @return Lifetime guard-hit count. */
 uint32_t openpete_subtick_view_guard_hits(void) { return s_guard_hits; }
 
+void openpete_subtick_guard_window_begin(const char* what)
+{
+    if (s_active || s_guard_armed) return;
+    if (sv_guard_begin(what)) s_guard_windows++;
+}
+
+void openpete_subtick_guard_window_end(void)
+{
+    if (!s_active) sv_guard_end();
+}
+
 /** @brief Log the RAM guard's exit row: presents armed and writes caught.
  *
  * Printed only when OPENPETE_SUBTICK_RAM_GUARD armed the guard; a gate reads
@@ -861,18 +888,23 @@ uint32_t openpete_subtick_view_guard_hits(void) { return s_guard_hits; }
 static void sv_guard_report(void)
 {
     if (s_guard > 0)
-        OPL_INFO_F("subtick-view", "RAM guard: armed_presents=%u hits=%u",
-                   s_guard_arms, s_guard_hits);
+        OPL_INFO_F("subtick-view", "RAM guard: armed_presents=%u armed_windows=%u hits=%u",
+                   atomic_load(&s_guard_arms), atomic_load(&s_guard_windows), s_guard_hits);
 }
 #else
-/** @brief Guard stub for platforms without mprotect: does nothing. */
-static void sv_guard_begin(void) {}
+/** @brief Guard stub for platforms without mprotect: does nothing.
+ *
+ * @param what Unused.
+ * @return 0. */
+static int sv_guard_begin(const char* what) { (void)what; return 0; }
 /** @brief Guard stub for platforms without mprotect: does nothing. */
 static void sv_guard_end(void)   {}
 /** @brief Return 0: the RAM guard does not exist on this platform.
  *
  * @return 0. */
 uint32_t openpete_subtick_view_guard_hits(void) { return 0; }
+void openpete_subtick_guard_window_begin(const char* what) { (void)what; }
+void openpete_subtick_guard_window_end(void) {}
 /** @brief Guard stub for platforms without mprotect: logs nothing. */
 static void sv_guard_report(void) {}
 #endif

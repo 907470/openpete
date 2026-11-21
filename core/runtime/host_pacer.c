@@ -25,6 +25,7 @@
 // initialization.c. The slip clamp moves the deadline forward without
 // firing extra yields.
 #include "host_pacer.h"
+#include "host_loop_internal.h"  /* host_headless_reextract_on */
 
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
@@ -133,7 +134,7 @@ void host_pacer_init(host_pacer_t* P, const openpete_options_t* opts, int refres
     pacer_capture_clock(P, opts);
 }
 
-/** @brief Enable interpolation capture when the render rate exceeds the sim rate, at two or more capture presents per tick, or for intermediate screenshots.
+/** @brief Enable interpolation capture above the sim rate, at two or more capture presents per tick, or deterministically headless.
  *
  * At parity there is nothing to interpolate between. Offline capture at 2
  * presents per tick puts the render period exactly on the VBL period, which
@@ -141,7 +142,8 @@ void host_pacer_init(host_pacer_t* P, const openpete_options_t* opts, int refres
  * the two is a sub-tick present. Intermediate screenshot targets capture
  * the ring headless with deterministic stamps, one tick apart, so the
  * forced present lands alpha exactly at 0.5; the live sub-tick present
- * stays headless-blocked, so the canonical dump is unchanged.
+ * stays headless-blocked, so the canonical dump is unchanged. The headless
+ * forced re-extract (OPENPETE_HEADLESS_REEXTRACT) takes the same ring.
  * @param P The pacer.
  * @param opts The parsed options. */
 static void pacer_interp_gate(const host_pacer_t* P, const openpete_options_t* opts)
@@ -163,12 +165,15 @@ static void pacer_interp_gate(const host_pacer_t* P, const openpete_options_t* o
         OPL_INFO_F("interp", "capture enabled (offline capture, %d present(s) per tick)",
                    P->capture_mult);
     }
-    if (opts->screenshot_intermediate_count > 0) {
+    if (opts->screenshot_intermediate_count > 0 ||
+        (opts->headless && host_headless_reextract_on())) {
         openpete_interp_set_enabled(1);
         openpete_interp_set_deterministic(1, g_openpete_tick_period_ns);
         OPL_INFO_F("interp",
-                   "deterministic capture enabled (%d intermediate screenshot target(s), tick=%lld ns)",
-                   opts->screenshot_intermediate_count, (long long)g_openpete_tick_period_ns);
+                   "deterministic capture enabled (%d intermediate screenshot target(s)%s, tick=%lld ns)",
+                   opts->screenshot_intermediate_count,
+                   host_headless_reextract_on() ? ", headless forced re-extract" : "",
+                   (long long)g_openpete_tick_period_ns);
     }
 }
 
