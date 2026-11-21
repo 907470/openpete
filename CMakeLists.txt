@@ -2375,7 +2375,14 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # write into a hashed row is reachable only here. Paced to the display,
     # hence the reduced VBL count (~3k records, the first level load
     # included); FAIL unless the present thread presented; SKIP without a
-    # display or the lvp ICD.
+    # display or the lvp ICD. The windowed rows run with
+    # OPENPETE_SUBTICK_RAM_GUARD (a store into guest RAM inside a sub-tick
+    # present fails the row) and OPENPETE_PRESENT_RAM_ASSERT (a store through
+    # a pointer the present thread resolved aborts it), and fail when the
+    # scene-ring and present-thread exit counts do not reconcile
+    # (check_psx_oracle.sh). Negative controls: OPENPETE_SUBTICK_FAULT_STORE=1
+    # and OPENPETE_PRESENT_FAULT_STORE=1 each fail every windowed row.
+    set(_windowed_guards "OPENPETE_ORACLE_WINDOWED=1;OPENPETE_SUBTICK_RAM_GUARD=1;OPENPETE_PRESENT_RAM_ASSERT=1")
     add_test(NAME psx_oracle_windowed
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh)
     set_tests_properties(psx_oracle_windowed PROPERTIES
@@ -2384,7 +2391,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin};OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=6000")
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin};${_windowed_guards};OPENPETE_FRAME_LIMIT=6000")
 
     # The Spyro 3 windowed row. Same contract as the row above on the Spyro 3
     # golden: --render-fps 60 is above the 29.913 Hz tick rate, so every
@@ -2402,7 +2409,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        ENVIRONMENT "OPENPETE_BIN=${_spyro3_bin};OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=4000")
+        ENVIRONMENT "OPENPETE_BIN=${_spyro3_bin};${_windowed_guards};OPENPETE_FRAME_LIMIT=4000")
+
+    # The Spyro 2 windowed row, on the contract of the Spyro 3 row. The frame
+    # limit reaches VBL 5000, past the demo's first level load (the bulk
+    # reads at VBLs 3678-4219 in the golden's load schedule).
+    add_test(NAME psx_oracle_windowed_spyro-2
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh
+                     --game spyro-2 -- --render-fps 60)
+    set_tests_properties(psx_oracle_windowed_spyro-2 PROPERTIES
+        LABELS "slow;oracle"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        ENVIRONMENT "OPENPETE_BIN=${_spyro2_bin};${_windowed_guards};OPENPETE_FRAME_LIMIT=5000")
 
     # The sub-tick RAM-write row: the windowed oracle over the full Spyro 1
     # golden on a private Xvfb display, --render-fps 60, with
@@ -2421,6 +2442,18 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}")
+
+    # The Spyro 3 twin of the row above, over the full Spyro 3 golden.
+    add_test(NAME psx_oracle_subtick_ram_guard_spyro-3
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_subtick_ram_guard.sh
+                     --game spyro-3)
+    set_tests_properties(psx_oracle_subtick_ram_guard_spyro-3 PROPERTIES
+        LABELS "slow;oracle;subtick"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        ENVIRONMENT "OPENPETE_BIN=${_spyro3_bin}")
 
     # The headless re-extract row, one per game: the full golden headless
     # with OPENPETE_ORACLE_REEXTRACT=1, so every non-drawing VBL re-extracts

@@ -89,8 +89,16 @@
 #   OPENPETE_BIN, OPENPETE_DISC
 #   OPENPETE_ORACLE_WINDOWED=1 windowed row: native renderer in a real window
 #                         under llvmpipe, eager present thread; FAIL unless the
-#                         present thread presented AND at least one sub-tick
-#                         re-extract was presented (needs a display and the lvp
+#                         present thread presented, at least one sub-tick
+#                         re-extract was made and one intermediate scene
+#                         presented, the present-thread write refusal armed,
+#                         and the scene-ring and present-thread exit counts
+#                         reconcile (published = rendered + render refusals +
+#                         superseded; rendered = presented + swapchain
+#                         refusals + discarded + queue drops); with
+#                         OPENPETE_SUBTICK_RAM_GUARD=1 also FAIL on a `GUEST
+#                         RAM WRITTEN` line, a guard hit or zero armed
+#                         presents (needs a display and the lvp
 #                         ICD, else SKIP); pair with OPENPETE_FRAME_LIMIT since
 #                         the run paces to the display, and with
 #                         `-- --render-fps N` above the tick rate so
@@ -161,6 +169,9 @@ export OPENPETE_VIBRATION=0
 export OPENPETE_THREAD_ROLE_FATAL=1
 # A store into guest RAM through a pointer the present thread resolved
 # aborts the run (core/psx/cpu.c); only a windowed row starts that thread.
+# Negative control: OPENPETE_PRESENT_FAULT_STORE=1 makes every present-thread
+# render rewrite one guest word (core/runtime/present_thread.c); the windowed
+# run must abort.
 export OPENPETE_PRESENT_RAM_ASSERT=1
 
 cd "$(dirname "$0")/../.."
@@ -642,7 +653,8 @@ fi
 # presented; a run whose scenes never left the sim thread verified the
 # headless path under another name.
 if [[ "$WINDOWED" != "0" && "$rc" == "0" ]]; then
-    PRESENTED=$(sed -n 's/.*present-thread: \([0-9]*\) scene(s) presented.*/\1/p' "$LOG" | tail -1)
+    PT_ROW=$(grep -o 'present-thread: [0-9]* scene(s) presented.*' "$LOG" | tail -1 || true)
+    PRESENTED=$(sed -n 's/^present-thread: \([0-9]*\) scene(s) presented.*/\1/p' <<<"$PT_ROW")
     if ! grep -q 'present-thread: started' "$LOG" || [[ "${PRESENTED:-0}" == "0" ]]; then
         echo "[psx-oracle] windowed: present thread never presented (started=$(grep -c 'present-thread: started' "$LOG"), presented=${PRESENTED:-0}); VACUOUS" >&2
         rc=2
@@ -651,16 +663,73 @@ if [[ "$WINDOWED" != "0" && "$rc" == "0" ]]; then
     fi
     # The windowed row exists for the sub-tick leg: a run whose presents were
     # all canonical exercised the tick path at a display cadence and nothing
-    # else. The exit line counts the presents built from interpolated
-    # gamestate (eager production plus the host loop's inline path); it is
-    # printed only when at least one ran, so an absent line is zero.
+    # else. The exit line counts the intermediate scenes eager production
+    # and the host loop's inline path re-extracted from interpolated
+    # gamestate; it is printed only when at least one ran, so an absent line
+    # is zero. The present thread's row counts the intermediate scenes that
+    # reached the display.
     REX=$(sed -n 's/.*sub-tick: \([0-9]*\) re-extract(s) presented.*/\1/p' "$LOG" | tail -1)
-    if [[ "${REX:-0}" == "0" ]]; then
-        echo "[psx-oracle] windowed: no sub-tick re-extract presented; the run verified the canonical path only; VACUOUS" >&2
+    INTER=$(sed -n 's/.* \([0-9]*\) intermediate scene(s) presented.*/\1/p' <<<"$PT_ROW")
+    if [[ "${REX:-0}" == "0" || "${INTER:-0}" == "0" ]]; then
+        echo "[psx-oracle] windowed: re-extracts=${REX:-0} intermediate presented=${INTER:-0}; the run verified the canonical path only; VACUOUS" >&2
         rc=2
     else
-        echo "[psx-oracle] windowed: $REX sub-tick re-extract(s) presented"
+        echo "[psx-oracle] windowed: $REX sub-tick re-extract(s), $INTER intermediate scene(s) presented"
     fi
+    # The present-thread write refusal (OPENPETE_PRESENT_RAM_ASSERT, exported
+    # above) aborts the run on a store; a run where it never armed proved
+    # nothing about the present thread's stores.
+    if ! grep -q 'present-ram: write refusal armed' "$LOG"; then
+        echo "[psx-oracle] windowed: the present-thread write refusal never armed; VACUOUS" >&2
+        rc=2
+    fi
+    # The sub-tick RAM guard (OPENPETE_SUBTICK_RAM_GUARD) logs a store into
+    # guest RAM inside a bracketed present and lets it through, so a
+    # write-and-restore passes the hashes and fails only here.
+    if [[ "${OPENPETE_SUBTICK_RAM_GUARD:-0}" != 0 ]]; then
+        GUARD_ROW=$(grep -o 'RAM guard: armed_presents=.*' "$LOG" | tail -1 || true)
+        G_ARMED=$(sed -n 's/.*armed_presents=\([0-9]*\).*/\1/p' <<<"$GUARD_ROW")
+        G_HITS=$(sed -n 's/.* hits=\([0-9]*\).*/\1/p' <<<"$GUARD_ROW")
+        G_LINES=$(grep -c 'GUEST RAM WRITTEN' "$LOG" || true)
+        echo "[psx-oracle] windowed: ${GUARD_ROW:-no RAM guard row}; guard_lines=$G_LINES"
+        if (( G_LINES > 0 )) || [[ -n "$G_HITS" && "$G_HITS" != 0 ]]; then
+            echo "[psx-oracle] windowed: guest RAM written inside a guarded present:" >&2
+            grep -m 5 'GUEST RAM WRITTEN' "$LOG" | sed 's/^/    /' >&2 || true
+            rc=2
+        elif [[ "${G_ARMED:-0}" == 0 ]]; then
+            echo "[psx-oracle] windowed: the RAM guard armed no present; VACUOUS" >&2
+            rc=2
+        fi
+    fi
+    # Scene accounting. Every published scene leaves the ring rendered,
+    # declined at render, or superseded (an older pending scene retired by a
+    # pick or by a flush); every rendered scene is presented, declined by
+    # the swapchain, discarded with its stage, or dropped to drain the
+    # queue. The rows are printed after the present thread is joined, when
+    # the ring holds no pending scene and no frame is staged, so both sums
+    # are exact; a residual is a scene the counters lost.
+    RING_ROW=$(grep -o 'scene-ring: [0-9]* scene(s) published.*' "$LOG" | tail -1 || true)
+    R_PUB=$(sed -n 's/^scene-ring: \([0-9]*\) scene(s) published.*/\1/p' <<<"$RING_ROW")
+    R_REN=$(sed -n 's/.* published, \([0-9]*\) presented.*/\1/p' <<<"$RING_ROW")
+    R_SUP=$(sed -n 's/.* \([0-9]*\) superseded unpresented.*/\1/p' <<<"$RING_ROW")
+    PT_SWREF=$(sed -n 's/.* \([0-9]*\) refused by the swapchain.*/\1/p' <<<"$PT_ROW")
+    PT_RREF=$(sed -n 's/.* \([0-9]*\) render(s) refused.*/\1/p' <<<"$PT_ROW")
+    PT_DISC=$(sed -n 's/.* \([0-9]*\) staged frame(s) discarded.*/\1/p' <<<"$PT_ROW")
+    PT_DROP=$(sed -n 's/.* \([0-9]*\) dropped to drain the queue.*/\1/p' <<<"$PT_ROW")
+    if [[ -z "$RING_ROW" || -z "$PT_ROW" || -z "$R_REN" || -z "$R_SUP" || -z "$PT_SWREF" ||
+          -z "$PT_RREF" || -z "$PT_DISC" || -z "$PT_DROP" ]]; then
+        echo "[psx-oracle] accounting: ${RING_ROW:-no scene-ring row}; ${PT_ROW:-no present-thread row}; unparsed; FAIL" >&2
+        rc=2
+    else
+        RING_RES=$(( R_PUB - R_REN - PT_RREF - R_SUP ))
+        STAGE_RES=$(( R_REN - PRESENTED - PT_SWREF - PT_DISC - PT_DROP ))
+        echo "[psx-oracle] accounting: published=$R_PUB rendered=$R_REN render_refused=$PT_RREF superseded=$R_SUP residual=$RING_RES; presented=$PRESENTED swapchain_refused=$PT_SWREF discarded=$PT_DISC late_drops=$PT_DROP residual=$STAGE_RES"
+        if (( RING_RES != 0 || STAGE_RES != 0 )); then
+            echo "[psx-oracle] accounting: the scene counts do not reconcile; FAIL" >&2
+            rc=2
+        fi
+    fi
+    echo "[psx-oracle] windowed engagement: presented=${PRESENTED:-0} re_extracts=${REX:-0} armed_presents=${G_ARMED:-unguarded} intermediate=${INTER:-0}"
 fi
 
 # Re-extract engagement and the guard's verdict: the guard logs a store

@@ -51,6 +51,7 @@
 #include "openpete_eager_ladder.h"  /* op_eager_cost_ema */
 #include "openpete_log.h"
 #include "openpete_config.h"     /* openpete_config_env */
+#include "openpete_psx.h"        /* openpete_psx_get_ram */
 
 #include <SDL3/SDL.h>
 #include <stdlib.h>
@@ -73,6 +74,7 @@ static struct {
 
     /* census */
     unsigned  presents;       /* scenes that went out */
+    unsigned  presents_inter; /* of those, scenes of kind OP_PACE_INTERMEDIATE */
     unsigned  refused;        /* compose ran but the swapchain declined */
     unsigned  late;           /* compose instant already passed when picked */
     int       late_run;       /* consecutive late presents */
@@ -486,6 +488,27 @@ static void pt_stall(void)
     if (ns > 0) op_sleep_until(op_now() + ns);
 }
 
+/** @brief Fault injection: rewrite one guest word through a host pointer from the present thread.
+ *
+ * The negative control of the present-thread write refusal
+ * (OPENPETE_PRESENT_RAM_ASSERT, core/psx/cpu.c). With
+ * OPENPETE_PRESENT_FAULT_STORE set, each scene render first stores the word
+ * already at RAM offset 0x10000 (the start of the main executable's load
+ * area) through the pointer openpete_psx_get_ram resolves on this thread, so
+ * no byte changes and only the refusal can see the store; with the refusal
+ * armed the store aborts the process. Read once; unset or 0 does nothing.
+ * Called with the mutex released. */
+static void pt_fault_store(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OPENPETE_PRESENT_FAULT_STORE"); on = (e && *e && *e != '0'); }
+    if (!on) return;
+    uint8_t *ram = openpete_psx_get_ram();
+    if (!ram) return;
+    volatile uint32_t *w = (volatile uint32_t *)(void *)(ram + 0x10000u);
+    *w = *w;
+}
+
 /** @brief Begin serving a new activation: drop the state the previous one left and claim the display; the mutex is held.
  *
  * Resets the vblank lattice, the flip wait state and any staged frame, since
@@ -583,6 +606,7 @@ static int present_thread_main(void *unused)
             s_pt.busy = 1;
             SDL_UnlockMutex(s_pt.mx);
             pt_stall();
+            pt_fault_store();
             const op_time_t c0 = op_now();
             const uint32_t gen = openpete_native_stage_gen();
             int did;
@@ -607,6 +631,7 @@ static int present_thread_main(void *unused)
                 openpete_pace_record_present((uint8_t)kind, alpha, paired);
                 if (s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
                 s_pt.presents++;
+                s_pt.presents_inter += kind == OP_PACE_INTERMEDIATE;
                 if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--; else s_pt.flip_pending = 1;
                 continue;
             }
@@ -711,6 +736,7 @@ static int present_thread_main(void *unused)
         s_pt.busy = 0;
         if (did) {
             s_pt.presents++;
+            s_pt.presents_inter += kind == OP_PACE_INTERMEDIATE;
             s_pt.present_ema = pt_cost_fold(s_pt.present_ema, c, 0);
             if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--;
             else s_pt.flip_pending = 1;
@@ -834,12 +860,12 @@ void openpete_present_thread_report(void)
     OPL_INFO_F("present-thread",
                "%u scene(s) presented, %u refused by the swapchain, %u render(s) refused, %u staged frame(s) discarded; "
                "%u presented late (%.3f ms mean, %.3f ms max), %u dropped to drain the queue; render %.3f ms ema, present step %.3f ms ema; "
-               "%u drain(s), %.3f ms waited total, %.3f ms max",
+               "%u drain(s), %.3f ms waited total, %.3f ms max; %u intermediate scene(s) presented",
                s_pt.presents, s_pt.refused, s_pt.render_refused, s_pt.discarded, s_pt.late,
                s_pt.late ? (double)s_pt.late_ns / s_pt.late / 1e6 : 0.0,
                (double)s_pt.late_max_ns / 1e6, s_pt.late_drops,
                (double)s_pt.render_ema / 1e6, (double)s_pt.present_ema / 1e6, s_pt.drains,
-               (double)s_pt.drain_wait_ns / 1e6, (double)s_pt.drain_wait_max_ns / 1e6);
+               (double)s_pt.drain_wait_ns / 1e6, (double)s_pt.drain_wait_max_ns / 1e6, s_pt.presents_inter);
     if (s_pt.flips || s_pt.flip_timeouts)
         OPL_INFO_F("present-thread",
                    "display: %u flip(s) observed, %u wait(s) ran to their bound (overrun %.3f ms mean, %.3f ms max); "
