@@ -309,6 +309,11 @@ const game_layout_t spyro1_game_layout = {
         .array_stride = (uint32_t)sizeof(Moby),
         .state_off    = offsetof(Moby, m_State),
         .state_term   = 0xFFu,
+        /* asm/42CC4.s func_800524C4: v0 = the slot g_MobyAllocPtr names; the
+         * free (func_80052568) moves the cursor down to the freed slot, so a
+         * slot freed in a tick is the next one allocated. No late switch:
+         * a reused slot keeps its address key (alloc_respawn 0). */
+        .alloc        = 0x800524C4u,
         .pos_off      = offsetof(Moby, m_Position),
         .angle_off    = offsetof(Moby, m_Rotation),   /* m_DepthOffset rides +3 */
         .class_off    = offsetof(Moby, m_Class),

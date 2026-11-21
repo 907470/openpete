@@ -481,6 +481,7 @@ const game_layout_t spyro2_game_layout = {
         .state_term   = 0xFFu,             /* mobydraw.s:69-70 state == -1 ends the list */
         .alloc        = 0x80041290u,       /* asm/updatemobys.s func_80041290: v0 = the free
                                             * cursor's slot, 0 when full */
+        .alloc_respawn = 1,
         .pos_off      = 0x0Cu,             /* mobydraw.s:81-83 the box cull's three words */
         .angle_off    = 0x44u,             /* mobydraw.s:220 the three byte angles */
         .class_off    = 0x36u,             /* mobydraw.s:111 lhu, model table index */

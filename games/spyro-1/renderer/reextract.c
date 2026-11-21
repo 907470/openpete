@@ -7,6 +7,7 @@
 #include "openpete_camlock.h"       /* render camera lock (G) - bracket override */
 #include "openpete_interp.h"
 #include "openpete_profile.h"          /* the re-extract's per-producer regions */
+#include "renderer/moby_serial.h"   /* moby_pair_reborn, the allocation census */
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/reextract_view.h"
@@ -1009,9 +1010,11 @@ static int moby_cut_hold(uint32_t m, const openpete_interp_obj_t* o, op_time_t n
     return cut_obj_hold(kind, m, o, MOBY_POS, a, moby_cut_stage);
 }
 
-/** @brief The hold a moby record takes before its own lerp: a class change, or a held camera cut it rolled on.
+/** @brief The hold a moby record takes before its own lerp: a class change or a reused slot, or a held camera cut it rolled on.
  *
- * A class change holds as CUT_CLASS. A held camera cut shows tick N-1 on
+ * A class change, and a pair whose two states are two allocations of the
+ * slot (moby_pair_reborn), hold as CUT_CLASS: tick N-1's moby until alpha 1,
+ * then tick N's. A held camera cut shows tick N-1 on
  * every record, so a record that rolled at the cut's tick holds as CUT_HELD
  * (cut_held_rolled).
  * @param o The moby's interp pair.
@@ -1019,7 +1022,7 @@ static int moby_cut_hold(uint32_t m, const openpete_interp_obj_t* o, op_time_t n
  * @param ccls Tick N's class.
  * @return CUT_CLASS, CUT_HELD, or -1 for no hold. */
 static int moby_cut_kind(const openpete_interp_obj_t* o, uint16_t pcls, uint16_t ccls) {
-    if (pcls != ccls) return CUT_CLASS;
+    if (pcls != ccls || moby_pair_reborn(o)) return CUT_CLASS;
     return cut_held_rolled(o) == 1 ? CUT_HELD : -1;
 }
 
@@ -2396,24 +2399,19 @@ static void game_reextract_body(void* cpu_v) {
                     const openpete_interp_obj_t* o =
                         openpete_interp_objs_find(phase ? game_interp_moby_key(m) : m);
                     if (o && o->have_prev) {
-                        /* IDENTITY guard (slot reuse). The interp-objs table is keyed
-                         * by the moby SLOT ADDRESS, so a slot a DIFFERENT moby respawns
+                        /* Identity guard (slot reuse). The interp-objs table is keyed
+                         * by the moby slot address, so a slot another moby is allocated
                          * into within one tick still reads have_prev=1 and would lerp
-                         * between two unrelated objects - position AND the two-pass
-                         * keyframe shape (garbage when the models differ). The teleport
-                         * guard below only catches FAR reuses; a near respawn (same
-                         * region) slips through it. m_Class @ +0x36 (i16) is the stable
-                         * type and the model is derived from it (G_MODELS[class]), so a
-                         * class change is a different model -> snap (present curr, no
-                         * bracket). Mirrors the particle class/sel guard. (Same-class
-                         * instance reuse - same model, near, a brief pose blend - is a
-                         * benign residual; catching it needs a per-instance id the moby
-                         * record doesn't carry.) */
+                         * between two unrelated mobys, position and keyframe shape. A
+                         * class change (m_Class +0x36 names the model) or a changed
+                         * slot allocation serial (moby_pair_reborn) holds tick N-1's
+                         * moby until alpha 1 (moby_cut_kind). */
                         uint16_t pcls, ccls;
                         memcpy(&pcls, o->prev + 0x36u, 2);
                         memcpy(&ccls, o->curr + 0x36u, 2);
                         const int hold_kind = moby_cut_kind(o, pcls, ccls);
                         if (hold_kind >= 0) {
+                            moby_serial_census(m, o, 0.0, 1);
                             moby_cut_hold(m, o, now, hold_kind);
                             goto next_moby;
                         }
@@ -2436,7 +2434,9 @@ static void game_reextract_body(void* cpu_v) {
                             /* per-moby teleport guard: a respawn / warp jumps far in
                              * one tick - lerping streaks it across the screen. The
                              * record holds tick N-1 whole until alpha 1 (moby_cut_hold). */
-                            if (moby_step_jumps(m, o)) {
+                            const int jumps = moby_step_jumps(m, o);
+                            moby_serial_census(m, o, ma, jumps);
+                            if (jumps) {
                                 moby_cut_hold(m, o, now, CUT_TELEPORT);
                                 goto next_moby;
                             }

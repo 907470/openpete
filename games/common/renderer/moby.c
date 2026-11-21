@@ -17934,16 +17934,20 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
  * @param moby The Moby address.
  * @param t Receives the phase when a pair is returned.
  * @return The interp object, or NULL when no term built on the pair may be
- *         applied: no pair, a slot that changed class between the two states,
- *         or a stale pair, where the gap is a discontinuity rather than
- *         motion and the record's own pose is what to keep. */
+ *         applied: no pair, a slot that changed class or allocation
+ *         (moby_pair_reborn) between the two states, or a stale pair, where
+ *         the gap is a discontinuity rather than motion and the record's own
+ *         pose is what to keep. */
 static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t) {
     const openpete_interp_obj_t* o = moby_interp_find(moby);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return NULL;
     uint16_t pcls, ccls;
     memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
     memcpy(&ccls, o->curr + game_layout.moby.class_off, 2);
-    if (pcls != ccls) return NULL;
+    if (pcls != ccls || moby_pair_reborn(o)) {
+        moby_serial_census(moby, o, 0.0, 1);
+        return NULL;
+    }
     if (moby_interp_stale_snap_enabled() && !cut_pair_is_tick(o)) return NULL;
     double period = (double)(o->curr_ns - o->prev_ns);
     if (period > (double)MOBY_TICK_PERIOD_NS) period = (double)MOBY_TICK_PERIOD_NS;
@@ -17952,6 +17956,7 @@ static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t) {
     if (cut_held_rolled(o) == 0) *t = 1.0;
     if (moby_jump_held(moby, o)) *t = 0.0;
     else if (cut_obj_held(moby) == 0) *t = 1.0;   /* the present's verdict snapped it to tick N */
+    moby_serial_census(moby, o, *t, 0);
     return o;
 }
 

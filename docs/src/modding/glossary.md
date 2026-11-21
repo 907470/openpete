@@ -93,6 +93,13 @@ pointers do not.
 The game's own name for a movable world object: Spyro (sometimes), a gem,
 an enemy, a chest, a 3D HUD element.
 
+A moby interpolates between ticks only while it stays allocated: a moby
+freed and another allocated in its slot within one tick are two mobys, the
+old one drawn until the tick's state takes over, never blended. A moby a
+mod allocates through `api->call` for each tick's draw and frees before
+the next update keeps interpolating while every tick hands it the same
+slot.
+
 ### mutative
 
 A mod that writes guest RAM, declared as `sim_mutative` in the manifest.

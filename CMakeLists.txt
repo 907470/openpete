@@ -529,6 +529,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Spyro 1 moby slot-reuse census: three rows (two bk2 windows and the
+    # attract demo) where a moby slot is freed and reallocated within one
+    # tick; no sub-tick present may lerp the dead moby into the newborn, and
+    # each row must see a reuse (engagement). Slow; `ctest -L moby_serial`
+    # or the script directly. Exit 64 = no binary or disc.
+    add_test(NAME moby_serial_census
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_serial_census.sh)
+    set_tests_properties(moby_serial_census PROPERTIES
+        LABELS "slow;presentation;moby_serial"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1500
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Hor+ presentation symmetry - boots the headless demo at 4:3, 16:9
     # and 21:9, takes a screenshot at the same frame, and pixel-diffs the
     # central 4:3 region. Asserts that widening the GTE projection does

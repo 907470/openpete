@@ -405,15 +405,15 @@ static int view_set_has(uint32_t m) {
     }
 }
 
-/** @brief Whether a changed moby slot serial makes the capture a despawn and a spawn: OPENPETE_MOBY_REUSE_SPAWN, default on, read once.
+/** @brief Whether a changed moby slot serial makes the capture a despawn and a spawn: game_layout.moby.alloc_respawn and OPENPETE_MOBY_REUSE_SPAWN (default on, read once).
  *
  * Off, the serial is still appended to the blob, and the pair spans the two
- * records a reused slot held.
+ * records a reused slot held (moby_pair_reborn names it).
  * @return 1 when on, else 0. */
 static int moby_reuse_spawn_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_MOBY_REUSE_SPAWN"); v = (e && *e) ? (*e != '0') : 1; }
-    return v;
+    return v && game_layout.moby.alloc_respawn;
 }
 
 /** @brief Capture one moby record under @p key with whether it was shown on the tick.
@@ -424,8 +424,9 @@ static int moby_reuse_spawn_on(void) {
  * parked unshown by both and placed into view on a later tick snaps on its
  * first shown tick. When the layout names a moby allocator and the store's
  * blob has room, the slot's allocation serial (moby_slot_serial) follows the
- * record's bytes, and a serial other than the tracked one's makes the capture
- * a despawn of the tracked record and a spawn of this one. With
+ * record's bytes, and, where the layout sets alloc_respawn, a serial other
+ * than the tracked one's makes the capture a despawn of the tracked record and
+ * a spawn of this one. With
  * OPENPETE_INTERP_OBJS_KEYLOG a replacement prints the moby, its class and
  * whether the native view drew it.
  * @param m The moby's PSX address.

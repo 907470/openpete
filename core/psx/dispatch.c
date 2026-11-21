@@ -635,6 +635,7 @@ static uint64_t s_redispatch_skips = 0;   /* re-dispatches that skipped the entr
 
 void openpete_psxtrace_gate_host_enter(void) { s_gate_depth++; }
 void openpete_psxtrace_gate_host_leave(void) { s_gate_depth--; }
+int  openpete_psxtrace_gate_host_active(void) { return s_gate_depth > 0; }
 
 /** @brief Pass one gate hit to the clock replay unless it is a host re-dispatch or inside a host-initiated call.
  *

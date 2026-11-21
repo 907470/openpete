@@ -713,6 +713,9 @@ void openpete_sched_clock_seeded(uint64_t tick);
 void openpete_psxtrace_gate_host_enter(void);
 /** @brief Leave a host-initiated guest call entered with openpete_psxtrace_gate_host_enter(). */
 void openpete_psxtrace_gate_host_leave(void);
+/** @brief Whether a host-initiated guest call (openpete_psxtrace_gate_host_enter) is running.
+ * @return 1 inside one, else 0. */
+int openpete_psxtrace_gate_host_active(void);
 
 /* GTE hash row. Under OPENPETE_GTE_HASH=1 with a `<trace>.gte` sidecar
  * beside the golden, every gte_execute call is folded into one hash per

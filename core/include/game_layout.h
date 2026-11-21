@@ -807,7 +807,11 @@ typedef struct game_layout {
      * equals `state_term`; an element whose state byte has bit 7 set is
      * dormant. `alloc` is the slot allocator every spawn takes its Moby
      * through, returning the slot in v0 or 0 when the array is full (0 = not
-     * hooked; renderer/moby_serial.h). `blend_shift` recovers the keyframe blend weight from the
+     * hooked; renderer/moby_serial.h). `alloc_respawn` 1 makes a changed slot
+     * serial a despawn of the captured record and a spawn of the new one
+     * under the same address key (the evicted record draws through the late
+     * switch); 0 keeps one entry per address, whose pair then spans the two
+     * allocations and is held as a class change. `blend_shift` recovers the keyframe blend weight from the
      * record's flags word as (w0 >> blend_shift) & blend_mask, with 4096 as
      * 1.0.
      *
@@ -826,6 +830,7 @@ typedef struct game_layout {
         uint32_t state_off;
         uint32_t state_term;
         uint32_t alloc;
+        int      alloc_respawn;
         uint32_t pos_off;
         uint32_t angle_off;
         uint32_t class_off;
