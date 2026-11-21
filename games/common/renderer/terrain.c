@@ -9581,6 +9581,9 @@ static void tvis_calibrate(CPUState* cpu, const tvis_sphere* S, uint32_t list, u
 static sector_pvs_tree_t   s_sf_tree OP_GUARDED_BY(sim);   /* thread-roles: the terrain tree snapshot, refreshed and read on sim at the walk */
 static sector_pvs_filled_t s_sf OP_GUARDED_BY(sim);        /* C' over two ticks, U */
 static int       s_sf_ready OP_GUARDED_BY(sim);       /* U is valid for this tick */
+/* The last canonical walk's sector table and count: the spheres the
+ * containment key (terrain_point_admitted) tests. */
+static uint32_t  s_sf_sector_ptr OP_GUARDED_BY(sim), s_sf_sector_n OP_GUARDED_BY(sim);
 /* Engagement counters: run totals (OPENPETE_SECTOR_FILLED_CENSUS periodic
  * line, the sector-filled exit row) and one load window's share. */
 static unsigned long s_sf_ticks OP_GUARDED_BY(sim), s_sf_computes OP_GUARDED_BY(sim),
@@ -9595,6 +9598,7 @@ typedef struct {
     int32_t level, area;
     unsigned long walks, notree, ticks, computes, walks_differ, added, pred, pred_rej;
     unsigned long sky, sky_computes, sky_differ, sky_added;   /* filled sky draws */
+    unsigned long contain, contain_rej;   /* terrain_point_admitted answers and rejections */
 } sf_window_t;
 
 static sf_window_t   s_sf_win OP_GUARDED_BY(sim);
@@ -9612,10 +9616,10 @@ static void sf_window_close(void) OP_REQUIRES(sim) {
     const int engaged = w->computes > 0 && w->walks_differ > 0;
     fprintf(stderr, "[sector-filled-window] frame=%u level=%d area=%d walks=%lu notree=%lu ticks=%lu "
                     "computes=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu sky=%lu "
-                    "sky_computes=%lu sky_differ=%lu sky_added=%lu engaged=%d\n",
+                    "sky_computes=%lu sky_differ=%lu sky_added=%lu contain=%lu contain_rejected=%lu engaged=%d\n",
             openpete_frame, w->level, w->area, w->walks, w->notree, w->ticks, w->computes,
             w->walks_differ, w->added, w->pred, w->pred_rej, w->sky, w->sky_computes, w->sky_differ,
-            w->sky_added, engaged);
+            w->sky_added, w->contain, w->contain_rej, engaged);
     s_sf_windows++;
     s_sf_windows_engaged += (unsigned long)engaged;
     s_sf_total.walks += w->walks; s_sf_total.notree += w->notree; s_sf_total.ticks += w->ticks;
@@ -9728,6 +9732,36 @@ void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim) {
     s_sf_win.sky_computes += computed != 0;
     s_sf_win.sky_differ += added > 0;
     s_sf_win.sky_added += (unsigned long)(added > 0 ? added : 0);
+}
+
+/** @brief Whether OPENPETE_SECTOR_VIS_CONTAIN=1 turns on the containment key for elements with no sector byte, read once.
+ * @return 1 when on, else 0. */
+static int sf_contain_on(void) OP_REQUIRES(sim) {
+    static int on OP_GUARDED_BY(sim) = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_SECTOR_VIS_CONTAIN"); on = e && *e == '1'; }
+    return on;
+}
+
+int terrain_point_admitted(struct CPUState* cpu, int32_t x, int32_t y, int32_t z) OP_REQUIRES(sim) {
+    const int mode = openpete_native_sector_visibility_active();
+    if (mode == OPENPETE_SECTOR_VIS_FRUSTUM || !sf_contain_on() || !s_sf_sector_ptr) return 1;
+    if (mode == OPENPETE_SECTOR_VIS_FILLED && !s_sf_ready) return 1;   /* no PVS: frustum */
+    const uint32_t n = s_sf_sector_n < 255u ? s_sf_sector_n : 255u;
+    int inside = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t sp = rd(cpu, s_sf_sector_ptr + i * 4u);
+        if (!sp) continue;
+        const uint32_t w0 = rd(cpu, sp), w1 = rd(cpu, sp + 4u);
+        const double cx = 16.0 * thdr_s16(w0 >> 16) - x, cy = 16.0 * thdr_s16(w0) - y,
+                     cz = 16.0 * thdr_s16(w1 >> 16) - z, r = 16.0 * thdr_radius(w1);
+        if (cx * cx + cy * cy + cz * cz > r * r) continue;
+        inside = 1;
+        const int drawn = mode == OPENPETE_SECTOR_VIS_FILLED ? s_sf.u[i] != 0 : tvis_visible(cpu, i) != 0;
+        if (drawn) { s_sf_win.contain++; return 1; }
+    }
+    s_sf_win.contain++;
+    s_sf_win.contain_rej += inside;
+    return !inside;
 }
 
 int terrain_sector_admitted(uint32_t i) OP_REQUIRES(sim) {
@@ -10269,6 +10303,15 @@ static void secvis_census(CPUState* cpu, const tvis_sphere* S, uint32_t sectorCn
     else secvis_print(cpu, S, n, &R);
 }
 
+/** @brief Records a canonical walk's sector table and count for the containment key; a sub-tick walk leaves them.
+ * @param S The sphere-test inputs, or NULL.
+ * @param sectorCnt The sector count. */
+static void sf_note_sectors(const tvis_sphere* S, uint32_t sectorCnt) OP_REQUIRES(sim) {
+    if (s_vanim_sub) return;
+    s_sf_sector_ptr = S ? S->sectorPtr : 0u;
+    s_sf_sector_n = sectorCnt;
+}
+
 /** @brief The --sector-visibility filled candidate set: advances the tick's set and admits the frustum sectors it holds.
  *
  * Every sector at index 255 or above is admitted (no PVS byte names it).
@@ -10332,6 +10375,7 @@ static int terrain_vislist_allvis(uint32_t sectorCnt, uint16_t* out) OP_REQUIRES
 static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int32_t group,
                            const tvis_sphere* S) OP_REQUIRES(sim) {
     if (sectorCnt > 1024) sectorCnt = 1024;
+    sf_note_sectors(S, sectorCnt);
     secvis_census(cpu, S, sectorCnt);
     {
         const int k = terrain_vislist_filled(cpu, sectorCnt, out, S);

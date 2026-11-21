@@ -4916,7 +4916,8 @@ static void reveal_census_print(const moby_reveal_census_t* c, moby_reveal_kind_
 /** @brief Whether --sector-visibility rejects a moby's key sector, which keeps the reveal clauses from drawing it.
  *
  * The key is the byte at game_layout.moby.sector_off (0xFE and 0xFF name no
- * sector). terrain_sector_admitted answers: under frustum every sector is
+ * sector; such a moby takes terrain_point_admitted's containment key at its
+ * position). terrain_sector_admitted answers: under frustum every sector is
  * admitted, under game the clauses keep their own tests (a -1 answer), under
  * filled a sector outside the tick's drawn set is rejected, so a moby that
  * stands in geometry the terrain does not draw is not drawn in the sky.
@@ -4926,7 +4927,12 @@ static void reveal_census_print(const moby_reveal_census_t* c, moby_reveal_kind_
 static int moby_reveal_sector_rejected(CPUState* cpu, uint32_t m) OP_REQUIRES(sim) {
     if (!game_layout.moby.sector_off) return 0;
     const uint32_t sec = cpu->read_byte(m + game_layout.moby.sector_off);
-    return sec < 0xFEu && terrain_sector_admitted(sec) == 0;
+    if (sec >= 0xFEu) {
+        const uint32_t pos = m + game_layout.moby.pos_off;
+        return !terrain_point_admitted(cpu, (int32_t)cpu->read_word(pos), (int32_t)cpu->read_word(pos + 4u),
+                                       (int32_t)cpu->read_word(pos + 8u));
+    }
+    return terrain_sector_admitted(sec) == 0;
 }
 
 int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) OP_REQUIRES(sim) {

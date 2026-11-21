@@ -378,6 +378,20 @@ int terrain_preview_build(const terrain_host_level* L, const terrain_preview_vie
  * @param added The sky sectors drawn that the game's verdict hid. */
 void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim);
 
+/** @brief The containment key for an element with no sector byte: whether a point lies in a drawn sector or in none.
+ *
+ * Under OPENPETE_SECTOR_VIS_CONTAIN=1 and --sector-visibility game or
+ * filled, a point inside one or more sector bounding spheres of the last
+ * canonical walk is admitted when one of those sectors is drawn (the filled
+ * set, or the game's verdict under game); a point inside none is admitted.
+ * Under frustum, with the switch off, or where filled has no PVS: 1.
+ * @param cpu The guest CPU state, read only.
+ * @param x The point, world X.
+ * @param y The point, world Y.
+ * @param z The point, world Z.
+ * @return 1 to admit, 0 to reject. */
+int terrain_point_admitted(struct CPUState* cpu, int32_t x, int32_t y, int32_t z) OP_REQUIRES(sim);
+
 /** @brief Whether sector `i` is admitted by the --sector-visibility mode for this tick.
  *
  * frustum admits every sector (the identity for non-terrain paths); filled
