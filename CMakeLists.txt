@@ -2814,9 +2814,13 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # roll, so every vertex its plain chunks hold must read its colour from
     # the table; a baked colour there stays at the bake's value and the clean
     # leg counts it. Spyro 1 Peace Keepers re-bakes only (no Spyro 1 sector
-    # moves its ring); the Spyro 3 rows both re-bake and re-roll.
+    # moves its ring); the Spyro 3 rows both re-bake and re-roll. Spyro 3
+    # Country Speedway also holds HP triangles whose unused slot-3 colour
+    # index points past the sector record at bytes rewritten every tick; the
+    # bake keeps no such word.
     foreach(_row spyro-1:peace_keepers spyro-2:aquaria_towers spyro-2:robotica_farms
-                 spyro-3:seashell_shore spyro-3:evening_lake spyro-3:starfish_reef)
+                 spyro-3:seashell_shore spyro-3:evening_lake spyro-3:starfish_reef
+                 spyro-3:country_speedway)
         string(REPLACE ":" ";" _rl "${_row}")
         list(GET _rl 0 _g)
         list(GET _rl 1 _lvl)
