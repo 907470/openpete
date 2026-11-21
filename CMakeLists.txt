@@ -2238,6 +2238,31 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             RUN_SERIAL TRUE
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        # Swapchain rebuilds on a window the driver keeps bound after
+        # vkDestroySwapchainKHR (tests/harness/check_swapchain_rebuild.py):
+        # OPENPETE_VK_FAULT=window-held refuses a creation on the bound window
+        # unless it names the live swapchain as oldSwapchain, and
+        # window-held-surface refuses it until the surface is rebuilt. The
+        # launcher resizes through OPENPETE_LAUNCHER_INPUT; the game, booted
+        # from the disc, through an X11 client on its display. Pass: a rebuild
+        # per resize, no unrecovered creation failure, presents after the last
+        # rebuild. Each run starts its own xvfb-run display; skips (exit 64)
+        # without xvfb-run, the binary, the window manager or the disc.
+        foreach(_sc_case launcher game)
+            foreach(_sc_fault window-held window-held-surface)
+                add_test(NAME swapchain_rebuild_${_sc_case}_${_sc_fault}
+                         COMMAND ${Python3_EXECUTABLE}
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_swapchain_rebuild.py
+                                 ${_sc_case} --fault ${_sc_fault} --build-dir ${CMAKE_BINARY_DIR})
+                set_tests_properties(swapchain_rebuild_${_sc_case}_${_sc_fault} PROPERTIES
+                    LABELS "renderer;windowed"
+                    TIMEOUT 300
+                    SKIP_RETURN_CODE 64
+                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+            endforeach()
+        endforeach()
+        set_tests_properties(swapchain_rebuild_game_window-held swapchain_rebuild_game_window-held-surface
+            PROPERTIES RESOURCE_LOCK openpete_game)
         # The launcher's 3D title (tests/harness/check_launcher_title.py): drawn
         # from the asset cache against the reference layout and a model of the
         # emitter, and switched in on the assets-ready reap.

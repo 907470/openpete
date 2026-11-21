@@ -720,6 +720,17 @@ struct rhi_device {
     /* A zero surface extent has been logged since the last swapchain
      * creation (surface_extent); cleared by create_swapchain. */
     bool     sc_zero_logged;
+    /* Swapchain census, logged by rhi_destroy: successful rebuilds,
+     * vkCreateSwapchainKHR failures, surface rebuilds, presents the driver
+     * accepted, and that present count at the last successful rebuild. */
+    uint32_t sc_recreates;
+    uint32_t sc_create_failures;
+    uint32_t sc_surface_rebuilds;
+    uint64_t sc_presents;
+    uint64_t sc_presents_at_recreate;
+    /* OPENPETE_VK_FAULT=window-held*: the window holds a binding to a
+     * swapchain (fault_swapchain_create). */
+    bool     fault_window_bound;
     uint32_t draw_calls;    /* rhi_draw invocations since begin_frame (perf census) */
     bool     pass_open;     /* a render pass is recording (offscreen or a render target) */
     /* Compute (rhi_compute_*): whether the device runs compute passes, decided
@@ -2243,15 +2254,71 @@ static void consume_display_change(rhi_device *dev)
     dev->acquire_backoff_until_ns = 0;
 }
 
+/** @brief Return the OPENPETE_VK_FAULT window-held mode: 0 off, 1 window-held, 2 window-held-surface.
+ *
+ * Both modes make the window stay bound to Vulkan from its first swapchain
+ * creation, through vkDestroySwapchainKHR, until the VkSurfaceKHR is
+ * destroyed; while bound, a vkCreateSwapchainKHR on it returns
+ * VK_ERROR_NATIVE_WINDOW_IN_USE_KHR without creating anything. Mode 1
+ * (window-held) also lets a creation that names a swapchain of the window as
+ * oldSwapchain succeed and take the binding over; mode 2
+ * (window-held-surface) refuses that creation too, so only a new surface
+ * releases the window.
+ * @return The mode. */
+static int fault_window_held_mode(void)
+{
+    static OP_ONCE_INT cache = -1;
+    int mode = op_once_int_get(&cache);
+    if (mode >= 0) return mode;
+    const char *e = getenv("OPENPETE_VK_FAULT");
+    mode = 0;
+    if (e && !strcmp(e, "window-held")) mode = 1;
+    if (e && !strcmp(e, "window-held-surface")) mode = 2;
+    if (mode) RHI_LOG("fault injection: the window stays bound after swapchain destruction "
+                      "until %s\n", mode == 1 ? "an oldSwapchain handover or a new surface"
+                                               : "a new surface");
+    return op_once_int_fill(&cache, mode);
+}
+
+/** @brief Create a swapchain through vkCreateSwapchainKHR, refusing it as a driver that keeps the window bound would under OPENPETE_VK_FAULT=window-held*.
+ *
+ * Under the fault (fault_window_held_mode) a creation on a bound window
+ * returns VK_ERROR_NATIVE_WINDOW_IN_USE_KHR, except in mode 1 when
+ * sci->oldSwapchain names a swapchain; a successful creation binds the
+ * window. Without the fault this is vkCreateSwapchainKHR.
+ * @param dev Device whose window binding is read and written.
+ * @param sci The creation info.
+ * @param out Receives the swapchain on success.
+ * @return The creation result. */
+static VkResult fault_swapchain_create(rhi_device *dev, const VkSwapchainCreateInfoKHR *sci,
+                                       VkSwapchainKHR *out)
+{
+    const int held = fault_window_held_mode();
+    const bool handover = held == 1 && sci->oldSwapchain != VK_NULL_HANDLE;
+    if (held && dev->fault_window_bound && !handover) return VK_ERROR_NATIVE_WINDOW_IN_USE_KHR;
+    const VkResult r = vkCreateSwapchainKHR(dev->device, sci, NULL, out);
+    dev->fault_window_bound = dev->fault_window_bound || r == VK_SUCCESS;
+    return r;
+}
+
 /** @brief Create the swapchain for the window's current size, format and present mode.
  *
+ * A non-null @p old is retired by the creation, whether or not it succeeds,
+ * and handed to the driver as oldSwapchain, so the window passes from the old
+ * swapchain to the new one without a moment in which neither holds it; the
+ * caller destroys @p old afterwards. dev->swapchain is written only on
+ * success.
  * @param dev Windowed device.
- * @return false when the window is minimized or any creation step fails. */
-static bool create_swapchain(rhi_device *dev)
+ * @param old The swapchain being replaced, or VK_NULL_HANDLE.
+ * @return VK_SUCCESS; the vkCreateSwapchainKHR result when it fails;
+ *         VK_NOT_READY when the window is minimized;
+ *         VK_ERROR_INITIALIZATION_FAILED when the surface lists no format
+ *         or the swapchain's images cannot be fetched. */
+static VkResult create_swapchain(rhi_device *dev, VkSwapchainKHR old)
 {
     VkSurfaceCapabilitiesKHR caps;
     VkExtent2D extent;
-    if (!surface_extent(dev, &caps, &extent)) return false;
+    if (!surface_extent(dev, &caps, &extent)) return VK_NOT_READY;
     SDL_GetWindowSizeInPixels(dev->window, &dev->sc_win_w, &dev->sc_win_h);
     /* The resize-settle check in ensure_swapchain compares against
      * last_seen_w/h: seeding them with the creation size makes a rebuild at
@@ -2262,9 +2329,15 @@ static bool create_swapchain(rhi_device *dev)
 
     uint32_t fn = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev->phys, dev->surface, &fn, NULL);
-    if (fn == 0) { RHI_LOG("create_swapchain: surface reports zero formats\n"); return false; }
+    if (fn == 0) {
+        RHI_LOG("create_swapchain: surface reports zero formats\n");
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
     VkSurfaceFormatKHR *fmts = calloc(fn, sizeof(*fmts));
-    if (!fmts) { RHI_LOG("create_swapchain: OOM for %u surface formats\n", fn); return false; }
+    if (!fmts) {
+        RHI_LOG("create_swapchain: OOM for %u surface formats\n", fn);
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev->phys, dev->surface, &fn, fmts);
     VkSurfaceFormatKHR pick = pick_surface_format(dev, fmts, fn);
     free(fmts);
@@ -2291,16 +2364,22 @@ static bool create_swapchain(rhi_device *dev)
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         .presentMode = (dev->present_mode_granted = choose_present_mode(dev)), /* FIFO (vsync) unless --vsync 0 / OPENPETE_PRESENT_MODE */
         .clipped = VK_TRUE,
-        .oldSwapchain = VK_NULL_HANDLE,
+        .oldSwapchain = old,
     };
-    VkResult r = vkCreateSwapchainKHR(dev->device, &sci, NULL, &dev->swapchain);
-    if (r != VK_SUCCESS) { RHI_LOG("vkCreateSwapchainKHR failed: %d\n", (int)r); return false; }
+    VkSwapchainKHR sc = VK_NULL_HANDLE;
+    VkResult r = fault_swapchain_create(dev, &sci, &sc);
+    if (r != VK_SUCCESS) {
+        RHI_LOG("vkCreateSwapchainKHR failed: %d\n", (int)r);
+        dev->sc_create_failures++;
+        return r;
+    }
+    dev->swapchain = sc;
 
     dev->sc_format = pick.format;
     dev->sc_extent = extent;
     off_extent_sync(dev);
     dev->sc_zero_logged = false;
-    if (!swapchain_fetch_images(dev)) return false;
+    if (!swapchain_fetch_images(dev)) return VK_ERROR_INITIALIZATION_FAILED;
 
     for (uint32_t i = 0; i < RHI_MAX_SC_IMAGES; i++)
         dev->images_in_flight[i] = VK_NULL_HANDLE;
@@ -2332,7 +2411,44 @@ static bool create_swapchain(rhi_device *dev)
         RHI_LOG("swapchain: %u image(s), acquire budget %.1f ms (refresh %.3f Hz)\n",
                 dev->sc_count, (double)budget / 1e6, (double)hz);
     }
-    return true;
+    return VK_SUCCESS;
+}
+
+/** @brief Create dev->surface on the device's window and check that the device's queue family presents to it.
+ *
+ * @param dev Windowed device whose surface is VK_NULL_HANDLE.
+ * @return false when SDL cannot create the surface or the queue family
+ *         cannot present to it; dev->surface is then VK_NULL_HANDLE. */
+static bool surface_create(rhi_device *dev)
+{
+    if (!SDL_Vulkan_CreateSurface(dev->window, dev->instance, NULL, &dev->surface)) {
+        RHI_LOG("surface: SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
+        dev->surface = VK_NULL_HANDLE;
+        return false;
+    }
+    VkBool32 present = VK_FALSE;
+    vkGetPhysicalDeviceSurfaceSupportKHR(dev->phys, dev->gfx_family, dev->surface, &present);
+    if (present) return true;
+    RHI_LOG("surface: queue family %u cannot present to the new surface\n", dev->gfx_family);
+    vkDestroySurfaceKHR(dev->instance, dev->surface, NULL);
+    dev->surface = VK_NULL_HANDLE;
+    return false;
+}
+
+/** @brief Replace dev->surface with a new VkSurfaceKHR on the same window, releasing a window the driver still holds for a destroyed swapchain.
+ *
+ * The caller has destroyed every swapchain of the surface.
+ * @param dev Windowed device.
+ * @return The surface_create result. */
+static bool surface_rebuild(rhi_device *dev)
+{
+    RHI_LOG("swapchain: the window is in use (VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) with no "
+            "swapchain alive; rebuilding the surface\n");
+    vkDestroySurfaceKHR(dev->instance, dev->surface, NULL);
+    dev->surface = VK_NULL_HANDLE;
+    dev->fault_window_bound = false;
+    dev->sc_surface_rebuilds++;
+    return surface_create(dev);
 }
 
 /* External dependencies every render pass of the device declares. A pipeline
@@ -3260,11 +3376,12 @@ static bool create_stages(rhi_device *dev)
     return true;
 }
 
-/** @brief Destroy everything sized to the swapchain: stages, the offscreen color and depth targets and framebuffer, render-done semaphores and the swapchain.
+/** @brief Destroy the objects sized to the swapchain: stages, the offscreen color and depth targets and framebuffer, and render-done semaphores.
  *
- * Each handle is nulled after destruction, so a repeat call (after a partial
- * failure in recreate) is harmless. The caller guarantees the device is idle.
- * The sc_images array is not cleared; those images belong to the swapchain.
+ * The swapchain itself stays (swapchain_destroy), so recreate can hand it to
+ * the new one as oldSwapchain. Each handle is nulled after destruction, so a
+ * repeat call (after a partial failure in recreate) is harmless. The caller
+ * guarantees the device is idle.
  * @param dev Device whose swapchain-sized objects are destroyed. */
 static void destroy_swapchain_resources(rhi_device *dev)
 {
@@ -3282,7 +3399,16 @@ static void destroy_swapchain_resources(rhi_device *dev)
             dev->render_done[i] = VK_NULL_HANDLE;
         }
     }
-    if (dev->swapchain) { vkDestroySwapchainKHR(dev->device, dev->swapchain, NULL); dev->swapchain = VK_NULL_HANDLE; }
+}
+
+/** @brief Destroy the swapchain and null its handle.
+ *
+ * The sc_images array is not cleared; those images belong to the swapchain.
+ * @param dev Device whose swapchain is destroyed; the device is idle. */
+static void swapchain_destroy(rhi_device *dev)
+{
+    if (dev->swapchain) vkDestroySwapchainKHR(dev->device, dev->swapchain, NULL);
+    dev->swapchain = VK_NULL_HANDLE;
 }
 
 /* Present-extent trace (OPENPETE_PRESENT_EXTENT_TRACE); see
@@ -3412,13 +3538,15 @@ static void lxt_present(rhi_device *dev, const char *src, VkImage img)
  * no present since the arm held non-black content, within 30 s of the arm;
  * the first present with a non-black pixel and the first with at least 1%
  * non-black pixels each log their time after the arm and after the first
- * game present.
+ * game present. Every present the driver queued (@p pr VK_SUCCESS or
+ * VK_SUBOPTIMAL_KHR) counts in sc_presents, armed or not.
  * @param dev Device that presented.
  * @param src Source label; NULL names it from the launcher-frame flag.
  * @param pr The vkQueuePresentKHR result.
  * @param img The image whose content was presented (TRANSFER_SRC), or VK_NULL_HANDLE. */
 static void pxt_present(rhi_device *dev, const char *src, VkResult pr, VkImage img)
 {
+    dev->sc_presents += pr >= 0;   /* VK_SUCCESS or VK_SUBOPTIMAL_KHR: the image was queued */
     lxt_present(dev, src, img);
     if (s_pxt_on <= 0 || atomic_load(&s_pxt_t0) == 0) return;
     int w = 0, h = 0;
@@ -3471,14 +3599,34 @@ static void pxt_skip(rhi_device *dev, const char *why)
             dev->sc_extent.width, dev->sc_extent.height);
 }
 
+/** @brief Create the new swapchain with the current one as oldSwapchain, destroy the old one, and on VK_ERROR_NATIVE_WINDOW_IN_USE_KHR retry once on a new surface.
+ *
+ * The old swapchain is retired by the creation whether or not it succeeds,
+ * so it is destroyed either way. A window still in use once no swapchain of
+ * it is alive is held by the driver for a destroyed swapchain;
+ * surface_rebuild releases it.
+ * @param dev Windowed device, idle, whose swapchain-sized objects are destroyed.
+ * @return true when a swapchain was created. */
+static bool swapchain_replace(rhi_device *dev)
+{
+    const VkSwapchainKHR old = dev->swapchain;
+    dev->swapchain = VK_NULL_HANDLE;
+    VkResult r = create_swapchain(dev, old);
+    if (old) vkDestroySwapchainKHR(dev->device, old, NULL);
+    if (r == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR && surface_rebuild(dev))
+        r = create_swapchain(dev, VK_NULL_HANDLE);
+    return r == VK_SUCCESS;
+}
+
 /** @brief Rebuild the swapchain and every object sized to it, restarting the acquire and present synchronization.
  *
  * Waits for the device to go idle, resets the present-id counters, replaces
  * every acquire semaphore and slot fence (a binary semaphore left signaled
  * cannot be reused, and a fence left unsignaled would stall its next wait),
  * clears the staged-present acquire flag, destroys the swapchain-sized
- * resources, and creates the swapchain, offscreen targets, stage images and
- * render-done semaphores. dev->needs_recreate is cleared only on success.
+ * resources, replaces the swapchain (swapchain_replace), and creates the
+ * offscreen targets, stage images and render-done semaphores. A surface
+ * left null by a failed surface rebuild is created first. dev->needs_recreate is cleared only on success.
  * A zero surface extent (a minimized window) refuses before anything is
  * waited or destroyed: the swapchain and every object sized to it stay at
  * the last extent, so a capture-mode frame keeps rendering into off_image
@@ -3490,6 +3638,7 @@ static void pxt_skip(rhi_device *dev, const char *why)
  *         retries because needs_recreate stays set. */
 static bool recreate(rhi_device *dev)
 {
+    if (!dev->surface && !surface_create(dev)) return false;   /* a failed surface rebuild */
     {
         VkSurfaceCapabilitiesKHR caps;
         VkExtent2D extent;
@@ -3536,7 +3685,7 @@ static bool recreate(rhi_device *dev)
     }
     destroy_swapchain_resources(dev);
     const uint64_t pxt_t1 = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
-    if (!create_swapchain(dev)) return false;   /* also nulls images_in_flight */
+    if (!swapchain_replace(dev)) return false;   /* also nulls images_in_flight */
     const uint64_t pxt_t2 = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
     if (!create_offscreen(dev)) return false;
     if (!create_stages(dev)) return false;
@@ -3544,6 +3693,8 @@ static bool recreate(rhi_device *dev)
     for (uint32_t i = 0; i < dev->sc_count; i++)
         VK_CHECK(vkCreateSemaphore(dev->device, &sem, NULL, &dev->render_done[i]));
     dev->needs_recreate = false;
+    dev->sc_recreates++;
+    dev->sc_presents_at_recreate = dev->sc_presents;
     if (s_pxt_on > 0 && atomic_load(&s_pxt_t0)) {
         const uint64_t now = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
         RHI_LOG("pxt %9.2f ms recreate %ux%u -> %ux%u in %.2f ms (idle+teardown %.2f, "
@@ -3556,6 +3707,28 @@ static bool recreate(rhi_device *dev)
 }
 
 /* ------------------------------------------------------------------ */
+
+/** @brief Log the names of the Vulkan layers active on the instance, implicit ones included, on one line.
+ *
+ * The loader answers vkEnumerateDeviceLayerProperties with the layers it
+ * activated on the instance: the implicit layers the system installs (an
+ * overlay, a capture tool, a vendor's presentation layer) and any the
+ * instance enabled.
+ * @param dev Device whose instance and physical device are read. */
+static void log_active_layers(rhi_device *dev)
+{
+    uint32_t n = 0;
+    vkEnumerateDeviceLayerProperties(dev->phys, &n, NULL);
+    VkLayerProperties *lp = n ? calloc(n, sizeof(*lp)) : NULL;
+    if (!lp) n = 0;
+    if (n) vkEnumerateDeviceLayerProperties(dev->phys, &n, lp);
+    char line[1024] = "";
+    size_t at = 0;
+    for (uint32_t i = 0; i < n && at < sizeof line; i++)
+        at += (size_t)snprintf(line + at, sizeof line - at, "%s%s", i ? ", " : "", lp[i].layerName);
+    free(lp);
+    RHI_LOG("vulkan layers active: %s\n", n ? line : "none");
+}
 
 /** @brief Log the device's memory table: one line per heap (size, flags) and per type (property flags, heap).
  *
@@ -4296,10 +4469,11 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     }
     step = "No Vulkan graphics device that can draw to the window was found.";
     if (!pick_physical_and_device(dev)) goto fail;
+    log_active_layers(dev);
     volkLoadDevice(dev->device);        /* device-specific dispatch (faster) */
     step = "The Vulkan swapchain could not be created.";
     if (!headless) {
-        if (!create_swapchain(dev)) goto fail;
+        if (create_swapchain(dev, VK_NULL_HANDLE) != VK_SUCCESS) goto fail;
     } else {
         /* No swapchain: the offscreen image still needs an extent, the
          * requested size. sc_count stays 0 -> no render_done semaphores, no
@@ -4437,6 +4611,7 @@ static void device_objects_destroy(rhi_device *dev)
         thumb_slot_free(dev, i);
     }
     destroy_swapchain_resources(dev);
+    swapchain_destroy(dev);
     if (dev->off_rp) vkDestroyRenderPass(dev->device, dev->off_rp, NULL);
     if (dev->off_load_rp) vkDestroyRenderPass(dev->device, dev->off_load_rp, NULL);
     if (dev->rt_rp)  vkDestroyRenderPass(dev->device, dev->rt_rp, NULL);
@@ -4471,6 +4646,19 @@ static void device_objects_destroy(rhi_device *dev)
     dev->device = VK_NULL_HANDLE;
 }
 
+/** @brief Log the windowed device's swapchain census: rebuilds, creation failures, surface rebuilds and presents, in total and since the last rebuild.
+ *
+ * @param dev Device being destroyed; a headless one logs nothing. */
+static void swapchain_census_log(const rhi_device *dev)
+{
+    if (dev->headless) return;
+    RHI_LOG("swapchain census: %u recreates, %u create failures, %u surface rebuilds, "
+            "%llu presents, %llu after the last recreate\n",
+            dev->sc_recreates, dev->sc_create_failures, dev->sc_surface_rebuilds,
+            (unsigned long long)dev->sc_presents,
+            (unsigned long long)(dev->sc_presents - dev->sc_presents_at_recreate));
+}
+
 void rhi_destroy(rhi_device *dev)
 {
     if (ring_gen_dbg())
@@ -4479,6 +4667,7 @@ void rhi_destroy(rhi_device *dev)
                 (unsigned long long)s_dbg_gw, (unsigned long long)s_dbg_gb);
     if (!dev) return;
     if (!dev->headless) SDL_RemoveEventWatch(display_change_watch, dev);
+    swapchain_census_log(dev);
     rhi_compile_pool_stop(dev);   /* no thread may use the cache or the device past here */
     described_free(dev);
     rhi_pc_report();
