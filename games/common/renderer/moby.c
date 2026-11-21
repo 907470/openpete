@@ -4760,6 +4760,7 @@ typedef struct {
     long canon_absent, canon_boxed;
     long sector_seen, sector_occl;
     long cand;        /* mobys offered to the occlusion test */
+    long sector_rej;  /* mobys --sector-visibility kept from the reveal clauses */
     long confirmed;   /* provisional admissions their decode's bounds culled */
     int  added, wide_added, sector_added;
 } moby_reveal_census_t;
@@ -4897,20 +4898,38 @@ static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_
 /** @brief Print one canonical reveal walk's [reveal-census] line while OPENPETE_REVEAL_CENSUS is nonzero (read once).
  *
  * The line carries the VBL, the feed key, the kind, the mobys offered to the
- * occlusion test, those it culled, the records appended and the provisional
- * admissions a decode's bounds culled. A sub-tick walk prints nothing.
+ * occlusion test, those it culled, the records appended, the provisional
+ * admissions a decode's bounds culled and the mobys --sector-visibility kept
+ * from the reveal clauses. A sub-tick walk prints nothing.
  * @param c The walk's tallies.
  * @param kind The model kind the walk covered. */
 static void reveal_census_print(const moby_reveal_census_t* c, moby_reveal_kind_t kind) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_REVEAL_CENSUS"); on = (e && *e && *e != '0'); }
     if (!on || s_in_reextract) return;
-    fprintf(stderr, "[reveal-census vbl=%u key=%u kind=%s] cand=%ld occl=%ld added=%d confirmed=%ld\n",
+    fprintf(stderr, "[reveal-census vbl=%u key=%u kind=%s] cand=%ld occl=%ld added=%d confirmed=%ld "
+                    "sector_rejected=%ld\n",
             openpete_frame, openpete_feed_key_now(), kind == MOBY_REVEAL_ANIMATED ? "anim" : "simple",
-            c->cand, c->occl, c->added + c->wide_added + c->sector_added, c->confirmed);
+            c->cand, c->occl, c->added + c->wide_added + c->sector_added, c->confirmed, c->sector_rej);
 }
 
-int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
+/** @brief Whether --sector-visibility rejects a moby's key sector, which keeps the reveal clauses from drawing it.
+ *
+ * The key is the byte at game_layout.moby.sector_off (0xFE and 0xFF name no
+ * sector). terrain_sector_admitted answers: under frustum every sector is
+ * admitted, under game the clauses keep their own tests (a -1 answer), under
+ * filled a sector outside the tick's drawn set is rejected, so a moby that
+ * stands in geometry the terrain does not draw is not drawn in the sky.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @return 1 when the moby's sector is rejected, else 0. */
+static int moby_reveal_sector_rejected(CPUState* cpu, uint32_t m) OP_REQUIRES(sim) {
+    if (!game_layout.moby.sector_off) return 0;
+    const uint32_t sec = cpu->read_byte(m + game_layout.moby.sector_off);
+    return sec < 0xFEu && terrain_sector_admitted(sec) == 0;
+}
+
+int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) OP_REQUIRES(sim) {
     if (!moby_game.cull_box_threshold || !moby_game.reveal_record) return 0;
     const double widen = moby_native_view_widen();
     const int wide = kind == MOBY_REVEAL_ANIMATED && moby_game.cull_view_admits && widen > 1.0;
@@ -4927,6 +4946,7 @@ int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
         if (moby_run_once_hidden(cpu, m,
                 (unsigned)cpu->read_half(m + game_layout.moby.class_off))) continue;
         c.seen++;
+        if (moby_reveal_sector_rejected(cpu, m)) { c.sector_rej++; continue; }
         if (wide && moby_reveal_widened(cpu, m, head, widen, c.wide_v, &c.occl, &c.requeued)) {
             c.wide_added++; continue;
         }

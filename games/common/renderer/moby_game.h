@@ -24,6 +24,7 @@
 #include <string.h>
 #include "psx_runtime_internal.h"   /* CPUState: the decoders read guest memory */
 #include "renderer/moby_rank.h"      /* the paint-key rows the providers name */
+#include "openpete_thread_roles.h"   /* OP_SLOT */
 
 #ifdef __cplusplus
 extern "C" {
@@ -283,7 +284,7 @@ typedef struct moby_game {
      * from the queue the canonical call captured, so the simple mobys survive
      * between ticks. NULL where the game has no such kind, and the walk feeds
      * the animated records alone. */
-    int  (*simple_pass)(CPUState* cpu);
+    int  (*simple_pass)(CPUState* cpu) OP_SLOT(sim);
     int  (*simple_replay)(CPUState* cpu);
     /* The mobys of the simple models' queue copy taken in canonical epoch
      * `epoch`, written to out (at most max); 0 when that epoch captured no

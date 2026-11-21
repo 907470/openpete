@@ -46,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* The one-byte vertex form indexes a 32-bit adjustment table
  * (mobydraw.s:914), moby_game_s23.vertex_adjust_table. The draw XORs the
@@ -3079,7 +3080,7 @@ static int s23_reveal_record(CPUState* cpu, uint32_t moby, moby_reveal_kind_t ki
  * decoded. Prints a census line under moby_verify_vbl.
  * @param cpu The guest CPU state; the game's draw writes guest memory.
  * @return The number of triangles emitted. */
-static int s23_simple_pass(CPUState* cpu) {
+static int s23_simple_pass(CPUState* cpu) OP_REQUIRES(sim) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
     s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
     s_simple_lp = s_simple_fade = s_simple_occl = 0;

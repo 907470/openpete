@@ -853,6 +853,8 @@ typedef struct game_layout {
         uint32_t colour_off;        /* per-moby colour word; 0 where none */
         uint32_t size_off;          /* per-moby screen-scale byte; 0 where none */
         uint32_t drawn_off;         /* the drawn verdict the cull writes back */
+        uint32_t sector_off;        /* the byte naming the sector the cull tests against the
+                                     * PVS verdict, 0xFE/0xFF for none (0 = no such byte) */
         uint32_t rot_off;           /* the model-to-world rotation (3x3 Q12, the
                                      * GTE's five-word form) the water-plane
                                      * split reads; 0 where the game has none */

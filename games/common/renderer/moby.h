@@ -14,6 +14,7 @@
 #include "renderer/moby_rank.h"   /* paint-key records and vertices */
 #include "renderer/native_gte.h"  /* ngte_euler_sc: the composed rotation's sin/cos */
 #include "openpete_time.h"         /* op_time_t */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -695,7 +696,7 @@ void moby_simple_world_bucket(moby_simple_emit* se, int w);
  * @param cpu The guest CPU state, read only.
  * @param kind The model kind whose queue the records join.
  * @return The number of records appended. */
-int moby_reveal_candidates(struct CPUState* cpu, moby_reveal_kind_t kind);
+int moby_reveal_candidates(struct CPUState* cpu, moby_reveal_kind_t kind) OP_REQUIRES(sim);
 
 /* ---- decode pieces shared with the player feeder -----------------------
  * The avatar draw and the moby draw are different routines, but they encode a
