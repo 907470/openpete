@@ -2840,7 +2840,7 @@ static const knob_desc_t g_builtin_debug[] = {
     ENVROW_LATCHED("TC_EDGE_RECYCLE", "Debug", "0",
         "The outgoing level's terrain-cache buffers stay allocated, one per arena, and serve the next level edge's replacement when large enough (default 0 = freed, and the replacement allocated at the edge)."),
     ENVROW_LATCHED("TC_BAKE_BUDGET_US", "Debug", "1000",
-        "Terrain-cache first-touch bake time per tick in us; the rest draw through the CPU walk (0 = one sector per tick, off = no budget)."),
+        "Terrain-cache first-touch bake budget per tick in us of reference-host bake time, charged in work units counted from each sector (800 per ms), so every host defers the same sectors; the rest draw through the CPU walk (0 = one sector per tick, off = no budget)."),
     ENVROW_LIVE("TERRAIN_VANIM", "Debug", "1",
         "Sub-tick lerp of moving-terrain verts (default 1)."),
     ENVROW_LIVE("TERRAIN_TANIM", "Debug", "1",

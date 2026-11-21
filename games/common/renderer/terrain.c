@@ -10797,14 +10797,22 @@ static void tgpu_table_watch(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
     openpete_tercache_set_content(lvl, &c);
 }
 
+/* Bake work units (tgpu_bake_units): a sector's predicted bake cost, read
+ * from its decoded counts before the bake, so a per-tick bake budget admits
+ * the same sectors on every host and under any load. TGPU_UNITS_PER_MS
+ * units bake in about 1 ms on the 9800X3D reference host (1.27 us per unit
+ * over 631 first-touch bakes on the three games). */
+#define TGPU_UNITS_PER_MS 800u
+
 /* Consolidation migration (openpete_tercache_buf_source): a canonical tick
  * walk re-bakes visible sectors whose chunks sit in a source buffer until
- * the bake time this tick spent on them passes TGPU_MIGRATE_NS, checked
- * before each sector, so the cost is per tick whatever the display rate. */
-#define TGPU_MIGRATE_NS 1000000u
+ * the bake units this tick spent on them reach TGPU_MIGRATE_UNITS (about
+ * 1 ms on the reference host), checked before each sector, so the cost is
+ * per tick whatever the display rate. */
+#define TGPU_MIGRATE_UNITS TGPU_UNITS_PER_MS
 static int s_mig_canon;               /* this build is a canonical tick walk with migration owed */
 static uint32_t s_mig_frame = 0xFFFFFFFFu;   /* openpete_frame of the tick being budgeted */
-static uint64_t s_mig_ns;             /* migration bake time spent in that tick */
+static uint32_t s_mig_units OP_GUARDED_BY(sim);   /* migration bake units spent in that tick */
 
 /** @brief Tests whether a slot holds a chunk in a consolidation source buffer.
  * @param T The slot.
@@ -10819,8 +10827,8 @@ static int tgpu_slot_on_source(const tgpu_slot_t* T) {
  * @param T The slot.
  * @param dirty Nonzero when the slot re-bakes anyway.
  * @return 1 on a canonical tick walk with migration budget left and a chunk of the slot in a source. */
-static int tgpu_migrate_due(const tgpu_slot_t* T, int dirty) {
-    return !dirty && s_mig_canon && s_mig_ns < TGPU_MIGRATE_NS && tgpu_slot_on_source(T);
+static int tgpu_migrate_due(const tgpu_slot_t* T, int dirty) OP_REQUIRES_SHARED(sim) {
+    return !dirty && s_mig_canon && s_mig_units < TGPU_MIGRATE_UNITS && tgpu_slot_on_source(T);
 }
 
 /** @brief Opens a build's migration budget: on the first canonical build of a tick, resets it and counts the tick.
@@ -10829,11 +10837,11 @@ static int tgpu_migrate_due(const tgpu_slot_t* T, int dirty) {
  * (s_vanim_sub) migrates nothing on purpose; its sectors still move out of a
  * source whenever they re-bake for any other reason.
  * @param tgpu_on Nonzero when this build feeds the cache. */
-static void tgpu_migrate_begin(int tgpu_on) {
+static void tgpu_migrate_begin(int tgpu_on) OP_REQUIRES(sim) {
     s_mig_canon = tgpu_on && !s_vanim_sub && openpete_tercache_migrating();
     if (!s_mig_canon || openpete_frame == s_mig_frame) return;
     s_mig_frame = openpete_frame;
-    s_mig_ns = 0;
+    s_mig_units = 0;
     openpete_tercache_migrate_tick();
 }
 
@@ -10869,9 +10877,11 @@ static int tgpu_claim_retry(const tgpu_slot_t* T) {
  * holds no chunk of the sector (every slot after a level-edge adoption, which
  * frees them all; a sector entering view or a camera cut) or the retry of an
  * arena-full claim once the allocation epoch steps (a growth adoption).
- * First-touch bakes share a wall-time budget per canonical tick, checked
- * before each sector; the first of a tick is always admitted, so at least one
- * bakes per tick. A sector over budget leaves its slot untouched and returns
+ * First-touch bakes share a budget of bake work units (tgpu_bake_units) per
+ * canonical tick, checked before each sector; the first of a tick is always
+ * admitted, so at least one bakes per tick. The units are read from game
+ * state, so the deferred set is the same on every host and under any load;
+ * the wall time a bake takes is census output only. A sector over budget leaves its slot untouched and returns
  * TGPU_CLAIM_BUDGET: the CPU walk draws it this walk, the cache counts it in
  * budget_claims, and it is a candidate again on the next walk. A parallel
  * walk's prepass collects the candidates and bakes them after the prepass in
@@ -10880,14 +10890,18 @@ static int tgpu_claim_retry(const tgpu_slot_t* T) {
  * class nearest view depth first. A serial walk bakes them in walk order and
  * admits an aged sector over budget. Re-bakes of a slot that holds the sector
  * (rolls, generations, colour, near variant, migration) are never deferred.
- * OPENPETE_TC_BAKE_BUDGET_US is the budget in microseconds (default 1000; 0
- * admits one sector per tick; "off" or a negative value disables it). */
-#define TGPU_BUDGET_NS_DEFAULT 1000000
+ * OPENPETE_TC_BAKE_BUDGET_US is the budget in microseconds of reference-host
+ * bake time, converted to units at TGPU_UNITS_PER_MS (default 1000 = 800
+ * units; 0 admits one sector per tick; "off" or a negative value disables
+ * it). */
+#define TGPU_BUDGET_US_DEFAULT 1000
 #define TGPU_BUDGET_AGE 8u
 #define TGPU_CLAIM_BUDGET 6
 enum { TGPU_BUD_OFF, TGPU_BUD_INLINE, TGPU_BUD_COLLECT, TGPU_BUD_RESOLVE };
 static int s_bud_mode;                 /* this walk's budget mode (TGPU_BUD_*) */
-static uint64_t s_bud_ns;              /* first-touch bake time spent in the tick */
+static uint32_t s_bud_units OP_GUARDED_BY(sim);   /* first-touch bake units spent in the tick */
+static int s_bud_log OP_GUARDED_BY(sim) = -1;     /* OPENPETE_TC_BUDGET_LOG, latched */
+static uint64_t s_bud_ns;              /* first-touch bake time spent in the tick (census) */
 static uint32_t s_bud_n;               /* first-touch bakes in the tick */
 static uint32_t s_bud_frame = 0xFFFFFFFFu;   /* openpete_frame of the tick being budgeted */
 static uint32_t s_bud_tick;            /* canonical ticks budgeted: the deferral age clock */
@@ -10907,21 +10921,22 @@ typedef struct { int vi; uint32_t i, age; uint8_t want_near, aged; double depth;
 static tgpu_bud_cand_t s_bud_cand[1024];
 static int s_bud_ncand;
 
-/** @brief Returns the first-touch bake budget per tick in nanoseconds, latched from OPENPETE_TC_BAKE_BUDGET_US.
+/** @brief Returns the first-touch bake budget per tick in bake units, latched from OPENPETE_TC_BAKE_BUDGET_US.
  * @return The budget, or -1 when the budget is off. */
-static int64_t tgpu_budget_ns(void) {
-    static int64_t v = -2;
+static int64_t tgpu_budget_units(void) OP_REQUIRES(sim) {
+    static int64_t v OP_GUARDED_BY(sim) = -2;
     if (v != -2) return v;
     const char* e = getenv("OPENPETE_TC_BAKE_BUDGET_US");
-    v = TGPU_BUDGET_NS_DEFAULT;
-    if (e && *e) v = (strcmp(e, "off") == 0 || atoll(e) < 0) ? -1 : atoll(e) * 1000;
+    int64_t us = TGPU_BUDGET_US_DEFAULT;
+    if (e && *e) us = strcmp(e, "off") == 0 ? -1 : atoll(e);
+    v = us < 0 ? -1 : us * (int64_t)TGPU_UNITS_PER_MS / 1000;
     return v;
 }
 
 /** @brief Tests whether the tick's first-touch budget admits one more bake.
- * @return 1 for the tick's first bake or while the time spent is under the budget. */
-static int tgpu_budget_room(void) {
-    return s_bud_n == 0 || (int64_t)s_bud_ns < tgpu_budget_ns();
+ * @return 1 for the tick's first bake or while the units spent are under the budget. */
+static int tgpu_budget_room(void) OP_REQUIRES(sim) {
+    return s_bud_n == 0 || (int64_t)s_bud_units < tgpu_budget_units();
 }
 
 /** @brief Returns how many consecutive ticks a sector has been deferred, 0 when it was not deferred on the previous tick.
@@ -10956,20 +10971,20 @@ static void tgpu_budget_note_baked(uint32_t i, uint32_t s) {
     if (i < 1024u) s_bud_age[i].s = 0;
 }
 
-/** @brief Decides whether a dirty slot's bake is deferred by the first-touch budget, and names the budget its bake time charges.
+/** @brief Decides whether a dirty slot's bake is deferred by the first-touch budget, and names the budget its bake units charge.
  * @param T The slot, not yet re-latched.
  * @param SC The decoded sector.
  * @param sec_index The sector index.
  * @param dirty Nonzero when the slot re-bakes.
  * @param mig Nonzero for a migration bake.
- * @param meter Receives the budget the bake time charges, or NULL.
+ * @param meter Receives the budget the bake units charge, or NULL.
  * @return 1 to claim the sector for this walk instead of baking it. */
 static int tgpu_budget_gate(const tgpu_slot_t* T, const tscache_t* SC, int sec_index,
-                            int dirty, int mig, uint64_t** meter) {
-    *meter = mig ? &s_mig_ns : NULL;
+                            int dirty, int mig, uint32_t** meter) OP_REQUIRES(sim) {
+    *meter = mig ? &s_mig_units : NULL;
     if (!dirty || s_bud_mode == TGPU_BUD_OFF || openpete_tercache_bake_held()) return 0;
     if (T->s == SC->s && !tgpu_claim_retry(T)) return 0;
-    *meter = &s_bud_ns;
+    *meter = &s_bud_units;
     if (s_bud_mode == TGPU_BUD_COLLECT) return 1;
     if (s_bud_mode == TGPU_BUD_RESOLVE || tgpu_budget_room()) return 0;
     return tgpu_budget_age((uint32_t)sec_index, SC->s) < TGPU_BUDGET_AGE;
@@ -10978,9 +10993,9 @@ static int tgpu_budget_gate(const tgpu_slot_t* T, const tscache_t* SC, int sec_i
 /** @brief Opens a walk's first-touch budget: picks its mode, resets the walk counters, and on the first canonical build of a tick resets the tick's budget.
  * @param tgpu_on Nonzero when this build feeds the cache.
  * @param serial Nonzero when the walk runs serially (no post-prepass resolve). */
-static void tgpu_budget_begin(int tgpu_on, int serial) {
+static void tgpu_budget_begin(int tgpu_on, int serial) OP_REQUIRES(sim) {
     s_bud_t0 = op_now();   /* clock-guard: wall (bake census) */
-    s_bud_mode = (!tgpu_on || tgpu_budget_ns() < 0) ? TGPU_BUD_OFF
+    s_bud_mode = (!tgpu_on || tgpu_budget_units() < 0) ? TGPU_BUD_OFF
                : serial ? TGPU_BUD_INLINE : TGPU_BUD_COLLECT;
     s_bud_claims_walk = s_bud_age_walk = 0;
     s_bud_bakes_walk = s_bud_fresh_walk = s_bud_cands_walk = 0;
@@ -10988,6 +11003,7 @@ static void tgpu_budget_begin(int tgpu_on, int serial) {
     s_bud_ncand = 0;
     if (s_vanim_sub || openpete_frame == s_bud_frame) return;
     s_bud_frame = openpete_frame;
+    s_bud_units = 0;
     s_bud_ns = 0;
     s_bud_n = 0;
     s_bud_tick++;
@@ -15251,24 +15267,49 @@ static uint32_t tgpu_slot_coltab(const tgpu_slot_t* T) {
     return T->tabUnits > 0 ? T->tabFirst + (uint32_t)(T->tabCur * T->tabEnt) : OPTC_PREV_REC_NONE;
 }
 
-/** @brief Builds a sector through tgpu_build_sector, timing it for the walk census and charging the time to a budget.
+/** @brief Returns a sector bake's work units, its predicted cost, from the decoded sector before the bake.
+ *
+ * 40 per sector, 1 per face of the sector's own LP and HP tiers and its
+ * borrowed LP faces, doubled for a sector baking into the anim arenas (a
+ * previous-tick record per vertex), and 4 more per HP face when the bake
+ * carries near-variant chunks (tgpu_bake_near). Fit to first-touch bake
+ * times on the three games: R^2 0.59 per bake, against 0.21 for the face
+ * count alone; repeat bakes of one sector vary 26% in wall time.
+ * @param SC The decoded sector.
+ * @param with_var The bake's near-variant request, before tgpu_bake_with_var.
+ * @return The units. */
+static uint32_t tgpu_bake_units(const tscache_t* SC, int with_var) {
+    const uint32_t faces = (uint32_t)(SC->nLpF + SC->nHpF + (SC->imp ? SC->imp->nLpF : 0));
+    const uint32_t var = tgpu_bake_with_var(with_var, SC) ? 4u * (uint32_t)SC->nHpF : 0u;
+    return 40u + faces * (tgpu_sector_anim(SC) ? 2u : 1u) + var;
+}
+
+/** @brief Builds a sector through tgpu_build_sector, charging its units to a budget and timing it for the census.
  * @param cpu The guest CPU state.
  * @param slot The sector's decode slot index.
  * @param SC The decoded sector.
  * @param hqTable The HQ record table's guest address, or 0.
  * @param sec_index The level sector index.
  * @param with_var 1 to bake near-variant chunks.
- * @param meter The budget the bake time charges (the migration or the first-touch budget), or NULL.
+ * @param meter The budget the bake units charge (the migration or the first-touch budget), or NULL.
  * @return tgpu_build_sector's result. */
 static int tgpu_build_sector_metered(CPUState* cpu, int slot, const tscache_t* SC,
-                                     uint32_t hqTable, int sec_index, int with_var, uint64_t* meter) {
-    const op_time_t t0 = op_now();   /* clock-guard: wall (bake budgets) */
+                                     uint32_t hqTable, int sec_index, int with_var, uint32_t* meter) OP_REQUIRES(sim) {
+    ENV_FLAG_LATCH(s_bud_log, "OPENPETE_TC_BUDGET_LOG");
+    const uint32_t units = tgpu_bake_units(SC, with_var);
+    const op_time_t t0 = op_now();   /* clock-guard: wall (bake census) */
     const int r = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index, with_var);
     const uint64_t dt = (uint64_t)(op_now() - t0);   /* clock-guard: wall */
     s_bud_bake_ns_walk += dt;
     s_bud_bakes_walk++;
-    if (meter) *meter += dt;
-    if (meter != &s_bud_ns) return r;
+    if (meter) *meter += units;
+    if (s_bud_log)
+        fprintf(stderr, "[tc-bake] kind=%c units=%u lp=%d hp=%d imp=%d var=%d anim=%d ns=%llu\n",
+                meter == &s_bud_units ? 'F' : meter ? 'M' : 'R', units, SC->nLpF, SC->nHpF,
+                SC->imp ? SC->imp->nLpF : 0, tgpu_bake_with_var(with_var, SC),
+                tgpu_sector_anim(SC), (unsigned long long)dt);
+    if (meter != &s_bud_units) return r;
+    s_bud_ns += dt;
     s_bud_n++;
     s_bud_fresh_walk++;
     tgpu_budget_note_baked((uint32_t)sec_index, SC->s);
@@ -15286,10 +15327,10 @@ static int tgpu_build_sector_metered(CPUState* cpu, int slot, const tscache_t* S
  * @param hqTable The scene HQ table.
  * @param sec_index The sector's table index.
  * @param with_var Nonzero to bake near-variant chunks.
- * @param meter The budget the bake time charges (tgpu_budget_gate), or NULL.
+ * @param meter The budget the bake units charge (tgpu_budget_gate), or NULL.
  * @return The claim code: 0 baked, 1 arena-full or held, else the bake's code. */
 static int tgpu_build_or_hold(CPUState* cpu, int slot, const tscache_t* SC, uint32_t hqTable,
-                              int sec_index, int with_var, uint64_t* meter) {
+                              int sec_index, int with_var, uint32_t* meter) OP_REQUIRES(sim) {
     if (!openpete_tercache_bake_held())
         return tgpu_build_sector_metered(cpu, slot, SC, hqTable, sec_index, with_var, meter);
     openpete_tercache_note_window_skip();
@@ -15485,7 +15526,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     /* Migration out of a consolidation source, within the tick's budget. */
     const int mig = tgpu_migrate_due(T, dirty);
     dirty |= mig;
-    uint64_t* meter;
+    uint32_t* meter;
     if (tgpu_budget_gate(T, SC, sec_index, dirty, mig, &meter)) return TGPU_CLAIM_BUDGET;
     if (!dirty && !tgpu_roll_free(T) && T->lastColFrame != openpete_frame) {
         /* Colour liveness once per VBL (colours can only change per tick);
@@ -19544,10 +19585,12 @@ static long tgpu_budget_resolve(CPUState* cpu, uint32_t hqTable, int cen) OP_REQ
  * level-edge adoption, the walk's time from before the adoption to the
  * commit, the time and count of every bake, the first-touch bakes, the
  * candidates a parallel walk queued, the sectors deferred, the longest
- * deferral a baked sector ended, and the tick's first-touch time. */
-static void tgpu_budget_end(void) {
-    static int s_log = -1;
-    ENV_FLAG_LATCH(s_log, "OPENPETE_TC_BUDGET_LOG");
+ * deferral a baked sector ended, and the tick's first-touch units and time.
+ * Each bake prints a [tc-bake] line before it: the budget it charges (F
+ * first-touch, M migration, R none), its units and their inputs, and its
+ * wall time. */
+static void tgpu_budget_end(void) OP_REQUIRES(sim) {
+    ENV_FLAG_LATCH(s_bud_log, "OPENPETE_TC_BUDGET_LOG");
     const uint32_t ep = openpete_tercache_alloc_epoch();
     const char adopt = s_bud_edge ? 'E' : ep != s_bud_epoch ? 'G' : '-';
     s_bud_epoch = ep;
@@ -19555,13 +19598,14 @@ static void tgpu_budget_end(void) {
     s_bud_edge = 0;
     openpete_tercache_note_budget_walk(s_bud_claims_walk, s_bud_age_walk,
                                        !s_vanim_sub && s_bud_claims_walk > 0 && s_bud_fresh_walk == 0);
-    if (s_log)
+    if (s_bud_log)
         fprintf(stderr, "[tc-budget] f=%u sub=%d adopt=%c age=%u walk_ms=%.3f bake_ms=%.3f bakes=%u "
-                "fresh=%u cands=%u deferred=%u defer_ticks=%u tick_ms=%.3f\n",
+                "fresh=%u cands=%u deferred=%u defer_ticks=%u tick_units=%u tick_ms=%.3f\n",
                 openpete_feed_key_now(), s_vanim_sub, adopt, s_bud_since_edge,
                 (double)(op_now() - s_bud_t0) / 1e6,   /* clock-guard: wall (bake census) */
                 (double)s_bud_bake_ns_walk / 1e6, s_bud_bakes_walk, s_bud_fresh_walk,
-                s_bud_cands_walk, s_bud_claims_walk, s_bud_age_walk, (double)s_bud_ns / 1e6);
+                s_bud_cands_walk, s_bud_claims_walk, s_bud_age_walk, s_bud_units,
+                (double)s_bud_ns / 1e6);
     s_bud_mode = TGPU_BUD_OFF;
 }
 

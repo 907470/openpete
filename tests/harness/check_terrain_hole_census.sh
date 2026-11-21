@@ -161,9 +161,10 @@ leg() {  # tag level pose start lod control(0|1) lto faceid [kind: holes|walk]
     else
         # OPENPETE_TC_BAKE_BUDGET_US=off: the face identity hashes a face's
         # element index in its arena buffer, which follows the order sectors
-        # are baked; the first-touch budget orders bakes by bake time, a
-        # wall-clock quantity, so without the pin two captures of one pose
-        # place a sector at different elements and repaint every face.
+        # are baked; the first-touch budget spreads bakes over walks in an
+        # order keyed on view depth, so an arm that moves the camera would
+        # place a sector at different elements and repaint every face. With
+        # the budget off every sector bakes on its first walk in walk order.
         env+=(OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off)
     fi
     [[ "$prec" != 0 ]] && env+=(OPENPETE_TERRAIN_SECDELTA=1)

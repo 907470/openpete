@@ -4123,7 +4123,6 @@ games/common/renderer/terrain.c	-	s_lqsnap	static	-
 games/common/renderer/terrain.c	-	s_lqsnap_base	static	-	
 games/common/renderer/terrain.c	-	s_mig_canon	static	-	
 games/common/renderer/terrain.c	-	s_mig_frame	static	-	
-games/common/renderer/terrain.c	-	s_mig_ns	static	-	
 games/common/renderer/terrain.c	-	s_near_c_only	static	-	
 games/common/renderer/terrain.c	-	s_near_q_agree	static	-	
 games/common/renderer/terrain.c	-	s_nearhq	static	-	
@@ -4471,8 +4470,6 @@ games/common/renderer/terrain.c	terrain_vislist	s_binchk	local	-
 games/common/renderer/terrain.c	terrain_vislist	s_viscal	local	-	
 games/common/renderer/terrain.c	tgpu_animnear_on	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	tgpu_arena_census_at_exit	armed	local	-	
-games/common/renderer/terrain.c	tgpu_budget_end	s_log	local	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	tgpu_budget_ns	v	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tgpu_canimnear_on	v	local	once	= -1, one filler, first reference tests it
 games/common/renderer/terrain.c	tgpu_census	n	local	-	
 games/common/renderer/terrain.c	tgpu_census	on	local	-	

@@ -903,6 +903,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             SKIP_RETURN_CODE 64)
     endforeach()
 
+    # Headless native captures repeat across host load: one Spyro 3 capture
+    # twice, the second pinned to CPU 0, with the terrain cache forced on;
+    # every PNG digest, the native-feed triangle total and the cache's bakes
+    # and budget_claims agree, and both legs report bakes>0 and
+    # budget_claims>0 (the first-touch budget deferred sectors). A
+    # presentation decision keyed on wall time separates the legs. Exit 64 =
+    # no binary or disc.
+    add_test(NAME capture_repeat_spyro-3
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_capture_repeat.sh
+                     --game spyro-3 --exe ${_spyro1_bin}
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(capture_repeat_spyro-3 PROPERTIES
+        LABELS "slow;renderer;determinism"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64)
+
     # Cognitive-complexity ratchet, the ctest spelling of the per-build
     # check (core/CMakeLists.txt, openpete_complexity_ratchet). Exit 64 =
     # no compile database.
