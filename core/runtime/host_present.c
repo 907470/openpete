@@ -422,7 +422,7 @@ void present_record_shown(openpete_frame_time_log_t* ftl, int kind)
 {
     if (op_prof_on())
         op_prof_present((uint32_t)openpete_canon_tick, kind);
-    openpete_frame_time_log_present(ftl, openpete_frame);
+    openpete_frame_time_log_present(ftl, openpete_frame_published());
 }
 
 /* Documented at the declaration in host_loop_internal.h. */

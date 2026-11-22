@@ -20,14 +20,15 @@
  * per-object alpha mapping discontinuous at every roll (fast movers judder
  * ±half a tick per present). Falls back to op_now() if unset (unit harnesses
  * that drive the objs table without the run loop). */
-op_time_t g_openpete_tick_stamp = 0;
+OP_ROLE_ATOMIC(op_time_t) g_openpete_tick_stamp = 0;
 /** @brief Return the timestamp that marks the current tick's snapshot.
  *
  * The PLL-smoothed VBL stamp g_openpete_tick_stamp when set, else the wall
  * clock (unit harnesses that drive the table without the run loop).
  * @return The stamp in nanoseconds. */
 static op_time_t objs_tick_stamp(void) {
-    return g_openpete_tick_stamp ? g_openpete_tick_stamp : op_now(); /* clock-guard: wall */ /* unit harnesses only */
+    const op_time_t s = atomic_load_explicit(&g_openpete_tick_stamp, memory_order_relaxed);
+    return s ? s : op_now(); /* clock-guard: wall */ /* unit harnesses only */
 }
 op_time_t openpete_interp_tick_stamp(void) { return objs_tick_stamp(); }
 

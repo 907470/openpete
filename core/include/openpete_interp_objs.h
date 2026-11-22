@@ -40,6 +40,7 @@
 
 #include <stdint.h>
 #include "openpete_time.h"   /* op_time_t - per-object distinct-roll timestamps */
+#include "openpete_thread_roles.h"   /* OP_ROLE_ATOMIC */
 
 #ifdef __cplusplus
 extern "C" {
@@ -308,9 +309,11 @@ void openpete_interp_objs_stats(int* tracked, int* paired,
  * freezes the other half). */
 extern op_time_t g_openpete_tick_period_ns;
 
-/* The stamp of the newest object capture; run.c sets it beside
- * openpete_interp_capture, and openpete_interp_tick_stamp returns it. */
-extern op_time_t g_openpete_tick_stamp;
+/* The stamp of the newest object capture; the host loop stores it on the
+ * sim thread beside openpete_interp_capture, and openpete_interp_tick_stamp
+ * returns it on any thread (the present thread's pace records). Atomic;
+ * every access is relaxed, since no other data is published through it. */
+extern OP_ROLE_ATOMIC(op_time_t) g_openpete_tick_stamp;
 
 /** @brief Return the stamp of the most recent sim tick.
  *

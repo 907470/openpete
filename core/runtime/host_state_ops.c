@@ -198,7 +198,7 @@ static int state_op_run(const state_op_t* op) OP_REQUIRES(sim) {
         return openpete_bugreport_press(&g_game.cpu, s_bug_opts) == 0 ? STATE_OP_DONE
                                                                        : STATE_OP_FAILED;
     }
-    if (rc == STATE_OP_DONE) openpete_frame = lf;
+    if (rc == STATE_OP_DONE) openpete_frame_set(lf);
     return rc;
 }
 
@@ -368,7 +368,7 @@ static void state_stress_rewind(openpete_state_mem_t* sm, unsigned k) OP_REQUIRE
         return;
     }
     if (rc == 0) {
-        openpete_frame = lf;
+        openpete_frame_set(lf);
         if ((++s_stress_ops & 0xFFu) == 1u)
             OPL_INFO_F("savestate", "stress-rewind: %u rollbacks (back to f=%u)", s_stress_ops, lf);
     }
@@ -461,7 +461,7 @@ static bool rewind_seek_one_tick(bool bk2_active) OP_REQUIRES(sim) {
     const int log_offset = input_log_count() - (int)openpete_frame;
     unsigned lf = openpete_frame;
     if (openpete_rewind_restore(kf, &g_game.cpu, &lf) != 0) return false;
-    openpete_frame = lf;
+    openpete_frame_set(lf);
     const bool fault_short = rewind_fault_short(++s_rewind_steps);
     openpete_interp_reset();
     openpete_interp_objs_reset();

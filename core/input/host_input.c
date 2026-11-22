@@ -19,6 +19,7 @@
 
 #include <math.h>
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
@@ -41,6 +42,78 @@
  * is whole; a reader that sees an odd count, or a different count either
  * side of its copy, retries. The producer never blocks inside the critical
  * section (a dozen bytes of stores), so a reader converges immediately. */
+
+/* Seqlock payload word. Every payload byte is stored and loaded through
+ * relaxed atomic 64-bit words, so a copy that overlaps a publish is a
+ * mixed but defined value that the count check rejects, never a data race
+ * on plain memory (C11 7.17; the seqlock form of Boehm, "Can Seqlocks Get
+ * Along With Programming Language Memory Models?", 2012). */
+typedef _Atomic uint64_t seq_word_t;
+
+/* Payload words a type of `bytes` needs. */
+#define SEQ_WORDS(bytes) (((bytes) + 7u) / 8u)
+
+/* Largest span seq_load copies: 15 words of data plus one for an offset that
+ * does not start on a word. */
+#define SEQ_LOAD_MAX_WORDS 16u
+
+/** @brief Publish bytes into a seqlock's word payload: count odd, a release fence, the words, count even with release.
+ *
+ * Single producer. The release fence after the odd count orders it before
+ * every payload store, so a reader whose relaxed load sees a payload word
+ * of this publish also sees a count that is no longer its starting count.
+ * @param seq the count; even while the payload is whole.
+ * @param words the payload, SEQ_WORDS(bytes) words.
+ * @param src the bytes to publish.
+ * @param bytes the byte count.
+ * @return the new (even) count. */
+static unsigned seq_store(_Atomic unsigned* seq, seq_word_t* words,
+                          const void* src, size_t bytes)
+{
+    const unsigned s = atomic_load_explicit(seq, memory_order_relaxed);
+    atomic_store_explicit(seq, s + 1u, memory_order_relaxed);
+    atomic_thread_fence(memory_order_release);
+    const unsigned char* p = (const unsigned char*)src;
+    for (size_t i = 0; i < SEQ_WORDS(bytes); i++) {
+        uint64_t w = 0;
+        const size_t left = bytes - i * 8u;
+        memcpy(&w, p + i * 8u, left < 8u ? left : 8u);
+        atomic_store_explicit(&words[i], w, memory_order_relaxed);
+    }
+    atomic_store_explicit(seq, s + 2u, memory_order_release);
+    return s + 2u;
+}
+
+/** @brief Copy bytes [off, off + bytes) of a seqlock's word payload in one try, and report whether the copy is whole.
+ *
+ * Loads the count with acquire, the covering words relaxed, then issues an
+ * acquire fence and reloads the count: an odd or changed count means a
+ * publish overlapped the copy. out receives the copy in every case.
+ * @param seq the count.
+ * @param words the payload.
+ * @param off first byte to copy.
+ * @param out receives the bytes.
+ * @param bytes the byte count; off % 8 + bytes is at most
+ *        8 * SEQ_LOAD_MAX_WORDS.
+ * @param seq_out receives the count the whole copy belongs to; may be NULL.
+ * @return 1 when the copy belongs to one publish, 0 otherwise. */
+static int seq_load(_Atomic unsigned* seq, seq_word_t* words, size_t off,
+                    void* out, size_t bytes, unsigned* seq_out)
+{
+    uint64_t tmp[SEQ_LOAD_MAX_WORDS];
+    const size_t w0 = off / 8u;
+    const size_t nw = SEQ_WORDS(off % 8u + bytes);
+    SDL_assert(nw <= SEQ_LOAD_MAX_WORDS);
+    const unsigned s0 = atomic_load_explicit(seq, memory_order_acquire);
+    for (size_t i = 0; i < nw; i++)
+        tmp[i] = atomic_load_explicit(&words[w0 + i], memory_order_relaxed);
+    atomic_thread_fence(memory_order_acquire);
+    const unsigned s1 = atomic_load_explicit(seq, memory_order_relaxed);
+    memcpy(out, (const unsigned char*)tmp + off % 8u, bytes);
+    if (seq_out) *seq_out = s0;
+    return !(s0 & 1u) && s1 == s0;
+}
+
 typedef struct {
     /* One snapshot per pad slot, published together under one sequence
      * number: the slots are sampled in the same host iteration and a reader
@@ -51,8 +124,11 @@ typedef struct {
     int64_t                 ns;    /* op_now() at publish */
 } host_pad_sample_t;
 
-static host_pad_sample_t   s_snap_live;   /* guarded by s_snap_seq */
+/* The published host_pad_sample_t, as seqlock words under s_snap_seq. */
+static seq_word_t          s_snap_words[SEQ_WORDS(sizeof(host_pad_sample_t))];
 static _Atomic unsigned    s_snap_seq;    /* even = stable, odd = publishing */
+_Static_assert(sizeof(host_pad_sample_t) <= 8u * (SEQ_LOAD_MAX_WORDS - 1u),
+               "host_pad_sample_t must fit one seq_load copy");
 
 /* Bounded so a producer preempted mid-publish cannot hang the sim thread. The
  * publish itself is a dozen bytes, so a reader normally converges on the first
@@ -690,8 +766,34 @@ typedef struct {
     openpete_mouse_state_t mouse;   /* event-derived, see openpete_host_mouse.h */
 } host_sdl_state_t;
 
-static host_sdl_state_t s_sdl_state[2];
+/* Two host_sdl_state_t buffers, each a seqlock (seq_word_t payload under its
+ * own count). The pump thread publishes into the buffer readers are not
+ * directed to, then flips s_sdl_state_cur; a reader on another thread that
+ * still holds the older index when the producer comes back to that buffer
+ * two publishes later sees the count move and retries. */
+static seq_word_t       s_sdl_words[2][SEQ_WORDS(sizeof(host_sdl_state_t))];
+static _Atomic unsigned s_sdl_seq[2];
 static SDL_AtomicInt    s_sdl_state_cur;   /* index of the readable buffer */
+_Static_assert(sizeof(host_pad_state_t) <= 8u * (SEQ_LOAD_MAX_WORDS - 1u) &&
+               sizeof(openpete_mouse_state_t) <= 8u * (SEQ_LOAD_MAX_WORDS - 1u),
+               "a host_sdl_load field must fit one seq_load copy");
+
+/** @brief Copy bytes [off, off + bytes) of the published SDL snapshot.
+ *
+ * Reads the buffer s_sdl_state_cur names and retries while a publish
+ * overlaps the copy, with the pad seqlock's bound and back-off. Past the
+ * bound out keeps the last copy, every byte of which some publish wrote.
+ * @param off byte offset into host_sdl_state_t.
+ * @param out receives the bytes.
+ * @param bytes the byte count. */
+static void host_sdl_load(size_t off, void* out, size_t bytes)
+{
+    for (int i = 0; i < PAD_SEQLOCK_TRIES; i++) {
+        if (i >= PAD_SEQLOCK_SPIN) SDL_DelayNS(1000);
+        const int b = SDL_GetAtomicInt(&s_sdl_state_cur);
+        if (seq_load(&s_sdl_seq[b], s_sdl_words[b], off, out, bytes, NULL)) return;
+    }
+}
 
 /* Keys the injection script holds down. Pump thread only: the script steps
  * and the snapshot publishes on the same thread. `marked` keys come from the
@@ -1123,9 +1225,10 @@ static void host_pad_state_fill(host_pad_state_t* ps, SDL_Gamepad* gp)
 
 void openpete_host_input_publish_sdl(void)
 {
-    int cur  = SDL_GetAtomicInt(&s_sdl_state_cur);
-    int next = cur ^ 1;
-    host_sdl_state_t* d = &s_sdl_state[next];
+    const int next = SDL_GetAtomicInt(&s_sdl_state_cur) ^ 1;
+    host_sdl_state_t st;
+    memset(&st, 0, sizeof st);
+    host_sdl_state_t* d = &st;
 
     int nkeys = 0;
     const bool* keys = SDL_GetKeyboardState(&nkeys);
@@ -1168,52 +1271,63 @@ void openpete_host_input_publish_sdl(void)
     for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++)
         host_pad_state_fill(&d->pads[sl], lock_filter_gamepad(slot_gp[sl]));
 
-    /* Release: the buffer's contents must be visible before the index that
-     * publishes it. */
-    SDL_MemoryBarrierRelease();
+    /* The buffer's count turns even with release before the index that
+     * directs readers to it is stored. */
+    seq_store(&s_sdl_seq[next], s_sdl_words[next], d, sizeof *d);
     SDL_SetAtomicInt(&s_sdl_state_cur, next);
 }
 
-/** @brief Return the published SDL snapshot buffer for reading.
+/** @brief Copy one pad slot of the published SDL snapshot.
  *
- * Loads the current-buffer index, then issues an acquire barrier that pairs
- * with the release barrier in openpete_host_input_publish_sdl. The pointer
- * addresses one of two buffers; the producer overwrites it two publishes later,
- * so a caller reads it briefly and calls again for a later sample.
- * @return the buffer, never NULL. */
-static const host_sdl_state_t* host_sdl_read(void)
+ * @param slot pad slot, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @param ps receives the slot's state. */
+static void host_sdl_pad(int slot, host_pad_state_t* ps)
 {
-    const host_sdl_state_t* r = &s_sdl_state[SDL_GetAtomicInt(&s_sdl_state_cur)];
-    SDL_MemoryBarrierAcquire();
-    return r;
+    host_sdl_load(offsetof(host_sdl_state_t, pads) + (size_t)slot * sizeof *ps,
+                  ps, sizeof *ps);
+}
+
+/** @brief Copy the mouse half of the published SDL snapshot.
+ *
+ * @param ms receives the state. */
+static void host_sdl_mouse(openpete_mouse_state_t* ms)
+{
+    host_sdl_load(offsetof(host_sdl_state_t, mouse), ms, sizeof *ms);
 }
 
 int openpete_host_input_key_down(int scancode)
 {
     if (scancode <= 0 || scancode >= SDL_SCANCODE_COUNT) return 0;
-    return host_sdl_read()->keys[scancode] ? 1 : 0;
+    bool down = false;
+    host_sdl_load(offsetof(host_sdl_state_t, keys) + (size_t)scancode * sizeof down,
+                  &down, sizeof down);
+    return down ? 1 : 0;
 }
 
 int openpete_host_input_pad_button_slot(int slot, int button)
 {
     if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) return 0;
     if (button < 0 || button >= SDL_GAMEPAD_BUTTON_COUNT) return 0;
-    const host_pad_state_t* ps = &host_sdl_read()->pads[slot];
-    return (ps->have_pad && ps->buttons[button]) ? 1 : 0;
+    host_pad_state_t ps;
+    host_sdl_pad(slot, &ps);
+    return (ps.have_pad && ps.buttons[button]) ? 1 : 0;
 }
 
 int openpete_host_input_pad_axis_slot(int slot, int axis)
 {
     if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) return 0;
     if (axis < 0 || axis >= SDL_GAMEPAD_AXIS_COUNT) return 0;
-    const host_pad_state_t* ps = &host_sdl_read()->pads[slot];
-    return ps->have_pad ? ps->axes[axis] : 0;
+    host_pad_state_t ps;
+    host_sdl_pad(slot, &ps);
+    return ps.have_pad ? ps.axes[axis] : 0;
 }
 
 int openpete_host_input_pad_connected(int slot)
 {
     if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) return 0;
-    return host_sdl_read()->pads[slot].have_pad ? 1 : 0;
+    host_pad_state_t ps;
+    host_sdl_pad(slot, &ps);
+    return ps.have_pad ? 1 : 0;
 }
 
 /* --pad-unfocused; read by the rumble path on the pump thread and by the
@@ -1235,8 +1349,9 @@ int openpete_host_input_pad_unfocused(void)
 int openpete_host_input_pad_type(int slot)
 {
     if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) return (int)SDL_GAMEPAD_TYPE_UNKNOWN;
-    const host_pad_state_t* ps = &host_sdl_read()->pads[slot];
-    return ps->have_pad ? ps->type : (int)SDL_GAMEPAD_TYPE_UNKNOWN;
+    host_pad_state_t ps;
+    host_sdl_pad(slot, &ps);
+    return ps.have_pad ? ps.type : (int)SDL_GAMEPAD_TYPE_UNKNOWN;
 }
 
 int openpete_host_input_pad_button(int button)
@@ -1251,25 +1366,28 @@ int openpete_host_input_pad_axis(int axis)
 
 unsigned openpete_host_input_modstate(void)
 {
-    return host_sdl_read()->mods;
+    unsigned mods = 0;
+    host_sdl_load(offsetof(host_sdl_state_t, mods), &mods, sizeof mods);
+    return mods;
 }
 
 void openpete_host_input_mouse(openpete_mouse_state_t* out)
 {
-    if (out) *out = host_sdl_read()->mouse;
+    if (out) host_sdl_mouse(out);
 }
 
 int openpete_host_input_mouse_button(int button_index)
 {
     if (button_index < 0 || button_index >= OPENPETE_MOUSE_BUTTONS) return 0;
-    return (host_sdl_read()->mouse.buttons >> button_index) & 1u;
+    openpete_mouse_state_t ms;
+    host_sdl_mouse(&ms);
+    return (ms.buttons >> button_index) & 1u;
 }
 
 /** @brief Publish one whole pad sample under the seqlock.
  *
- * The sequence is made odd before the bytes are written and even after,
- * with release barriers between, so a reader never accepts a partial
- * sample. Slot 0 is always valid.
+ * Builds the sample in a local and stores it with seq_store, so a reader
+ * never accepts a partial sample. Slot 0 is always valid.
  * @param bits slot 0's active-low pad bits.
  * @param axes slot 0's RX, RY, LX, LY bytes.
  * @param extra slots 1 .. OPENPETE_PAD_SLOTS - 1, or NULL to publish them
@@ -1280,20 +1398,15 @@ static unsigned pad_publish(unsigned short bits, const unsigned char axes[4],
                             const openpete_pad_snapshot_t* extra,
                             int64_t now_ns)
 {
-    const unsigned seq = atomic_load_explicit(&s_snap_seq, memory_order_relaxed);
-    atomic_store_explicit(&s_snap_seq, seq + 1u, memory_order_relaxed);
-    SDL_MemoryBarrierRelease();          /* odd count visible before the bytes */
-
-    s_snap_live.snap[0].bits = bits;
-    memcpy(s_snap_live.snap[0].axes, axes, sizeof(s_snap_live.snap[0].axes));
-    s_snap_live.snap[0].valid = true;
+    host_pad_sample_t smp;
+    memset(&smp, 0, sizeof smp);
+    smp.snap[0].bits = bits;
+    memcpy(smp.snap[0].axes, axes, sizeof(smp.snap[0].axes));
+    smp.snap[0].valid = true;
     for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++)
-        s_snap_live.snap[sl] = extra ? extra[sl - 1] : (openpete_pad_snapshot_t){0};
-    s_snap_live.ns = now_ns;
-
-    SDL_MemoryBarrierRelease();          /* bytes visible before the even count */
-    atomic_store_explicit(&s_snap_seq, seq + 2u, memory_order_relaxed);
-    return seq + 2u;
+        if (extra) smp.snap[sl] = extra[sl - 1];
+    smp.ns = now_ns;
+    return seq_store(&s_snap_seq, s_snap_words, &smp, sizeof smp);
 }
 
 /** @brief Copy the current pad sample whole under the seqlock.
@@ -1310,13 +1423,8 @@ static unsigned pad_read_stable(host_pad_sample_t* out)
 {
     for (int i = 0; i < PAD_SEQLOCK_TRIES; i++) {
         if (i >= PAD_SEQLOCK_SPIN) SDL_DelayNS(1000);
-        const unsigned s0 =
-            atomic_load_explicit(&s_snap_seq, memory_order_relaxed);
-        if (s0 & 1u) continue;           /* publish in flight */
-        SDL_MemoryBarrierAcquire();
-        *out = s_snap_live;
-        SDL_MemoryBarrierAcquire();
-        if (atomic_load_explicit(&s_snap_seq, memory_order_relaxed) == s0)
+        unsigned s0 = 0;
+        if (seq_load(&s_snap_seq, s_snap_words, 0, out, sizeof *out, &s0))
             return s0;
     }
     /* The producer was not merely publishing but unavailable for the whole

@@ -117,8 +117,8 @@ void openpete_host_input_latch(bool claimed);
  * Everything that reads live SDL keyboard or gamepad state reads this
  * snapshot instead. The SDL arrays are refreshed by the event pump, which
  * under the thread split runs on a different thread from the consumers.
- * The snapshot is double-buffered with an atomic index, so a consumer reads
- * one internally consistent sample. Injected raw keys are merged before the
+ * The snapshot is double-buffered with an atomic index, each buffer a
+ * seqlock, so every accessor's read comes from one publish. Injected raw keys are merged before the
  * input lock blanks the keyboard and modifiers; marked injected keys are
  * merged after it. On the legacy input path the mouse fields come from
  * SDL_GetMouseState. Every accessor below is consumer-side and never

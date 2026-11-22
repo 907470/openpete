@@ -40,6 +40,7 @@ uint32_t     openpete_yield_loop_header = 0u;
 int openpete_replaying                 = 0;
 int openpete_ra_input_edge             = 0;
 unsigned     openpete_frame            = 0u;
+static SDL_AtomicU32 s_frame_pub;   /* openpete_frame as last written; see openpete_frame_published */
 unsigned     openpete_canon_tick       = 0u;
 unsigned     openpete_consume          = 0u;
 unsigned     openpete_consume_write     = 0u;
@@ -194,6 +195,7 @@ void openpete_yield_to_host(void) {
      * logical frame waited. Yields only bump the host-side render counter
      * so frame-limit / screenshot / bk2 alignment stay yield-driven. */
     openpete_frame++;
+    SDL_SetAtomicU32(&s_frame_pub, openpete_frame);
     op_functrace_pause();     /* exclude host render+sleep from func-trace */
     switch_to_host();
     op_functrace_resume();
@@ -207,7 +209,16 @@ openpete_feed_key_t openpete_feed_key(void) { return s_feed_key; }
 
 unsigned openpete_feed_key_now(void) {
     return s_feed_key == OPENPETE_FEED_KEY_VBL
-               ? (unsigned)SDL_GetAtomicInt(&openpete_vbl) : openpete_frame;
+               ? (unsigned)SDL_GetAtomicInt(&openpete_vbl) : openpete_frame_published();
+}
+
+void openpete_frame_set(unsigned frame) {
+    openpete_frame = frame;
+    SDL_SetAtomicU32(&s_frame_pub, frame);
+}
+
+unsigned openpete_frame_published(void) {
+    return SDL_GetAtomicU32(&s_frame_pub);
 }
 
 int openpete_fiber_in_game(void) {

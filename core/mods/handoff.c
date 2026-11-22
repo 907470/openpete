@@ -120,7 +120,7 @@ static void handoff_resume_poll(CPUState* cpu) OP_REQUIRES(sim) {
     if (rc == 1 && ++s_resume_waits + s_resume_cd_waits < s_site_wait) return;
     s_resume_done = 1;
     if (rc == 0) {
-        openpete_frame = frame;
+        openpete_frame_set(frame);
         remove(s_resume_path);
         s_resume_result = 1;
         OPL_INFO_F("handoff", "session resumed at frame %u after %u park-site and %u CD-queue "

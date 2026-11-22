@@ -136,7 +136,6 @@ core/diag/pace_log.c	-	s_coarse_span	static	-	owed: declared with no form and no
 core/diag/pace_log.c	-	s_coarse_used	static	-	owed: declared with no form and no row before the new-global refusal
 core/diag/pace_log.c	-	s_extract_alpha_micro	static	-	
 core/diag/pace_log.c	-	s_extract_alpha_paired	static	-	
-core/diag/pace_log.c	-	s_fp	static	-	
 core/diag/pace_log.c	-	s_next_alpha_micro	static	-	
 core/diag/pace_log.c	-	s_next_alpha_paired	static	-	
 core/diag/pace_log.c	-	s_next_clocksample_ns	static	-	
@@ -454,9 +453,7 @@ core/input/host_input.c	-	s_pulse_gap_ns	static	-
 core/input/host_input.c	-	s_pulse_hold_ns	static	-	
 core/input/host_input.c	-	s_pulse_n	static	-	
 core/input/host_input.c	-	s_pulse_t0	static	-	
-core/input/host_input.c	-	s_sdl_state	static	-	
 core/input/host_input.c	-	s_slot_keymap_decodes	static	-	
-core/input/host_input.c	-	s_snap_live	static	-	
 core/input/host_input.c	-	s_synth	static	once	= -1, one filler, first reference tests it
 core/input/host_input.c	-	s_vpad_rumble	static	-	
 core/input/host_input.c	-	s_vpad_script_axis	static	-	
@@ -1295,7 +1292,6 @@ core/renderer/native_render.c	-	s_fov_tan	static	atomic	1 storing function(s), n
 core/renderer/native_render.c	-	s_fps_frames	static	-	
 core/renderer/native_render.c	-	s_fps_in_record	static	-	
 core/renderer/native_render.c	-	s_fps_in_record_pref	static	-	
-core/renderer/native_render.c	-	s_fps_value	static	-	
 core/renderer/native_render.c	-	s_fps_win_start	static	-	
 core/renderer/native_render.c	-	s_freeze_retained	static	atomic	1 storing function(s), none reads it
 core/renderer/native_render.c	-	s_front_mark	static	-	
@@ -1430,7 +1426,6 @@ core/renderer/native_render.c	-	s_overlay_prev_freeze	static	-
 core/renderer/native_render.c	-	s_overlay_prev_n	static	-	
 core/renderer/native_render.c	-	s_overlay_prev_ns	static	-	
 core/renderer/native_render.c	-	s_overlay_prev_v	static	-	owed: declared with no form and no row before the new-global refusal
-core/renderer/native_render.c	-	s_ovl_extent	static	atomic	1 storing function(s), none reads it
 core/renderer/native_render.c	-	s_pc	static	-	
 core/renderer/native_render.c	-	s_pc_clear	static	-	
 core/renderer/native_render.c	-	s_pc_cur	static	-	
@@ -1913,7 +1908,6 @@ core/renderer/openpete_interp.c	ra_commit_env_on	v	local	once	= -1, one filler, 
 core/renderer/openpete_interp_objs.c	-	BLOB	static	-	
 core/renderer/openpete_interp_objs.c	-	SLOTS	static	-	
 core/renderer/openpete_interp_objs.c	-	g_openpete_tick_period_ns	extern	-	
-core/renderer/openpete_interp_objs.c	-	g_openpete_tick_stamp	extern	-	
 core/renderer/openpete_interp_objs.c	-	s_capture_cb	static	-	
 core/renderer/openpete_interp_objs.c	-	s_collisions	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/openpete_interp_objs.c	-	s_count	static	-	

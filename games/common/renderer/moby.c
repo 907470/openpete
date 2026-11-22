@@ -79,7 +79,6 @@
 static int moby_lift_tier(void);
 static void moby_fade_census_skip(void);
 
-extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
 
 extern unsigned openpete_frame;
 
@@ -332,7 +331,7 @@ static void moby_rec_snapshot(CPUState* cpu) {
     const unsigned epoch = spyro_native_canon_epoch_stamp();
     if (s_rec_snap_words && s_rec_snap_epoch != epoch) rec_snap_swap();
     s_rec_snap_epoch  = epoch;
-    s_rec_snap_ref_ns = g_openpete_tick_stamp;
+    s_rec_snap_ref_ns = atomic_load_explicit(&g_openpete_tick_stamp, memory_order_relaxed);
     s_rec_snap_cam_ok = 0;
     if (game_layout.cam.proj_matrix && game_layout.cam.position) {
         int M[3][3];

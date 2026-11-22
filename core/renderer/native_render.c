@@ -19395,7 +19395,7 @@ static int s_perf_stats_last = OPENPETE_PERF_FPS;
 static int s_overlay_live = 0;   /* 1 only during the live present's compose_variant */
 static uint64_t s_fps_win_start = 0;  /* rolling 0.5s FPS window */
 static int      s_fps_frames    = 0;
-static int      s_fps_value     = 0;
+static _Atomic(int) s_fps_value = 0;  /* written by the presenting thread, read by the overlay builder on sim */
 
 static int s_fps_in_record_pref = -1;  /* --record-fps-overlay: -1 unset, 0/1 explicit */
 static int s_fps_in_record = -1;       /* resolved lazily (pref, else env); setter resets */
@@ -19425,7 +19425,7 @@ int  openpete_native_fps_value(void)
     if (s_nr.headless)
         return (int)((2 * OP_VBL_HZ_NUM + OP_VBL_HZ_DEN * OP_TICK_VBLS)
                      / (2 * OP_VBL_HZ_DEN * OP_TICK_VBLS));
-    return s_fps_value;
+    return atomic_load_explicit(&s_fps_value, memory_order_relaxed);
 }
 
 /* Live presentation setters (in-game settings menu). Display-only: they touch
@@ -20282,16 +20282,13 @@ static bool ovl_ss_ready(void) {
  * in a shape other than the one it was rasterized into. Exactly one side owns
  * it - the game-side builder, which is the side that can measure a string -
  * and pushes it here; the renderer reads it back and never re-derives it. */
-/* Published as ONE 64-bit word rather than two floats. The builder writes it
- * on the sim thread and the compose reads it on the present thread, and a torn
- * PAIR - new width, stale height - would build the composite quad for a
- * different rect than the supersample target holds, landing the readout in a
- * shape it was not rasterized into. An aligned 64-bit store is single-copy on
- * every target this builds for; two independent float stores are not one
- * event. (Same class as the glyph publish below, found by auditing the
- * sim->present statics rather than by seeing it go wrong.) */
-static uint64_t s_ovl_extent =
-    ((uint64_t)0) ;   /* 0 = never pushed; the OVL_REGION_* fallback applies */
+/* Published as ONE 64-bit atomic word rather than two floats. The builder
+ * writes it on the sim thread and the compose reads it on the present thread,
+ * and a torn PAIR - new width, stale height - would build the composite quad
+ * for a different rect than the supersample target holds, landing the
+ * readout in a shape it was not rasterized into. One relaxed atomic store
+ * and load carry both halves as one event. */
+static _Atomic(uint64_t) s_ovl_extent = 0;   /* 0 = never pushed; the OVL_REGION_* fallback applies */
 
 /** @brief Extract one float half of the packed overlay extent word.
  *
@@ -20312,10 +20309,12 @@ void openpete_native_set_overlay_extent(float w, float h) {
     uint32_t bw, bh;
     memcpy(&bw, &w, sizeof bw);
     memcpy(&bh, &h, sizeof bh);
-    s_ovl_extent = (uint64_t)bw | ((uint64_t)bh << 32);
+    atomic_store_explicit(&s_ovl_extent, (uint64_t)bw | ((uint64_t)bh << 32),
+                          memory_order_relaxed);
 }
 void openpete_native_get_overlay_extent(float *w, float *h) {
-    const uint64_t v = s_ovl_extent;   /* one read: both halves from one publish */
+    /* One load: both halves from one publish. */
+    const uint64_t v = atomic_load_explicit(&s_ovl_extent, memory_order_relaxed);
     if (w) *w = ovl_ext_unpack(v, 0, OVL_REGION_W);
     if (h) *h = ovl_ext_unpack(v, 1, OVL_REGION_H);
 }
@@ -21335,7 +21334,6 @@ static void pc_ring_audit(int kind, int tc_drawn)
  * @param tc_drawn Retained sectors the present draws. */
 static void pc_trace_print(int kind, int outcome, int ntri, int tc_drawn)
 {
-    extern unsigned openpete_frame;
     const scene_view_t pv = scene_present_view();
     const int twod = scene_2d_count_fwd(pv.tri, pv.n);
     const unsigned frame = s_ps_slot ? s_ps_slot->frame : s_scene_frame;
@@ -21345,7 +21343,7 @@ static void pc_trace_print(int kind, int outcome, int ntri, int tc_drawn)
                     " now=%u world=%d twod=%d clear=%08x hold=%d\n",
             s_pc.total, s_pc_kind_name[kind], s_pc_outcome_name[outcome], frame, scene_present_stamp(),
             ntri, tc_drawn, alpha, paired, s_nr.win_w, s_nr.win_h, s_render_full_extent,
-            openpete_frame, pv.n - twod, twod, s_pc_clear, s_pc_hold);
+            openpete_frame_published(), pv.n - twod, twod, s_pc_clear, s_pc_hold);
 }
 
 /** @brief Tally one composed present into the per-present census.
@@ -23970,7 +23968,9 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
         s_fps_frames++;
         uint64_t el = now - s_fps_win_start;
         if (freq > 0 && el >= freq / 2u) {
-            s_fps_value = (int)((double)s_fps_frames * (double)freq / (double)el + 0.5);
+            atomic_store_explicit(&s_fps_value,
+                                  (int)((double)s_fps_frames * (double)freq / (double)el + 0.5),
+                                  memory_order_relaxed);
             s_fps_win_start = now; s_fps_frames = 0;
         }
     }

@@ -108,8 +108,25 @@ extern SDL_AtomicInt openpete_game_running;
  * VSync(0) yield. Every host-side consumer - frame-limit, screenshot/RAM-dump
  * gates, hang detector, dump windows in dump tools, traces - uses this so
  * "frame N" means the same thing across runs regardless of disc-seek timing
- * during the splash sequence. */
+ * during the splash sequence. Written only on the thread holding `sim`, by
+ * openpete_yield_to_host and openpete_frame_set; another thread reads
+ * openpete_frame_published. */
 extern unsigned openpete_frame;
+
+/** @brief Set openpete_frame and its published copy.
+ *
+ * Every assignment to openpete_frame outside openpete_yield_to_host (a
+ * savestate restore, a runahead rollback, a handoff load) goes through it,
+ * so the copy openpete_frame_published returns never lags the counter.
+ * @param frame The new counter value. */
+void openpete_frame_set(unsigned frame);
+
+/** @brief Return openpete_frame as last written, from any thread.
+ *
+ * A relaxed atomic copy stored beside every write of openpete_frame; on the
+ * thread holding `sim` it equals openpete_frame.
+ * @return The counter's value. */
+unsigned openpete_frame_published(void);
 
 /* The counter that indexes every number a run is told from outside
  * (--frame-limit, --screenshot-on-frame and the other one-shot frame
@@ -136,9 +153,9 @@ openpete_feed_key_t openpete_feed_key(void);
 
 /** @brief Return the current value of the selected feed key's counter.
  *
- * `openpete_frame`, or `openpete_vbl` read atomically. Both counters advance
- * only on the game fiber, so between yields the host loop reads a stable
- * value.
+ * openpete_frame_published, or `openpete_vbl`, each read atomically, so
+ * any thread may call it. Both counters advance only on the thread holding
+ * `sim`, so between yields the host loop reads a stable value.
  * @return The counter's value. */
 unsigned openpete_feed_key_now(void);
 

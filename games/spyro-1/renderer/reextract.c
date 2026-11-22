@@ -1204,7 +1204,7 @@ static void scratch_row_capture(scratch_region_t* r) {
         r->prev_ref_ns = r->ref_ns;
         r->epoch = s_canon_epoch_now;
     }
-    r->ref_ns = g_openpete_tick_stamp;
+    r->ref_ns = atomic_load_explicit(&g_openpete_tick_stamp, memory_order_relaxed);
     memcpy(r->canon, h, r->len);
     r->captured = 1;
     s_any_captured = 1;

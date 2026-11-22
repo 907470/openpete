@@ -51,7 +51,10 @@ typedef struct {
 _Static_assert(sizeof(pace_rec_t) == OP_PACE_RECORD_BYTES,
                "pace_rec_t must match OP_PACE_RECORD_BYTES");
 
-static FILE*       s_fp;
+/* The open log file. Atomic: pace_sink_on tests it without s_lock on the
+ * emitting threads, and a non-NULL load also makes s_lock, created before
+ * the store, visible to them. */
+static _Atomic(FILE*) s_fp;
 static SDL_Mutex*  s_lock;
 static pace_rec_t  s_buf[PACE_BUF_RECORDS];
 static unsigned    s_buf_n;
@@ -103,7 +106,8 @@ int openpete_pace_log_active(void) { return s_fp != NULL; }
 /** @brief Return whether any sink takes records: the log file or the ring. */
 static int pace_sink_on(void)
 {
-    return s_fp != NULL || atomic_load_explicit(&s_ring_on, memory_order_relaxed);
+    return atomic_load_explicit(&s_fp, memory_order_acquire) != NULL ||
+           atomic_load_explicit(&s_ring_on, memory_order_acquire);
 }
 
 /** @brief Store one record in the ring over its oldest; the caller holds the writer lock.

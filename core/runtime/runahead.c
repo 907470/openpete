@@ -462,7 +462,7 @@ static void ra_end_away(int left, int adopted) OP_REQUIRES(sim)
         unsigned ra_lf = openpete_frame;
         const int ra_rc = openpete_state_mem_load(s_ra.snap, &g_game.cpu, &ra_lf, 1);
         if (ra_rc == 0)
-            openpete_frame = ra_lf;
+            openpete_frame_set(ra_lf);
         ra_card_settle(ra_rc);
     }
     if (!left && !adopted) return;
@@ -522,7 +522,7 @@ void runahead_settle(runahead_lead_t r) OP_REQUIRES(sim)
     const int ra_rc = ra_snapshot_rollback(s_ra.snap, &g_game.cpu, &ra_lf);
     ra_card_settle(ra_rc);
     if (ra_rc == 0) {
-        openpete_frame = ra_lf;
+        openpete_frame_set(ra_lf);
         /* Committed-timeline regions (g_Camera): replace
          * their led bytes in the ring's newest slot with
          * the just-restored committed state, so those

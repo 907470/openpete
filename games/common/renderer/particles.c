@@ -58,7 +58,6 @@
 #include "no_lod.h"                 /* openpete_no_lod: extended LOD reveals records past the depth bound */
 #include "openpete_recomp_module.h"   /* the allocator's own body */
 
-extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
 #include "game_layout.h"
 
 #include <math.h>
@@ -229,7 +228,7 @@ static void part_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
     if (s_item_epoch != epoch) part_item_swap();
     s_item_epoch  = epoch;
-    s_item_ref_ns = g_openpete_tick_stamp;
+    s_item_ref_ns = atomic_load_explicit(&g_openpete_tick_stamp, memory_order_relaxed);
     s_item_n = 0;
     const ngte_walk_policy pol = {
         .tag_len_max = 9, .raw_words_max = 10, .guard = PART_MAX_PRIMS,

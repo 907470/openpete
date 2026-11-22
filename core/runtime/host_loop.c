@@ -143,8 +143,10 @@ static void tick_interp_capture(op_time_t sim_period_ns) OP_REQUIRES(sim)
      * on a VBL the direct ring skips, as the wall-clock stamp does:
      * an object that changes there is stamped after the capture that
      * last saw its previous state, not equal to it. */
-    g_openpete_tick_stamp = openpete_interp_deterministic()
-                          ? openpete_interp_det_vbl_stamp(openpete_frame) : stamp;
+    atomic_store_explicit(&g_openpete_tick_stamp,
+                          openpete_interp_deterministic()
+                              ? openpete_interp_det_vbl_stamp(openpete_frame) : stamp,
+                          memory_order_relaxed);
 }
 
 /** @brief Run the post-tick work of a VBL that advanced openpete_frame: the game hook, the runahead lead, the interp captures at the led head and the runahead settle.

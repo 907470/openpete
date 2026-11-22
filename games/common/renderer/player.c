@@ -49,9 +49,9 @@
 #include "renderer/player_hide.h"
 #include "renderer/water_plane.h"
 #include "openpete_thread_roles.h"
+#include "openpete_interp_objs.h"   /* g_openpete_tick_stamp */
 
 extern unsigned openpete_frame;
-extern op_time_t g_openpete_tick_stamp;      /* per-VBL stamp (PLL) */
 extern op_time_t g_openpete_tick_period_ns;  /* one wall-time tick */
 
 #define PL (game_layout.player)
@@ -1913,7 +1913,10 @@ static int store_roll(const rec_list_t* epoch, int ring_rolled, op_time_t ns) {
     if (ring_rolled) s_store[0].ns = ns;
     else if (openpete_interp_deterministic() && s_store[1].valid)
         s_store[0].ns = s_store[1].ns + openpete_interp_det_period();
-    else s_store[0].ns = g_openpete_tick_stamp ? g_openpete_tick_stamp : ns;
+    else {
+        const op_time_t stamp = atomic_load_explicit(&g_openpete_tick_stamp, memory_order_relaxed);
+        s_store[0].ns = stamp ? stamp : ns;
+    }
     pair_lists(&s_store[0].list, s_store[1].valid ? &s_store[1].list : NULL);
     return rec_changed;
 }
