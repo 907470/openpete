@@ -589,7 +589,8 @@ def perf_ring(ticks=60, exclusive=False):
                        f=u32pair(4000, 250) if exclusive else 4000))
         out.append(rec(br.PACE_EAGER_PLAN, t + 20_900_000, v0 + 1,
                        flags=(br.PACE_EP_CUT if k % 10 == 0 else 0) | (br.PACE_EP_FILL if k % 2 else 0),
-                       aux=2 | 1 << 8, a=20_000_000 | 2 << 32, b=1_500_000, c=5_000_000, d=200_000, e=0,
+                       aux=2 | 1 << 8, a=20_000_000 | 2 << 32, b=1_500_000, c=5_000_000,
+                       d=200_000 | 5 << 32 | 1 << 47 | 3 << 48, e=0,
                        f=4 | 3 << 16 | 2 << 32 | 8333 << 48))
         out.append(rec(br.PACE_GPU_FRAME, t + 21_000_000, k, aux=12, a=3_000_000, b=2_500_000, c=k))
         for q in range(4):
@@ -633,6 +634,14 @@ class PerfRecords(Base):
         new = br.plan_decode(tuple(b if i == 6 else v for i, v in enumerate(recs[[r[0] for r in recs].index(br.PACE_EAGER_PLAN)])))
         self.assertAlmostEqual(new["tail"], 1.5)
         self.assertEqual((new["prev_spare"], new["prev_capacity"], new["prev_planned"]), (2, 15, 14))
+        self.assertAlmostEqual(pl["vbl"], 0.2)
+        self.assertEqual((pl["cap"], pl["capped"], pl["sup"]), (5, True, 3))
+        r = br.perf_rollup(perf_ring(60))
+        self.assertEqual((r["plan_capped"], r["plan_sup"]), (60, 59 * 3))
+        self.assertAlmostEqual(r["tick_produced"], 3.0)
+        self.assertAlmostEqual(r["tick_presented"], 4.0)
+        self.assertAlmostEqual(r["tick_sup"], 59 * 3 / 60)
+        self.assertAlmostEqual(r["tick_discard_ms"], 59 * 3 / 60 * 0.5)
         g = [br.gpu_decode(r) for r in recs if r[0] == br.PACE_GPU_FRAME][1]
         self.assertEqual((g["token"], g["zones"], g["frame_ms"], g["busy_ms"]), (1, 12, 3.0, 2.5))
 

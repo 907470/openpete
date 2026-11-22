@@ -117,7 +117,12 @@ enum {
      * finished before the update VBL), capacity (bits 40-47: scenes
      * produced plus spare, 0 when spare was not measured) and final planned
      * count after any re-plan (bits 48-55), each saturated at 255; a log
-     * written before them has bits 32-63 zero. c = lag ns, d = non-drawing VBL cost ns, e = tick start lateness ns, f = slots (bits 0-15), afford
+     * written before them has bits 32-63 zero. c = lag ns, d = non-drawing VBL cost ns (bits 0-31, saturated),
+     * the presenter cap on afford (bits 32-46, saturated; 0 when no cap
+     * was computed), CAPPED (bit 47: the presenter bound lowered the
+     * span's scenes) and the scenes the scene ring retired unpresented
+     * since the previous plan (bits 48-63, saturated), e = tick start
+     * lateness ns, f = slots (bits 0-15), afford
      * (16-31), planned scenes (32-47), planned grid period in us (48-63,
      * saturated). */
     OP_PACE_EAGER_PLAN = 16,
@@ -731,13 +736,17 @@ void openpete_pace_tick_split(uint32_t vbl_index, int64_t tick_ns);
  * @param head_vbls The VBLs from the interp ring head's capture to the plan's VBL.
  * @param spare The previous span's spare: scenes the guard would still have started when its plan finished.
  * @param capacity The previous span's scenes produced plus spare, 0 when spare was not measured.
- * @param final_planned The previous span's planned count after any re-plan. */
+ * @param final_planned The previous span's planned count after any re-plan.
+ * @param cap The presenter cap on afford; 0 when none was computed.
+ * @param capped Nonzero when the presenter bound (the cap, or a free span's service floor) lowered the span's scenes.
+ * @param superseded The scenes the scene ring retired unpresented since the previous plan. */
 void openpete_pace_eager_plan(uint32_t vbl_index, int64_t t_ns, uint8_t flags,
                               int level, int std_level, int slots, int afford,
                               int planned, int made, int64_t period_ns, int64_t budget_ns,
                               int64_t tail_ns, int64_t lag_ns, int64_t vbl_ns,
                               int64_t late_ns, int64_t anchor_age_ns, int head_vbls,
-                              int spare, int capacity, int final_planned);
+                              int spare, int capacity, int final_planned,
+                              int cap, int capped, unsigned superseded);
 
 /** @brief Write one GPU_FRAME record for a harvested frame's timestamp zones.
  * @param token The frame's RHI token.

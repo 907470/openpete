@@ -112,6 +112,27 @@ int openpete_get_cadence(void) { return atomic_load(&s_cadence); }
 #define EAGER_COUNT_RUNS 16
 #define EAGER_COUNT_SPARE 1
 #define EAGER_DRAIN_RUNS 32
+/* The presenter cap's backlog gate judges blocks of this many spans with
+ * picks (about half a second of ticks) and arms after as many spans of
+ * evidence, doubling after each disarm up to the maximum (about 8.6 s). */
+#define EAGER_CAP_ARM_SPANS 16
+#define EAGER_CAP_ARM_MAX 256
+/* OPENPETE_EAGER_CAP_AB=<ms>: the presenter cap's in-binary A/B. Arm 0
+ * runs with the cap off and arm 1 with it on, alternating every window;
+ * OPENPETE_EAGER_CAP_AB_NULL=1 runs both arms with the configured cap (the
+ * null A/B). The first quarter of each window settles and is not counted,
+ * nor is an interval while the world is not live. */
+typedef struct { op_time_t ns; unsigned presents, sup, spans, capped; } eager_cap_arm_t;
+typedef struct {
+    op_time_t window;                 /* arm length in nanoseconds; 0 = off */
+    int       null_ab;                /* both arms run the configured cap */
+    int       cap_cfg;                /* the cap setting OPENPETE_EAGER_CAP chose */
+    int       arm;                    /* the arm of the open interval */
+    int       counting;               /* the open interval is past the settle */
+    op_time_t arm_start, t0;          /* the arm's start; the open interval's start */
+    unsigned  pres0, sup0;            /* presents and ring retirements at t0 */
+    eager_cap_arm_t acc[2];           /* counted time, presents, retired scenes, spans, capped spans per arm */
+} eager_cap_ab_t;
 static struct {
     int       active;                 /* the present thread owns the display */
     int       n, i;                   /* planned targets, next to produce */
@@ -120,6 +141,16 @@ static struct {
     int       level;                  /* divisor of the span being produced: every level-th slot */
     int       pinned;                 /* OPENPETE_EAGER_LEVEL */
     int       afford_pin;             /* OPENPETE_EAGER_AFFORD: force the budget's verdict (A/B) */
+    int       cap_on;                 /* OPENPETE_EAGER_CAP (default 1): cap afford at the presenter's consumption while it is behind */
+    op_eager_cap_t cap;               /* the presenter cap's backlog gate (op_eager_cap_step) */
+    int       span_cap;               /* the open span's presenter cap on afford; 0 when none was computed */
+    op_time_t span_cap_ns;            /* the open span's least free spacing under the cap; 0 when none */
+    int       span_capped;            /* the presenter cap lowered the open span's scenes */
+    unsigned  capped_spans;           /* spans the cap lowered */
+    unsigned  picks_seen, starved_seen;   /* openpete_present_thread_picks() at the last plan */
+    unsigned  sup_seen;               /* openpete_native_scene_ring_superseded() at the last plan */
+    unsigned  span_sup;               /* scenes the ring retired unpresented between the last two plans */
+    eager_cap_ab_t ab;                /* OPENPETE_EAGER_CAP_AB */
     int       count_spare;            /* OPENPETE_EAGER_COUNT_SPARE: room a clean span leaves, in scenes */
     int       count_runs;             /* OPENPETE_EAGER_COUNT_RUNS: clean spans that give back one scene */
     int       rewarm_on;              /* OPENPETE_EAGER_REWARM (default 1): re-warm the cost averages at the world going live */
@@ -174,6 +205,63 @@ static struct {
 } s_eager = { .ladder = { .level = 1, .since_short = EAGER_HEADROOM_RUNS }, .level = 1,
              .count_spare = EAGER_COUNT_SPARE, .count_runs = EAGER_COUNT_RUNS, .replan_on = 1 };
 
+
+/** @brief Book the interval since the previous plan to its arm, and switch arms at a window boundary (OPENPETE_EAGER_CAP_AB).
+ *
+ * Runs at each plan, before the cap is computed, so the span about to be
+ * planned runs under the arm this call leaves in s_eager.cap_on.
+ * @param now The plan instant. */
+static void eager_cap_ab_step(op_time_t now)
+{
+    if (s_eager.ab.window <= 0) return;
+    const unsigned pres = openpete_present_thread_presents();
+    const unsigned sup = openpete_native_scene_ring_superseded();
+    if (s_eager.ab.counting && s_eager.world_live && s_eager.ab.t0) {
+        eager_cap_arm_t *a = &s_eager.ab.acc[s_eager.ab.arm];
+        a->ns += now - s_eager.ab.t0;
+        a->presents += pres - s_eager.ab.pres0;
+        a->sup += sup - s_eager.ab.sup0;
+        a->spans++;
+        a->capped += (unsigned)s_eager.span_capped;
+    }
+    s_eager.ab.t0 = now; s_eager.ab.pres0 = pres; s_eager.ab.sup0 = sup;
+    if (!s_eager.ab.arm_start || now - s_eager.ab.arm_start >= s_eager.ab.window) {
+        s_eager.ab.arm ^= 1;
+        s_eager.ab.arm_start = now;
+        s_eager.cap_on = s_eager.ab.null_ab ? s_eager.ab.cap_cfg : s_eager.ab.arm;
+    }
+    s_eager.ab.counting = now - s_eager.ab.arm_start >= s_eager.ab.window / 4;
+}
+
+/** @brief Log the presenter cap A/B's per-arm presents per second, retired scenes per span and capped spans. */
+static void eager_cap_ab_report(void)
+{
+    if (s_eager.ab.window <= 0) return;
+    for (int k = 0; k < 2; k++) {
+        const eager_cap_arm_t *a = &s_eager.ab.acc[k];
+        OPL_INFO_F("eager", "cap-ab arm%d (%s): %.3f s counted, %u span(s), %u present(s) = %.2f/s, "
+                   "%u superseded = %.3f per span, %u capped span(s)",
+                   k, s_eager.ab.null_ab ? (s_eager.ab.cap_cfg ? "null, cap on" : "null, cap off") : (k ? "cap on" : "cap off"),
+                   (double)a->ns / 1e9, a->spans, a->presents, a->ns > 0 ? a->presents * 1e9 / (double)a->ns : 0.0,
+                   a->sup, a->spans ? (double)a->sup / a->spans : 0.0, a->capped);
+    }
+}
+
+/** @brief Log the presenter cap's state and backlog gate: on or off, spans capped, armings, disarmings, slack, and the presenter's service time and picks. */
+static void eager_cap_report(void)
+{
+    unsigned picks, starved;
+    openpete_present_thread_picks(&picks, &starved);
+    OPL_INFO_F("eager", "presenter cap %s: %u span(s) capped; backlog gate %s, %u arming(s), %u disarming(s), "
+               "%u block(s) raised the slack (now %d), next arming needs %d span(s); "
+               "service %.3f ms ema; %u pick(s), %u starved",
+               s_eager.cap_on ? "on" : "off", s_eager.capped_spans, s_eager.cap.armed ? "armed" : "disarmed",
+               s_eager.cap.arms, s_eager.cap.disarms, s_eager.cap.loosened, s_eager.cap.slack,
+               s_eager.cap.need > 0 ? s_eager.cap.need : EAGER_CAP_ARM_SPANS,
+               (double)openpete_present_thread_service_ns() / 1e6, picks, starved);
+    eager_cap_ab_report();
+}
+
 /* Documented at the declaration in eager.h. */
 int eager_active(void) { return s_eager.active; }
 
@@ -208,7 +296,8 @@ int eager_hold_done(void)
  * else policy 0 (every level-th grid slot). OPENPETE_EAGER_LEVEL, when
  * nonzero, disables the adaptive level ladder, and a positive value also
  * sets the level. OPENPETE_EAGER_AFFORD pins the per-span scene budget and
- * OPENPETE_EAGER_LAG_US (microseconds) pins the lag. OPENPETE_EAGER_COUNT_SPARE
+ * OPENPETE_EAGER_LAG_US (microseconds) pins the lag. OPENPETE_EAGER_CAP=0
+ * turns off the presenter cap (eager_cap_afford). OPENPETE_EAGER_COUNT_SPARE
  * (scenes, default EAGER_COUNT_SPARE) sets the room a span must leave to
  * count as clean for the free-span and fill count controllers, and
  * OPENPETE_EAGER_COUNT_RUNS (spans, default EAGER_COUNT_RUNS) the free
@@ -228,6 +317,14 @@ static void eager_init(void) OP_REQUIRES(sim)
     if (s_eager.pinned > 0) s_eager.level = s_eager.ladder.level = s_eager.pinned;
     const char *f = getenv("OPENPETE_EAGER_AFFORD");
     s_eager.afford_pin = (f && *f) ? atoi(f) : 0;
+    const char *cap = getenv("OPENPETE_EAGER_CAP");
+    s_eager.cap_on = !(cap && *cap == '0');
+    if (!s_eager.cap_on) OPL_INFO_F("eager", "%s", "presenter cap off (OPENPETE_EAGER_CAP=0)");
+    const char *ab = getenv("OPENPETE_EAGER_CAP_AB");
+    s_eager.ab.window = (ab && *ab) ? (op_time_t)atoll(ab) * 1000000 : 0;
+    const char *abn = getenv("OPENPETE_EAGER_CAP_AB_NULL");
+    s_eager.ab.null_ab = abn && *abn && *abn != '0';
+    s_eager.ab.cap_cfg = s_eager.cap_on;
     const char *g = getenv("OPENPETE_EAGER_LAG_US");
     s_eager.lag_pin = (g && *g) ? (op_time_t)atoll(g) * 1000 : 0;
     const char *rw = getenv("OPENPETE_EAGER_REWARM");
@@ -651,29 +748,87 @@ static op_time_t eager_grid_period(op_time_t period, const eager_lattice_t *lat,
     return period;
 }
 
-/** @brief Return the least spacing of a free span's instants: the largest of the render grid's period, the present thread's cost and the ring cut's drain floor.
+/** @brief Return the least spacing of a free span's instants: the largest of the render grid's period, the present thread's cost, the ring cut's drain floor and, when asked, the presenter cap's spacing.
  *
  * The render grid's period is the --render-fps cap; the present thread's
  * measured cost and the drain floor a recent ring cut set
  * (op_eager_count_floor) bound how fast scenes can be shown. The seed plan
  * (eager_span_fill) and the re-plan after the update VBL (eager_replan)
  * both take their floor here, so a further bound on the present side's
- * rate added to this function applies to both.
+ * rate added to this function applies to both. The presenter cap's spacing
+ * (span_cap_ns, eager_cap_afford) is 0 unless the backlog gate is armed.
  * @param grid_period The render grid period in nanoseconds.
+ * @param with_cap Nonzero to include the presenter cap's spacing.
  * @return The least spacing in nanoseconds. */
-static op_time_t eager_free_floor(op_time_t grid_period)
+static op_time_t eager_free_floor(op_time_t grid_period, int with_cap)
 {
     op_time_t floor_ns = openpete_present_thread_cost_ns();
     if (grid_period > floor_ns) floor_ns = grid_period;
     if (op_eager_count_floor(&s_eager.count) > floor_ns) floor_ns = op_eager_count_floor(&s_eager.count);
+    if (with_cap && s_eager.span_cap_ns > floor_ns) floor_ns = s_eager.span_cap_ns;
     return floor_ns;
+}
+
+/** @brief Step the presenter cap's backlog gate on the present thread's picks, starved picks and the ring's retirements since the previous plan.
+ *
+ * Reads the deltas of openpete_present_thread_picks and
+ * openpete_native_scene_ring_superseded, keeps the retirements in span_sup
+ * for the EAGER_PLAN record, and steps the gate (op_eager_cap_step) while
+ * the world is live, with the cap flag of the span those picks consumed.
+ * Counts the spans the cap lowered. Runs at each plan before
+ * eager_cap_afford. */
+static void eager_cap_step(void)
+{
+    unsigned picks, starved;
+    openpete_present_thread_picks(&picks, &starved);
+    const unsigned sup = openpete_native_scene_ring_superseded();
+    const unsigned dp = picks - s_eager.picks_seen, dz = starved - s_eager.starved_seen;
+    s_eager.span_sup = sup - s_eager.sup_seen;
+    s_eager.picks_seen = picks; s_eager.starved_seen = starved; s_eager.sup_seen = sup;
+    s_eager.capped_spans += (unsigned)s_eager.span_capped;
+    if (s_eager.world_live)
+        op_eager_cap_step(&s_eager.cap, dp, dz, s_eager.span_sup, s_eager.span_capped,
+                          EAGER_CAP_ARM_SPANS, EAGER_CAP_ARM_MAX);
+}
+
+/** @brief Cap a span's afford at the scenes the present thread can consume over it, while the backlog gate is armed.
+ *
+ * The budget prices the sim thread's CPU only; a presenter slower than the
+ * producer supersedes the excess unpresented. The cap
+ * (op_eager_cap_count) is ceil(len / service) plus the gate's slack plus
+ * one, len the span's presentation length from the previous span's last
+ * target when this span continues it, else from its first slot, to its
+ * lag-extended end; service is openpete_present_thread_service_ns. The cap
+ * applies only while the gate (op_eager_cap_step) holds evidence that the
+ * presenter is behind: a presenter that finds nothing due at most of its
+ * picks is keeping up, and a cap would take scenes it can present. No cap applies
+ * before the service time is measured, under OPENPETE_EAGER_AFFORD, or with
+ * OPENPETE_EAGER_CAP=0. Sets span_cap (0 when none), span_cap_ns (a free
+ * span's least spacing under the cap, read by eager_free_floor) and
+ * span_capped.
+ * @param afford The budget's afford, at least 1.
+ * @param sp The span, enumerated by eager_span_slots.
+ * @return The capped afford, at least 1. */
+static int eager_cap_afford(int afford, const eager_span_t *sp)
+{
+    const op_time_t svc = openpete_present_thread_service_ns();
+    s_eager.span_cap = 0;
+    s_eager.span_cap_ns = 0;
+    s_eager.span_capped = 0;
+    if (!s_eager.cap_on || !s_eager.cap.armed || s_eager.afford_pin > 0 || svc <= 0) return afford;
+    const op_time_t start = sp->prev ? sp->prev : sp->first;
+    s_eager.span_cap = op_eager_cap_count(sp->end - start, svc, s_eager.cap.slack, EAGER_MAX_TARGETS,
+                                          &s_eager.span_cap_ns);
+    if (s_eager.span_cap >= afford) return afford;
+    s_eager.span_capped = 1;
+    return s_eager.span_cap;
 }
 
 /** @brief Re-space a free span's slots: as many as the budget affords, evenly over the span, and return their period.
  *
  * With no display grid the slot count is the planner's choice, and it is
  * afford, bounded by EAGER_MAX_TARGETS and by a least period
- * (eager_free_floor), so the ladder is asked for level 1 whenever the
+ * (eager_free_floor, the presenter cap's spacing included), so the ladder is asked for level 1 whenever the
  * estimate holds; a
  * grid sized from a different cost than the budget's would offer a slot or
  * two more than afford and halve the plan. A span
@@ -681,7 +836,9 @@ static op_time_t eager_free_floor(op_time_t grid_period)
  * through the lag-extended end, so spans chain at one spacing; otherwise
  * the first slot stays at first. op_eager_ladder_fill does the arithmetic;
  * the span's length is kept in span_len for the drain floor and the grid
- * period in span_grid for the re-plan's floor.
+ * period in span_grid for the re-plan's floor. A span the presenter cap's
+ * spacing plans fewer scenes for than the floor without it is marked
+ * span_capped.
  * @param afford The scenes the budget affords, at least 1.
  * @param grid_period The render grid period in nanoseconds.
  * @param sp The span, enumerated by eager_span_slots; its first, slots and ns are rewritten.
@@ -689,12 +846,18 @@ static op_time_t eager_free_floor(op_time_t grid_period)
 static op_time_t eager_span_fill(int afford, op_time_t grid_period, eager_span_t *sp)
 {
     const op_time_t start = sp->prev ? sp->prev : sp->first;
-    const op_time_t floor_ns = eager_free_floor(grid_period);
+    const op_time_t floor_ns = eager_free_floor(grid_period, 1);
+    const int a = afford < EAGER_MAX_TARGETS ? afford : EAGER_MAX_TARGETS;
+    const int after = sp->prev != 0;
     int n;
     s_eager.span_len = sp->end - start;
     s_eager.span_grid = grid_period;
-    const op_time_t p = op_eager_ladder_fill(s_eager.span_len, afford < EAGER_MAX_TARGETS ? afford : EAGER_MAX_TARGETS,
-                                             floor_ns, sp->prev != 0, &n);
+    const op_time_t p = op_eager_ladder_fill(s_eager.span_len, a, floor_ns, after, &n);
+    if (s_eager.span_cap_ns > 0 && !s_eager.span_capped) {
+        int n_free;
+        (void)op_eager_ladder_fill(s_eager.span_len, a, eager_free_floor(grid_period, 0), after, &n_free);
+        s_eager.span_capped = n < n_free;
+    }
     sp->first = sp->prev ? sp->prev + p : sp->first;
     for (int q = 0; q < n; q++) sp->slots[q] = sp->first + p * q;
     sp->ns = n;
@@ -815,7 +978,8 @@ static void eager_plan_record(op_time_t now, const eager_span_t *sp, op_time_t p
                              afford, planned, s_eager.span_pub, period, budget, eager_tail_cost(), s_eager.lag,
                              s_eager.vbl_ema, s_eager.tick_late, s_eager.anchor_age,
                              head ? (int)(openpete_frame - head->tick) : -1,
-                             s_eager.closed_spare, s_eager.closed_capacity, s_eager.closed_n);
+                             s_eager.closed_spare, s_eager.closed_capacity, s_eager.closed_n,
+                             s_eager.span_cap, s_eager.span_capped, s_eager.span_sup);
 }
 
 /* The scheduler's per-span state as profiler counters, in eager_prof_plan's order. */
@@ -886,7 +1050,9 @@ static void eager_prof_plan(op_time_t budget, int afford, int ns, op_time_t peri
  * before the cost is measured. Enumerates the slots with eager_span_slots
  * (span_end raised to first and extended by the lag, continuing after the
  * previous span's last target). Estimates how many scenes fit
- * before prod_end (eager_afford). eager_span_count plans the count: without
+ * before prod_end (eager_afford), capped at the scenes the present thread
+ * can consume over the span while its backlog gate holds (eager_cap_step,
+ * eager_cap_afford). eager_span_count plans the count: without
  * vsync a free span (eager_free_span: afford less the count controller's
  * shortfall, evenly spaced, at level 1); on a display grid under the fill
  * cadence eager_fill_span's count; otherwise it moves the level
@@ -906,6 +1072,8 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
                        op_time_t span_end, op_time_t prod_end)
 {
     eager_close_span();   /* the previous span's books first */
+    eager_cap_ab_step(now);
+    eager_cap_step();
     /* Precondition check: under eager the host loop keeps the render grid's
      * next slot within one period of now, so this trims nothing. A slot that
      * led by more would leave this tick's span one slot, or none past the
@@ -943,7 +1111,7 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
      * after a span was cut short, which is the oscillation the divisor ladder
      * exists to prevent. */
     op_time_t budget;
-    const int afford = eager_afford(now, prod_end, sp.ns, &budget);
+    const int afford = eager_cap_afford(eager_afford(now, prod_end, sp.ns, &budget), &sp);
     period = eager_span_count(free_grid, afford, grid_period, &sp, period);
     const int ns = sp.ns;
     s_eager.span_free = free_grid;
@@ -1127,7 +1295,7 @@ static void eager_replan(op_time_t now, op_time_t deadline, op_time_t tail)
     if (s_eager.cost_n < EAGER_COST_WARMUP || deadline < s_eager.produce_end) return;
     if (s_eager.i < 1 || s_eager.i >= s_eager.n) return;
     const int m = op_eager_guard_room(deadline - now, s_eager.cost_ema, tail);
-    const int n = op_eager_replan(s_eager.target, s_eager.i, s_eager.n, m, eager_free_floor(s_eager.span_grid),
+    const int n = op_eager_replan(s_eager.target, s_eager.i, s_eager.n, m, eager_free_floor(s_eager.span_grid, 1),
                                   EAGER_MAX_TARGETS);
     if (n != s_eager.n && !s_eager.span_replanned) { s_eager.span_replanned = 1; s_eager.replanned++; }
     s_eager.n = n;
@@ -1292,7 +1460,8 @@ int eager_idle(int world_live, int may_produce, op_time_t deadline, op_time_t pe
  * whose render-grid slot was pulled back to within a period of now; the
  * cadence policy at exit and the spans the fill cadence planned; the
  * re-warm windows a level edge opened; the free spans whose planned count
- * the re-plan changed. Silent when no span ran. */
+ * the re-plan changed; then the presenter cap's line (eager_cap_report).
+ * Silent when no span ran. */
 static void eager_report(void)
 {
     if (!s_eager.spans) return;
@@ -1310,6 +1479,7 @@ static void eager_report(void)
                s_eager.policy ? "greedy" : "divisor", s_eager.span_held, s_eager.trimmed,
                openpete_get_cadence() == OPENPETE_CADENCE_FILL ? "fill" : "even", s_eager.fill_spans,
                s_eager.edge_windows, s_eager.replanned);
+    eager_cap_report();
 }
 
 /** @brief Drop the eager scene plan on a guest discontinuity (a savestate load from a file, or a non-quiet in-memory state load).

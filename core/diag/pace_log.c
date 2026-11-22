@@ -1678,7 +1678,8 @@ void openpete_pace_eager_plan(uint32_t vbl_index, int64_t t_ns, uint8_t flags,
                               int planned, int made, int64_t period_ns, int64_t budget_ns,
                               int64_t tail_ns, int64_t lag_ns, int64_t vbl_ns,
                               int64_t late_ns, int64_t anchor_age_ns, int head_vbls,
-                              int spare, int capacity, int final_planned)
+                              int spare, int capacity, int final_planned,
+                              int cap, int capped, unsigned superseded)
 {
     if (!pace_sink_on()) return;
 #define EP_U16(v) ((uint64_t)((v) < 0 ? 0 : (v) > 0xFFFF ? 0xFFFF : (v)))
@@ -1696,7 +1697,11 @@ void openpete_pace_eager_plan(uint32_t vbl_index, int64_t t_ns, uint8_t flags,
                     EP_U16(made) << 32 | (uint64_t)age10 << 48 | hv << 61);
     r.b = (int64_t)((uint64_t)(tail_ns < 0 ? 0 : tail_ns > (int64_t)UINT32_MAX ? (int64_t)UINT32_MAX : tail_ns) |
                     EP_U8(spare) << 32 | EP_U8(capacity) << 40 | EP_U8(final_planned) << 48 | OP_PACE_EP_B_SPAN);
-    r.c = lag_ns; r.d = vbl_ns; r.e = late_ns;
+    r.c = lag_ns; r.e = late_ns;
+    const uint64_t cap15 = cap < 0 ? 0u : cap > 0x7FFF ? 0x7FFFu : (uint64_t)cap;
+    const uint64_t sup16 = superseded > 0xFFFFu ? 0xFFFFu : (uint64_t)superseded;
+    r.d = (int64_t)((uint64_t)(vbl_ns < 0 ? 0 : vbl_ns > (int64_t)UINT32_MAX ? (int64_t)UINT32_MAX : vbl_ns) |
+                    cap15 << 32 | (uint64_t)(capped ? 1u : 0u) << 47 | sup16 << 48);
     r.f = (int64_t)(EP_U16(slots) | EP_U16(afford) << 16 | EP_U16(planned) << 32 |
                     EP_U16(period_ns / 1000) << 48);
 #undef EP_U16

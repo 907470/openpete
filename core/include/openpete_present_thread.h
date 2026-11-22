@@ -118,6 +118,30 @@ unsigned openpete_present_thread_presents(void);
  * be superseded. Read without the thread's mutex; each average is a relaxed atomic.
  * @return The average in nanoseconds, 0 before the first present. */
 int64_t  openpete_present_thread_cost_ns(void);
+/** @brief Return the present thread's busy time per present, as a moving average.
+ *
+ * Sums the scene renders, the swapchain acquires and the present steps made
+ * since the previous present, scenes rendered but dropped or refused
+ * included, and folds the sum at each present into an 8-sample exponential
+ * average (the re-warm window applies). The target-instant and flip waits
+ * are left out; the acquire's wait for a free image is in. Under immediate
+ * present a GPU-bound presenter waits in that acquire, so the average is the
+ * rate at which it can consume scenes; under FIFO it carries the display's
+ * back-pressure and sits near one refresh. Read without the thread's mutex;
+ * the average is a relaxed atomic.
+ * @return The average in nanoseconds, 0 before the first present. */
+int64_t  openpete_present_thread_service_ns(void);
+/** @brief Read the present thread's running scene-pick counts: every pick, and the picks that found no scene due.
+ *
+ * A pick is the choice of the scene the next present shows
+ * (openpete_native_scene_pick). It is starved when no pending scene's target
+ * lies at or before the pick instant: the presenter was ready before the
+ * producer's next scene was due, so it was not behind. A presenter with a
+ * backlog finds one or more scenes due at every pick. Read without the
+ * thread's mutex; each count is a relaxed atomic, modulo 2^32.
+ * @param picks Receives the number of picks.
+ * @param starved Receives the number of starved picks. */
+void     openpete_present_thread_picks(unsigned *picks, unsigned *starved);
 /** @brief Read the two moving averages openpete_present_thread_cost_ns sums: the scene render and the present step.
  *
  * The render average is the render into a stage image, per scene; the

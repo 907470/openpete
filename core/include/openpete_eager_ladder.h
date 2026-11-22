@@ -447,4 +447,101 @@ static inline int64_t op_eager_cost_ema(int64_t ema, int64_t sample)
     return (ema * 7 + op_eager_cost_sample(ema, sample)) / 8;
 }
 
+/* The presenter cap's backlog gate. The cap lowers a span's scenes only
+ * while the present thread is behind the producer, judged per block of
+ * spans with picks: a block is behind when at most a quarter of its picks
+ * found no scene due at the pick instant (starved) and the ring retired at
+ * least one scene per span unpresented. A presenter behind the producer
+ * still starves some picks: an acquire that finds its image's previous
+ * submission retired returns without the image-fence wait, and the next
+ * pick comes before the next scene's target; and a pick that took the
+ * nearest scene ahead of its instant leaves the next pick nothing due. A
+ * presenter that keeps up starves most of its picks. The gate arms after
+ * `need` spans of behind blocks in a row. Armed, a block with more than
+ * half its picks starved disarms the gate and doubles the evidence the
+ * next arming needs, up to max_need; a block between a quarter and a half
+ * raises the cap by one scene (slack) when the cap lowered one of its
+ * spans and disarms otherwise; a block with at most an eighth starved that
+ * retired two or more scenes per span gives back one scene of slack. A run
+ * of max_need armed spans with no disarm restores the base need. */
+typedef struct {
+    int      armed;        /* the evidence holds: the cap applies */
+    int      run;          /* spans of behind blocks (disarmed) or of armed service (armed) */
+    int      need;         /* spans of evidence the next arming needs; 0 = the base */
+    int      slack;        /* scenes added to the cap over the presenter's measured consumption */
+    int      b_spans, b_capped;              /* the open block: spans with picks, spans the cap lowered */
+    unsigned b_picks, b_starved, b_sup;      /* the open block: picks, starved picks, scenes retired unpresented */
+    unsigned arms, disarms, loosened;        /* armings, disarmings, blocks that raised the slack */
+} op_eager_cap_t;
+
+/** @brief Close one block of the presenter cap's backlog gate (op_eager_cap_step) and clear the block's sums.
+ *
+ * @param c The gate, its block full.
+ * @param base_need The spans of evidence the first arming needs; also the block length.
+ * @param max_need The most spans of evidence an arming needs. */
+static inline void op_eager_cap_block(op_eager_cap_t *c, int base_need, int max_need)
+{
+    const unsigned p = c->b_picks, z = c->b_starved;
+    const int behind = z * 4 <= p, over_half = z * 2 > p, spans = c->b_spans;
+    const unsigned sup = c->b_sup;
+    const int capped = c->b_capped;
+    c->b_spans = 0; c->b_capped = 0; c->b_picks = 0; c->b_starved = 0; c->b_sup = 0;
+    if (!c->armed) {
+        if (!behind || sup < (unsigned)spans) { c->run = 0; return; }
+        c->run += spans;
+        if (c->run < c->need) return;
+        c->armed = 1; c->arms++; c->slack = 0; c->run = 0;
+        return;
+    }
+    if (over_half || (!behind && !capped)) {
+        c->armed = 0; c->disarms++; c->slack = 0; c->run = 0;
+        c->need = c->need * 2 > max_need ? max_need : c->need * 2;
+        return;
+    }
+    if (!behind) { c->slack++; c->loosened++; return; }
+    if (z * 8 <= p && sup >= 2u * (unsigned)spans && c->slack > 0) c->slack--;
+    c->run += spans;
+    if (c->run >= max_need) c->need = base_need;
+}
+
+/** @brief Step the presenter cap's backlog gate on the picks, starved picks and retired scenes since the previous plan.
+ *
+ * A span with no pick carries no evidence and changes nothing. Every other
+ * span adds to the open block, and the block closes after base_need such
+ * spans (op_eager_cap_block); the gate changes state only at a close.
+ * @param c The gate, zero-initialised before the first step.
+ * @param picks The present thread's picks since the previous plan.
+ * @param starved Of those, the picks that found no scene due.
+ * @param sup The scenes the ring retired unpresented since the previous plan.
+ * @param capped Nonzero when the cap lowered the span those picks consumed.
+ * @param base_need The spans of evidence the first arming needs and the block length, at least 1.
+ * @param max_need The most spans of evidence an arming needs, at least base_need. */
+static inline void op_eager_cap_step(op_eager_cap_t *c, unsigned picks, unsigned starved, unsigned sup,
+                                     int capped, int base_need, int max_need)
+{
+    if (c->need < base_need) c->need = base_need;
+    if (picks == 0) return;
+    c->b_spans++; c->b_capped += capped != 0;
+    c->b_picks += picks; c->b_starved += starved; c->b_sup += sup;
+    if (c->b_spans >= base_need) op_eager_cap_block(c, base_need, max_need);
+}
+
+/** @brief Return the presenter cap on a span's scenes: the scenes the present thread consumes over len at its service time, plus the slack, plus one for the pick's phase.
+ *
+ * @param len The span's presentation length in nanoseconds.
+ * @param service_ns The present thread's service time per present, positive.
+ * @param slack The gate's slack in scenes.
+ * @param max_n The most scenes a span plans.
+ * @param spacing_ns Receives len over the consumed scenes: the least spacing of a free span's instants under the cap.
+ * @return The cap, at least 2. */
+static inline int op_eager_cap_count(int64_t len, int64_t service_ns, int slack, int max_n, int64_t *spacing_ns)
+{
+    if (len < 0) len = 0;
+    int64_t k = (len + service_ns - 1) / service_ns + slack;
+    if (k < 1) k = 1;
+    if (k > max_n) k = max_n;
+    *spacing_ns = len / k;
+    return (int)k + 1;
+}
+
 #endif /* OPENPETE_EAGER_LADDER_H */

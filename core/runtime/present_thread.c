@@ -91,6 +91,13 @@ static struct {
      * relaxed atomics, each word read whole, no other data published. */
     _Atomic op_time_t render_ema;  /* render into a stage image, per scene */
     _Atomic op_time_t present_ema; /* acquire + blit + present, per frame */
+    _Atomic op_time_t service_ema; /* busy time per present: renders, acquires and present steps, no deliberate wait */
+    op_time_t service_acc;    /* busy time since the last present, folded into service_ema at the next one */
+    /* Scene picks and the picks that found no pending scene due at the pick
+     * instant. Written by this thread only, read without mx by the sim
+     * thread's planner: relaxed atomics. */
+    _Atomic unsigned picks;
+    _Atomic unsigned starved;
     SDL_AtomicInt rewarm;     /* renders left in which a cost below an average replaces it (openpete_present_thread_rewarm) */
     unsigned  render_refused; /* the render frame could not begin (rebuild pending, fence bound) */
     unsigned  discarded;      /* staged frames never presented (deactivated, stages rebuilt) */
@@ -501,12 +508,16 @@ static int s_stage_next;
  *
  * Harness knob: a present thread slower than the producer lets published
  * scenes fill the scene ring, as a loaded machine does. Read once; unset
- * or 0 sleeps nothing. Called with the mutex released. */
-static void pt_stall(void)
+ * or 0 sleeps nothing. Called with the mutex released.
+ * @return The nanoseconds slept, which the caller counts as busy time. */
+static op_time_t pt_stall(void)
 {
     static op_time_t ns = -1;
     if (ns < 0) { const char *e = getenv("OPENPETE_PRESENT_STALL_MS"); ns = (e && *e) ? (op_time_t)atoll(e) * 1000000 : 0; }
-    if (ns > 0) op_sleep_until(op_now() + ns);
+    if (ns <= 0) return 0;
+    const op_time_t t0 = op_now();
+    op_sleep_until(t0 + ns);
+    return op_now() - t0;
 }
 
 /** @brief Fault injection: rewrite one guest word through a host pointer from the present thread.
@@ -542,13 +553,14 @@ static void pt_begin_activation(void)
     lattice_reset_why("activation", 0);
     lattice_reset();
     s_pt.flip_pending = 0; s_pt.flip_holdoff = 0;
+    s_pt.service_acc = 0;
     if (s_staged.valid) { s_staged.valid = 0; s_pt.discarded++; }
     s_pt.pre_held = 0;   /* the deactivation released any held image */
     openpete_native_display_claim();
 }
 
 /** @brief Load one present-thread cost average (relaxed).
- * @param ema s_pt.render_ema or s_pt.present_ema.
+ * @param ema s_pt.render_ema, s_pt.present_ema or s_pt.service_ema.
  * @return The average in nanoseconds. */
 static op_time_t pt_ema(const _Atomic op_time_t *ema) {
     return atomic_load_explicit(ema, memory_order_relaxed);
@@ -658,6 +670,7 @@ static void pt_step_acquire_locked(void)
     const op_time_t dt = op_now() - t0;
     if (!ok) openpete_pace_record_sheds((uint8_t)s_pt.last_kind);
     pt_busy_leave();
+    s_pt.service_acc += dt;
     if (ok) { s_pt.pre_held = 1; return; }
     s_pt.acq_first_refused++;
     if (dt < 1000000) SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, 4);
@@ -704,8 +717,11 @@ static void pt_stage_hold_locked(int stage, uint32_t gen, op_time_t target, doub
     s_pt.acq_first_renders += s_pt.pre_held;
     s_pt.pre_held = 0;
     pt_busy_enter_locked();
+    const op_time_t a0 = op_now();
     if (!openpete_native_present_stage_acquire()) openpete_pace_record_sheds((uint8_t)kind);
+    const op_time_t a = op_now() - a0;
     pt_busy_leave();
+    s_pt.service_acc += a;
     s_staged.valid = 1; s_staged.stage = stage; s_staged.gen = gen;
     s_staged.target = target; s_staged.alpha = alpha; s_staged.paired = paired; s_staged.kind = kind;
 }
@@ -728,8 +744,11 @@ static void pt_step_render_locked(op_time_t now, double slot)
         ? lattice_ceil_locked(now + pt_ema(&s_pt.render_ema) + 100000
                               + (op_time_t)(s_lat.period + 0.5) - compose_guard_ns())
         : now;
-    const int slot_idx = openpete_native_scene_pick(pick_at);
+    int due = 0;
+    const int slot_idx = openpete_native_scene_pick(pick_at, &due);
     if (slot_idx < 0) return;
+    atomic_fetch_add_explicit(&s_pt.picks, 1u, memory_order_relaxed);
+    if (due == 0) atomic_fetch_add_explicit(&s_pt.starved, 1u, memory_order_relaxed);
     op_time_t t_ns = 0; double alpha = 0.0; int paired = 0, kind = OP_PACE_INTERMEDIATE;
     openpete_native_scene_slot_info(slot_idx, &t_ns, &alpha, &paired, &kind);
     const int nstages = s_pt.staged_on ? openpete_native_stage_count() : 0;
@@ -740,7 +759,7 @@ static void pt_step_render_locked(op_time_t now, double slot)
         fprintf(stderr, "[pt] render target=%.0f now=%.0f stage=%d\n", dbg_rel(t_ns), dbg_rel(now), stage);
     }
     pt_busy_enter_locked();
-    pt_stall();
+    const op_time_t stalled = pt_stall();
     pt_fault_store();
     const op_time_t c0 = op_now();
     const uint32_t gen = openpete_native_stage_gen();
@@ -748,6 +767,7 @@ static void pt_step_render_locked(op_time_t now, double slot)
     const op_time_t c = op_now() - c0;
     openpete_pace_split_add(OP_PACE_SPLIT_RENDER, c);
     pt_busy_leave();
+    if (stage >= 0) s_pt.service_acc += c + stalled;   /* unstaged, c holds the wait for the instant */
     if (!did) { s_pt.render_refused++; return; }
     s_pt.last_kind = kind;
     if (stage < 0) {
@@ -831,6 +851,10 @@ static void pt_present_outcome_locked(int did, int kind, op_time_t cost)
     }
     pt_count_present_locked(kind);
     pt_cost_fold(&s_pt.present_ema, cost, 0);
+    /* Every render, acquire and present step since the last present,
+     * dropped and refused ones included, is the price of this one. */
+    pt_cost_fold(&s_pt.service_ema, s_pt.service_acc, 0);
+    s_pt.service_acc = 0;
     if (s_pt.acq_first && ++s_pt.acq_ok_run >= PT_ACQ_FIRST_EXIT) { s_pt.acq_first = 0; s_pt.acq_ok_run = 0; }
 }
 
@@ -863,6 +887,7 @@ static void pt_step_present_locked(op_time_t now, double slot)
     openpete_pace_record_present((uint8_t)kind, alpha, paired);
     if (did && s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
     pt_busy_leave();
+    s_pt.service_acc += c;
     pt_present_outcome_locked(did, kind, c);
 }
 
@@ -1025,6 +1050,11 @@ void openpete_present_thread_report(void)
                "acquire order: %u switch(es) to acquire-first, %u render(s) made on an image acquired first, "
                "%u acquire(s) refused before a render (renders not made), %u render(s) discarded by a refused present",
                s_pt.acq_first_entries, s_pt.acq_first_renders, s_pt.acq_first_refused, s_pt.refused);
+    OPL_INFO_F("present-thread",
+               "consumption: service %.3f ms ema; %u scene pick(s), %u found no scene due at the pick instant (starved)",
+               (double)pt_ema(&s_pt.service_ema) / 1e6,
+               atomic_load_explicit(&s_pt.picks, memory_order_relaxed),
+               atomic_load_explicit(&s_pt.starved, memory_order_relaxed));
     if (s_pt.flips || s_pt.flip_timeouts)
         OPL_INFO_F("present-thread",
                    "display: %u flip(s) observed, %u wait(s) ran to their bound (overrun %.3f ms mean, %.3f ms max); "
@@ -1042,6 +1072,16 @@ unsigned openpete_present_thread_presents(void) { return s_pt.presents; }
  * off this is the display's real throughput ceiling; the planner spaces
  * targets no denser than it, or most scenes are made only to be superseded. */
 int64_t openpete_present_thread_cost_ns(void) { return pt_ema(&s_pt.render_ema) + pt_ema(&s_pt.present_ema); }
+
+/* Documented at the declaration in openpete_present_thread.h. */
+int64_t openpete_present_thread_service_ns(void) { return pt_ema(&s_pt.service_ema); }
+
+/* Documented at the declaration in openpete_present_thread.h. */
+void openpete_present_thread_picks(unsigned *picks, unsigned *starved)
+{
+    *picks = atomic_load_explicit(&s_pt.picks, memory_order_relaxed);
+    *starved = atomic_load_explicit(&s_pt.starved, memory_order_relaxed);
+}
 
 /* Documented at the declaration in openpete_present_thread.h. */
 void openpete_present_thread_emas(int64_t *render_ns, int64_t *present_ns)

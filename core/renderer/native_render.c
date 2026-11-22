@@ -23581,15 +23581,17 @@ int64_t openpete_native_scene_next_target(void) {
     return t;
 }
 /* Pick the pending scene whose target is nearest `at`; every pending scene
- * OLDER than the pick retires unpresented (superseded). Alpha binds here, at
+ * OLDER than the pick retires unpresented (superseded). `due` receives the
+ * pending scenes due at `at`, counted before the pick. Alpha binds here, at
  * consume time: the scene shown is the animation moment nearest the flip,
  * not the one a fixed slot mapping decided on at extraction. Returns the
  * slot (now PRESENTING) or -1. */
-int openpete_native_scene_pick(int64_t at) {
-    int best = -1; op_time_t bd = 0;
+int openpete_native_scene_pick(int64_t at, int *due) {
+    int best = -1, n_due = 0; op_time_t bd = 0;
     SDL_LockMutex(ring_mx());
     for (int i = 0; i < SCENE_RING; i++) {
         if (s_ring[i].state != SS_PENDING) continue;
+        n_due += s_ring[i].target_ns <= at;
         op_time_t d = s_ring[i].target_ns > at ? s_ring[i].target_ns - at : at - s_ring[i].target_ns;
         if (best < 0 || d < bd) { best = i; bd = d; }
     }
@@ -23602,6 +23604,7 @@ int openpete_native_scene_pick(int64_t at) {
         s_ring[best].state = SS_PRESENTING;
     }
     SDL_UnlockMutex(ring_mx());
+    if (due) *due = n_due;
     return best;
 }
 /* Called by the present thread right after every rhi_begin_frame: frames
@@ -23663,6 +23666,13 @@ float openpete_native_display_refresh_hz(void) { return s_nr.dev ? rhi_refresh_h
 int   openpete_native_display_vsync(void)      { return s_nr.dev ? rhi_present_is_vsync(s_nr.dev) : 0; }
 /* Free ring slots: the producer's back-pressure. */
 int openpete_native_scene_ring_free(void) { return SCENE_RING - openpete_native_scene_ring_busy(); }
+/* Documented at the declaration in openpete_native_render.h. */
+unsigned openpete_native_scene_ring_superseded(void) {
+    SDL_LockMutex(ring_mx());
+    const unsigned n = s_ring_census.superseded;
+    SDL_UnlockMutex(ring_mx());
+    return n;
+}
 void openpete_native_scene_ring_report(void) {
     if (!s_ring_census.published) return;
     OPL_INFO_F("scene-ring", "%u scene(s) published, %u presented, %u superseded unpresented, %u refused (ring full)",

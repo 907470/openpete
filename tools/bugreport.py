@@ -512,16 +512,21 @@ def plan_decode(r):
     `prev_spare` (scenes the produce guard would still have started when the previous span's plan
     finished; 128 when it finished before the update VBL), `prev_capacity` (its scenes produced plus
     spare; 0 when spare was not measured) and `prev_planned` (its planned count after any re-plan) are
-    None in a log written before them."""
+    None in a log written before them.
+    `cap` is the presenter cap on afford (0 when none was computed), `capped` whether the presenter bound
+    lowered the span's scenes, and `sup` the scenes the scene ring retired unpresented since the previous
+    plan; all three are 0 in a log written before them."""
     f = r[10] or 0
     a = r[5] or 0
     b = r[6] or 0
     span = bool(b & PACE_EP_B_SPAN)
+    d = r[8] or 0
     return {"index": r[3], "t_ns": r[4], "flags": r[1], "cut": bool(r[1] & PACE_EP_CUT),
             "ring": bool(r[1] & PACE_EP_RING), "withheld": bool(r[1] & PACE_EP_WITHHELD),
             "late": bool(r[1] & PACE_EP_LATE), "fill": bool(r[1] & PACE_EP_FILL),
             "level": r[2] & 0xFF, "std": (r[2] >> 8) & 0xFF,
-            "budget": (a & 0xFFFFFFFF) / 1e6, "made": (a >> 32) & 0xFFFF, "tail": (b & 0xFFFFFFFF) / 1e6, "lag": r[7] / 1e6, "vbl": r[8] / 1e6,
+            "budget": (a & 0xFFFFFFFF) / 1e6, "made": (a >> 32) & 0xFFFF, "tail": (b & 0xFFFFFFFF) / 1e6, "lag": r[7] / 1e6, "vbl": (d & 0xFFFFFFFF) / 1e6,
+            "cap": (d >> 32) & 0x7FFF, "capped": bool((d >> 47) & 1), "sup": (d >> 48) & 0xFFFF,
             "late_ms": (r[9] or 0) / 1e6, "slots": f & 0xFFFF, "afford": (f >> 16) & 0xFFFF,
             "planned": (f >> 32) & 0xFFFF, "period_ms": ((f >> 48) & 0xFFFF) / 1000.0,
             "anchor_ms": ((a >> 48) & 0x1FFF) / 100.0, "head_vbls": (a >> 61) & 7,
@@ -636,6 +641,16 @@ def perf_rollup(data, tail_s=10.0):
         if caps:
             out["plan_capacity"] = sum(p["prev_capacity"] for p in caps) / len(caps)
             out["plan_final"] = sum(p["prev_planned"] for p in caps) / len(caps)
+        out["plan_capped"] = sum(1 for p in plans if p["capped"])
+        out["plan_sup"] = sum(p["sup"] for p in plans[1:])
+        if splits:
+            # Per tick over the TICK_SPLIT records: scenes extracted, presents, scenes retired unpresented,
+            # and the sim-thread extract time those retired scenes cost at the mean extract per scene.
+            ns, n_ex = len(splits), sum(sp["n_extract"] for sp in splits)
+            out["tick_produced"] = n_ex / ns
+            out["tick_presented"] = sum(sp["n_present"] for sp in splits) / ns
+            out["tick_sup"] = out["plan_sup"] / ns
+            out["tick_discard_ms"] = (out["tick_sup"] * sum(sp["extract"] for sp in splits) / n_ex) if n_ex else 0.0
     gpus = [gpu_decode(r) for r in recs if r[0] == PACE_GPU_FRAME]
     if gpus:
         out["gpu_frames"] = len(gpus)
@@ -1894,7 +1909,11 @@ def perf_lines(pace, coarse, manifest, logt=None):
               f"cut {100 * r['plan_cut_frac']:.1f}% (ring {100 * r['plan_cut_ring_frac']:.1f}%); "
               f"budget p50 {r['plan_budget_p50']:.2f} ms" +
               (f"; capacity {r['plan_capacity']:.2f} final plan {r['plan_final']:.2f} per measured span"
-               if "plan_capacity" in r else ""))
+               if "plan_capacity" in r else "") +
+              f"; capped {r['plan_capped']} span(s)")
+            if "tick_produced" in r:
+                w(f"  per tick: produced {r['tick_produced']:.2f} presented {r['tick_presented']:.2f} "
+                  f"superseded {r['tick_sup']:.2f} (discarded extract {r['tick_discard_ms']:.3f} ms)")
         else:
             w("  planner: no EAGER_PLAN record (eager production did not run: headless, or not windowed)")
         if "gpu_frames" in r:

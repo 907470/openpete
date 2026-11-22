@@ -2951,8 +2951,10 @@ int64_t  openpete_native_scene_next_target(void);
  * as superseded. Alpha binds here, at consume time: the scene shown is the
  * animation moment nearest the flip.
  * @param at The display instant, op_now nanoseconds.
+ * @param due Receives the pending scenes whose target is at or before at,
+ *            counted before the pick; may be NULL.
  * @return The picked slot, or -1 when none is pending. */
-int      openpete_native_scene_pick(int64_t at);
+int      openpete_native_scene_pick(int64_t at, int *due);
 /** @brief Compose a ring slot and present it to the swapchain directly.
  *
  * The slot's lifecycle matches openpete_native_render_scene_to_stage with no
@@ -3062,6 +3064,10 @@ void     openpete_native_scene_slot_ids(int slot, uint32_t *scene_id, uint32_t *
  * presenting, and refused for a full ring. Logs nothing when no scene was
  * published. */
 void     openpete_native_scene_ring_report(void);
+/** @brief Return the number of ring scenes retired unpresented since start: superseded at a pick or flushed while pending.
+ *
+ * @return The running count, modulo 2^32. */
+unsigned openpete_native_scene_ring_superseded(void);
 /** @brief Log the window state and the per-present census at exit.
  *
  * The census counts what each composed image showed (native scene, VRAM

@@ -1319,6 +1319,63 @@ static void test_replan(int print)
  * @param argc Argument count.
  * @param argv Arguments.
  * @return 0 on pass, 1 on a failed check. */
+/** @brief The presenter cap's backlog gate: arming on backlog evidence only, loosening on a capped span's starved picks, disarming with backoff on an uncapped starved pick, and the cap count.
+ *
+ * A presenter keeping up (a starved pick in every span, as a vsync-480
+ * presenter at its slot rate) never arms the gate; one behind (no starved
+ * pick, two retired scenes per span) arms after the base need; a starved
+ * pick while capped raises the slack, and one while uncapped disarms and
+ * doubles the next need. */
+static void test_cap_gate(void)
+{
+    op_eager_cap_t c = {0};
+    /* Keeping up: three of four picks starved (the least starved fraction of
+     * a presenter that keeps up at 480 Hz), a scene retired per span. */
+    for (int k = 0; k < 400; k++) op_eager_cap_step(&c, 12, 9, 1, 0, 16, 256);
+    check(!c.armed && c.arms == 0, "cap gate: a presenter that starves three picks in four never arms");
+    memset(&c, 0, sizeof c);
+    for (int k = 0; k < 400; k++) op_eager_cap_step(&c, 12, 0, 0, 0, 16, 256);
+    check(!c.armed, "cap gate: no retired scene, no arming");
+    memset(&c, 0, sizeof c);
+    /* Behind: about one pick in ten starved (an acquire with no image-fence
+     * wait, a pick ahead of the nearest scene), three scenes retired per span. */
+    for (int k = 0; k < 15; k++) op_eager_cap_step(&c, 3, k % 3 == 0, 3, 0, 16, 256);
+    check(!c.armed, "cap gate: 15 spans of backlog do not arm at need 16");
+    op_eager_cap_step(&c, 0, 0, 0, 0, 16, 256);
+    check(!c.armed && c.b_spans == 15, "cap gate: a span with no pick carries no evidence");
+    op_eager_cap_step(&c, 3, 0, 3, 0, 16, 256);
+    check(c.armed && c.arms == 1 && c.slack == 0, "cap gate: the 16th backlog span arms despite isolated starved picks");
+    memset(&c, 0, sizeof c);
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, k < 13, 3, 0, 16, 256);
+    check(!c.armed, "cap gate: a block with more than a quarter of its picks starved does not arm");
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, 0, 3, 0, 16, 256);
+    check(c.armed, "cap gate: the next behind block arms");
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, k < 16, 0, 1, 16, 256);
+    check(c.armed && c.slack == 1 && c.loosened == 1,
+          "cap gate: a capped block with a third of its picks starved raises the slack by one");
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, 0, 2, 1, 16, 256);
+    check(c.slack == 0, "cap gate: a clean capped block retiring two scenes per span gives one back");
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, k < 16, 0, 0, 16, 256);
+    check(!c.armed && c.disarms == 1 && c.need == 32 && c.slack == 0,
+          "cap gate: an uncapped block with a third of its picks starved disarms and doubles the need");
+    for (int k = 0; k < 31; k++) op_eager_cap_step(&c, 2, 0, 2, 0, 16, 256);
+    check(!c.armed, "cap gate: after a disarm 31 spans do not arm at need 32");
+    op_eager_cap_step(&c, 2, 0, 2, 0, 16, 256);
+    check(c.armed, "cap gate: the 32nd span re-arms");
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 2, 2, 1, 1, 16, 256);
+    check(!c.armed && c.disarms == 2 && c.need == 64, "cap gate: a capped block with every pick starved disarms");
+    memset(&c, 0, sizeof c);
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 2, 0, 2, 0, 16, 256);
+    c.need = 64;
+    for (int k = 0; k < 256; k++) op_eager_cap_step(&c, 2, 0, 1, 1, 16, 256);
+    check(c.armed && c.need == 16, "cap gate: a long armed run restores the base need");
+    int64_t sp = 0;
+    check(op_eager_cap_count(33 * MS, 15 * MS, 0, 48, &sp) == 4 && sp == 11 * MS,
+          "cap count: 33 ms at 15 ms service consumes 3, cap 4, spacing 11 ms");
+    check(op_eager_cap_count(33 * MS, 15 * MS, 2, 48, &sp) == 6, "cap count: the slack adds scenes");
+    check(op_eager_cap_count(33 * MS, 1, 0, 48, &sp) == 49, "cap count: bounded at the span maximum plus one");
+}
+
 int main(int argc, char **argv)
 {
     test_afford();
@@ -1339,6 +1396,7 @@ int main(int argc, char **argv)
     test_fill_recovery();
     test_fill_cut_causes();
     test_replan(argc > 1 && !strcmp(argv[1], "replay"));
+    test_cap_gate();
     printf("eager_ladder_test: %s\n", g_fail ? "FAIL" : "PASS");
     return g_fail;
 }
