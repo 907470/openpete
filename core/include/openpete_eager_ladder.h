@@ -124,6 +124,32 @@ static inline int64_t op_eager_ladder_fill(int64_t len, int afford, int64_t floo
     return period;
 }
 
+/** @brief Return a span's first instant when it continues the previous span's grid, and the instant that grid placed before it.
+ *
+ * The continuation is the previous span's last instant plus one period.
+ * When that lies more than a period past the span's own first slot, the old
+ * grid ran ahead of the plan instant (a period floored at a present-thread
+ * cost above the tick advances the chain faster than time), and only its
+ * phase is kept: the instant lands in [first, first + period), so the lead
+ * of a span's first instant over its own first slot stays under one period
+ * whatever the previous lead was. The caller checks last + period > first.
+ * @param last The previous span's last instant.
+ * @param first The span's first render-grid slot.
+ * @param period The planned grid period, positive.
+ * @param prev Receives the old grid's instant one period before the result:
+ *        last itself, or the instant the phase-only case continues after.
+ * @return The span's first instant. */
+static inline int64_t op_eager_span_continue(int64_t last, int64_t first, int64_t period, int64_t *prev)
+{
+    int64_t f = last + period;
+    *prev = last;
+    if (f - first > period) {
+        f = first + (f - first) % period;
+        *prev = f - period;
+    }
+    return f;
+}
+
 /* Why a span ended with planned scenes unproduced. Only a deadline cut says
  * the plan held more scenes than their cost lets the budget produce. */
 typedef enum {

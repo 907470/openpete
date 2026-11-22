@@ -44,6 +44,13 @@
  * capacity and through a stall, with the free span's count step as the
  * control.
  *
+ * The chain rows run 1000 continued spans with the period floored at a
+ * present-thread cost of 200 ms over the 33.4 ms tick, on the display-grid
+ * and the free planner, from no lead and from a lead of three periods: each
+ * span's first instant stays under one period past its own first slot
+ * (op_eager_span_continue), with the continuation that kept whole periods as
+ * the control.
+ *
  * `eager_ladder_test replay` prints the per-row table. */
 
 #include "openpete_eager_ladder.h"
@@ -262,6 +269,90 @@ static void test_free(int print)
         snprintf(what, sizeof what, "control %s: the tail-floored grid plans at level 2", k_free[i].level);
         check(lo == 2 && ko <= (k_free[i].ns + 1) / 2, what);
     }
+}
+
+/* The span chain under a presenter slower than the tick: the planned period
+ * is floored at a present-thread cost P above the tick T, so each continued
+ * span moves the previous span's grid P - T further ahead of the plan
+ * instant. Spans step T apart with up to 2 ms of start jitter; each span's
+ * first render-grid slot is the 60 Hz slot at or after its plan instant; the
+ * span ends one tick plus the lag past the plan instant. */
+#define CHAIN_SPANS 1000
+#define CHAIN_TICK  33430222LL   /* 1125000/37609 Hz */
+#define CHAIN_GRID  16666667LL
+#define CHAIN_LAG   (8 * MS)
+#define CHAIN_P     (200 * MS)
+
+/** @brief The previous continuation: whole periods of the old grid's lead kept.
+ * @param last The previous span's last instant.
+ * @param first The span's first render-grid slot.
+ * @param period The planned grid period.
+ * @param prev Receives the previous span's last instant.
+ * @return The span's first instant. */
+static int64_t old_span_continue(int64_t last, int64_t first, int64_t period, int64_t *prev)
+{
+    int64_t f = last + period;
+    *prev = last;
+    if (f - first > period) f = first + ((f - first) / period) * period;
+    return f;
+}
+
+/** @brief Run CHAIN_SPANS spans of one planner and continuation rule from a seeded lead.
+ * @param cont The continuation rule.
+ * @param free_span Nonzero for the free span's placement (op_eager_ladder_fill after prev), else the display grid's.
+ * @param seed The previous span's last instant at the first span, in periods past its plan instant (0: none).
+ * @param max_over Receives the largest first instant minus the span's own first slot, nanoseconds.
+ * @param last_lead Receives the last span's first instant minus its plan instant, nanoseconds.
+ * @param max_lead Receives the largest first instant minus plan instant, nanoseconds. */
+static void chain_run(int64_t (*cont)(int64_t, int64_t, int64_t, int64_t *), int free_span, int seed,
+                      int64_t *max_over, int64_t *last_lead, int64_t *max_lead)
+{
+    const int64_t base = 1000 * MS;
+    int64_t last = seed ? base + seed * CHAIN_P : 0;
+    *max_over = INT64_MIN; *max_lead = INT64_MIN; *last_lead = 0;
+    for (int n = 0; n < CHAIN_SPANS; n++) {
+        const int64_t now = base + n * CHAIN_TICK + (n % 3) * MS;
+        const int64_t slot = ((now + CHAIN_GRID - 1) / CHAIN_GRID) * CHAIN_GRID;
+        int64_t first = slot, prev = 0;
+        int64_t end = now + CHAIN_TICK;
+        if (end < first) end = first;
+        end += CHAIN_LAG;
+        if (last && last + CHAIN_P > first) first = cont(last, first, CHAIN_P, &prev);
+        int k = 1;
+        if (free_span) {
+            const int64_t start = prev ? prev : first;
+            const int64_t p = op_eager_ladder_fill(end - start, 3, CHAIN_P, prev != 0, &k);
+            if (prev) first = prev + p;
+            last = first + p * (k - 1);
+        } else {
+            while (first + CHAIN_P * k <= end) k++;
+            last = first + CHAIN_P * (k - 1);
+        }
+        if (first - slot > *max_over) *max_over = first - slot;
+        if (first - now > *max_lead) *max_lead = first - now;
+        *last_lead = first - now;
+    }
+}
+
+/** @brief Check that a continued span's first instant stays under one period past its own first slot when the period exceeds the tick, on both planners, from no lead and from a lead of three periods. */
+static void test_chain(void)
+{
+    static const char *const planner[] = { "grid", "free" };
+    static const int seeds[] = { 0, 3 };
+    char what[192];
+    for (int fs = 0; fs < 2; fs++)
+        for (size_t si = 0; si < sizeof seeds / sizeof seeds[0]; si++) {
+            int64_t over, last_lead, max_lead, oover, olast, omax;
+            chain_run(op_eager_span_continue, fs, seeds[si], &over, &last_lead, &max_lead);
+            chain_run(old_span_continue, fs, seeds[si], &oover, &olast, &omax);
+            snprintf(what, sizeof what,
+                     "chain %s seed %dP: first instant %.3f ms past the span's slot, under P %.0f ms (lead max %.3f ms)",
+                     planner[fs], seeds[si], (double)over / MS, (double)CHAIN_P / MS, (double)max_lead / MS);
+            check(over < CHAIN_P && max_lead < CHAIN_P + CHAIN_GRID, what);
+            snprintf(what, sizeof what, "control %s seed %dP: the old continuation ends %.3f ms ahead, over P",
+                     planner[fs], seeds[si], (double)olast / MS);
+            check(olast > CHAIN_P, what);
+        }
 }
 
 static const unsigned char k_stone_hill_sum[] = {
@@ -1235,6 +1326,7 @@ int main(int argc, char **argv)
     test_replay(argc > 1 && !strcmp(argv[1], "replay"));
     test_fill();
     test_free(argc > 1 && !strcmp(argv[1], "replay"));
+    test_chain();
     test_count_steps();
     test_count(argc > 1 && !strcmp(argv[1], "replay"));
     test_count_transition(argc > 1 && !strcmp(argv[1], "replay"));

@@ -380,7 +380,8 @@ static void eager_shed_unplanned(op_time_t first, op_time_t span_end,
 /* The present thread's fitted vblank lattice, when targets go on it. */
 typedef struct { int on; int64_t base; double period; } eager_lattice_t;
 /* One span's display instants, as eager_span_slots enumerates them; prev is
- * the previous span's last target when this span continues it, else 0. */
+ * the old grid's instant one period before first when this span continues
+ * the previous span's grid (op_eager_span_continue), else 0. */
 typedef struct { op_time_t first, end, prev; int ns; op_time_t slots[EAGER_MAX_TARGETS]; } eager_span_t;
 
 /** @brief Enumerate the display instants of one span from its first render-grid slot.
@@ -388,8 +389,9 @@ typedef struct { op_time_t first, end, prev; int ns; op_time_t slots[EAGER_MAX_T
  * Raises span_end to first, puts first on the vblank lattice (no earlier than
  * EAGER_PUBLISH_LEAD_NS past now) when one is fitted, extends span_end by the
  * lag and, when the previous span's last target plus a period lies past
- * first, continues on the previous span's grid (unless it drifted a whole
- * period from this one), recording that target as the span's prev. The
+ * first, continues on the previous span's grid, keeping only its phase when
+ * it lies more than a period past first (op_eager_span_continue), and records
+ * the old grid's instant before first as the span's prev. The
  * slots step period from first through span_end; a span holds at least the
  * slot at first. Reads s_eager.lag and s_eager.last_target and writes
  * nothing else.
@@ -423,10 +425,8 @@ static void eager_span_slots(op_time_t now, op_time_t first, op_time_t span_end,
     span_end += s_eager.lag;
     out->prev = 0;
     if (s_eager.last_target && s_eager.last_target + period > first) {
-        out->prev = s_eager.last_target;
-        op_time_t f = s_eager.last_target + period;
-        /* the old span's grid, unless it drifted a whole slot from ours */
-        if (f - first > period) f = first + ((f - first) / period) * period;
+        /* the old span's grid, its phase only once it ran a period ahead of ours */
+        op_time_t f = op_eager_span_continue(s_eager.last_target, first, period, &out->prev);
         /* re-snapped: the lattice fit moves by microseconds between spans */
         if (lat->on) f = eager_lattice_ceil(f - period / 2, lat->base, lat->period);
         first = f;
