@@ -1392,6 +1392,36 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # ThreadSanitizer, label tsan (and slow: out of the default pass). tsan_build
+    # configures and builds the clang-19 TSan tree build/linux-tsan-clang in the
+    # source tree (a fixture of every run row); per game, a headless run of
+    # the moby, simple and emit fan-outs, the terrain sector walk and the pose
+    # cache on the work pool with the fan-out identity checks, and a windowed
+    # run on a private Xvfb display with the eager present thread and the
+    # sim/host-loop thread split. Fails on any report not in tests/harness/tsan/suppressions.txt.
+    # 3 to 5 min per row. Exit 64 = no clang-19, disc or xvfb-run.
+    add_test(NAME tsan_build
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tsan.sh --build-only)
+    set_tests_properties(tsan_build PROPERTIES
+        LABELS "slow;tsan"
+        FIXTURES_SETUP tsan_bin
+        TIMEOUT 7200
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    foreach(_tsan_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME tsan_${_tsan_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tsan.sh --game ${_tsan_game})
+        add_test(NAME tsan_windowed_${_tsan_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tsan.sh --game ${_tsan_game} --windowed)
+        set_tests_properties(tsan_${_tsan_game} tsan_windowed_${_tsan_game} PROPERTIES
+            LABELS "slow;tsan"
+            FIXTURES_REQUIRED tsan_bin
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 1000
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Moby sub-tick continuity. Per row of
     # games/<slug>/corpus/moby-subtick-corpus.manifest, two headless replays of one
     # bk2 with the intermediate presents pinned at alpha 0 and at alpha 1, and

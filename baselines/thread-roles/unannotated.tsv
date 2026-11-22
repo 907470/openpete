@@ -447,11 +447,7 @@ core/input/host_input.c	-	s_ps_mid_vbl	static	-	owed: declared with no form and 
 core/input/host_input.c	-	s_ps_n	static	-	owed: declared with no form and no row before the new-global refusal
 core/input/host_input.c	-	s_ps_next	static	-	owed: declared with no form and no row before the new-global refusal
 core/input/host_input.c	-	s_ps_stick_samples	static	-	owed: declared with no form and no row before the new-global refusal
-core/input/host_input.c	-	s_pulse_bit	static	-	
 core/input/host_input.c	-	s_pulse_fired	static	-	
-core/input/host_input.c	-	s_pulse_gap_ns	static	-	
-core/input/host_input.c	-	s_pulse_hold_ns	static	-	
-core/input/host_input.c	-	s_pulse_n	static	-	
 core/input/host_input.c	-	s_pulse_t0	static	-	
 core/input/host_input.c	-	s_slot_keymap_decodes	static	-	
 core/input/host_input.c	-	s_synth	static	once	= -1, one filler, first reference tests it

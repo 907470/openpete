@@ -1,0 +1,16 @@
+#!/bin/sh
+# The symbolizer ThreadSanitizer starts (TSAN_OPTIONS external_symbolizer_path),
+# with its stderr moved off the descriptor it inherited.
+#
+# The sanitizer runtime starts the symbolizer with fds 0 to 2 inherited and
+# keeps it alive until the process exits. Under the stderr log mirror
+# (core/diag/log_file.c) fd 2 is the write end of the mirror's pump pipe, so
+# the child holds that pipe open, the pump never reads EOF, and the exit-time
+# pump join never returns. Pointing fd 2 at a file first closes the child's
+# copy of the pipe. The file name must contain "llvm-symbolizer": the runtime
+# picks the symbolizer protocol by the name.
+#
+# OPENPETE_TSAN_SYMBOLIZER: the real symbolizer (default llvm-symbolizer-19).
+# OPENPETE_TSAN_SYMBOLIZER_LOG: where its stderr goes (default /dev/null).
+exec 2>>"${OPENPETE_TSAN_SYMBOLIZER_LOG:-/dev/null}"
+exec "${OPENPETE_TSAN_SYMBOLIZER:-llvm-symbolizer-19}" "$@"

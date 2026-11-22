@@ -9,6 +9,7 @@
 #include "openpete_paths.h"
 #include "openpete_rumble.h"
 #include "openpete_stick_response.h"
+#include "openpete_thread_roles.h"
 
 #include "PsyX/PsyX_public.h"
 
@@ -239,70 +240,80 @@ static void synth_pad(unsigned frame, unsigned short* bits, unsigned char axes[4
  * shorter than the sampling interval. Axes are held static: the synth source's
  * sweeping sticks emit an analog edge on nearly every publish, which would
  * bury the pulse edges the measurement is about. */
-static int      s_pulse_n = -1;      /* -1 = unresolved, 0 = off */
-static int      s_pulse_hold_ns;
-static int      s_pulse_gap_ns;
-static unsigned short s_pulse_bit;
+/* The settings are parsed once, by whichever thread calls pulse_count first:
+ * main's sampler and the sim thread's pace-log header both do. s_pulse_n is
+ * the first-use cache (-1 until filled); the three settings it publishes are
+ * stored before its release fill and read after its acquire get. Racing
+ * fillers parse the same environment and store the same values. */
+static OP_ONCE_INT s_pulse_n = -1;   /* -1 = unresolved, 0 = off */
+static _Atomic int s_pulse_hold_ns;
+static _Atomic int s_pulse_gap_ns;
+static _Atomic unsigned short s_pulse_bit;
 static int64_t  s_pulse_t0;
 static int      s_pulse_fired;       /* pulses whose press instant has passed */
 
-/** @brief Parse the OPENPETE_INPUT_PULSE* variables on first call and report whether the timed pulse source is on.
+/** @brief Return the configured pulse count, parsing the OPENPETE_INPUT_PULSE* variables on first call.
  *
  * Reads the pulse count, the hold (default 20 ms), the gap (default 117 ms)
- * and the button bit (default 0x0100, L2), and logs the schedule once when
- * the count is positive.
- * @return Non-zero when at least one pulse is configured. */
-static int pulse_on(void)
+ * and the button bit (default 0x0100, L2), and logs the schedule once, from
+ * the filler whose fill took, when the count is positive. Safe from any
+ * thread.
+ * @return The pulse count; 0 when the timed pulse source is off. */
+static int pulse_count(void)
 {
-    if (s_pulse_n < 0) {
-        const char* e = getenv("OPENPETE_INPUT_PULSE");
-        s_pulse_n = (e && *e) ? atoi(e) : 0;
-        if (s_pulse_n < 0) s_pulse_n = 0;
+    const int cached = op_once_int_get(&s_pulse_n);
+    if (cached >= 0) return cached;
 
-        const char* h = getenv("OPENPETE_INPUT_PULSE_HOLD_US");
-        /* One VBL period plus a margin: long enough that every latch interval
-         * overlaps the press, so "consumed == injected" is the expected
-         * result and any shortfall names a defect. */
-        s_pulse_hold_ns = (h && *h) ? atoi(h) * 1000 : 20 * 1000 * 1000;
+    const char* e = getenv("OPENPETE_INPUT_PULSE");
+    int n = (e && *e) ? atoi(e) : 0;
+    if (n < 0) n = 0;
 
-        const char* g = getenv("OPENPETE_INPUT_PULSE_GAP_US");
-        /* 117 ms is within 6 us of seven VBL periods, so the default gap
-         * alone places every press at nearly the same phase; pulse_apply's
-         * per-pulse jitter is what spreads the presses across the period. */
-        s_pulse_gap_ns = (g && *g) ? atoi(g) * 1000 : 117 * 1000 * 1000;
+    const char* h = getenv("OPENPETE_INPUT_PULSE_HOLD_US");
+    /* One VBL period plus a margin: long enough that every latch interval
+     * overlaps the press, so "consumed == injected" is the expected
+     * result and any shortfall names a defect. */
+    const int hold = (h && *h) ? atoi(h) * 1000 : 20 * 1000 * 1000;
 
-        const char* b = getenv("OPENPETE_INPUT_PULSE_BIT");
-        /* L2 by default: it reaches the pad buffer like any other bit but
-         * does not advance a menu, so a sweep does not rewrite the scene it
-         * is measuring. */
-        s_pulse_bit = (unsigned short)((b && *b) ? strtoul(b, NULL, 0) : 0x0100u);
+    const char* g = getenv("OPENPETE_INPUT_PULSE_GAP_US");
+    /* 117 ms is within 6 us of seven VBL periods, so the default gap
+     * alone places every press at nearly the same phase; pulse_apply's
+     * per-pulse jitter is what spreads the presses across the period. */
+    const int gap = (g && *g) ? atoi(g) * 1000 : 117 * 1000 * 1000;
 
-        if (s_pulse_n)
-            OPL_INFO_F("input",
-                       "timed pulse source: %d pulse(s), bit 0x%04X, hold %d us, "
-                       "gap %d us - diagnostic, in-process only",
-                       s_pulse_n, s_pulse_bit,
-                       s_pulse_hold_ns / 1000, s_pulse_gap_ns / 1000);
-    }
-    return s_pulse_n > 0;
+    const char* b = getenv("OPENPETE_INPUT_PULSE_BIT");
+    /* L2 by default: it reaches the pad buffer like any other bit but
+     * does not advance a menu, so a sweep does not rewrite the scene it
+     * is measuring. */
+    const unsigned short bit = (unsigned short)((b && *b) ? strtoul(b, NULL, 0) : 0x0100u);
+
+    atomic_store_explicit(&s_pulse_hold_ns, hold, memory_order_relaxed);
+    atomic_store_explicit(&s_pulse_gap_ns, gap, memory_order_relaxed);
+    atomic_store_explicit(&s_pulse_bit, bit, memory_order_relaxed);
+    int expect = -1;
+    if (!atomic_compare_exchange_strong_explicit(&s_pulse_n, &expect, n, memory_order_acq_rel,
+                                                 memory_order_acquire))
+        return expect;   /* another filler's fill took */
+    if (n)
+        OPL_INFO_F("input",
+                   "timed pulse source: %d pulse(s), bit 0x%04X, hold %d us, "
+                   "gap %d us - diagnostic, in-process only",
+                   n, bit, hold / 1000, gap / 1000);
+    return n;
 }
 
 int openpete_host_input_pulse_count(void)
 {
-    (void)pulse_on();
-    return s_pulse_n > 0 ? s_pulse_n : 0;
+    return pulse_count();
 }
 
 unsigned short openpete_host_input_pulse_bit(void)
 {
-    (void)pulse_on();
-    return s_pulse_n > 0 ? s_pulse_bit : 0u;
+    return pulse_count() > 0 ? atomic_load_explicit(&s_pulse_bit, memory_order_relaxed) : 0u;
 }
 
 int openpete_host_input_pulse_hold_us(void)
 {
-    (void)pulse_on();
-    return s_pulse_n > 0 ? s_pulse_hold_ns / 1000 : 0;
+    return pulse_count() > 0 ? atomic_load_explicit(&s_pulse_hold_ns, memory_order_relaxed) / 1000 : 0;
 }
 
 int openpete_host_input_pulses_fired(void)
@@ -318,28 +329,32 @@ int openpete_host_input_pulses_fired(void)
  * press phases spread across the period instead of aliasing onto one
  * point. Also advances s_pulse_fired to the number of pulses whose press
  * instant has passed. Pulses past the configured count press nothing.
- * @param bits the active-low pad bits, updated in place. */
-static void pulse_apply(unsigned short* bits)
+ * @param bits the active-low pad bits, updated in place.
+ * @param n The configured pulse count (pulse_count), above 0. */
+static void pulse_apply(unsigned short* bits, int n)
 {
+    const int gap = atomic_load_explicit(&s_pulse_gap_ns, memory_order_relaxed);
+    const int hold = atomic_load_explicit(&s_pulse_hold_ns, memory_order_relaxed);
+    const unsigned short bit = atomic_load_explicit(&s_pulse_bit, memory_order_relaxed);
     const int64_t now = (int64_t)op_now();
     if (!s_pulse_t0) s_pulse_t0 = now;
 
     const int64_t since = now - s_pulse_t0;
     if (since < 0) return;
-    int64_t k = since / s_pulse_gap_ns;
-    if (k >= s_pulse_n) return;
+    int64_t k = since / gap;
+    if (k >= n) return;
 
     /* A cheap deterministic hash of the index: reproducible across runs (the
      * whole log must replay identically) but uncorrelated with the grid. */
     unsigned h = (unsigned)k * 2654435761u;
     const int64_t jitter = (int64_t)(h % 16715111u);
 
-    const int64_t start = s_pulse_t0 + k * (int64_t)s_pulse_gap_ns + jitter;
+    const int64_t start = s_pulse_t0 + k * (int64_t)gap + jitter;
     if (now < start) return;
     if ((int)(k + 1) > s_pulse_fired) s_pulse_fired = (int)(k + 1);
-    if (now >= start + s_pulse_hold_ns) return;
+    if (now >= start + hold) return;
 
-    *bits = (unsigned short)(*bits & ~s_pulse_bit);   /* active-low */
+    *bits = (unsigned short)(*bits & ~bit);   /* active-low */
 }
 
 extern unsigned openpete_frame;
@@ -1624,8 +1639,9 @@ void openpete_host_input_sample(bool alt_held)
     /* Applied last so the pulse survives whatever the live decode produced:
      * the schedule is the thing under test, and a real key held at the same
      * moment must not cancel it. */
-    if (pulse_on())
-        pulse_apply(&bits);
+    const int pulses = pulse_count();
+    if (pulses > 0)
+        pulse_apply(&bits, pulses);
 
     /* Slots 1-3, decoded from their own devices through the same merge slot 0
      * uses, so a mapping or centre-convention change cannot reach one player

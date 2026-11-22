@@ -1,0 +1,8 @@
+# ThreadSanitizer suppressions for tests/harness/check_tsan.sh
+# (format: race:<function, source or module>). A line is added only for a
+# report with no openpete frame in either access stack, after the report is
+# read; a race in openpete code is fixed, never suppressed.
+# lavapipe-internal: pthread_mutex/cond_destroy in libvulkan_lvp against a lock on another lavapipe thread.
+race:libvulkan_lvp.so
+# libpulse-internal: pa_mutex_lock (alcOpenDevice on psyx-al-open) against pa_xmalloc on libpulse's own threaded-ml thread; SDL_RunThread is the only non-library frame.
+race:libpulsecommon

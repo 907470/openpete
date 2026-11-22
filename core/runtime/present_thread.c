@@ -54,6 +54,7 @@
 #include "openpete_psx.h"        /* openpete_psx_get_ram */
 
 #include <SDL3/SDL.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
@@ -65,7 +66,10 @@ static struct {
     SDL_Condition *cv;        /* activate / kick / quit */
     SDL_Condition *idle_cv;   /* a compose finished */
 
-    int  active;              /* the thread owns the display */
+    /* The thread owns the display. Written under mx by set_active;
+     * read without it by openpete_present_thread_active on every thread,
+     * the present thread's own pace records included: atomic. */
+    _Atomic int active;
     unsigned activation;      /* bumped by every set_active 0 -> 1 transition */
     int  busy;                /* a compose is in flight right now */
     int  quit;
@@ -82,8 +86,11 @@ static struct {
     unsigned  late_drops;     /* staged frames dropped to drain the present queue */
     op_time_t late_ns;        /* summed lateness */
     op_time_t late_max_ns;
-    op_time_t render_ema;     /* render into a stage image, per scene */
-    op_time_t present_ema;    /* acquire + blit + present, per frame */
+    /* The two cost averages. Written by this thread only, read without mx
+     * by the sim thread's planner (openpete_present_thread_cost_ns):
+     * relaxed atomics, each word read whole, no other data published. */
+    _Atomic op_time_t render_ema;  /* render into a stage image, per scene */
+    _Atomic op_time_t present_ema; /* acquire + blit + present, per frame */
     SDL_AtomicInt rewarm;     /* renders left in which a cost below an average replaces it (openpete_present_thread_rewarm) */
     unsigned  render_refused; /* the render frame could not begin (rebuild pending, fence bound) */
     unsigned  discarded;      /* staged frames never presented (deactivated, stages rebuilt) */
@@ -525,20 +532,29 @@ static void pt_begin_activation(void)
     openpete_native_display_claim();
 }
 
+/** @brief Load one present-thread cost average (relaxed).
+ * @param ema s_pt.render_ema or s_pt.present_ema.
+ * @return The average in nanoseconds. */
+static op_time_t pt_ema(const _Atomic op_time_t *ema) {
+    return atomic_load_explicit(ema, memory_order_relaxed);
+}
+
 /** @brief Fold one cost sample into a present-thread average: during a re-warm window a sample below the average replaces it, otherwise op_eager_cost_ema.
  *
  * The window (openpete_present_thread_rewarm) covers the first renders after
  * the world goes live, whose average a slow first scene of a level would
- * otherwise hold high for dozens of renders at one render per span.
- * @param ema The running average in nanoseconds.
+ * otherwise hold high for dozens of renders at one render per span. The
+ * present thread is the only writer, so the load and the store need no
+ * read-modify-write.
+ * @param ema The running average in nanoseconds, updated in place.
  * @param c The sample in nanoseconds.
- * @param render Nonzero for a render sample, which counts one render off the window.
- * @return The new average. */
-static op_time_t pt_cost_fold(op_time_t ema, op_time_t c, int render) {
+ * @param render Nonzero for a render sample, which counts one render off the window. */
+static void pt_cost_fold(_Atomic op_time_t *ema, op_time_t c, int render) {
+    const op_time_t old = pt_ema(ema);
     const int warm = SDL_GetAtomicInt(&s_pt.rewarm);
     if (warm > 0 && render) SDL_AddAtomicInt(&s_pt.rewarm, -1);
-    if (warm > 0 && ema > 0 && c < ema) return c;
-    return op_eager_cost_ema(ema, c);
+    const op_time_t next = (warm > 0 && old > 0 && c < old) ? c : op_eager_cost_ema(old, c);
+    atomic_store_explicit(ema, next, memory_order_relaxed);
 }
 
 /* Documented at the declaration in openpete_present_thread.h. */
@@ -586,7 +602,7 @@ static int present_thread_main(void *unused)
              * every stale scene in turn and never catch up; this retires
              * the older ones instead. */
             const op_time_t pick_at = on_lattice
-                ? lattice_ceil_locked(now + s_pt.render_ema + 100000
+                ? lattice_ceil_locked(now + pt_ema(&s_pt.render_ema) + 100000
                                       + (op_time_t)(s_lat.period + 0.5) - compose_guard_ns())
                 : now;
             const int slot_idx = openpete_native_scene_pick(pick_at);
@@ -635,7 +651,7 @@ static int present_thread_main(void *unused)
                 if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--; else s_pt.flip_pending = 1;
                 continue;
             }
-            s_pt.render_ema = pt_cost_fold(s_pt.render_ema, c, 1);
+            pt_cost_fold(&s_pt.render_ema, c, 1);
             /* And the swapchain image, now: an image the display let go of
              * at the last vblank is not available until the driver has
              * processed the release, and a present on it blocks until
@@ -737,7 +753,7 @@ static int present_thread_main(void *unused)
         if (did) {
             s_pt.presents++;
             s_pt.presents_inter += kind == OP_PACE_INTERMEDIATE;
-            s_pt.present_ema = pt_cost_fold(s_pt.present_ema, c, 0);
+            pt_cost_fold(&s_pt.present_ema, c, 0);
             if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--;
             else s_pt.flip_pending = 1;
         } else s_pt.refused++;
@@ -864,7 +880,7 @@ void openpete_present_thread_report(void)
                s_pt.presents, s_pt.refused, s_pt.render_refused, s_pt.discarded, s_pt.late,
                s_pt.late ? (double)s_pt.late_ns / s_pt.late / 1e6 : 0.0,
                (double)s_pt.late_max_ns / 1e6, s_pt.late_drops,
-               (double)s_pt.render_ema / 1e6, (double)s_pt.present_ema / 1e6, s_pt.drains,
+               (double)pt_ema(&s_pt.render_ema) / 1e6, (double)pt_ema(&s_pt.present_ema) / 1e6, s_pt.drains,
                (double)s_pt.drain_wait_ns / 1e6, (double)s_pt.drain_wait_max_ns / 1e6, s_pt.presents_inter);
     if (s_pt.flips || s_pt.flip_timeouts)
         OPL_INFO_F("present-thread",
@@ -882,11 +898,11 @@ unsigned openpete_present_thread_presents(void) { return s_pt.presents; }
 /* What one present costs this thread, compose to submit, EMA. With vsync
  * off this is the display's real throughput ceiling; the planner spaces
  * targets no denser than it, or most scenes are made only to be superseded. */
-int64_t openpete_present_thread_cost_ns(void) { return s_pt.render_ema + s_pt.present_ema; }
+int64_t openpete_present_thread_cost_ns(void) { return pt_ema(&s_pt.render_ema) + pt_ema(&s_pt.present_ema); }
 
 /* Documented at the declaration in openpete_present_thread.h. */
 void openpete_present_thread_emas(int64_t *render_ns, int64_t *present_ns)
 {
-    *render_ns = s_pt.render_ema;
-    *present_ns = s_pt.present_ema;
+    *render_ns = pt_ema(&s_pt.render_ema);
+    *present_ns = pt_ema(&s_pt.present_ema);
 }

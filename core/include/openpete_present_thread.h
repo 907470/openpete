@@ -115,7 +115,7 @@ unsigned openpete_present_thread_presents(void);
  *
  * With vsync off this is the display's throughput ceiling: the planner
  * spaces targets no denser than it, since closer ones would be built only to
- * be superseded. Read without the thread's mutex.
+ * be superseded. Read without the thread's mutex; each average is a relaxed atomic.
  * @return The average in nanoseconds, 0 before the first present. */
 int64_t  openpete_present_thread_cost_ns(void);
 /** @brief Read the two moving averages openpete_present_thread_cost_ns sums: the scene render and the present step.
