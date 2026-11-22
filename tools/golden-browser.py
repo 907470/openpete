@@ -39,6 +39,15 @@ directories, and shows them as images. Three views:
              each tier directory at that revision are that side's rows,
              digested from the tree and marked unverified.
 
+Each view shows one row per corpus sample: the variants of a row's VBL
+(original and extended LOD, the canonical tile and the intermediate tile
+captured after it) share it, buttons in it switch the variant shown (keys: l
+switches every row's LOD, i every row's leg), and it names the variants whose
+blessed digests are identical. The candidate row names each variant's status
+(diverge, match, absent) and shows the first divergent variant; the history row
+names each listed variant's kind and the variants left unchanged. --once lists
+every tile in FILE.rows.tsv as before.
+
 The page writes one output, the promote list: one tile name per line in
 <promote-dir>/promote-<game>-<tier>.txt, which
 tests/harness/presentation-corpus-promote.sh takes as its tile arguments. It
@@ -120,6 +129,100 @@ def tile_meta(tile):
     leg = parts[-2] if len(parts) >= 3 else ""
     lod = "extended" if "lodext" in parts[1:-2] else "original"
     return {"row": row, "leg": leg, "lod": lod, "vbl": vbl}
+
+
+# The variants of one corpus sample: original or extended LOD, canonical or
+# intermediate leg. Order is display order; the first present is the default.
+VARIANTS = (("o-c", "orig canon"), ("o-i", "orig inter"),
+            ("e-c", "ext canon"), ("e-i", "ext inter"))
+VLABEL = dict(VARIANTS)
+
+
+def variant_of(tile):
+    """Variant id of a tile (VARIANTS), or None for a name outside the
+    <row>[__lodext]__(canon|inter)__<vbl>-vk.png form."""
+    m = tile_meta(tile)
+    if m["leg"] not in ("canon", "inter") or not m["vbl"].isdigit():
+        return None
+    return ("e" if m["lod"] == "extended" else "o") + "-" + m["leg"][0]
+
+
+def sample_stem(tile):
+    """The tile name without its LOD, leg and VBL parts."""
+    stem = tile[:-len("-vk.png")] if tile.endswith("-vk.png") else tile
+    return "__".join(x for x in stem.split("__")[:-2] if x != "lodext")
+
+
+def group_keys(tiles):
+    """{tile: group key} over a tile set. A group is one corpus sample: the
+    canonical tile of a VBL and the intermediate tile captured after it, at
+    both LODs. presentation-corpus.sh captures the intermediate leg at each
+    canonical VBL + interval/2 and at each pinned VBL (where canon and inter
+    share the VBL), so per row and LOD an intermediate VBL pairs with the
+    canonical tile of the same VBL, else with the greatest unpaired canonical
+    VBL below it; an unpaired tile keys a group of its own VBL. The key is
+    (sample stem, canonical VBL); a name outside the variant form keys a
+    group of its own."""
+    legs = {}
+    out = {}
+    for t in tiles:
+        v = variant_of(t)
+        if v is None:
+            out[t] = (t, None)
+            continue
+        legs.setdefault((sample_stem(t), v[0]), {}).setdefault(
+            v[2], []).append((int(tile_meta(t)["vbl"]), t))
+    for (stem, _), byleg in legs.items():
+        canon = sorted(byleg.get("c", []))
+        for vbl, t in canon:
+            out[t] = (stem, vbl)
+        free = {vbl for vbl, _ in canon}
+        inter = sorted(byleg.get("i", []))
+        rest = []
+        for vbl, t in inter:
+            if vbl in free:
+                free.discard(vbl)
+                out[t] = (stem, vbl)
+            else:
+                rest.append((vbl, t))
+        for vbl, t in rest:
+            below = [c for c in free if c < vbl]
+            base = max(below) if below else vbl
+            free.discard(base)
+            out[t] = (stem, base)
+    return out
+
+
+def group_rows(rows, keyf):
+    """Rows grouped by keyf(row) in order of first appearance: a list of
+    (key, {variant id: row}). A second row of one variant in a group (two
+    unpaired tiles colliding) starts a group of its own."""
+    groups, index = [], {}
+    for r in rows:
+        k = keyf(r)
+        vid = variant_of(r["tile"]) or "-"
+        g = index.get(k)
+        if g is None or vid in g:
+            g = {}
+            index[k] = g
+            groups.append((k, g))
+        g[vid] = r
+    return groups
+
+
+def same_as(digests):
+    """{variant id: earlier variant id} for each variant whose digest equals
+    a variant before it in VARIANTS order."""
+    first, out = {}, {}
+    for vid, _ in VARIANTS:
+        d = digests.get(vid)
+        if not d:
+            continue
+        if d in first:
+            out[vid] = first[d]
+        else:
+            first[d] = vid
+    return out
 
 
 def tiers():
@@ -223,6 +326,7 @@ def current_rows(p):
     m, err = load_manifest(p["game"], p["tier"])
     if m is None:
         return [], err
+    keys = group_keys([r["tile"] for r in m.rows])
     out = []
     for r in m.rows:
         meta = tile_meta(r["tile"])
@@ -230,7 +334,7 @@ def current_rows(p):
             continue
         if p["leg"] and meta["leg"] != p["leg"]:
             continue
-        out.append(dict(r, **meta))
+        out.append(dict(r, gkey=keys[r["tile"]], **meta))
     return out, None
 
 
@@ -349,6 +453,15 @@ def candidate_rows(p, ctx):
     common = sorted(tiles & set(manifest))
     digs = candidate_digests([os.path.join(cand, t) for t in common])
     tdir = pb.tier_dir(p["game"], p["tier"])
+    keys = group_keys(list(manifest))
+    variants = {}
+    for t, row in manifest.items():
+        got = digs.get(os.path.join(cand, t)) if t in tiles else None
+        status = "absent" if t not in tiles else (
+            "match" if got is not None and got[0] == row["digest"]
+            else "diverge")
+        variants.setdefault(keys[t], {})[variant_of(t) or "-"] = dict(
+            row, status=status, **tile_meta(t))
     arch = None
     rows = []
     for t in common:
@@ -356,7 +469,7 @@ def candidate_rows(p, ctx):
         got, row = digs[path], manifest[t]
         if got is not None and got[0] == row["digest"]:
             continue
-        ent = dict(row, **tile_meta(t))
+        ent = dict(row, gkey=keys[t], **tile_meta(t))
         ent["cand_digest"] = got[0] if got else None
         ent["cand_src"] = ctx.file(path)
         ogp = None
@@ -389,7 +502,7 @@ def candidate_rows(p, ctx):
         arch.close()
     summary = {"compared": len(common), "divergent": len(rows),
                "missing": len(set(manifest) - tiles),
-               "extra": len(tiles - set(manifest))}
+               "extra": len(tiles - set(manifest)), "variants": variants}
     rows.sort(key=lambda e: (0 if "pixels" in e else 1,
                              -e.get("pixels", 0), e["tile"]))
     return filter_divergent(rows, p), summary, None
@@ -543,7 +656,7 @@ def history_rows(p, ctx):
                 p["a"] if not sa else p["b"])
         p["a_sha"], p["b_sha"] = sa, sb
         rr.tracked_cf.update({sa: cfa, sb: cfb})
-        rows, notes = [], []
+        rows, notes, unchanged = [], [], {}
         games = [p["game"]] if p["game"] else list(pb.GAMES)
         for game in games:
             sides = {}
@@ -564,20 +677,26 @@ def history_rows(p, ctx):
                         notes.append("%s absent at %s (%s)" % (mpath, side,
                                                               rev))
                 ma, mb = ma or {}, mb or {}
+                keys = group_keys(set(ma) | set(mb))
                 for t in sorted(set(ma) | set(mb)):
                     if p["q"] and p["q"] not in t:
                         continue
                     ra, rb = ma.get(t), mb.get(t)
                     if ra and rb and ra["digest"] == rb["digest"]:
+                        unchanged.setdefault((mpath,) + keys[t], set()).add(
+                            variant_of(t) or "-")
                         continue
                     kind = "changed" if ra and rb else (
                         "added" if rb else "removed")
                     ent = dict(tile_meta(t), tile=t, kind=kind, game=game,
                                tier=tier, manifest=mpath,
+                               gkey=(mpath,) + keys[t],
                                a_digest=ra["digest"] if ra else None,
                                b_digest=rb["digest"] if rb else None)
                     history_images(ent, ra, rb, tdir, rr, p, ctx)
                     rows.append(ent)
+        for e in rows:
+            e["unchanged"] = unchanged.get(e["gkey"], set())
         rows.sort(key=lambda e: ({"changed": 0, "added": 1, "removed": 2}
                                  [e["kind"]], -e.get("pixels", 0),
                                  e["tile"]))
@@ -672,6 +791,11 @@ grid-template-columns:1fr}}
 .panel figure{margin:0}.panel img{max-width:100%;image-rendering:pixelated}
 .panel figcaption{color:var(--mut);font-size:11px}.mut{color:var(--mut)}
 code{word-break:break-all}
+.vt{margin:4px 0;font-size:11px}.vt button{font-size:11px;margin:0 3px 3px 0;
+padding:1px 5px;background:#1f2226;color:var(--mut);border:1px solid
+var(--line);cursor:pointer}.vt button[aria-pressed=true]{color:var(--fg);
+border-color:var(--acc)}.vt button.st-diverge,.vt button.st-changed{
+color:#ffb38a}.vt button.st-absent{text-decoration:line-through}
 """
 
 JS = """
@@ -681,6 +805,16 @@ cb.dataset.tier,cand:cb.dataset.cand,tile:cb.dataset.tile,on:cb.checked})})
 .then(r=>r.json()).then(j=>{document.getElementById('plist').textContent=
 j.count+' tile(s) in the promote list'}).catch(e=>{cb.checked=!cb.checked;
 alert('promote list not written: '+e)})}
+function sv(g,v){document.querySelectorAll('[data-gv^="'+g+'|"]').forEach(
+e=>{e.hidden=e.dataset.gv!==g+'|'+v});document.querySelectorAll(
+'[data-gb="'+g+'"]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===v))}
+function flip(i,a,b){const cur={};document.querySelectorAll(
+'[data-gb][aria-pressed=true]').forEach(x=>{cur[x.dataset.gb]=x.dataset.v});
+for(const g in cur){const v=cur[g],t=v.slice(0,i)+(v[i]===a?b:a)+v.slice(i+1);
+if(document.querySelector('[data-gb="'+g+'"][data-v="'+t+'"]'))sv(g,t)}}
+document.addEventListener('keydown',e=>{if(e.ctrlKey||e.metaKey||e.altKey||
+/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))return;if(e.key==='l')
+flip(0,'o','e');else if(e.key==='i')flip(2,'c','i')})
 function pick(s,f){if(s.value){s.form.elements[f].value=s.value;
 s.form.submit()}}
 """
@@ -772,8 +906,59 @@ def diff_text(e):
     return e.get("note", "")
 
 
+KEY_HINT = "<p class=mut>Variants of one sample (original or extended LOD, " \
+    "canonical or intermediate leg) share a row; its buttons switch the " \
+    "variant shown. Keys: l switches every row's LOD, i every row's leg. " \
+    "= marks a variant pixel-identical in blessed.tsv to the one named.</p>"
+
+
+def variant_bar(gid, present, sel, digests, status=None, extra=()):
+    """The variant toggles of a group: one button per present variant, the
+    selected one pressed, and a note naming the variants whose blessed
+    digests are identical and, with status ({variant id: word}), each
+    variant's status. Empty for a group of one variant with nothing to
+    note."""
+    same = same_as(digests)
+    notes = ["%s = %s" % (VLABEL[v], VLABEL[same[v]]) for v, _ in VARIANTS
+             if v in same and v in present]
+    if status:
+        words = {}
+        for v in present:
+            words.setdefault(status[v], []).append(VLABEL.get(v, v))
+        notes += ["%s: %s" % (w, ", ".join(vs)) for w, vs in words.items()]
+    notes += list(extra)
+    if len(present) < 2 and not notes:
+        return ""
+    btns = []
+    if len(present) > 1:
+        for v in present:
+            title = "pixel-identical to %s in blessed.tsv" % VLABEL[same[v]] \
+                if v in same else ""
+            cls = " class=st-%s" % status[v] if status else ""
+            btns.append("<button type=button%s data-gb='%s' data-v='%s' "
+                        "aria-pressed=%s title='%s' onclick=\"sv('%s','%s')\">"
+                        "%s%s</button>" % (
+                            cls, gid, v, "true" if v == sel else "false",
+                            E(title), gid, v, E(VLABEL[v]),
+                            " =" if v in same else ""))
+    return "<div class=vt>%s%s</div>" % (
+        "".join(btns), "<div class=mut>%s</div>" % E("; ".join(notes))
+        if notes else "")
+
+
+def gv_attr(gid, vid, sel):
+    """The attributes of one variant's element in a group."""
+    return " data-gv='%s|%s'%s" % (gid, vid, "" if vid == sel else " hidden")
+
+
+def ordered(vids):
+    """Variant ids in VARIANTS order, any other id last."""
+    rank = {v: n for n, (v, _) in enumerate(VARIANTS)}
+    return sorted(vids, key=lambda v: rank.get(v, len(rank)))
+
+
 def render_current(p, ctx, static):
-    """The current-set view."""
+    """The current-set view: one card per sample group."""
     rows, err = current_rows(p)
     form = "" if static else (
         "<form action=/current>%s <input name=q value='%s' placeholder="
@@ -782,24 +967,50 @@ def render_current(p, ctx, static):
                                                    ["", "canon", "inter"])))
     if err:
         return page("current set", form + "<p>%s</p>" % E(err), static), []
+    groups = group_rows(rows, lambda r: r["gkey"])
     cards = []
-    for r in rows:
-        src = ctx.thumb(r["digest"])
-        img = "<img loading=lazy src='%s'>" % E(src) if src else \
-            "<div class=miss>not in store</div>"
-        cards.append("<div class=card>%s<b>%s</b><br>row %s &middot; VBL %s "
-                     "&middot; %s &middot; %s</div>" % (
-                         img, E(r["tile"]), E(r["row"]), E(r["vbl"]),
-                         E(r["leg"]), E(r["lod"])))
-    head = "<p class=mut>%s/%s: %d row(s) shown</p>" % (
-        E(p["game"]), E(p["tier"]), len(rows))
+    for n, (_, g) in enumerate(groups):
+        gid = "g%d" % n
+        present = ordered(g)
+        sel = present[0]
+        inner = []
+        for v in present:
+            r = g[v]
+            src = ctx.thumb(r["digest"])
+            img = "<img loading=lazy src='%s'>" % E(src) if src else \
+                "<div class=miss>not in store</div>"
+            inner.append("<div%s>%s<b>%s</b><br>row %s &middot; VBL %s "
+                         "&middot; %s &middot; %s</div>" % (
+                             gv_attr(gid, v, sel), img, E(r["tile"]),
+                             E(r["row"]), E(r["vbl"]), E(r["leg"]),
+                             E(r["lod"])))
+        cards.append("<div class=card>%s%s</div>" % (
+            "".join(inner), variant_bar(
+                gid, present, sel, {v: g[v]["digest"] for v in present})))
+    head = "<p class=mut>%s/%s: %d row(s) shown in %d sample(s)</p>" % (
+        E(p["game"]), E(p["tier"]), len(rows), len(groups)) + KEY_HINT
     body = form + head + "<div class=grid>%s</div>" % "".join(cards)
     return page("current set", body, static), [
         ("row", r["tile"], r["digest"]) for r in rows]
 
 
+def candidate_variant_tr(gid, v, sel, bar, ent, ctx):
+    """The row of a group variant the listing does not hold: its blessed
+    thumbnail and status."""
+    src = ctx.thumb(ent["digest"])
+    img = "<br><img loading=lazy width=192 src='%s'>" % E(src) if src else ""
+    word = {"match": "candidate matches the reference",
+            "absent": "absent from the candidate",
+            "diverge": "diverges; outside this listing's filters"}[
+                ent["status"]]
+    return "<tr%s><td></td><td>%s%s%s</td>%s<td>%s</td></tr>" % (
+        gv_attr(gid, v, sel), bar, E(ent["tile"]), img, meta_cells(ent),
+        E(word))
+
+
 def render_candidate(p, ctx, static, pdir):
-    """The candidate-review view."""
+    """The candidate-review view: one table row per sample group, showing
+    one variant; the group's other variants carry their status."""
     rows, summ, err = candidate_rows(p, ctx)
     form = "" if static else (
         "<form action=/candidate>%s <input name=cand size=48 value='%s' "
@@ -814,32 +1025,53 @@ def render_candidate(p, ctx, static, pdir):
         return page("candidate review", form + "<p>%s</p>" % E(err),
                     static), []
     chosen = set(read_promote_list(pdir, p["game"], p["tier"]))
+    groups = group_rows(rows, lambda e: e["gkey"])
     head = "<p class=mut>%s against %s/%s: %d compared, %d divergent, %d " \
-        "missing, %d extra; %d listed</p>" % (
+        "missing, %d extra; %d listed in %d sample(s)</p>" % (
             E(p["cand"]), E(p["game"]), E(p["tier"]), summ["compared"],
-            summ["divergent"], summ["missing"], summ["extra"], len(rows))
+            summ["divergent"], summ["missing"], summ["extra"], len(rows),
+            len(groups)) + KEY_HINT
     if not static:
         head += "<p><span id=plist>%d tile(s) in the promote list</span>: " \
             "<code>%s</code></p>" % (len(chosen), E(promote_command(p, pdir)))
     trs = []
-    for n, e in enumerate(rows):
-        cb = "" if static else (
-            "<input type=checkbox onchange='promote(this)' data-game='%s' "
-            "data-tier='%s' data-cand='%s' data-tile='%s'%s>" % (
-                E(p["game"]), E(p["tier"]), E(p["cand"]), E(e["tile"]),
-                " checked" if e["tile"] in chosen else ""))
-        panel = ""
-        if e.get("ref_src"):
-            panel = "<details%s><summary>panel</summary><div class=panel>" \
-                "%s%s%s%s</div></details>" % (
-                    " open" if n == 0 else "",
-                    figure(e["ref_src"], "reference (%s)" % e["where"]),
-                    figure(e["cand_src"], "candidate"),
-                    figure(e.get("heat_src"), "heat x8"),
-                    figure(e.get("og_src"), "-og (VBL %s) %s" % (
-                        e.get("og_vbl"), og_text(e.get("og")))))
-        trs.append("<tr><td>%s</td><td>%s%s</td>%s<td>%s</td></tr>" % (
-            cb, E(e["tile"]), panel, meta_cells(e), E(diff_text(e))))
+    for n, (key, g) in enumerate(groups):
+        gid = "g%d" % n
+        allv = summ["variants"].get(key, {})
+        others = {v: e for v, e in allv.items() if v not in g and (
+            not p["leg"] or e["leg"] == p["leg"])}
+        present = ordered(list(g) + list(others))
+        sel = ordered(g)[0]
+        status = {v: "diverge" if v in g else others[v]["status"]
+                  for v in present}
+        bar = variant_bar(gid, present, sel,
+                          {v: allv.get(v, g.get(v, {})).get("digest")
+                           for v in present}, status)
+        for v in present:
+            if v in others:
+                trs.append(candidate_variant_tr(gid, v, sel, bar, others[v],
+                                                ctx))
+                continue
+            e = g[v]
+            cb = "" if static else (
+                "<input type=checkbox onchange='promote(this)' "
+                "data-game='%s' data-tier='%s' data-cand='%s' "
+                "data-tile='%s'%s>" % (
+                    E(p["game"]), E(p["tier"]), E(p["cand"]), E(e["tile"]),
+                    " checked" if e["tile"] in chosen else ""))
+            panel = ""
+            if e.get("ref_src"):
+                panel = "<details%s><summary>panel</summary><div " \
+                    "class=panel>%s%s%s%s</div></details>" % (
+                        " open" if n == 0 else "",
+                        figure(e["ref_src"], "reference (%s)" % e["where"]),
+                        figure(e["cand_src"], "candidate"),
+                        figure(e.get("heat_src"), "heat x8"),
+                        figure(e.get("og_src"), "-og (VBL %s) %s" % (
+                            e.get("og_vbl"), og_text(e.get("og")))))
+            trs.append("<tr%s><td>%s</td><td>%s%s%s</td>%s<td>%s</td></tr>"
+                       % (gv_attr(gid, v, sel), cb, bar, E(e["tile"]), panel,
+                          meta_cells(e), E(diff_text(e))))
     body = form + head + "<table><tr><th>promote</th><th>tile</th><th>row" \
         "</th><th>VBL</th><th>leg</th><th>LOD</th><th>diff</th></tr>%s" \
         "</table>" % "".join(trs)
@@ -848,7 +1080,8 @@ def render_candidate(p, ctx, static, pdir):
 
 
 def render_history(p, ctx, static):
-    """The history-compare view."""
+    """The history-compare view: one table row per sample group, showing
+    one listed variant."""
     rows, notes, err = history_rows(p, ctx)
     form = ""
     if not static:
@@ -864,37 +1097,51 @@ def render_history(p, ctx, static):
     if err:
         return page("history compare", form + "<p>%s</p>" % E(err),
                     static), []
+    groups = group_rows(rows, lambda e: e["gkey"])
     head = "<p class=mut>%s (%s) -> %s (%s): %d changed, %d added, %d " \
-        "removed</p>" % (
+        "removed in %d sample(s)</p>" % (
         E(p["a"]), E(p["a_sha"][:12]), E(p["b"]), E(p["b_sha"][:12]),
         sum(e["kind"] == "changed" for e in rows),
         sum(e["kind"] == "added" for e in rows),
-        sum(e["kind"] == "removed" for e in rows))
+        sum(e["kind"] == "removed" for e in rows), len(groups)) + KEY_HINT
     head += "".join("<p class=mut>%s</p>" % E(n) for n in notes)
     trs = []
-    for n, e in enumerate(rows):
-        cell = []
-        for side in ("a", "b"):
-            if e.get(side + "_materialize"):
-                cell.append("<div>%s: materialize %s</div>" % (
-                    side, E(e[side + "_materialize"])))
-        if e["kind"] == "changed" and (e.get("a_src") or e.get("b_src")):
-            cell.append("<details%s><summary>panel</summary><div class=panel>"
-                        "%s%s%s</div></details>" % (
-                            " open" if n == 0 else "",
-                            figure(e.get("a_src"), "a %s (%s)" % (
-                                p["a"], e.get("a_where"))),
-                            figure(e.get("b_src"), "b %s (%s)" % (
-                                p["b"], e.get("b_where"))),
-                            figure(e.get("heat_src"), "heat x8")))
-        for side in ("a", "b"):
-            if e.get(side + "_thumb"):
-                cell.append("<img loading=lazy width=96 src='%s'>"
-                            % E(e[side + "_thumb"]))
-        trs.append("<tr><td>%s</td><td>%s</td><td>%s%s</td>%s<td>%s</td>"
-                   "</tr>" % (E(e["kind"]), E(e["game"] + "/" + e["tier"]),
-                              E(e["tile"]), "".join(cell), meta_cells(e),
-                              E(diff_text(e))))
+    for n, (_, g) in enumerate(groups):
+        gid = "g%d" % n
+        present = ordered(g)
+        sel = present[0]
+        first = g[sel]
+        unch = [VLABEL.get(v, v) for v in ordered(first["unchanged"])]
+        bar = variant_bar(
+            gid, present, sel,
+            {v: g[v]["b_digest"] or g[v]["a_digest"] for v in present},
+            {v: g[v]["kind"] for v in present},
+            ["unchanged: " + ", ".join(unch)] if unch else ())
+        for v in present:
+            e = g[v]
+            cell = []
+            for side in ("a", "b"):
+                if e.get(side + "_materialize"):
+                    cell.append("<div>%s: materialize %s</div>" % (
+                        side, E(e[side + "_materialize"])))
+            if e["kind"] == "changed" and (e.get("a_src") or e.get("b_src")):
+                cell.append("<details%s><summary>panel</summary><div "
+                            "class=panel>%s%s%s</div></details>" % (
+                                " open" if n == 0 else "",
+                                figure(e.get("a_src"), "a %s (%s)" % (
+                                    p["a"], e.get("a_where"))),
+                                figure(e.get("b_src"), "b %s (%s)" % (
+                                    p["b"], e.get("b_where"))),
+                                figure(e.get("heat_src"), "heat x8")))
+            for side in ("a", "b"):
+                if e.get(side + "_thumb"):
+                    cell.append("<img loading=lazy width=96 src='%s'>"
+                                % E(e[side + "_thumb"]))
+            trs.append("<tr%s><td>%s</td><td>%s</td><td>%s%s%s</td>%s"
+                       "<td>%s</td></tr>" % (
+                           gv_attr(gid, v, sel), E(e["kind"]),
+                           E(e["game"] + "/" + e["tier"]), bar, E(e["tile"]),
+                           "".join(cell), meta_cells(e), E(diff_text(e))))
     body = form + head + "<table><tr><th>kind</th><th>tier</th><th>tile</th>" \
         "<th>row</th><th>VBL</th><th>leg</th><th>LOD</th><th>diff</th></tr>" \
         "%s</table>" % "".join(trs)
