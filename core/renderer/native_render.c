@@ -22799,6 +22799,30 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
     return ran;
 }
 
+/** @brief Run the SCENE then COMPOSITE postfx chains over a capture target composed full extent.
+ *
+ * A capture composes the scene over the whole of @p rt, not into the
+ * window's picture panel, so the chains run with s_render_full_extent set
+ * and s_render_freeze_wf at @p wf: op_scene_rect and op_scene_grid then
+ * place the canonical PSX screen where the compose put it, whatever the
+ * window's size or aspect, and the pixelation and dither lattices land on
+ * the capture's PSX grid. Both values are restored after.
+ * @param rt The capture target, processed in place.
+ * @param w Width of @p rt in pixels.
+ * @param h Height of @p rt in pixels.
+ * @param wf The widen the scene was composed at (1 for a 4:3 capture). */
+static void capture_postfx_run(rhi_texture *rt, int w, int h, float wf)
+{
+    const int prev_fe = s_render_full_extent;
+    const float prev_wf = s_render_freeze_wf;
+    s_render_full_extent = 1;
+    s_render_freeze_wf = wf;
+    native_postfx_run(1 /* SCENE */, rt, w, h);
+    native_postfx_run(0 /* COMPOSITE */, rt, w, h);
+    s_render_full_extent = prev_fe;
+    s_render_freeze_wf = prev_wf;
+}
+
 /** @brief List the draw-site requests of a scene-contract material or combined module: the four blend classes, the MARK twin, the portal sky and, with a portal profile on a device binding 8 descriptor sets, the blended cover rule per class and the inner-rim rule with its MARK twin.
  *
  * @param mg The material or module.
@@ -25489,8 +25513,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
         draw_mod_overlay();
         menu_verts = shot_chrome_draw(Wc, H);
         rhi_end_render_target(s_nr.dev, rt);
-        native_postfx_run(1 /* SCENE */, rt, Wc, H);
-        native_postfx_run(0 /* COMPOSITE */, rt, Wc, H);
+        capture_postfx_run(rt, Wc, H, cap_wf);
         rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
         rhi_end_offscreen(s_nr.dev);
         rhi_blit_to_swapchain(s_nr.dev);
@@ -26017,10 +26040,7 @@ static int rr_shot_frames(const openpete_render_res_plan_t *p, rhi_texture *rt, 
         draw_mod_overlay();
         *menu_verts = shot_chrome_draw(Cw, Ch);
         rhi_end_render_target(s_nr.dev, rt);
-        s_render_full_extent = 1;
-        native_postfx_run(1 /* SCENE */, rt, Cw, Ch);
-        native_postfx_run(0 /* COMPOSITE */, rt, Cw, Ch);
-        s_render_full_extent = 0;
+        capture_postfx_run(rt, Cw, Ch, cap_wf);
         rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
         rhi_end_offscreen(s_nr.dev);
         rhi_blit_to_swapchain(s_nr.dev);
@@ -26440,9 +26460,9 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         /* Postfx over the dump compose too: this path bypasses off_image, so
          * without these calls a headless or screenshot-all capture would
          * carry no postfx. SCENE point first (--raster-quantize, dither, mod
-         * scene shaders), then COMPOSITE. */
-        native_postfx_run(1 /* SCENE */, dump_rt, W, H);
-        native_postfx_run(0 /* COMPOSITE */, dump_rt, W, H);
+         * scene shaders), then COMPOSITE, under the 4:3 full-extent mapping
+         * the compose drew with. */
+        capture_postfx_run(dump_rt, W, H, 1.0f);
         rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
         rhi_end_offscreen(s_nr.dev);
         rhi_blit_to_swapchain(s_nr.dev);

@@ -559,6 +559,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Headless capture postfx lattice: four Spyro 1 captures under
+    # --raster-quantize 1 at 4:3 and 16:9, each at the capture shape and at
+    # a --window of another shape; the duplicate column and row counts of
+    # the pixelation lattice must not change with --window (128 columns and
+    # 224 rows at 4:3).
+    # Exit 64 = no binary or disc.
+    add_test(NAME capture_lattice
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_capture_lattice.sh)
+    set_tests_properties(capture_lattice PROPERTIES
+        LABELS "slow;presentation"
+        RESOURCE_LOCK openpete_game
+        SKIP_RETURN_CODE 64
+        TIMEOUT 600
+        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/openpete"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Host disc-read trace: two Spyro 1 boots to VBL 600 (disc cache on and
     # off) under OPENPETE_DISC_TRACE; every row parses, the exe, libcd and
     # woah paths appear, the woah NSF decodes, and the libcd sector sum
