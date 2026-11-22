@@ -559,11 +559,13 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Headless capture postfx lattice: four Spyro 1 captures under
+    # Headless capture lattice: four Spyro 1 captures under
     # --raster-quantize 1 at 4:3 and 16:9, each at the capture shape and at
     # a --window of another shape; the duplicate column and row counts of
     # the pixelation lattice must not change with --window (128 columns and
-    # 224 rows at 4:3).
+    # 224 rows at 4:3); four no-postfx captures at the same shapes, each
+    # mismatched one pixel-identical to its matching one, plus a no-shadow
+    # control leg.
     # Exit 64 = no binary or disc.
     add_test(NAME capture_lattice
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_capture_lattice.sh)

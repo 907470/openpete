@@ -10207,6 +10207,29 @@ static od_serve_t od_serve(const openpete_render_res_plan_t *base)
     return s;
 }
 
+static void ensure_opaque_depth(od_serve_t sv);
+
+/** @brief Return the pre-pass extent and widen that serve a capture compose into a @p w x @p h target at widen @p wf, allocating opaque_depth for it.
+ *
+ * A headless or screenshot compose draws the scene full extent into its own
+ * target, whose size is independent of the window; rasterizing the pre-pass
+ * at that target makes one pre-pass texel one capture pixel, so the shadow
+ * decal's depth comparisons read the same texels at every --window. The
+ * extent is not exact: a larger allocation is kept and rasterized inside.
+ * A held --resolution base keeps its exact allocation, and the raster is
+ * clamped inside it. Waits idle on a (re)allocation, so it runs outside a
+ * frame.
+ * @param w Capture target width in pixels.
+ * @param h Capture target height in pixels.
+ * @param wf Widen the compose draws at.
+ * @return The serve extent. */
+static od_serve_t od_shot_serve(int w, int h, float wf)
+{
+    const od_serve_t sv = { w, h, wf, 0 };
+    if (!rr_held_plan()) ensure_opaque_depth(sv);
+    return sv;
+}
+
 /** @brief Return whether opaque_depth must be (re)allocated to serve @p s.
  *
  * An exact extent reallocates on any difference; a default extent
@@ -10222,10 +10245,11 @@ static int od_needs_alloc(const od_serve_t *s)
     return s_nr.od_w < s->w || s_nr.od_h < s->h;
 }
 
-/** @brief Create or resize opaque_depth, the world-opaque depth pre-pass target, for the compose through @p base.
+/** @brief Create or resize opaque_depth, the world-opaque depth pre-pass target, to serve @p sv.
  *
- * The extent is od_serve's: exactly the base under a --resolution base, else
- * grown to the larger of the reference and window sizes (od_needs_alloc).
+ * The extent is @p sv's (od_serve for a present, od_shot_serve for a capture
+ * compose): exactly the base under a --resolution base, else grown to the
+ * extent (od_needs_alloc).
  * No-op until the present scene carries a Spyro shadow
  * or moby occlusion culling is active, the two consumers of the pre-pass.
  * A device without a sampled depth target logs once and the function stays
@@ -10233,8 +10257,8 @@ static int od_needs_alloc(const od_serve_t *s)
  * fallback. A (re)allocation recreates the occlusion row target at the new
  * height (occl_rows_realloc). Creates GPU resources and waits idle, so it
  * runs outside a frame beside ensure_ss_rtt.
- * @param base The plan the next compose runs through, or NULL. */
-static void ensure_opaque_depth(const openpete_render_res_plan_t *base)
+ * @param sv The extent the next compose's pre-pass serves. */
+static void ensure_opaque_depth(od_serve_t sv)
 {
     static int s_failed = 0;
     if (s_failed) return;               /* device can't sample depth - fallback pipe */
@@ -10244,7 +10268,6 @@ static void ensure_opaque_depth(const openpete_render_res_plan_t *base)
     /* The pre-pass serves two consumers: the shadow decal and the moby
      * occlusion grid. Allocate when either wants it. */
     if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) return;
-    const od_serve_t sv = od_serve(base);
     if (sv.w <= 0 || sv.h <= 0 || !od_needs_alloc(&sv)) return;
     const int want_w = sv.w, want_h = sv.h;
     rhi_wait_idle(s_nr.dev);
@@ -10335,15 +10358,16 @@ static void prepass_record(int vw, int vh, int mt, int mw, int m)
 /** @brief Rasterizes the present scene's opaque WORLD geometry depth-only into opaque_depth, once per present.
  *
  * The occluders are terrain, walls and props (actors are excluded; layering
- * handles them), drawn in the full-extent PSX mapping at od_serve's extent
+ * handles them), drawn in the full-extent PSX mapping at @p sv's extent
  * and widen, clamped to the allocation. Every consumer pass samples the
  * result by PSX screen coordinate through the recorded affine, so the
  * default raster serves native_rtt, SSAA, the offscreen panel and
  * screenshots; under a --resolution base the raster is the base's own
  * extent and mapping, texel for pixel. Records before the first consumer
  * pass, in its own render pass (prepass_record). Display-only.
- * @param base The plan the compose this pre-pass serves runs through, or NULL. */
-static void native_depth_prepass(const openpete_render_res_plan_t *base)
+ * @param sv The extent and widen of the compose this pre-pass serves:
+ *        od_serve for a present, od_shot_serve for a capture compose. */
+static void native_depth_prepass(od_serve_t sv)
 {
     s_od_ready = 0;
     if (!s_nr.opaque_depth || !s_nr.prepass_vb || !s_nr.prepass_pipe) return;
@@ -10364,7 +10388,6 @@ static void native_depth_prepass(const openpete_render_res_plan_t *base)
     if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) return;
 
     /* Raster extent = the ensure_opaque_depth sizing, clamped to the allocation. */
-    const od_serve_t sv = od_serve(base);
     const int vw = sv.w < s_nr.od_w ? sv.w : s_nr.od_w;
     const int vh = sv.h < s_nr.od_h ? sv.h : s_nr.od_h;
     if (vw <= 0 || vh <= 0) return;
@@ -23987,7 +24010,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     ensure_menu_ss();          /* settings-menu glyph supersample (lazy, while open) */
     ensure_osd_ss();           /* OSD toast slot grid (lazy, once a toast exists) */
     ensure_version_ss();       /* version-line buffers + SS target (lazy, once it is up) */
-    ensure_opaque_depth(rr_live_base()); /* WORLD-opaque depth pre-pass target, at the base under --resolution */
+    ensure_opaque_depth(od_serve(rr_live_base())); /* WORLD-opaque depth pre-pass target, at the base under --resolution */
     ensure_terrain_key_targets(); /* key-contest images: bound by every scene-pipe draw, chrome first */
     NR_PROF_END();   /* render.setup */
 
@@ -24042,7 +24065,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     /* Shared WORLD-opaque depth pre-pass (its own render pass) - must record
      * before every consumer pass; one raster serves rtt/SSAA/offscreen alike. */
     NR_PROF_BEGIN("render.prepass");
-    native_depth_prepass(rr_live_base());   /* GPU zones "prepass" + "prepass_depth" */
+    native_depth_prepass(od_serve(rr_live_base()));   /* GPU zones "prepass" + "prepass_depth" */
     /* Moby occlusion grid: reduce + ring-readback (live presents only). */
     rhi_gpu_zone_begin(s_nr.dev, "occl");
     native_occl_downsample();
@@ -24499,7 +24522,7 @@ static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync, int *
 
     if (sync) sync_vram_texture();
     ensure_native_rtt(true);
-    ensure_opaque_depth(base ? &bp : NULL);
+    ensure_opaque_depth(od_serve(base ? &bp : NULL));
     ensure_terrain_key_targets();
     uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : sbg;
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
@@ -24511,7 +24534,7 @@ static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync, int *
         upload_synced_textures();
         hd_flush_pending();
         openpete_native_hdfold_flush();
-        native_depth_prepass(base ? &bp : NULL);
+        native_depth_prepass(od_serve(base ? &bp : NULL));
         if (nearcut) *nearcut = census_nearcut_record();
         { int kw, kh; rhi_texture_extent(t->tex, &kw, &kh);
           native_terrain_key_pass(1, kw, kh); }
@@ -25256,11 +25279,11 @@ void openpete_native_occl_service_headless(void)
     }
     sync_vram_texture();
     const openpete_render_res_plan_t *sp = rr_service_plan();
-    ensure_opaque_depth(sp);
+    ensure_opaque_depth(od_serve(sp));
     if (!rhi_begin_frame(s_nr.dev)) return;
     openpete_tercache_frame_select(scene_present_stamp());
     upload_synced_textures();
-    native_depth_prepass(sp);
+    native_depth_prepass(od_serve(sp));
     occl_meta_t m;
     const unsigned presents = native_occl_reduce();
     if (presents) occl_meta_now(&m, presents);
@@ -25299,11 +25322,11 @@ void openpete_native_occl_census_present(void)
     const int saved_suspend = SDL_GetAtomicInt(&s_occl_suspend);
     sync_vram_texture();
     const openpete_render_res_plan_t *sp = rr_service_plan();
-    ensure_opaque_depth(sp);
+    ensure_opaque_depth(od_serve(sp));
     if (!rhi_begin_frame(s_nr.dev)) return;
     openpete_tercache_frame_select(scene_present_stamp());
     upload_synced_textures();
-    native_depth_prepass(sp);
+    native_depth_prepass(od_serve(sp));
     occl_meta_t m;
     const unsigned presents = native_occl_reduce();
     if (presents) occl_meta_now(&m, presents);
@@ -25476,6 +25499,8 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
     const int Wc = (int)((double)s_nr.ref_w * (double)cap_wf + 0.5);
     rhi_texture *rt = ensure_shot_rtt(Wc, H);
     if (!rt) return 1;
+    /* The pre-pass is rasterized at the capture target, texel for pixel. */
+    const od_serve_t od_sv = od_shot_serve(Wc, H, cap_wf);
 
     /* Background = the gamestate draw-env clear (matching the 4:3 compose). */
     int scene_n; uint32_t scene_bg, scene_fade;
@@ -25501,7 +25526,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
         upload_synced_textures();
         hd_flush_pending();
         openpete_native_hdfold_flush();
-        native_depth_prepass(NULL);
+        native_depth_prepass(od_sv);
         census_shot_record();
         /* Black clear + mod overlay + SCENE point: live-offscreen parity,
          * same rationale as the 4:3 dump compose (see screenshot_all_impl). */
@@ -26029,7 +26054,7 @@ static int rr_shot_frames(const openpete_render_res_plan_t *p, rhi_texture *rt, 
         upload_synced_textures();
         hd_flush_pending();
         openpete_native_hdfold_flush();
-        native_depth_prepass(p);
+        native_depth_prepass(od_serve(p));
         census_shot_record();
         drew = rr_compose_into_base(p);
         s_render_freeze_wf = cap_wf;
@@ -26111,7 +26136,7 @@ static int native_shot_base(const char *base, float cap_wf, bool with_ref,
     if (!rr_capture_plan(cap_wf, &p)) return 1;
     ensure_native_rtt(true);
     p = s_rr.dplan;   /* an allocation step in ensure_native_rtt lands here */
-    ensure_opaque_depth(&p);
+    ensure_opaque_depth(od_serve(&p));
     ensure_terrain_key_targets();
     rhi_texture *rt = ensure_shot_rtt(p.dst[2], p.dst[3]);
     if (!rt || !s_nr.native_rtt || s_nr.rtt_w != p.bw || s_nr.rtt_h != p.bh || !rr_pipe_ready()) return 1;
@@ -26196,13 +26221,13 @@ static unsigned char *rr_ab_leg(int bits, int ssaa, const char *base, const char
     rr_plan_live();
     ensure_native_rtt(true);
     ensure_ss_rtt();
-    ensure_opaque_depth(rr_live_base());
+    ensure_opaque_depth(od_serve(rr_live_base()));
     ensure_terrain_key_targets();
     if (!rhi_begin_frame(s_nr.dev)) return NULL;
     upload_synced_textures();
     hd_flush_pending();
     openpete_native_hdfold_flush();
-    native_depth_prepass(rr_live_base());
+    native_depth_prepass(od_serve(rr_live_base()));
     const int ov = s_overlay_live;
     s_overlay_live = 0;
     compose_variant();
@@ -26364,7 +26389,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
     /* WORLD-opaque depth pre-pass target, held at a base while one is held:
      * a base capture then sizes it once (native_shot_base), and a windowed
      * recompose rasterizes inside the live base allocation. */
-    ensure_opaque_depth(rr_held_plan());
+    ensure_opaque_depth(od_serve(rr_held_plan()));
     ensure_terrain_key_targets();
     /* The reference readback only fills in for an EMPTY native scene below;
      * without one (pure vk with PsyCross in null-GPU library mode - no FBO
@@ -26406,6 +26431,9 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
      * at the live base size. */
     rhi_texture *const dump_rt = recompose_target(W, H);
     s_rr.composes++;
+    /* The pre-pass is rasterized at the dump target, texel for pixel, at the
+     * present's widen. */
+    const od_serve_t od_sv = od_shot_serve(W, H, ws_factor_present());
 
     /* Background = the gamestate draw-env clear (matching the live native render);
      * scene_bg then corner as fallbacks. See draw_native_scene for the rationale. */
@@ -26428,7 +26456,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         upload_synced_textures();  /* pending VRAM/ref uploads ride this frame */
         hd_flush_pending();        /* HD replacement textures queued at draw time */
         openpete_native_hdfold_flush();
-        native_depth_prepass(NULL); /* shared WORLD-opaque depth for the shadow decal */
+        native_depth_prepass(od_sv); /* shared WORLD-opaque depth for the shadow decal */
         tercache_readback_record();
         gsab_readback_record();
         census_shot_record();

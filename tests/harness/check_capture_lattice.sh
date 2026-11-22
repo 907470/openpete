@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# check_capture_lattice.sh - the postfx lattice of a headless capture does
-# not depend on --window.
+# check_capture_lattice.sh - the postfx lattice and the scene compose of a
+# headless capture do not depend on --window.
 #
 # A headless capture composes the scene over the whole capture target; its
 # SCENE and COMPOSITE postfx chains must place the PSX raster (op_scene_rect)
@@ -22,6 +22,15 @@
 # The 4:3 window is wider than the capture (the panel narrows x), the 16:9
 # window taller (the panel narrows y), so each axis has a leg that moves
 # when the chains read the panel.
+#
+# Four no-postfx legs (--raster-quantize 0) repeat those shapes; each
+# mismatched capture must be pixel-identical to its matching one (0
+# differing pixels). The Spyro shadow decal samples the depth pre-pass, so
+# a pre-pass rasterized at a window-derived extent moves the decal's edge.
+# Every no-postfx leg logs the capture's [depth-prepass] raster line
+# (OPENPETE_DEPTH_PREPASS_DEBUG) at the capture's size. Engagement: a
+# control leg with every render path but the shadow (43-noshadow) differs
+# from 43-plain-match, so the pose's capture carries the decal.
 #
 # A leg whose exit [render-res] line lacks rq_passes above 0 is VACUOUS
 # (the pixelation pass never ran) and fails the run. Runs are sandboxed
@@ -79,6 +88,16 @@ wait
 leg hor-match --aspect 16:9 &
 leg hor-mis --aspect 16:9 --window 1280x960 &
 wait
+export OPENPETE_DEPTH_PREPASS_DEBUG=1
+leg 43-plain-match --aspect 4:3 --raster-quantize 0 &
+leg 43-plain-mis --aspect 4:3 --raster-quantize 0 --window 1280x720 &
+wait
+leg hor-plain-match --aspect 16:9 --raster-quantize 0 &
+leg hor-plain-mis --aspect 16:9 --raster-quantize 0 --window 1280x960 &
+wait
+leg 43-noshadow --aspect 4:3 --raster-quantize 0 --render-paths \
+  cyclorama,spyro,moby,terrain,flame,particles,tracer,transition,portal,glow,sparkle,moby_shadow,ui
+unset OPENPETE_DEPTH_PREPASS_DEBUG
 
 declare -A D
 for t in 43-match 43-mis hor-match hor-mis; do
@@ -90,6 +109,33 @@ done
 [[ "${D[43-mis]}" == "${D[43-match]}" ]] || { echo "FAIL 43-mis: dup ${D[43-mis]} (want ${D[43-match]})"; FAILS=$((FAILS + 1)); }
 [[ "${D[hor-match]}" =~ ^[1-9][0-9]*,[1-9][0-9]*$ ]] || { echo "FAIL hor-match: dup ${D[hor-match]} (want above 0)"; FAILS=$((FAILS + 1)); }
 [[ "${D[hor-mis]}" == "${D[hor-match]}" ]] || { echo "FAIL hor-mis: dup ${D[hor-mis]} (want ${D[hor-match]})"; FAILS=$((FAILS + 1)); }
+
+# Differing pixel count of two legs' -vk, or -1 when either capture is
+# missing or the shapes differ.
+ndiff() {
+  local a="$OUT/$1__${F}-vk.png" b="$OUT/$2__${F}-vk.png"
+  [[ -f "$a" && -f "$b" ]] || { echo -1; return; }
+  python3 -c 'import sys,numpy as np; from PIL import Image
+a=np.asarray(Image.open(sys.argv[1]).convert("RGB")); b=np.asarray(Image.open(sys.argv[2]).convert("RGB"))
+print(int((a!=b).any(axis=2).sum()) if a.shape==b.shape else -1)' "$a" "$b"
+}
+
+# The capture's own pre-pass: a raster line at VBL F whose extent is the
+# capture's size.
+for t in 43-plain-match 43-plain-mis hor-plain-match hor-plain-mis; do
+  wh="$(python3 -c 'import sys; from PIL import Image
+w,h=Image.open(sys.argv[1]).size; print("%dx%d" % (w,h))' "$OUT/${t}__${F}-vk.png" 2>/dev/null)"
+  grep -aq "^\[depth-prepass\] f=$F .* raster ${wh:-none} in " "$OUT/$t.log" \
+    || { echo "FAIL $t: no capture pre-pass raster line at ${wh:-no capture} (log $OUT/$t.log)"; FAILS=$((FAILS + 1)); }
+done
+for p in 43 hor; do
+  n="$(ndiff "$p-plain-match" "$p-plain-mis")"
+  echo "plain $p mis-vs-match=$n px"
+  [[ "$n" == 0 ]] || { echo "FAIL $p-plain-mis: $n px differ from $p-plain-match (want 0)"; FAILS=$((FAILS + 1)); }
+done
+n="$(ndiff 43-plain-match 43-noshadow)"
+echo "control 43-noshadow-vs-match=$n px"
+[[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "VACUOUS 43-noshadow: $n px (want above 0)"; FAILS=$((FAILS + 1)); }
 
 echo "capture-lattice: $FAILS failure(s)"
 (( FAILS == 0 ))
