@@ -196,7 +196,17 @@ class Fence:
         return [r.rstrip("/") for r in self.scope_roots]
 
 
+# The first printed line holding "REFUSED" since run() began: the line the
+# refusal log records.
+_FIRST_REFUSED = []
+
+
 def say(msg=""):
+    if not _FIRST_REFUSED:
+        for line in msg.split("\n"):
+            if "REFUSED" in line:
+                _FIRST_REFUSED.append(line.strip())
+                break
     sys.stderr.write(msg + "\n")
 
 
@@ -916,21 +926,53 @@ def repo_root(fence, mode):
     return root
 
 
+# Exit codes that are not refusals: pass, usage, SKIP (ctest's
+# SKIP_RETURN_CODE). Every other code a fence returns is a refusal.
+NOT_REFUSED = (0, 2, 64)
+REFUSAL_LOG = "openpete-fence-refusals.tsv"
+
+
+def log_refusal(fence, mode, root, code):
+    """Append one row to <git common dir>/REFUSAL_LOG: ISO time, fence name,
+    mode, HEAD short sha, exit code, the first REFUSED line printed. Every
+    failure (no repo, no HEAD, an unwritable directory) is swallowed: the
+    log never changes the fence's exit."""
+    try:
+        def rev(*args):
+            p = subprocess.run(["git", "-C", root, "rev-parse"] + list(args),
+                               capture_output=True, text=True, timeout=30)
+            return p.stdout.strip() if p.returncode == 0 else ""
+        common = rev("--git-common-dir")
+        if not common:
+            return
+        line = _FIRST_REFUSED[0] if _FIRST_REFUSED else "-"
+        row = [time.strftime("%Y-%m-%dT%H:%M:%S%z"), fence.name, mode or "-",
+               rev("--short", "HEAD") or "-", str(code), line]
+        with open(os.path.join(root, common, REFUSAL_LOG), "a") as fh:
+            fh.write("\t".join(" ".join(c.split()) for c in row) + "\n")
+    except Exception:
+        pass
+
+
 def run(fence, dispatch, usage):
     """The exit protocol: dispatch(root, mode, argv) returns the exit code;
-    a Refusal prints and exits 1 (git aborts the commit on nonzero)."""
+    a Refusal prints and exits 1 (git aborts the commit on nonzero). A code
+    outside NOT_REFUSED is appended to the refusal log (log_refusal)."""
     argv = sys.argv[1:]
     mode = argv[0] if argv else ""
     root = repo_root(fence, mode)
+    del _FIRST_REFUSED[:]
     try:
         code = dispatch(root, mode, argv)
         if code is None:
             say(usage)
             return 2
-        return code
     except Refusal as e:
         say("%s: REFUSED: %s" % (fence.name, e))
-        return 1
+        code = 1
+    if code not in NOT_REFUSED:
+        log_refusal(fence, mode, root, code)
+    return code
 
 
 # --------------------------------------------------------------------------

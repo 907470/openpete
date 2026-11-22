@@ -44,8 +44,13 @@ Modes:
                     mod source, CMake file or this fence is staged.
                     linux-release is always decided, its database
                     configured and its build-produced inputs built on
-                    demand (MISSING-INPUT below); windows-mingw when its
-                    database exists, else SKIP. An entry is altered when its
+                    demand (MISSING-INPUT below); windows-mingw likewise
+                    when its build directory is configured (its database
+                    is configured on demand when CMakeCache.txt exists).
+                    windows-mingw SKIPs, naming the reason, only with no
+                    mingw toolchain (the C compiler
+                    cmake/toolchains/mingw-w64.cmake names is not on PATH)
+                    or no configured build/windows-mingw. An entry is altered when its
                     dependency set holds a staged path (every entry, when this
                     fence is staged), or when a staged CMake file changed its
                     command. A rise in a row an altered entry produces is
@@ -80,13 +85,13 @@ refuses; STALE-DB (a CMake file newer than the database, or an
 error-kind diagnostic with no option): refuses, never baselined; ERROR (an
 error-set diagnostic): refuses; MISSING-INPUT (a header a build rule
 generates, or the mod SDK, is absent from the build directory, or a
-staged SDK root file differs from its tracked source): on
-linux-release the hook, tighten and baseline build openpete_generated_headers
-plus the SDK staging targets under nice -n 10, re-run the -M pass and
+staged SDK root file differs from its tracked source): the hook, tighten
+and baseline build openpete_generated_headers plus the SDK staging targets
+in the database's directory under nice -n 10, re-run the -M pass and
 refuse only when the build fails or an input is still absent (the build's
 seconds are printed on the decision line); `check` (run inside `cmake
 --build` of the same directory) and OPENPETE_FENCE_NO_BUILD=1 refuse
-naming the targets; windows-mingw SKIPs.
+naming the targets.
 
 Mod SDK: the mod entries compile against <build>/sdk (openpete_sdk_stage,
 which depends on the executable) when it holds every configured game, else
@@ -118,6 +123,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -910,17 +916,8 @@ def missing_probe(c):
     return c.missing + c.missing_sdk, c.sdk_targets if c.missing_sdk else []
 
 
-def missing_refusal(c):
-    """MISSING-INPUT: -> None, or the text (windows-mingw SKIPs on it)."""
-    missing, extra = missing_probe(c)
-    if not missing:
-        return None
-    return lib.missing_input_text(c.name, os.path.dirname(os.path.abspath(c.db_path)),
-                                  missing, [lib.HEADER_TARGET] + extra)
-
-
 def ready_corpus(root, dbname, db_path, mods, jobs, build):
-    """load_corpus, with linux-release's absent build-produced inputs built
+    """load_corpus, with the database's absent build-produced inputs built
     on demand (lib.ensure_inputs; the corpus is reloaded after the build,
     since the SDK directory and every -M dependency set may change).
     -> (Corpus, the build note: empty when nothing was built)."""
@@ -936,10 +933,40 @@ def ready_corpus(root, dbname, db_path, mods, jobs, build):
 # --------------------------------------------------------------------------
 # hook
 # --------------------------------------------------------------------------
-def database_paths(root, configure_mingw=False):
-    linux = lib.linux_db(root, FENCE)
-    mingw = lib.mingw_db(root, FENCE, "OPENPETE_WARNING_MINGW_DB", configure=configure_mingw)
-    return linux, mingw
+MINGW_DB_ENV = "OPENPETE_WARNING_MINGW_DB"
+MINGW_TOOLCHAIN = "cmake/toolchains/mingw-w64.cmake"
+MINGW_CC_DEFAULT = "x86_64-w64-mingw32-gcc-posix"
+
+
+def mingw_compiler(root):
+    """-> the C compiler the windows-mingw toolchain file sets
+    (CMAKE_C_COMPILER), else MINGW_CC_DEFAULT."""
+    try:
+        with open(os.path.join(root, MINGW_TOOLCHAIN)) as fh:
+            text = fh.read()
+    except OSError:
+        return MINGW_CC_DEFAULT
+    m = re.search(r"^\s*set\(\s*CMAKE_C_COMPILER\s+(\S+?)\s*\)", text, re.M)
+    return m.group(1) if m else MINGW_CC_DEFAULT
+
+
+def mingw_database(root):
+    """The hook's windows-mingw database. -> (path, None) when it is decided
+    here, else (None, the reason it cannot be): no mingw toolchain, or no
+    configured build directory. A configured directory (CMakeCache.txt
+    present) missing its compile database is configured again."""
+    cc = mingw_compiler(root)
+    if shutil.which(cc) is None:
+        return None, "no mingw toolchain (%s, the C compiler %s names, is not on PATH)" % (
+            cc, MINGW_TOOLCHAIN)
+    build_dir = os.path.dirname(os.path.join(root, lib.MINGW_DB))
+    configured = os.path.isfile(os.path.join(build_dir, "CMakeCache.txt"))
+    path = lib.mingw_db(root, FENCE, MINGW_DB_ENV, configure=configured)
+    if path is None:
+        return None, ("no configured windows-mingw build directory (%s holds no "
+                      "CMakeCache.txt; configure it: cmake --preset windows-mingw)"
+                      % build_dir)
+    return path, None
 
 
 def baseline_source(root, dbname, staged_text, version, after):
@@ -1000,19 +1027,11 @@ def print_rise(c, bins, root):
 
 
 def hook_database(root, dbname, db_path, staged, staged_cmake, fence_staged, deleted,
-                  renames, jobs, linux):
+                  renames, jobs):
     """Decide one database for the hook. -> (rc, text to stage or None, the
     source paths its entries compile)."""
     tsv = tsv_path(dbname)
-    note = ""
-    if linux:
-        c, note = ready_corpus(root, dbname, db_path, True, jobs, True)
-    else:
-        c = load_corpus(root, dbname, db_path, jobs=jobs)
-        miss = missing_refusal(c)
-        if miss:
-            say("warning-ratchet: %s SKIP: %s" % (dbname, miss))
-            return 0, None, {e.rel for e in c.entries}
+    c, note = ready_corpus(root, dbname, db_path, True, jobs, True)
     stale = stale_cmake(root, db_path, staged_cmake)
     if stale:
         raise Refusal("STALE-DB: staged CMake files newer than the %s database: %s. "
@@ -1163,17 +1182,18 @@ def mode_hook(root):
         raise Refusal("diagnostic pragmas:\n    " + "\n    ".join(prag))
     jobs = lib.jobs("OPENPETE_WARNING_JOBS", JOBS)
     t0 = time.time()
-    linux_path, mingw_path = database_paths(root)
+    linux_path = lib.linux_db(root, FENCE)
+    mingw_path, mingw_skip = mingw_database(root)
+    if mingw_skip:
+        say("warning-ratchet: windows-mingw SKIP: %s (land-branch.sh decides it)"
+            % mingw_skip)
     rc, texts = 0, {}
     known = set()
-    for dbname, path, linux in (("linux-release", linux_path, True),
-                                ("windows-mingw", mingw_path, False)):
+    for dbname, path in (("linux-release", linux_path), ("windows-mingw", mingw_path)):
         if path is None:
-            say("warning-ratchet: windows-mingw SKIP: no database (configure the "
-                "windows-mingw preset to decide it here; land-branch.sh decides it)")
             continue
         r, text, rels = hook_database(root, dbname, path, staged, staged_cmake,
-                                      fence_staged, deleted, renames, jobs, linux)
+                                      fence_staged, deleted, renames, jobs)
         rc |= r
         if text is not None:
             texts[dbname] = text
@@ -1219,7 +1239,7 @@ def parse_db_args(root, argv, configure_mingw):
     if name == "linux-release":
         return name, os.environ.get(FENCE.db_env) or os.path.join(root, lib.DB_DEFAULT)
     if name == "windows-mingw":
-        return name, lib.mingw_db(root, FENCE, "OPENPETE_WARNING_MINGW_DB",
+        return name, lib.mingw_db(root, FENCE, MINGW_DB_ENV,
                                   configure=configure_mingw)
     return name, os.path.join(root, "build", name, "compile_commands.json")
 
@@ -1254,14 +1274,8 @@ def corpus_for(root, argv, mode):
         lib.refuse_partial(FENCE, mode)
     jobs = lib.jobs("OPENPETE_WARNING_JOBS", JOBS)
     mods = "--no-mods" not in argv
-    if linux:
-        # check runs inside `cmake --build` of this directory: never builds.
-        c, note = ready_corpus(root, dbname, path, mods, jobs, mode != "check")
-    else:
-        c = load_corpus(root, dbname, path, mods=mods, jobs=jobs)
-        miss = missing_refusal(c)
-        if miss:
-            raise Refusal(miss)
+    # check runs inside `cmake --build` of this directory: never builds.
+    c, _ = ready_corpus(root, dbname, path, mods, jobs, mode != "check")
     stale = stale_cmake(root, path, tracked_cmake(root))
     if stale:
         raise Refusal("STALE-DB: CMake files newer than the %s database: %s. Re-run "

@@ -13,11 +13,15 @@ clean measured entries, not its decided rows. CompileTest compiles a scratch TU 
 reads one front-end and one middle-end row from it; skipped without gcc.
 
 OnDemandInputTest drives ratchet_lib's on-demand configure and build of
-build-produced inputs against a stub cmake, and the mod SDK directory
-choice.
+build-produced inputs against a stub cmake, the mod SDK directory
+choice, the hook's windows-mingw SKIP reasons (no toolchain, no configured
+build directory), and a windows-mingw database missing a generated header
+built and then decided.
 
 Run: python3 scripts/fences/tests/test_warning_ratchet.py
 """
+import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -260,8 +264,10 @@ class OnDemandInputTest(unittest.TestCase):
         self.header = os.path.join(self.build, "gen", "x.gen.h")
         self.saved = dict(os.environ)
         for k in (lib.NO_BUILD_ENV, lib.BUILD_JOBS_ENV, "STUB_CREATE", "STUB_RC",
-                  "STUB_OUT", "OPENPETE_FENCE_BUILD_SDK", "OPENPETE_WARNING_DB"):
+                  "STUB_OUT", "OPENPETE_FENCE_BUILD_SDK", "OPENPETE_WARNING_DB",
+                  wr.MINGW_DB_ENV):
             os.environ.pop(k, None)
+        self.bindir = bindir
         os.environ["PATH"] = bindir + os.pathsep + os.environ["PATH"]
         os.environ["STUB_LOG"] = self.log
         self.calls = 0
@@ -343,6 +349,73 @@ class OnDemandInputTest(unittest.TestCase):
         self.assertTrue(lib.configure_db(self.tmp, wr.FENCE, "linux-release", self.db))
         self.assertFalse(lib.configure_db(self.tmp, wr.FENCE, "linux-release", self.db))
         self.assertEqual(self.cmake_runs(), ["--preset linux-release"])
+
+    def mingw_toolchain(self, cc, present):
+        """A toolchain file under the scratch root naming cc; present puts an
+        executable cc on PATH."""
+        tc = os.path.join(self.tmp, wr.MINGW_TOOLCHAIN)
+        os.makedirs(os.path.dirname(tc), exist_ok=True)
+        with open(tc, "w") as fh:
+            fh.write("set(CMAKE_SYSTEM_NAME Windows)\nset(CMAKE_C_COMPILER       %s)\n" % cc)
+        if present:
+            exe = os.path.join(self.bindir, cc)
+            with open(exe, "w") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(exe, 0o755)
+
+    def test_mingw_skips_only_without_a_toolchain_or_a_configured_directory(self):
+        self.mingw_toolchain("openpete-test-absent-mingw-gcc", False)
+        path, why = wr.mingw_database(self.tmp)
+        self.assertIsNone(path)
+        self.assertIn("no mingw toolchain (openpete-test-absent-mingw-gcc", why)
+        self.mingw_toolchain("openpete-test-mingw-gcc", True)
+        path, why = wr.mingw_database(self.tmp)
+        self.assertIsNone(path)
+        self.assertIn("no configured windows-mingw build directory", why)
+        self.assertEqual(self.cmake_runs(), [])
+        mdir = os.path.join(self.tmp, "build", "windows-mingw")
+        os.makedirs(mdir)
+        open(os.path.join(mdir, "CMakeCache.txt"), "w").close()
+        db = os.path.join(mdir, "compile_commands.json")
+        os.environ["STUB_CREATE"] = db
+        self.assertEqual(wr.mingw_database(self.tmp), (db, None))
+        self.assertEqual(self.cmake_runs(), [
+            "--preset windows-mingw",
+            "--build %s --target openpete_generated_headers" % mdir])
+
+    def test_missing_mingw_generated_header_is_built_then_decided(self):
+        mdir = os.path.join(self.tmp, "build", "windows-mingw")
+        db = os.path.join(mdir, "compile_commands.json")
+        header = os.path.join(mdir, "gen", "spyro1_symbols.gen.h")
+        os.environ["STUB_CREATE"] = header
+        loads = []
+
+        def load_corpus(root, dbname, db_path, mods=True, jobs=16):
+            c = wr.Corpus()
+            c.name, c.db_path, c.entries = dbname, db_path, []
+            c.missing = [] if os.path.exists(header) else [header]
+            c.missing_sdk, c.sdk_targets = [], []
+            loads.append(list(c.missing))
+            return c
+
+        class Decided(Exception):
+            pass
+
+        def stale_cmake(root, db_path, paths):
+            raise Decided(db_path)
+        saved = wr.load_corpus, wr.stale_cmake
+        wr.load_corpus, wr.stale_cmake = load_corpus, stale_cmake
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), self.assertRaises(Decided) as cm:
+                wr.hook_database(self.tmp, "windows-mingw", db, [], [], False, set(), {}, 2)
+        finally:
+            wr.load_corpus, wr.stale_cmake = saved
+        self.assertEqual(str(cm.exception), db)
+        self.assertEqual(loads, [[header], []])
+        self.assertEqual(self.cmake_runs(), [
+            "--build %s --target openpete_generated_headers" % mdir])
+        self.assertNotIn("SKIP", err.getvalue())
 
     def test_sdk_directory_choice(self):
         games = {"spyro-1", "spyro-2"}

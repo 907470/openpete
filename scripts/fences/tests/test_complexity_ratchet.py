@@ -6,7 +6,9 @@ drives the OPENPETE_GAMES configuration and its UNCONFIGURED bin.
 EndToEndTest builds a throwaway git repo with the
 hook installed and its own compile database (OPENPETE_COMPLEXITY_DB) and
 commits each index shape: M, A, D, identical rename, changed rename, the
-temporary-index form, and a stale hook-written baseline on a doc-only commit.
+temporary-index form, and a stale hook-written baseline on a doc-only commit,
+and the refusal log row a refused commit writes. RefusalLogTest drives
+ratchet_lib.run's refusal log on each exit code.
 
 Run: python3 scripts/fences/tests/test_complexity_ratchet.py
 """
@@ -434,6 +436,100 @@ class EndToEndTest(unittest.TestCase):
         self.git("add", cr.TSV)
         p = self.commit("prefund", ok=False)
         self.assertIn("hand edit", p.stderr)
+
+    def test_refused_commit_logs_one_row_and_a_pass_none(self):
+        log = os.path.join(self.repo, ".git", rl.REFUSAL_LOG)
+        self.assertFalse(os.path.exists(log))
+        self.write("core/tail.c", nest("tail", 8, 5))
+        self.git("add", "core/tail.c")
+        self.commit("rise", ok=False)
+        with open(log) as fh:
+            rows = [r.split("\t") for r in fh.read().splitlines()]
+        head = self.git("rev-parse", "--short", "HEAD").stdout.strip()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows[0]), 6)
+        self.assertRegex(rows[0][0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d{4}$")
+        self.assertEqual(rows[0][1:5], ["complexity-ratchet", "hook", head, "1"])
+        self.assertIn("REFUSED core/tail.c:tail 40 -> 41", rows[0][5])
+        self.write("core/tail.c", nest("tail", 8, 1))
+        self.git("add", "core/tail.c")
+        self.commit("lower")
+        with open(log) as fh:
+            self.assertEqual(len(fh.read().splitlines()), 1)
+
+
+class RefusalLogTest(unittest.TestCase):
+    """ratchet_lib.run's refusal log: a Refusal and a refusing exit code each
+    append one row; pass, usage and SKIP append none; an unwritable git
+    directory leaves the exit code unchanged and raises nothing."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="refusal-log-")
+        self.cwd, self.argv = os.getcwd(), sys.argv
+        self.env = dict(os.environ)
+        for k in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"):
+            os.environ.pop(k, None)
+        subprocess.run(["git", "init", "-q", self.tmp], check=True)
+        os.chdir(self.tmp)
+        sys.argv = ["fence.py", "hook"]
+        self.fence = rl.Fence("test-fence", "fence.py", "t.tsv", ["core/"], "TEST_FENCE_DB")
+        self.log = os.path.join(self.tmp, ".git", rl.REFUSAL_LOG)
+        self.stderr = sys.stderr
+
+    def tearDown(self):
+        sys.stderr = self.stderr
+        os.chdir(self.cwd)
+        sys.argv = self.argv
+        os.environ.clear()
+        os.environ.update(self.env)
+        os.chmod(os.path.join(self.tmp, ".git"), 0o755)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_fence(self, dispatch):
+        import io
+        sys.stderr = io.StringIO()
+        try:
+            return rl.run(self.fence, dispatch, "usage")
+        finally:
+            sys.stderr = self.stderr
+
+    def rows(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as fh:
+            return [r.split("\t") for r in fh.read().splitlines()]
+
+    def test_pass_usage_and_skip_log_nothing(self):
+        for result, code in ((0, 0), (None, 2), (64, 64)):
+            self.assertEqual(self.run_fence(lambda r, m, a: result), code)
+        self.assertEqual(self.rows(), [])
+
+    def test_refusal_exception_logs_one_row(self):
+        def dispatch(root, mode, argv):
+            raise rl.Refusal("forced\nsecond line")
+        self.assertEqual(self.run_fence(dispatch), 1)
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1:5], ["test-fence", "hook", "-", "1"])
+        self.assertEqual(rows[0][5], "test-fence: REFUSED: forced")
+
+    def test_refusing_exit_code_logs_the_first_refused_line(self):
+        def dispatch(root, mode, argv):
+            rl.say("test-fence: checking")
+            rl.say("test-fence: REFUSED  core/a.c:f  3 -> 4")
+            rl.say("test-fence: REFUSED (0.1 s)")
+            return 1
+        self.assertEqual(self.run_fence(dispatch), 1)
+        self.assertEqual([r[5] for r in self.rows()], ["test-fence: REFUSED core/a.c:f 3 -> 4"])
+
+    def test_unwritable_git_directory_keeps_the_exit_code(self):
+        os.chmod(os.path.join(self.tmp, ".git"), 0o555)
+
+        def dispatch(root, mode, argv):
+            raise rl.Refusal("forced")
+        self.assertEqual(self.run_fence(dispatch), 1)
+        self.assertEqual(self.run_fence(lambda r, m, a: 3), 3)
+        self.assertFalse(os.path.exists(self.log))
 
 
 if __name__ == "__main__":
