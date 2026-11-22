@@ -86,6 +86,9 @@ Checks:
   gpu-clock     GPU max frequency equals RP0 (no cap); current is INFO
   power-profile ACPI platform profile not low-power / quiet / cool
   governor      CPU frequency governor (INFO)
+  display-on    fleet host: a windowed leg (no --headless) needs a connected
+                DRM connector whose dpms reads On (/sys/class/drm/card*-*);
+                headless: INFO
 
 Post checks (the leg's log and its pace log; the main exe prints no
 present-mode line under fifo and no swapchain-extent line):
@@ -853,6 +856,9 @@ lk="$FLEET_ROOT/golden.lock"
 if [ ! -e "$lk" ] || flock -n "$lk" true; then echo golden=free
 else echo "golden=busy $(head -c 160 "$lk" | tr '\n' ' ')"; fi
 pgrep -ax "$BUSY_RE" | sed 's/^/proc=/'
+for c in /sys/class/drm/card*-*; do
+  [ -e "$c/status" ] && echo "drm=${c##*/} $(cat "$c/status") $(cat "$c/dpms" 2>/dev/null || echo ?) $(cat "$c/enabled" 2>/dev/null || echo ?)"
+done
 echo "governor=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
 echo "profile=$(cat /sys/firmware/acpi/platform_profile 2>/dev/null)"
 for f in /sys/class/drm/card*/device/tile0/gt0/freq0; do
@@ -897,8 +903,28 @@ def _one(d, k):
     return (d.get(k) or [""])[0].strip()
 
 
-def remote_checks(host, cfg, exe):
-    """The fleet host's checks."""
+def check_display_on(drm, exe, args):
+    """The display-on check of a fleet host from its DRM connector lines
+    ("<connector> <status> <dpms> <enabled>", /sys/class/drm/card*-*). A
+    windowed leg (an exe named without --headless) needs a connected
+    connector whose dpms reads On: with every panel powered off (a closed
+    laptop lid) the compositor returns swapchain images late and FIFO
+    presents are refused. A headless leg or no exe records the reading only."""
+    conns = [(l.split() + ["?"] * 4)[:4] for l in drm if l.strip()]
+    text = ", ".join("%s %s dpms %s %s" % tuple(c) for c in conns) or "no DRM connector"
+    if exe is None or _flag(args, "--headless") is not None:
+        return Check("display-on", "INFO", "%s: %s" % (
+            "headless" if exe else "no exe named", text), required=False)
+    on = [c[0] for c in conns if c[1] == "connected" and c[2] == "On"]
+    if on:
+        return Check("display-on", "PASS", "dpms On: %s (%s)" % (", ".join(on), text))
+    return Check("display-on", "FAIL", "no connected connector reads dpms On (%s); a windowed "
+                 "leg presents to a powered-off display: run kscreen-doctor --dpms on on "
+                 "the host, or present to a virtual KWin" % text)
+
+
+def remote_checks(host, cfg, exe, args=()):
+    """The fleet host's checks; `args` are the leg's game arguments."""
     d = remote_readings(cfg, exe)
     if d is None:
         return [Check("remote", "UNCHECKED", "ssh %s did not answer" % cfg.get("ssh"))]
@@ -949,6 +975,7 @@ def remote_checks(host, cfg, exe):
         out.append(Check("power-profile", "UNCHECKED", "no ACPI platform_profile",
                          required=False))
     out.append(Check("governor", "INFO", _one(d, "governor") or "none", required=False))
+    out.append(check_display_on(d.get("drm", []), exe, list(args)))
     if exe:
         lines = d.get("cacheline", [])
         inc = next((l.split("=", 1)[1] for l in lines
@@ -1009,7 +1036,7 @@ def run_checks(target, exe=None, args=(), env=None, source_exe=None, decl=None):
         if cfg is None or cfg.get("transport") != "ssh":
             return [Check("target", "UNCHECKED", "%s is not an ssh host in fleet-hosts.toml"
                           % target)]
-        out = [check_lock(target)] + remote_checks(target, cfg, exe)
+        out = [check_lock(target)] + remote_checks(target, cfg, exe, args)
     out += [check_window(exe, args, env),
             Check("present-mode", "INFO", requested_present_mode(args, env), required=False)]
     if leg:

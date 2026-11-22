@@ -347,6 +347,52 @@ class DisplayAndMonitorTest(unittest.TestCase):
             shutil.rmtree(d)
 
 
+# /sys/class/drm/card*-* as the remote probe prints it: connector, status,
+# dpms, enabled.
+DRM_LID_CLOSED = ["card0-DP-1 disconnected Off disabled",
+                  "card0-HDMI-A-1 disconnected Off disabled",
+                  "card0-eDP-1 connected Off disabled"]
+DRM_PANEL_ON = ["card0-DP-1 disconnected Off disabled",
+                "card0-eDP-1 connected On enabled"]
+DRM_NONE_CONNECTED = ["card0-DP-1 disconnected Off disabled",
+                      "card0-HDMI-A-1 disconnected On disabled"]
+
+
+class DisplayOnTest(unittest.TestCase):
+    EXE = "/x/build/linux-release/openpete"
+
+    def test_dpms_off_refuses_a_windowed_leg(self):
+        c = preflight.check_display_on(DRM_LID_CLOSED, self.EXE, ["--window", "1280x896"])
+        self.assertEqual(c.status, "FAIL")
+        self.assertTrue(c.blocks())
+        self.assertIn("card0-eDP-1 connected dpms Off disabled", c.reading)
+        self.assertIn("kscreen-doctor --dpms on", c.reading)
+        self.assertIn("virtual KWin", c.reading)
+
+    def test_dpms_on_passes(self):
+        c = preflight.check_display_on(DRM_PANEL_ON, self.EXE, [])
+        self.assertEqual((c.status, c.blocks()), ("PASS", False))
+        self.assertIn("dpms On: card0-eDP-1", c.reading)
+
+    def test_no_connected_connector_refuses(self):
+        c = preflight.check_display_on(DRM_NONE_CONNECTED, self.EXE, [])
+        self.assertEqual(c.status, "FAIL")
+        self.assertEqual(preflight.check_display_on([], self.EXE, []).status, "FAIL")
+
+    def test_headless_and_no_exe_unaffected(self):
+        for exe, args in ((self.EXE, ["--headless"]), (None, [])):
+            c = preflight.check_display_on(DRM_LID_CLOSED, exe, args)
+            self.assertEqual((c.status, c.blocks()), ("INFO", False))
+
+    def test_remote_checks_carry_it(self):
+        d = {"golden": ["free"], "clk_tck": ["100"], "drm": DRM_LID_CLOSED}
+        with mock.patch.object(preflight, "remote_readings", return_value=d):
+            win = preflight.remote_checks("ptah", {"ssh": "x"}, self.EXE, ["--vsync", "1"])
+            hl = preflight.remote_checks("ptah", {"ssh": "x"}, self.EXE, ["--headless"])
+        self.assertEqual({c.name: c.status for c in win}["display-on"], "FAIL")
+        self.assertEqual({c.name: c.status for c in hl}["display-on"], "INFO")
+
+
 class ClassTest(unittest.TestCase):
     def test_no_class_refuses(self):
         self.assertTrue(preflight.check_class(None, False, [], {}).blocks())
