@@ -199,6 +199,9 @@ enum {
                                     * neither bit the original form: the row
                                     * per face, the heavy-fog fade stepped per
                                     * face                                     */
+#define OPTC_GF_NOBIAS     1048576u /* the level takes no bias reach: a terrain
+                                   * face's class byte carries no slot term
+                                   * (game_layout.terrain.bias_reach_level) */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u

@@ -19050,6 +19050,26 @@ static uint32_t tc_ot_terms(void) {
          | (keyed << 16);
 }
 
+/* 1 when this build's level takes the key contest's bias reach
+ * (game_layout.terrain.bias_reach_level), set by tn_bias_reach_resolve. */
+static int s_bias_reach_on OP_GUARDED_BY(sim) = 1;
+
+/** @brief Sets s_bias_reach_on for the level the guest is in.
+ *
+ * OPENPETE_KEY_BIAS_REACH=8 clears it and =128 sets it on every level;
+ * otherwise it is set when g_LevelId is listed in
+ * game_layout.terrain.bias_reach_level.
+ * @param cpu The guest CPU state. */
+static void tn_bias_reach_resolve(CPUState* cpu) OP_REQUIRES(sim) {
+    static tn_envvbl_t c OP_GUARDED_BY(sim);
+    const int force = tn_env_vbl(&c, "OPENPETE_KEY_BIAS_REACH", 0, 0);
+    if (force > 0) { s_bias_reach_on = force > 8; return; }
+    const int lvl = (int)(int32_t)rd(cpu, game_layout.level_id);
+    s_bias_reach_on = 0;
+    for (int k = 0; k < game_layout.terrain.bias_reach_levels && k < 4; k++)
+        if (game_layout.terrain.bias_reach_level[k] == lvl) s_bias_reach_on = 1;
+}
+
 /** @brief Builds the retained path's global flag word (OPTC_GF_*) for this present.
  *
  * Each bit is one walk rule the vertex stage mirrors: the near/HQ subdivide,
@@ -19060,7 +19080,7 @@ static uint32_t tc_ot_terms(void) {
  * @param nearhq 1 when the near/HQ subdivide is on and an HQ table exists.
  * @param lod_handoff 1 when the LP LOD handoff is on.
  * @return The flag word. */
-static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
+static uint32_t tc_global_flags(int nearhq, int lod_handoff) OP_REQUIRES_SHARED(sim) {
     return (nearhq            ? OPTC_GF_NEARHQ  : 0u)
          | (s_clutfog         ? OPTC_GF_CLUTFOG : 0u)
          | ((s_cull & 1)      ? OPTC_GF_CULLHP  : 0u)
@@ -19082,6 +19102,7 @@ static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
          | (s_hp_fog                                  ? OPTC_GF_HPFOG   : 0u)
          | (s_fog_mode == OPENPETE_FOG_OFF            ? OPTC_GF_FOGOFF  : 0u)
          | (s_fog_mode == OPENPETE_FOG_PER_PIXEL      ? OPTC_GF_FOGPP   : 0u)
+         | (s_bias_reach_on                           ? 0u : OPTC_GF_NOBIAS)
          | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u);
 }
 
@@ -19679,6 +19700,7 @@ static void tn_fp32emu_dump(const int M[3][3], double camx, double camy, double 
 /** @brief Walks the visible sectors of the current view into the terrain triangle stream and feeds the native scene. */
 static void terrain_build(CPUState* cpu, int32_t occGroup) OP_REQUIRES(sim) {
     s_snap_src = 0;                /* until this build latches its walk inputs */
+    tn_bias_reach_resolve(cpu);
     s_secrec_gen++;                /* the sectors' record runs are this build's */
     ngte_view_build(cpu, &s_view);
     /* Publish this walk's camera for the occluder grid: the depth pre-pass of
@@ -21579,7 +21601,7 @@ static int tn_rim_feed(CPUState* cpu, const ttri* t) {
  * @param t The triangle.
  * @param st Its scene triangle, koff and blend already set.
  * @return The packed inputs: class << 15 | q. */
-static uint32_t tn_key_attr(const ttri* t, const openpete_scene_tri* st) {
+static uint32_t tn_key_attr(const ttri* t, const openpete_scene_tri* st) OP_REQUIRES_SHARED(sim) {
     if (!(st->koff > 0.0f) || st->blend) return 0u;
     double P[3][3];
     for (int k = 0; k < 3; k++) {
@@ -21597,7 +21619,7 @@ static uint32_t tn_key_attr(const ttri* t, const openpete_scene_tri* st) {
     double q = floor(sqrt(d) * 64.0 + 0.5);
     if (q > 32767.0) q = 32767.0;
     const uint32_t hp = (!t->tier && !t->lpkey) ? 128u : 0u;
-    uint32_t sl = ((uint32_t)t->otslots + 2u) / 4u;
+    uint32_t sl = s_bias_reach_on ? ((uint32_t)t->otslots + 2u) / 4u : 0u;
     if (sl > 127u) sl = 127u;
     return ((hp + sl) << 15) | (uint32_t)q;
 }
@@ -21760,7 +21782,7 @@ static float tn_tri_koff(const ttri* t, int blend) {
  * cleared before it returns.
  * @param cpu The guest CPU state.
  */
-static void terrain_feed_native(CPUState* cpu) {
+static void terrain_feed_native(CPUState* cpu) OP_REQUIRES_SHARED(sim) {
     OP_PROF_SCOPE("ter.feed");
     openpete_native_scene_mark_terrain_feed();
     {

@@ -305,6 +305,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_HPFOG     131072
 #define GF_FOGOFF    262144
 #define GF_FOGPP     524288
+#define GF_NOBIAS    1048576
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -3123,7 +3124,8 @@ void main()
                               : float(((ff & FF_LPKEY) != 0u ? ot_lp_base() : 0u)
                                        + ot_hp_mul() * ob);
             koff = float(float(ok) + 128.0 * slots + 0.5);
-            kcls = op_key_class(!lp && (ff & FF_LPKEY) == 0u, float(slots));
+            kcls = op_key_class(!lp && (ff & FF_LPKEY) == 0u,
+                                (gf & GF_NOBIAS) != 0 ? 0.0 : float(slots));
         }
     }
     vKoff = koff;

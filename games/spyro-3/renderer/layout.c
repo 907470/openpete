@@ -382,6 +382,9 @@ const game_layout_t spyro3_game_layout = {
                                    * ordinary insert; the 0x30-based drain at
                                    * environment.s:7104,7138-7145 takes none of
                                    * them */
+        .bias_reach_level  = { 21 }, /* Icy Peak: the stone slab authored under
+                                      * the ice in area 1 (sector 54 face 0) */
+        .bias_reach_levels = 1,
         .slot_ot_contest  = 1,    /* draw/Draw.s:403 submits the whole scene
                                    * through one table and one DrawOTag;
                                    * stdutil.s:84-99 makes a later insert into a

@@ -633,6 +633,16 @@ typedef struct game_layout {
          * An actor face is not compared against the terrain key; true
          * depth with the stored tie pull decides it against terrain. */
         int      slot_ot_contest;
+        /* The g_LevelId values whose terrain carries authored sunk layering
+         * (a face with fewer authored slots lying 10-128 world behind the
+         * plane of one with more, which the ordering table paints over it).
+         * On these levels the key contest's bias reach (psx_key_contest.glsl
+         * OP_KEY_BIAS_REACH) applies; on every other level each terrain
+         * face's class byte carries no slot term, so terrain against terrain
+         * takes the equal reach (OP_KEY_TIE_REACH) only.
+         * OPENPETE_KEY_BIAS_REACH=8 or 128 forces one reach on every level. */
+        int      bias_reach_level[4];
+        int      bias_reach_levels;
         /* The WAD entry of a level whose terrain another scene reuses: a
          * scene sector whose LP faces all occur, in world space, in one
          * sector of this level's terrain (sub-file 1 of the entry) borrows

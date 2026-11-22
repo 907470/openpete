@@ -279,6 +279,8 @@ const game_layout_t spyro1_game_layout = {
                                    * every sub-quad into g_WorldOT at
                                    * (ΣSZ >> 7) + ((word3 & 0x38) >> 1):
                                    * r_environment.s 0x80027D4C, 0x80027EF8 */
+        .bias_reach_level  = { 14 }, /* Toasty: the lowered walls */
+        .bias_reach_levels = 1,
         .slot_ot_contest  = 0,
     },
     .shadow = {
