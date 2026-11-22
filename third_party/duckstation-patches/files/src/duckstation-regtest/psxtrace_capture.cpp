@@ -1564,7 +1564,10 @@ bool LoadSpans(const std::string& path, std::vector<uint8_t>& bitmap, uint8_t va
 // (voice bit), SpuGetAllKeysStatus (status buffer), and SpuSetVoiceAttr
 // when its mask has a pitch field (PITCH, NOTE, SAMPLE_NOTE) or an ADSR
 // field (AMODE..SL, ADSR1, ADSR2), with the SpuVoiceAttr fields those
-// set. Columns: idx rec vbl kind pc ra tick, then per kind
+// set. Rows are written from boot: a call before the anchor's first hit
+// carries rec 0, as a .loads row does, so a voice keyed on before the
+// first record has its reference clock. Columns: idx rec vbl kind pc ra
+// tick, then per kind
 //   setkey     on voices
 //   keystatus  voice
 //   allkeys    buf
@@ -1587,7 +1590,7 @@ uint32_t s_spuq_rows = 0, s_spuq_attr_skipped = 0, s_spuq_by_kind[SPUQ_KINDS] = 
 bool SpuqCB(CPU::BreakpointType type, VirtualMemoryAddress pc, VirtualMemoryAddress memaddr)
 {
   (void)type; (void)memaddr;
-  if (!s_spuq_fp || !s_armed || s_complete)
+  if (!s_spuq_fp || s_complete)
     return true;
   int kind = -1;
   for (int i = 0; i < SPUQ_KINDS; i++)
@@ -1650,7 +1653,8 @@ bool SpuqCB(CPU::BreakpointType type, VirtualMemoryAddress pc, VirtualMemoryAddr
 // (voice base + 4) or loads a voice's envelope level (ENVX, voice base +
 // 0xC), at the instruction's exact tick (before it executes): the SPU
 // state a libspu call moves or reads changes at these accesses, not at the
-// call's entry. Columns: idx rec vbl spuq kind pc addr value tick, where
+// call's entry. Rows are written from boot, rec 0 before the anchor's
+// first hit. Columns: idx rec vbl spuq kind pc addr value tick, where
 // spuq is the index of the last <trace>.spuq row written (-1 when none or
 // the .spuq recorder is off), kind kon|pitch|envx, addr the access's
 // effective address from the instruction's base register and offset, and
@@ -1664,7 +1668,7 @@ uint32_t s_spureg_rows = 0, s_spureg_by_kind[SPUREG_KINDS] = {}, s_spureg_undeco
 bool SpuregCB(CPU::BreakpointType type, VirtualMemoryAddress pc, VirtualMemoryAddress memaddr)
 {
   (void)type; (void)memaddr;
-  if (!s_spureg_fp || !s_armed || s_complete)
+  if (!s_spureg_fp || s_complete)
     return true;
   int kind = -1;
   for (const auto& e : s_spureg_pc)

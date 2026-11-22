@@ -251,7 +251,10 @@ rest as `voiceattr_skipped`. Columns: `idx rec vbl kind pc ra tick`, then
 per kind `on voices` (setkey), `voice` (keystatus), `buf` (allkeys), or
 `voice mask pitch note sample_note a_mode s_mode r_mode ar dr sr rr sl
 adsr1 adsr2` (voiceattr; a field outside the mask is whatever the
-caller's struct held). The capture refuses a run with zero rows.
+caller's struct held). Rows are written from boot: a call before the
+anchor's first hit carries `rec` 0, as a `.loads` row does, so a voice the
+game keys on before the first record is charged to the reference's clock.
+The capture refuses a run with zero rows.
 
 KIND `spuwrite` (SpuWrite, a main-RAM to SPU-RAM transfer) adds `src size
 n` and then `n` voice heads `v:start:cur:counter`, one per voice whose
@@ -274,7 +277,8 @@ where `spuq` is the `idx` of the last `.spuq` row written (the call the
 access belongs to), `addr` the effective address from the instruction's
 base register and offset, `value` the stored halfword (`-` for a load)
 and `tick` the exact tick before the instruction executes. The capture
-refuses a run in which a named kind recorded no access.
+refuses a run in which a named kind recorded no access. Rows are written
+from boot, `rec` 0 before the anchor's first hit.
 
 Two captures of one recipe from builds that differ only in these
 recorders compare with `python3 -m tools.psxtrace_format compare A B`
