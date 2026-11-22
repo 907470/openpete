@@ -186,11 +186,9 @@ name              = "g_Spu"
 start             = 0x80075F08
 length            = 0x340
 class             = "gameplay"
-description       = "SPU definition table and sound-request slots the level load fills"
-mask_offsets      = [0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B]
-mask_reason       = "+0x34..+0x4B: a sound-request slot the host SPU resolves one tick later than hardware (the voice answer lands in g_DragonCutscene+0x54, masked in its extent row); the same host-precision residual as the moby m_SoundChannel masks"
+description       = "SpuCommonAttr (+0x0), m_ActiveSounds[24] (+0x28, stride 0x1C) and the sound-definition and volume state (+0x2C8); the level load fills the definition pointers"
 cd_load_transient = true
-diverge_baseline  = 2032
+diverge_baseline  = 2061
 
 [[region]]
 name              = "level_tables"
@@ -420,7 +418,7 @@ start        = 0x80076BC0
 length       = 0x548
 class        = "gameplay"
 mask_offsets = [0x4C4]
-mask_reason  = "+0x4C4 g_DragonCutscene+0x54 (0x80077084): the SPU voice the host allocator answered to a play request, resolved one tick later than hardware on some ticks (host-precision residual, as the m_SoundChannel masks)"
+mask_reason  = "+0x4C4 g_DragonCutscene+0x54 (0x80077084): the release flag 0x7F that SoundsUpdate writes through m_ActiveSounds[0].m_SoundRefPtr when the cutscene voice ends; under the host SPU envelope clock the voice ends one tick early, so the byte differs for one tick on the same records as the g_Spu gameplay bursts"
 
 # .bss extent 18: 4 symbols; named: g_TracerPointCount, g_LevelDragonCount, g_CollisionNormal, g_Pad
 [[region]]

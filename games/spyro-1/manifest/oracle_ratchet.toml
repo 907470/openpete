@@ -26,7 +26,12 @@
 # branch on 19 records (a voice ends one tick early under the host SPU
 # clock). VBL: the 8 title-to-demo ticks (reference 3,1 against 2,2) and
 # the 6 demo starts. Gameplay bursts: g_DeltaTime on the 8 title-to-demo
-# ticks, g_Spu voice state on 29 voice ends. The clock row holds all 0.
+# ticks, g_Spu voice state on 29 voice ends, and g_Spu on the 5 dragon-
+# cutscene voice ends (3017, 8211, 10788, 13235, 18429): SoundsUpdate
+# releases the cutscene voice in m_ActiveSounds[0] (m_SoundRefPtr
+# g_DragonCutscene+0x54) one tick early under the host SPU envelope clock,
+# so m_SoundId, m_Flags and m_SoundRefPtr differ for one tick. The clock
+# row holds all 0.
 
 [psxtrace-demo-20k]
 gte = [
@@ -41,13 +46,14 @@ vbl = [
 ]
 gameplay_bursts = [
     "g_DeltaTime@1555", "g_Spu@1980", "g_Spu@2005", "g_Spu@2325",
-    "g_Spu@2493", "g_DeltaTime@4002", "g_Spu@4684", "g_Spu@4760",
-    "g_Spu@4869", "g_Spu@4970", "g_DeltaTime@6689", "g_DeltaTime@9196",
-    "g_Spu@9731", "g_Spu@9739", "g_Spu@9771", "g_Spu@9822",
-    "g_Spu@9865", "g_Spu@10145", "g_Spu@10211", "g_Spu@10261",
-    "g_Spu@10271", "g_Spu@10521", "g_DeltaTime@11773", "g_Spu@12198",
-    "g_Spu@12223", "g_Spu@12543", "g_Spu@12711", "g_DeltaTime@14220",
+    "g_Spu@2493", "g_Spu@3017", "g_DeltaTime@4002", "g_Spu@4684",
+    "g_Spu@4760", "g_Spu@4869", "g_Spu@4970", "g_DeltaTime@6689",
+    "g_Spu@8211", "g_DeltaTime@9196", "g_Spu@9731", "g_Spu@9739",
+    "g_Spu@9771", "g_Spu@9822", "g_Spu@9865", "g_Spu@10145",
+    "g_Spu@10211", "g_Spu@10261", "g_Spu@10271", "g_Spu@10521",
+    "g_Spu@10788", "g_DeltaTime@11773", "g_Spu@12198", "g_Spu@12223",
+    "g_Spu@12543", "g_Spu@12711", "g_Spu@13235", "g_DeltaTime@14220",
     "g_Spu@14902", "g_Spu@14978", "g_Spu@15087", "g_Spu@15188",
-    "g_DeltaTime@16907", "g_DeltaTime@19414", "g_Spu@19949", "g_Spu@19957",
-    "g_Spu@19989",
+    "g_DeltaTime@16907", "g_Spu@18429", "g_DeltaTime@19414", "g_Spu@19949",
+    "g_Spu@19957", "g_Spu@19989",
 ]
