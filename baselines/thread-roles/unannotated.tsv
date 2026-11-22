@@ -1715,7 +1715,6 @@ core/renderer/native_render.c	moby_shell_census	C	local	-
 core/renderer/native_render.c	moby_shell_census_on	s_on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	moby_shell_on	s_on	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	native_depth_prepass	last	local	-	
-core/renderer/native_render.c	native_depth_prepass	last_m	local	-	
 core/renderer/native_render.c	native_depth_prepass	pr_fmin	local	-	
 core/renderer/native_render.c	native_depth_prepass	pr_on	local	-	
 core/renderer/native_render.c	native_depth_prepass	pr_sx	local	-	
@@ -1953,7 +1952,6 @@ core/renderer/subtick_view.c	-	s_fault_stores	static	-
 core/renderer/subtick_view.c	-	s_gen	static	-	
 core/renderer/subtick_view.c	-	s_guard	static	-	
 core/renderer/subtick_view.c	-	s_guard_armed	static	-	
-core/renderer/subtick_view.c	-	s_guard_arms	static	-	
 core/renderer/subtick_view.c	-	s_guard_hits	static	-	
 core/renderer/subtick_view.c	-	s_idx	static	-	
 core/renderer/subtick_view.c	-	s_opens	static	-	
