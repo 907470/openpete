@@ -801,9 +801,8 @@ core/mods/mod_registry.c	-	s_moby_classes	static	-
 core/mods/mod_registry.c	-	s_resident_level	static	-	
 core/mods/mod_registry.c	-	s_slot_entering	static	-	
 core/mods/mod_registry.c	counts_tick	s_ids	local	-	
-core/mods/mod_registry.c	custom_env_schedule	s_at	local	-	
-core/mods/mod_registry.c	custom_env_schedule	s_name	local	-	
-core/mods/mod_registry.c	custom_env_schedule	s_parsed	local	-	
+core/mods/mod_registry.c	custom_env_schedule	s_mode	local	-	harness variable parse cache, read and written by custom_tick on the sim thread only
+core/mods/mod_registry.c	custom_env_schedule	s_warp	local	-	harness variable parse cache, read and written by custom_tick on the sim thread only
 core/mods/mod_registry.c	custom_tick	s_tickno	local	-	
 core/mods/mod_save.c	-	openpete_modsave_armed	extern	-	
 core/mods/mod_save.c	-	s_blk	static	-	

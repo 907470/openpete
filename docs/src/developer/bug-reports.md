@@ -38,7 +38,7 @@ these records existed; the reader still reads its pace ring.
 | `reports.txt`, `pace-census.txt`, `summary.txt` | the subsystem reports at the press and at the screenshot; their pace lines; the state summary |
 | `config.txt`, `keymap.txt`, `config-files/`, `env.txt`, `argv.txt` | `--config-report`, `--keys-report`, the raw config tiers, the `OPENPETE_*` environment, the command line |
 | `knobs.txt` | every knob registry row at the press with its boot value, default and flags, and each change of a live row after boot with its tick (layout under [Knob record](#knob-record)) |
-| `warps.txt` | each warp request with the tick its queue drained (frame, VBL, feed key, route, target): the dev-overlay level and area warps (`warp_go`, `warp_area_go`, target the level or area number) and the Mods menu's custom-level warp (`custom_warp`, target the row's position in name order), which the replay queues again at that tick; a mod's level entry (`mod_level_enter`, target the level id), which the replay matches against the mod's own call. The replay's `warps:` line counts the requests taken, taken past their frame, and not reached |
+| `warps.txt` | each warp request with the tick its queue drained (frame, VBL, feed key, route, target): the dev-overlay level and area warps (`warp_go`, `warp_area_go`, target the level or area number) the Mods menu's custom-level warp (`custom_warp`, target the row's position in name order) and its slot/replace toggle (`custom_mode`, target the row's position times 2, plus 1 for replace), which the replay queues again at that tick; a mod's level entry (`mod_level_enter`, target the level id), which the replay matches against the mod's own call. The replay's `warps:` line counts the requests taken, taken past their frame, and not reached |
 | `device.txt`, `devices.txt` | Vulkan device, displays, system; the input devices |
 | `log.txt`, `log-prev.txt`, `hang/`, `crash/` | the log tails of this run and the previous one, the hang dumps and minidump the previous run's log names |
 | `mods.txt`, `mods/<id>/` | every installed mod with per-file SHA-256; every enabled mod's files, its loaded object and its effective config rows; a link inside a mod's tree is skipped, never followed |
@@ -429,7 +429,10 @@ SHA-256 equals the tester's.
 Either route runs the exe with `--game <game> --headless --input-lock
 --vibration 0 --mute 1 --disc <cue> --bug-report-replay <bundle>`, the
 bundle's card images extracted to `<work>/cards/` as `--card1`/`--card2`
-(`--no-card` when the bundle holds none), `OPENPETE_VIBRATION=0`, and
+(no card flag for a port the bundle holds no image for: the replay passes
+`--no-cardN`, or, when the anchor held a card with no image, a card the
+game had not read where no file existed, a fresh card path in its scratch
+directory, provisioned on first access), `OPENPETE_VIBRATION=0`, and
 `OPENPETE_MODULE_MARCH` set to the manifest's `module_march`.
 
 ## `--bug-report-replay PATH`
@@ -462,7 +465,8 @@ path is not in the bundle, and a replay without it is refused with
    scratch directory; the developer's own capture flags decide what the
    replay writes. Display flags (`--renderer`, `--window`, `--fullscreen`,
    `--vsync`, `--gpu`, `--ssaa`, `--aspect`) pass. Then the
-   replay's flags (headless, the scratch cards, the bundle's `mods/` as the
+   replay's flags (headless, the scratch cards, a fresh scratch card path
+   for a port whose anchor held a card with no image, the bundle's `mods/` as the
    mods root, `anchor.state` as the `--resume-handoff` file, `segment.bk2`
    as the `--bk2` movie at the anchor's consume point); then the
    developer's own flags. The environment takes `env.txt`'s `OPENPETE_*`
@@ -730,7 +734,7 @@ that file alone; an artifact with no `EXE-SHA256SUMS` line is not found.
 | `OPENPETE_BUGREPORT_GPU=1` | arm the GPU timestamp zones and record a GPU_FRAME per rendered frame (default `0`); read at device creation. `OPENPETE_GPU_TIMERS=1` arms the same zones and also prints the `[gpu-pass]` line |
 | `OPENPETE_PACE_RING=0` | no pace ring and no coarse ring; the bundle then holds neither `pace.oppl` nor `pace-coarse.bin`, and no TICK_SPLIT, EAGER_PLAN or GPU_FRAME record is made unless `--pace-log` is open |
 | `OPENPETE_BUGREPORT_REPLAY_DIR`, `OPENPETE_BUGREPORT_REPLAY_SITE_WAIT`, `OPENPETE_BUGREPORT_REPLAY_WINDOWED` | the replay's scratch directory, park-wait cap (above), and a set value runs the replay in a window instead of headless |
-| `OPENPETE_BUGREPORT_REPLAY_ENV=A,B=V,...` | instrument variables the replay keeps: `NAME` keeps the developer's value, `NAME=VALUE` sets one; set after `env.txt`, each printed as `env kept`. Refused (exit 64): a name outside `OPENPETE_*`, a harness trigger the replay drops, an unset name, and a variable whose consumer writes guest RAM, feeds the pad or the CD timing, or loads mods (`OPENPETE_PLAYER_POSE`, `OPENPETE_FREECAM*`, `OPENPETE_CAMLOCK*`, `OPENPETE_CUSTOM_WARP`, `OPENPETE_SKIP_*`, `OPENPETE_LOAD_DELAY`, `OPENPETE_INPUT_*`, `OPENPETE_SYNTH_PADS`, `OPENPETE_MOUSE*`, `OPENPETE_DEVUI_INJECT_MOUSE`, `OPENPETE_REWIND_*`, `OPENPETE_MODS`, `OPENPETE_MODS_DIR`, `OPENPETE_MOD_CHANNEL_MASK`, `OPENPETE_MOD_HOT_RELOAD`, the `*_POKE` fault injectors, `OPENPETE_MODSAVE_FAULT_*`). A kept variable not on that list is unverified as neutral; the row and press-state compares report it if it is not |
+| `OPENPETE_BUGREPORT_REPLAY_ENV=A,B=V,...` | instrument variables the replay keeps: `NAME` keeps the developer's value, `NAME=VALUE` sets one; set after `env.txt`, each printed as `env kept`. Refused (exit 64): a name outside `OPENPETE_*`, a harness trigger the replay drops, an unset name, and a variable whose consumer writes guest RAM, feeds the pad or the CD timing, or loads mods (`OPENPETE_PLAYER_POSE`, `OPENPETE_FREECAM*`, `OPENPETE_CAMLOCK*`, `OPENPETE_CUSTOM_WARP`, `OPENPETE_CUSTOM_MODE`, `OPENPETE_SKIP_*`, `OPENPETE_LOAD_DELAY`, `OPENPETE_INPUT_*`, `OPENPETE_SYNTH_PADS`, `OPENPETE_MOUSE*`, `OPENPETE_DEVUI_INJECT_MOUSE`, `OPENPETE_REWIND_*`, `OPENPETE_MODS`, `OPENPETE_MODS_DIR`, `OPENPETE_MOD_CHANNEL_MASK`, `OPENPETE_MOD_HOT_RELOAD`, the `*_POKE` fault injectors, `OPENPETE_MODSAVE_FAULT_*`). A kept variable not on that list is unverified as neutral; the row and press-state compares report it if it is not |
 
 A replay drops `OPENPETE_BUGREPORT_AT`, `OPENPETE_BUGREPORT_KNOB_AT`,
 `OPENPETE_BUGREC_ANCHOR_AT`, `OPENPETE_BUGREC_DUMP_AT` and

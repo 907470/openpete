@@ -122,6 +122,19 @@ static void alias_call(CPUState* cpu) {
     if (aliased) cpu->write_word(ADDR_G_LEVELID, id);
 }
 
+/** @brief Chains alias_call onto SetOverlayPointers and LoadLevelScene, once.
+ * @return 0 when the hooks are installed, -1 when a chain add failed. */
+static int alias_hooks_install(void) {
+    if (s_hooks_installed) return 0;
+    if (openpete_mods_chain_add(ADDR_SETOVERLAYPTRS, alias_call,
+                                "level-registry") != 0 ||
+        openpete_mods_chain_add(ADDR_LOADLEVELSCENE, alias_call,
+                                "level-registry") != 0)
+        return -1;
+    s_hooks_installed = 1;
+    return 0;
+}
+
 /** @brief Claims the free level slot (index 35, id 65) for a donor level and installs the alias hooks.
  *
  * Copies the donor's 16-byte WAD TOC entry over the slot's, copies the
@@ -145,14 +158,7 @@ static int ops_claim_slot(CPUState* cpu, int donor_level_id) {
         cpu->write_word(entry_addr(SLOT_INDEX) + w,
                         cpu->read_word(entry_addr(donor_index) + w));
     inherit_donor_music(cpu, donor_index);
-    if (!s_hooks_installed) {
-        if (openpete_mods_chain_add(ADDR_SETOVERLAYPTRS, alias_call,
-                                    "level-registry") != 0 ||
-            openpete_mods_chain_add(ADDR_LOADLEVELSCENE, alias_call,
-                                    "level-registry") != 0)
-            return 0;
-        s_hooks_installed = 1;
-    }
+    if (alias_hooks_install() != 0) return 0;
     s_slot_donor = donor_level_id;
     return SLOT_LEVEL_ID;
 }
@@ -224,6 +230,25 @@ static int ops_retarget_slot(CPUState* cpu, int donor_level_id) {
         cpu->write_word(entry_addr(SLOT_INDEX) + w,
                         cpu->read_word(entry_addr(donor_index) + w));
     inherit_donor_music(cpu, donor_index);
+    s_slot_donor = donor_level_id;
+    return 0;
+}
+
+/** @brief Adopts the custom-level slot claim a loaded state's guest RAM holds, or releases it.
+ *
+ * Sets the donor that alias_call swaps into g_LevelId and installs the
+ * alias hooks on first use, writing no guest memory: the state's RAM
+ * already carries the slot's TOC entry and XA track. The mod registry
+ * calls it after a state load restores its claim.
+ * @param donor_level_id The donor's level id, 10 to 64, or 0 to release the slot.
+ * @return 0 on success, -1 when the id is out of range or a hook install failed. */
+static int ops_adopt_slot(int donor_level_id) {
+    if (donor_level_id == 0) {
+        s_slot_donor = 0;
+        return 0;
+    }
+    if (donor_level_id < 10 || donor_level_id > 64) return -1;
+    if (alias_hooks_install() != 0) return -1;
     s_slot_donor = donor_level_id;
     return 0;
 }
@@ -812,6 +837,7 @@ static void replace_transition_sky(CPUState* cpu, int donor_id,
 
 static const openpete_level_ops_t s_spyro1_level_ops = {
     .claim_slot       = ops_claim_slot,
+    .adopt_slot       = ops_adopt_slot,
     .retarget_slot    = ops_retarget_slot,
     .declare_data_len = ops_declare_data_len,
     .resolve_name     = ops_resolve_name,

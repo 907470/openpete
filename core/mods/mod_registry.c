@@ -37,6 +37,9 @@ void openpete_mods_base(CPUState* cpu);
  * level id). */
 #define CUSTOM_WARP_ID "custom_warp"
 #define LEVEL_ENTER_ID "mod_level_enter"
+/* warps.txt row id of the Mods menu's slot/replace toggle; its target is
+ * the row's position in name order times 2, plus 1 for replace. */
+#define CUSTOM_MODE_ID "custom_mode"
 
 #define MOBY_NAME_MAX   48
 #define MOBY_OWNER_MAX  64 /* mirrors the loader's MOD_ID_MAX */
@@ -462,6 +465,10 @@ static int s_custom_warp = -1;         /* queued warp (real row index) */
  * OPENPETE_CUSTOM_WARP): the row's position in name order, -1 = none.
  * custom_tick takes it into s_custom_warp on a committed tick. */
 static _Atomic int s_custom_req = -1;
+/* A slot/replace toggle from the host (the Mods menu, OPENPETE_CUSTOM_MODE):
+ * position * 2 + replace, -1 = none. custom_tick takes it on a committed
+ * tick, so a toggle is a timeline event: recorded, replayed, rewound. */
+static _Atomic int s_custom_mode_req = -1;
 
 /* Literal lowercase path first, then a case-insensitive directory scan. */
 int openpete_mods_custom_asset_path(const char* dir, const char* stem,
@@ -644,7 +651,8 @@ int openpete_mods_custom_info(int i, openpete_mods_custom_info_t* out) {
     out->name = r->name;
     out->owner = r->mod_id;
     out->donor_id = r->donor_id;
-    out->replace_mode = r->replace_mode;
+    const int pending = atomic_load(&s_custom_mode_req);
+    out->replace_mode = pending >= 0 && pending / 2 == i ? pending & 1 : r->replace_mode;
     out->active = s_custom_active == order_row(i);
     out->level_id = r->replace_mode ? r->donor_id
                   : (out->active ? s_custom_slot_id : 0);
@@ -660,7 +668,7 @@ int openpete_mods_custom_warp(int i) {
 
 void openpete_mods_custom_set_mode(int i, int replace) {
     if (i < 0 || i >= custom_count()) return;
-    custom_at(order_row(i))->replace_mode = replace ? 1 : 0;
+    atomic_store(&s_custom_mode_req, i * 2 + (replace ? 1 : 0));
 }
 
 int openpete_mods_custom_files_for(int level_id, const char** dir_out,
@@ -704,34 +712,80 @@ const char* openpete_mods_custom_music_for(int level_id,
     return r->music;
 }
 
-/** @brief Queue the custom-level warp that OPENPETE_CUSTOM_WARP schedules.
+/* Ticks one harness variable can schedule. */
+#define CUSTOM_ENV_TICKS 4
+
+/* A harness request read from an environment variable
+ * `<tick>[,<tick>...]:<rest>`. */
+typedef struct {
+    int      parsed;
+    int      n;
+    unsigned at[CUSTOM_ENV_TICKS];
+    char     rest[80];
+} custom_env_req_t;
+
+/** @brief Parse a `<tick>[,<tick>...]:<rest>` harness variable once and report whether it is due at this tick.
  *
- * The variable reads `<tick>:<Level Name>` and is parsed once, on the
- * first call; a value without a colon schedules nothing. When `tick_no`
- * equals the parsed tick, every row whose name matches exactly is queued
- * in turn, so the last match holds the warp.
+ * A value without a colon schedules nothing; ticks past CUSTOM_ENV_TICKS
+ * are ignored.
+ * @param q The request's parse cache.
+ * @param var The variable's name.
+ * @param tick_no 1-based count of custom_tick calls.
+ * @return The text after the colon when due, else NULL. */
+static const char* custom_env_due(custom_env_req_t* q, const char* var, unsigned tick_no) {
+    if (!q->parsed) {
+        q->parsed = 1;
+        const char* e = getenv(var);
+        const char* c = e ? strchr(e, ':') : NULL;
+        const char* t = e;
+        while (c && q->n < CUSTOM_ENV_TICKS) {
+            q->at[q->n++] = (unsigned)strtoul(t, NULL, 10);
+            const char* comma = (const char*)memchr(t, ',', (size_t)(c - t));
+            if (!comma) break;
+            t = comma + 1;
+        }
+        if (c) snprintf(q->rest, sizeof q->rest, "%s", c + 1);
+    }
+    for (int i = 0; q->rest[0] && i < q->n; i++)
+        if (q->at[i] == tick_no) return q->rest;
+    return NULL;
+}
+
+/** @brief Return the name-order position of the last row whose name matches exactly, or -1.
+ * @param name The row name. */
+static int custom_pos_named(const char* name) {
+    int pos = -1;
+    for (int i = 0; i < custom_count(); i++)
+        if (strcmp(custom_at(order_row(i))->name, name) == 0) pos = i;
+    return pos;
+}
+
+/** @brief Queue the custom-level warp and slot/replace toggle the harness variables schedule.
+ *
+ * OPENPETE_CUSTOM_WARP reads `<ticks>:<Level Name>` and queues the request
+ * the Mods menu's Warp button queues; OPENPETE_CUSTOM_MODE reads
+ * `<ticks>:slot:<Level Name>` or `<ticks>:replace:<Level Name>` and queues
+ * the toggle its mode checkbox queues. `<ticks>` is one tick or up to
+ * CUSTOM_ENV_TICKS separated by commas. Each is parsed once and fires when
+ * `tick_no` equals one of its ticks, on the last row whose name matches
+ * exactly.
  * @param tick_no 1-based count of custom_tick calls. */
 static void custom_env_schedule(unsigned tick_no) {
-    static int s_parsed = 0;
-    static unsigned s_at = 0;
-    static char s_name[64];
-    if (!s_parsed) {
-        s_parsed = 1;
-        const char* e = getenv("OPENPETE_CUSTOM_WARP");
-        if (e && *e) {
-            const char* c = strchr(e, ':');
-            if (c) {
-                s_at = (unsigned)atoi(e);
-                snprintf(s_name, sizeof s_name, "%s", c + 1);
-            }
-        }
+    static custom_env_req_t s_warp, s_mode;
+    const char* w = custom_env_due(&s_warp, "OPENPETE_CUSTOM_WARP", tick_no);
+    const int wpos = w ? custom_pos_named(w) : -1;
+    if (wpos >= 0) {
+        atomic_store(&s_custom_req, wpos);
+        OPL_INFO_F("mods", "custom warp scheduled: \"%s\"", w);
     }
-    if (!s_name[0] || tick_no != s_at) return;
-    for (int i = 0; i < custom_count(); i++)
-        if (strcmp(custom_at(order_row(i))->name, s_name) == 0) {
-            atomic_store(&s_custom_req, i);
-            OPL_INFO_F("mods", "custom warp scheduled: \"%s\"", s_name);
-        }
+    const char* m = custom_env_due(&s_mode, "OPENPETE_CUSTOM_MODE", tick_no);
+    const char* c = m ? strchr(m, ':') : NULL;
+    const int mpos = c ? custom_pos_named(c + 1) : -1;
+    if (mpos >= 0) {
+        const int replace = strncmp(m, "replace:", 8) == 0;
+        openpete_mods_custom_set_mode(mpos, replace);
+        OPL_INFO_F("mods", "custom mode scheduled: \"%s\" %s", c + 1, replace ? "replace" : "slot");
+    }
 }
 
 /** @brief Report whether a custom-level warp is queued and not yet accepted by the level ops.
@@ -752,6 +806,23 @@ static void custom_take_request(void) {
     if (pos < 0 || pos >= custom_count()) return;
     s_custom_warp = order_row(pos);
     openpete_bugrec_warp(CUSTOM_WARP_ID, pos);
+}
+
+/** @brief Take this tick's slot/replace toggle, apply it to its row and record it for the bug-report bundle.
+ *
+ * Under --bug-report-replay the bundle's toggle recorded at this tick is
+ * taken first, else the host's (openpete_mods_custom_set_mode). The
+ * declare loop in custom_tick acts on the new mode in the same tick.
+ * Does nothing on a speculative tick, so a toggle is taken on a committed
+ * one only. */
+static void custom_take_mode(void) {
+    if (openpete_speculative) return;
+    int v = -1;
+    if (!openpete_bugreport_replay_warp_take(CUSTOM_MODE_ID, &v))
+        v = atomic_exchange(&s_custom_mode_req, -1);
+    if (v < 0 || v / 2 >= custom_count()) return;
+    custom_at(order_row(v / 2))->replace_mode = v & 1;
+    openpete_bugrec_warp(CUSTOM_MODE_ID, v);
 }
 
 /** @brief Test whether a custom-level row's data file was found and its mod is enabled.
@@ -942,8 +1013,9 @@ static void custom_warp_step(CPUState* cpu) {
 
 /** @brief Keep each custom-level row's replace declaration in sync, then run a queued warp.
  *
- * A row wants its replace declared when its data file exists, it is in
- * replace mode and its mod is enabled. Declaring writes the data length
+ * On a committed tick a queued slot/replace toggle is taken first
+ * (custom_take_mode). A row wants its replace declared when its data file
+ * exists, it is in replace mode and its mod is enabled. Declaring writes the data length
  * over the donor's entry and sets the donor's title to the row's title or
  * name; undeclaring writes length 0 and restores the stock name. Each
  * replace row also drives the donor portal's sky preview every tick. The
@@ -953,6 +1025,7 @@ static void custom_tick(CPUState* cpu) {
     static unsigned s_tickno = 0;
     custom_env_schedule(++s_tickno);
     if (!level_ops() || !custom_count()) return;
+    custom_take_mode();
 
     for (int i = 0; i < custom_count(); i++) {
         custom_level_t* r = custom_at(i);
@@ -993,6 +1066,83 @@ static void custom_tick(CPUState* cpu) {
     /* A speculative tick's guest writes are rolled back: the warp is taken
      * and driven on committed ticks only, so it is not spent on one. */
     if (!openpete_speculative) custom_warp_step(cpu);
+}
+
+/* The registry section of a state: the custom-level registry's host state,
+ * which mirrors the guest writes it made (the shared slot's claim, the
+ * replace declarations) or decides the next ones (each row's mode, a queued
+ * warp), so it travels with the guest RAM it describes. */
+#define REGISTRY_STATE_VERSION 1u
+typedef struct {
+    uint32_t version;
+    uint32_t rows;
+    int32_t  slot_id;   /* s_custom_slot_id */
+    int32_t  active;    /* s_custom_active */
+    int32_t  warp;      /* s_custom_warp */
+} registry_state_hdr_t;
+typedef struct {
+    uint8_t replace_mode;
+    uint8_t declared_replace;
+    uint8_t pad[2];
+} registry_state_row_t;
+
+/* Documented at the declaration in openpete_mods.h. */
+uint32_t openpete_mods_registry_state_size(void) {
+    if (!custom_count()) return 0;
+    return (uint32_t)(sizeof(registry_state_hdr_t) +
+                      (size_t)custom_count() * sizeof(registry_state_row_t));
+}
+
+/* Documented at the declaration in openpete_mods.h. */
+void openpete_mods_registry_state_save(void* dst) {
+    const registry_state_hdr_t h = {REGISTRY_STATE_VERSION, (uint32_t)custom_count(),
+                                    s_custom_slot_id, s_custom_active, s_custom_warp};
+    memcpy(dst, &h, sizeof h);
+    uint8_t* p = (uint8_t*)dst + sizeof h;
+    for (int i = 0; i < custom_count(); i++, p += sizeof(registry_state_row_t)) {
+        const registry_state_row_t r = {(uint8_t)custom_at(i)->replace_mode,
+                                        (uint8_t)custom_at(i)->declared_replace, {0, 0}};
+        memcpy(p, &r, sizeof r);
+    }
+}
+
+/* Documented at the declaration in openpete_mods.h. */
+void openpete_mods_registry_state_apply(const void* src, uint32_t size) {
+    if (!src || !size) return;
+    registry_state_hdr_t h;
+    if (size < sizeof h) return;
+    memcpy(&h, src, sizeof h);
+    const int n = custom_count();
+    if (h.version != REGISTRY_STATE_VERSION || h.rows != (uint32_t)n ||
+        size != sizeof h + (size_t)n * sizeof(registry_state_row_t) ||
+        h.active >= n || h.warp >= n) {
+        OPL_WARN_F("mods", "state registry section (v%u, %u rows, %u B) does not fit the %d "
+                   "registered custom level(s); the live registry is kept", h.version, h.rows,
+                   size, n);
+        return;
+    }
+    const int had_slot = s_custom_slot_id != 0;
+    s_custom_slot_id = h.slot_id;
+    s_custom_active = h.active < 0 ? -1 : h.active;
+    s_custom_warp = h.warp < 0 ? -1 : h.warp;
+    const uint8_t* p = (const uint8_t*)src + sizeof h;
+    for (int i = 0; i < n; i++, p += sizeof(registry_state_row_t)) {
+        registry_state_row_t r;
+        memcpy(&r, p, sizeof r);
+        custom_at(i)->replace_mode = r.replace_mode ? 1 : 0;
+        custom_at(i)->declared_replace = r.declared_replace ? 1 : 0;
+    }
+    /* The level ops hold the slot's alias donor host-side: hand them the
+     * restored claim, or release the one this registry made. */
+    if (!level_ops() || !level_ops()->adopt_slot) return;
+    if (s_custom_slot_id && s_custom_active >= 0) {
+        if (level_ops()->adopt_slot(custom_at(s_custom_active)->donor_id) != 0)
+            OPL_WARN_F("mods", "state load: the level ops refused the restored slot claim "
+                       "(id %d, donor %d)", s_custom_slot_id,
+                       custom_at(s_custom_active)->donor_id);
+    } else if (had_slot && !s_custom_slot_id) {
+        (void)level_ops()->adopt_slot(0);
+    }
 }
 
 /* Reads host-side statics only: the last level the per-tick driver saw. */

@@ -815,7 +815,7 @@ class Replay(Base):
         log = (self.d / "w" / "replay.log").read_text()
         self.assertIn("--bug-report-replay", log)
         self.assertIn("--card1 " + str(self.d / "w" / "cards" / "card1.mcd"), log)
-        self.assertIn("--no-card2", log)
+        self.assertNotIn("--no-card", log)
         self.assertTrue((self.d / "w" / "cards" / "card1.mcd").is_file())
 
     def test_fallback_diverged(self):

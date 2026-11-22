@@ -63,6 +63,8 @@ set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
+# shellcheck source=scripts/lib/custom_level_fixture.sh
+source scripts/lib/custom_level_fixture.sh
 
 for a in "$@"; do
     case "$a" in
@@ -188,35 +190,7 @@ CUSTOM_PRESS=5200
 CUSTOM_HOLD_WARP=30
 CUSTOM_HOLD_AT=400
 MODS="$ABS_OUT/mods"
-mkdir -p "$MODS/warpfx/assets/levels"
-cat > "$MODS/warpfx/mod.toml" <<'TOML'
-[mod]
-id      = "warpfx"
-name    = "Warp Fixture"
-version = "1.0.0"
-game    = "spyro-1"
-api     = 1
-
-[[level]]
-name    = "Warp Fixture"
-files   = "warp_fx"
-donor   = "dark_hollow"
-replace = true
-TOML
-# The level file is Dark Hollow's own data entry, read from the disc's WAD
-# at run time: the WAD TOC's level entries start at byte 72, 16 bytes each
-# (overlay offset and length, data offset and length), level id L at index
-# (L / 10 - 1) * 6 + L % 10.
-python3 -I - "$WAD" "$MODS/warpfx/assets/levels/warp_fx.wad" <<'PY' || fail+=("custom: cannot read level 12's data entry from $WAD")
-import struct, sys
-with open(sys.argv[1], "rb") as f:
-    _, _, off, n = struct.unpack_from("<4I", f.read(2048), 72 + 2 * 16)
-    f.seek(off)
-    d = f.read(n)
-if n == 0 or len(d) != n:
-    sys.exit(1)
-open(sys.argv[2], "wb").write(d)
-PY
+custom_level_fixture "$MODS" "$WAD" || fail+=("custom: cannot read level 12's data entry from $WAD")
 
 if (( ${#fail[@]} == 0 )); then
     PG_CAPTURE_ENV=("OPENPETE_SANDBOX=$ABS_OUT/xdg-custom" "OPENPETE_BUGREPORT_AT=$CUSTOM_PRESS"

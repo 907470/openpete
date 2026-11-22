@@ -1118,6 +1118,11 @@ typedef struct {
     /* Re-target an already-claimed slot at a new donor: re-copy the
      * donor's TOC entry into the slot and swap the alias donor. 0 ok. */
     int (*retarget_slot)(CPUState* cpu, int donor_level_id);
+    /* Adopt a claim the guest RAM already holds (a state load): set the
+     * slot's alias donor without a guest write, installing the alias hooks
+     * on first use; donor 0 releases the slot. 0 ok, -1 = id out of range
+     * or a hook install failed. */
+    int (*adopt_slot)(int donor_level_id);
     /* Declare `len` as a level entry's Data length in the guest WAD TOC
      * (len 0 = restore the stock length). 0 ok, -1 = TOC not live. */
     int (*declare_data_len)(CPUState* cpu, int level_id, uint32_t len);
@@ -1227,8 +1232,10 @@ int  openpete_mods_custom_info(int i, openpete_mods_custom_info_t* out);
 int  openpete_mods_custom_warp(int i);
 /** @brief Set the custom level at alphabetical position @p i to slot or replace serving.
  *
- * The per-tick driver declares or withdraws the replace over the donor's
- * entry on its next tick. An out-of-range @p i is ignored.
+ * Queues the toggle; the per-tick driver takes it on its next committed
+ * tick, records it for a bug-report bundle, and declares or withdraws the
+ * replace over the donor's entry in that tick. One toggle is held; a later
+ * call replaces it. An out-of-range @p i is ignored.
  * @param i Position in the name order openpete_mods_custom_info uses.
  * @param replace 0 serves the level from the shared slot, nonzero over its
  *        donor's own entry. */
@@ -2763,6 +2770,31 @@ int      openpete_mods_arena_state_verdict(const void* src, uint32_t size);
  * @param src Saved section bytes.
  * @param size Section size in bytes. */
 void     openpete_mods_arena_state_apply(const void* src, uint32_t size);
+
+/** @brief Size of the registry state section, 0 when no custom level is registered.
+ *
+ * The section carries the custom-level registry's host state: the shared
+ * slot's claim (slot id, owning row), the queued warp, and each row's
+ * slot/replace mode and replace declaration. core/record/savestate.c
+ * serializes it with the engine state, file and in-memory alike.
+ * @return Section size in bytes. */
+uint32_t openpete_mods_registry_state_size(void);
+/** @brief Write the registry state section to a buffer.
+ *
+ * The layout is a version-1 header (version, row count, slot id, owning
+ * row, queued warp row), then one 4-byte record per row in registration
+ * order (mode, declaration, two pad bytes).
+ * @param dst A buffer of at least openpete_mods_registry_state_size() bytes. */
+void     openpete_mods_registry_state_save(void* dst);
+/** @brief Adopt a saved registry state section after a state load commits.
+ *
+ * A section whose version or row count does not fit the registered rows
+ * is logged and ignored; an empty section leaves the registry as it is.
+ * A restored slot claim is handed to the level ops' adopt_slot, and a
+ * claim the restore drops is released there.
+ * @param src Saved section bytes, or NULL.
+ * @param size Section size in bytes. */
+void     openpete_mods_registry_state_apply(const void* src, uint32_t size);
 
 #ifdef __cplusplus
 }

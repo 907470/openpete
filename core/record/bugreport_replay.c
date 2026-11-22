@@ -873,7 +873,49 @@ static int rp_tester_args(rp_argv_t* a)
     return 0;
 }
 
-/** @brief Copy the anchor's card of one port into <scratch>/cards and name it on the command line, or pass --no-cardN.
+/** @brief Report whether the bundle's anchor state held a card in a port.
+ *
+ * @param port 1 or 2.
+ * @return 1 when it held one, 0 when not or when anchor.state does not parse. */
+static int rp_anchor_card_held(int port)
+{
+    char p[RP_PATH];
+    rp_join(p, sizeof p, R.scratch, "anchor.state");
+    size_t n = 0;
+    uint8_t* d = NULL;
+    int held[2] = {0, 0};
+    const int ok = br_read_file(p, &d, &n) == 0 && openpete_state_image_card_held(d, n, held) == 0;
+    free(d);
+    return ok && held[port - 1];
+}
+
+/** @brief Name the card of a port the bundle holds no image for: a fresh card path in <scratch>/cards when the anchor held a card, else --no-cardN.
+ *
+ * A port holds a card with no image when the game had not read it by the
+ * anchor and no file existed at its path (a first-run card folder); the
+ * card is provisioned on first access, as the tester's was. The path lies
+ * in the replay's scratch directory, never in a default card directory.
+ * @param a The argv.
+ * @param port 1 or 2.
+ * @return 0, or -1 on failure (refused). */
+static int rp_card_absent_args(rp_argv_t* a, int port)
+{
+    char dir[RP_PATH], dst[RP_PATH], name[32], flag[16];
+    if (!rp_anchor_card_held(port)) {
+        snprintf(flag, sizeof flag, "--no-card%d", port);
+        return rp_arg(a, flag);
+    }
+    snprintf(name, sizeof name, "card%d.mcd", port);
+    rp_join(dir, sizeof dir, R.scratch, "cards");
+    rp_join(dst, sizeof dst, dir, name);
+    if (!dst[0] || rp_mkdirs(dir) != 0) { rp_refuse("cannot make %s", dir); return -1; }
+    fprintf(stderr, "bug-report-replay: card %d: the anchor holds a card with no image (not read by the "
+            "anchor, no file at its path); the replay provisions one at %s\n", port, dst);
+    snprintf(flag, sizeof flag, "--card%d", port);
+    return (rp_arg(a, flag) || rp_arg(a, dst)) ? -1 : 0;
+}
+
+/** @brief Copy the anchor's card of one port into <scratch>/cards and name it on the command line, else rp_card_absent_args.
  * @param a The argv.
  * @param port 1 or 2.
  * @return 0, or -1 on failure (refused). */
@@ -882,10 +924,7 @@ static int rp_card_args(rp_argv_t* a, int port)
     char src[RP_PATH], dst[RP_PATH], name[32], flag[16];
     snprintf(name, sizeof name, "card%d.mcd", port);
     rp_join(src, sizeof src, R.scratch, name);
-    if (!rp_is_file(src)) {
-        snprintf(flag, sizeof flag, "--no-card%d", port);
-        return rp_arg(a, flag);
-    }
+    if (!rp_is_file(src)) return rp_card_absent_args(a, port);
     for (int k = 0; k < 2; k++) {
         char s2[RP_PATH], d2[RP_PATH], leaf[64];
         snprintf(leaf, sizeof leaf, "cards/card%d.mcd%s", port, k ? ".modsave" : "");
@@ -1003,7 +1042,7 @@ static int rp_dev_args(rp_argv_t* a, int argc, char** argv)
 
 /* env.txt variables the replay does not set: the harness triggers that
  * would write a bundle, set a knob (knobs.txt carries the change and its
- * tick), queue a warp (warps.txt carries the request and its tick), take
+ * tick), queue a warp or a custom-level mode toggle (warps.txt carries the request and its tick), take
  * extra anchors, dump the ring, exec a handoff or end the run
  * early, the injected host input (the movie carries the
  * pad it produced), the config file the tiers replace, and the tester's
@@ -1014,6 +1053,7 @@ static const char* const k_env_drop[] = {
     "OPENPETE_LOG_FILE", "OPENPETE_MOUSE_INJECT", "OPENPETE_MOUSE_INJECT_RAW",
     "OPENPETE_DEVUI_INJECT_MOUSE", "OPENPETE_BUGREPORT_KNOB_AT", "OPENPETE_SANDBOX",
     "OPENPETE_LEVELWARP_TEST", "OPENPETE_AREAWARP_TEST", "OPENPETE_CUSTOM_WARP",
+    "OPENPETE_CUSTOM_MODE",
 };
 
 /** @brief Report whether a variable is one of k_env_drop's harness triggers. */
@@ -1044,6 +1084,7 @@ static const struct { const char* name; const char* why; } k_env_gameplay[] = {
     {"OPENPETE_FREECAM*", "writes the camera"},
     {"OPENPETE_CAMLOCK*", "writes the camera"},
     {"OPENPETE_CUSTOM_WARP", "warps to a level"},
+    {"OPENPETE_CUSTOM_MODE", "toggles a custom level's slot/replace mode"},
     {"OPENPETE_SKIP_*", "times a level skip's release"},
     {"OPENPETE_LOAD_DELAY", "sets the CD load timing"},
     {"OPENPETE_INPUT_*", "synthesizes pad input"},

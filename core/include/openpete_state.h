@@ -66,7 +66,7 @@ int openpete_state_image_capture(uint8_t** buf, size_t* len, size_t* cap,
 /* One section of a state file image, as openpete_state_image_sections lists it. */
 typedef struct {
     const char* name;  /* "header", "cpu", "ram", "scratch", "vram", "spu", "spumem", "cd",
-                          "card", "game-extra", "arena", "modset-tag" */
+                          "card", "game-extra", "arena", "modset-tag", "registry" */
     size_t      off;   /* byte offset in the image */
     size_t      len;
     int         guest; /* the bytes are guest memory or a game's or mod's own data */
@@ -78,7 +78,7 @@ typedef struct {
  * @param len Its length.
  * @param out Receives up to @p max sections.
  * @param max Capacity of @p out.
- * @return The section count (12), or -1 when the header's sizes do not add up to @p len. */
+ * @return The section count (13), or -1 when the header's sizes do not add up to @p len. */
 int openpete_state_image_sections(const uint8_t* img, size_t len,
                                   openpete_state_section_t* out, int max);
 
@@ -92,6 +92,16 @@ int openpete_state_image_sections(const uint8_t* img, size_t len,
  * @return The paths rewritten, or -1 when the image does not parse. */
 int openpete_state_image_card_paths_set(uint8_t* img, size_t len, const char* port1,
                                         const char* port2);
+
+/** @brief Read which ports held a card in a state file image's card section.
+ *
+ * A port can hold a card with no image file behind it (a card the game had
+ * not read yet, at a path where no file existed).
+ * @param img The image.
+ * @param len Its length.
+ * @param held Receives 1 per port that held a card, else 0.
+ * @return 0, or -1 when the image does not parse. */
+int openpete_state_image_card_held(const uint8_t* img, size_t len, int held[2]);
 
 /** @brief Write a state file image's content identity as lowercase hex.
  *

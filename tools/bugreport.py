@@ -1287,15 +1287,13 @@ def replay_plan(b, exe=None, disc=None, arch=None, work=None):
         # Headless with input locked and rumble off: an unattended run.
         cmd = [str(plan["exe"]), "--game", str(man.get("game", "")), "--headless", "--input-lock",
                "--vibration", "0", "--mute", "1", "--disc", str(disc), "--bug-report-replay", str(b.path.resolve())]
+        # A port without a card member gets no flag: the replay passes
+        # --no-cardN itself, or a fresh scratch card when the anchor held a
+        # card with no image; a --no-card here would override that.
         cards = work / "cards"
         for p in (1, 2):
             if b.has(f"card{p}.mcd"):
                 cmd += [f"--card{p}", str(cards / f"card{p}.mcd")]
-            else:
-                cmd += [f"--no-card{p}" if p == 2 else "--no-card"]
-                if p == 1:
-                    # --no-card already covers slot 2; drop the slot-2 pass.
-                    break
     plan["cmd"] = cmd
     return plan
 

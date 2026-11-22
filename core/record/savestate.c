@@ -151,7 +151,7 @@ extern int g_cdXaStartVBL;
 #endif
 
 #define OPENPETE_STATE_MAGIC    0x3176534Fu  /* 'OSv1' little-endian */
-#define OPENPETE_STATE_VERSION  6u
+#define OPENPETE_STATE_VERSION  7u
 /* The oldest header version this build reads: v4, the v6 header without
  * the park site and the consume position. */
 #define OPENPETE_STATE_VERSION_MIN 4u
@@ -203,22 +203,36 @@ typedef struct {
     uint32_t park_sp;          /* v5: openpete_yield_site.sp at the save */
     uint32_t consume;          /* v6: openpete_consume (E) at the save */
     uint32_t consume_write;    /* v6: openpete_consume_write (j) at the save */
+    uint32_t registry_bytes;   /* v7: mod registry section, after the modset tag */
 } openpete_state_header_t;
 
 /* The header's size is fixed per version: the game field replaced
  * reserved[3]; v4 appended vbl_device (104 bytes); v5 appended the park
- * site (112 bytes); v6 the consume position (120 bytes). */
+ * site (112 bytes); v6 the consume position (120 bytes); v7 the registry
+ * section's size (124 bytes). */
 #define STATE_HEADER_V4_BYTES ((size_t)offsetof(openpete_state_header_t, park_ra))
 #define STATE_HEADER_V5_BYTES ((size_t)offsetof(openpete_state_header_t, consume))
-typedef char state_header_size_check[sizeof(openpete_state_header_t) == 120 ? 1 : -1];
+#define STATE_HEADER_V6_BYTES ((size_t)offsetof(openpete_state_header_t, registry_bytes))
+typedef char state_header_size_check[sizeof(openpete_state_header_t) == 124 ? 1 : -1];
 typedef char state_header_v4_size_check[STATE_HEADER_V4_BYTES == 104 ? 1 : -1];
 typedef char state_header_v5_size_check[STATE_HEADER_V5_BYTES == 112 ? 1 : -1];
+typedef char state_header_v6_size_check[STATE_HEADER_V6_BYTES == 120 ? 1 : -1];
+
+/** @brief Return the byte size of a state header of a version this build reads.
+ * @param version The header's version.
+ * @return The size; a version outside the readable range returns the v4 size. */
+static size_t state_header_bytes(uint32_t version) {
+    if (version >= 7u && version <= OPENPETE_STATE_VERSION) return sizeof(openpete_state_header_t);
+    if (version == 6u) return STATE_HEADER_V6_BYTES;
+    if (version == 5u) return STATE_HEADER_V5_BYTES;
+    return STATE_HEADER_V4_BYTES;
+}
 
 /** @brief Read a state header of any version this build reads, leaving the file just past it.
  *
  * Reads the v4 prefix, then the fields each later version appended (v5 the
- * park site, v6 the consume position); a field the version lacks reads as
- * zero. Magic and version are left to the caller's checks; a version
+ * park site, v6 the consume position, v7 the registry section's size); a
+ * field the version lacks reads as zero. Magic and version are left to the caller's checks; a version
  * outside the readable range reads only the prefix.
  * @param fp The state file, at offset 0.
  * @param hdr Receives the header.
@@ -229,8 +243,7 @@ static int state_header_read(FILE* fp, openpete_state_header_t* hdr) {
     if (hdr->magic != OPENPETE_STATE_MAGIC || hdr->version < 5u ||
         hdr->version > OPENPETE_STATE_VERSION)
         return 0;
-    const size_t end = hdr->version >= 6u ? sizeof *hdr : STATE_HEADER_V5_BYTES;
-    const size_t tail = end - STATE_HEADER_V4_BYTES;
+    const size_t tail = state_header_bytes(hdr->version) - STATE_HEADER_V4_BYTES;
     return fread((uint8_t*)hdr + STATE_HEADER_V4_BYTES, 1, tail, fp) == tail ? 0 : -1;
 }
 
@@ -776,13 +789,15 @@ int openpete_state_image_capture(uint8_t** buf, size_t* len, size_t* cap,
      * per rewind keyframe), never per speculative tick. */
     openpete_mods_arena_immutable_check("file save");
     hdr.arena_bytes      = openpete_mods_arena_state_size();
+    hdr.registry_bytes   = openpete_mods_registry_state_size();
 
     /* The file layout, in order: header, cpu, ram, scratch, vram, spu,
-     * spumem, cd, card, game-extra, arena, modset-tag. */
+     * spumem, cd, card, game-extra, arena, modset-tag, registry. */
     const size_t total = sizeof(hdr) + CPU_REG_BYTES + OPENPETE_PSX_RAM_SIZE +
                          OPENPETE_PSX_SCRATCH_SIZE + hdr.vram_bytes + hdr.spu_state_bytes +
                          hdr.spu_mem_bytes + sizeof(state_cd_t) + sizeof(state_card_t) +
-                         hdr.game_extra_bytes + hdr.arena_bytes + hdr.modset_tag_bytes;
+                         hdr.game_extra_bytes + hdr.arena_bytes + hdr.modset_tag_bytes +
+                         hdr.registry_bytes;
     if (image_reserve(buf, cap, total) != 0) {
         OPL_ERROR_F("savestate", "out of memory for a %zu-byte state image", total);
         return -1;
@@ -810,22 +825,29 @@ int openpete_state_image_capture(uint8_t** buf, size_t* len, size_t* cap,
     if (hdr.arena_bytes) openpete_mods_arena_state_save(p);
     p += hdr.arena_bytes;
     memcpy(p, modset_tag, hdr.modset_tag_bytes);
+    p += hdr.modset_tag_bytes;
+    if (hdr.registry_bytes) openpete_mods_registry_state_save(p);
     *len = total;
     return 0;
 }
 
 int openpete_state_image_sections(const uint8_t* img, size_t len,
                                   openpete_state_section_t* out, int max) {
-    if (!img || len < sizeof(openpete_state_header_t)) return -1;
+    if (!img || len < STATE_HEADER_V4_BYTES) return -1;
     openpete_state_header_t h;
-    memcpy(&h, img, sizeof h);
+    memset(&h, 0, sizeof h);
+    memcpy(&h, img, STATE_HEADER_V4_BYTES);
+    const size_t hn = state_header_bytes(h.version);
+    if (len < hn) return -1;
+    memcpy(&h, img, hn);
     const struct { const char* name; uint64_t n; int guest; } sec[] = {
-        {"header", sizeof h, 0},          {"cpu", h.cpu_bytes, 0},
+        {"header", hn, 0},                {"cpu", h.cpu_bytes, 0},
         {"ram", h.ram_bytes, 1},          {"scratch", h.scratch_bytes, 1},
         {"vram", h.vram_bytes, 1},        {"spu", h.spu_state_bytes, 1},
         {"spumem", h.spu_mem_bytes, 1},   {"cd", h.cd_state_bytes, 0},
         {"card", sizeof(state_card_t), 0}, {"game-extra", h.game_extra_bytes, 1},
         {"arena", h.arena_bytes, 1},      {"modset-tag", h.modset_tag_bytes, 0},
+        {"registry", h.registry_bytes, 0},
     };
     const int nsec = (int)(sizeof sec / sizeof sec[0]);
     uint64_t off = 0;
@@ -856,6 +878,20 @@ int openpete_state_image_card_paths_set(uint8_t* img, size_t len, const char* po
         }
         memcpy(img + s[i].off, &c, sizeof c);
         return changed;
+    }
+    return -1;
+}
+
+int openpete_state_image_card_held(const uint8_t* img, size_t len, int held[2]) {
+    openpete_state_section_t s[16];
+    const int n = openpete_state_image_sections(img, len, s, 16);
+    for (int i = 0; i < n; i++) {
+        if (strcmp(s[i].name, "card") != 0 || s[i].len != sizeof(state_card_t)) continue;
+        state_card_t c;
+        memcpy(&c, img + s[i].off, sizeof c);
+        held[0] = c.held[0] != 0;
+        held[1] = c.held[1] != 0;
+        return 0;
     }
     return -1;
 }
@@ -892,7 +928,8 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     memcpy(&card, img + len - sizeof(state_card_t) -
                   ((const openpete_state_header_t*)img)->game_extra_bytes -
                   ((const openpete_state_header_t*)img)->arena_bytes -
-                  ((const openpete_state_header_t*)img)->modset_tag_bytes, sizeof card);
+                  ((const openpete_state_header_t*)img)->modset_tag_bytes -
+                  ((const openpete_state_header_t*)img)->registry_bytes, sizeof card);
     free(img);
     if (op_atomic_file_commit(&af) != 0) return -1;
     OPL_INFO_F("savestate", "saved %s (frame=%u) cards held %u/%u flags 0x%02X/0x%02X",
@@ -908,8 +945,8 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame) {
 
 /** @brief Check that the sections a state header declares add up to the bytes the file holds after the header.
  *
- * The fixed sections were already matched against this build; the three
- * variable sections (game extra, arena, modset tag) are sized only by the
+ * The fixed sections were already matched against this build; the four
+ * variable sections (game extra, arena, modset tag, registry) are sized only by the
  * header, so a corrupt or hostile header could otherwise ask for a
  * multi-gigabyte allocation before any read fails. The sum is formed in
  * 64 bits, so no declared size can wrap it.
@@ -927,11 +964,12 @@ static int state_sections_fit(FILE* fp, const char* path, const openpete_state_h
     uint64_t want = (uint64_t)hdr->cpu_bytes + hdr->ram_bytes + hdr->scratch_bytes +
                     hdr->vram_bytes + hdr->spu_state_bytes + hdr->spu_mem_bytes +
                     hdr->cd_state_bytes + sizeof(state_card_t) + hdr->game_extra_bytes +
-                    hdr->arena_bytes + hdr->modset_tag_bytes;
+                    hdr->arena_bytes + hdr->modset_tag_bytes + hdr->registry_bytes;
     if (want == (uint64_t)(end - pos)) return 0;
     OPL_ERROR_F("savestate", "%s: header declares %llu section bytes, the file holds %ld "
-                "(game-extra=%u arena=%u modset-tag=%u)", path, (unsigned long long)want,
-                end - pos, hdr->game_extra_bytes, hdr->arena_bytes, hdr->modset_tag_bytes);
+                "(game-extra=%u arena=%u modset-tag=%u registry=%u)", path,
+                (unsigned long long)want, end - pos, hdr->game_extra_bytes, hdr->arena_bytes,
+                hdr->modset_tag_bytes, hdr->registry_bytes);
     return -1;
 }
 
@@ -1058,7 +1096,7 @@ static int state_header_check(FILE* fp, const char* path, const openpete_state_h
     return state_sections_fit(fp, path, hdr);
 }
 
-/** @brief Read a state file's arena and modset-tag sections, the last two in the file.
+/** @brief Read a state file's arena, modset-tag and registry sections, the last three in the file.
  *
  * Seeks past every earlier section from the end of the header, so a load
  * judges the mod sections without reading the guest memory images.
@@ -1068,17 +1106,19 @@ static int state_header_check(FILE* fp, const char* path, const openpete_state_h
  * @param hdr The header, already checked against the file's length.
  * @param arena_out Receives the arena section (NULL when it is empty); the caller frees it.
  * @param tag_out Receives the NUL-terminated modset tag; the caller frees it.
- * @return 0 when both sections were read, -1 otherwise (logged; nothing to free). */
+ * @param reg_out Receives the registry section (NULL when it is empty); the caller frees it.
+ * @return 0 when the sections were read, -1 otherwise (logged; nothing to free). */
 static int state_mod_sections_read(FILE* fp, const char* path, long body,
                                    const openpete_state_header_t* hdr,
-                                   uint8_t** arena_out, char** tag_out) {
+                                   uint8_t** arena_out, char** tag_out, uint8_t** reg_out) {
     const uint64_t skip = (uint64_t)hdr->cpu_bytes + hdr->ram_bytes + hdr->scratch_bytes +
                           hdr->vram_bytes + hdr->spu_state_bytes + hdr->spu_mem_bytes +
                           hdr->cd_state_bytes + sizeof(state_card_t) +
                           hdr->game_extra_bytes;
     uint8_t* arena = hdr->arena_bytes ? (uint8_t*)malloc(hdr->arena_bytes) : NULL;
     char*    tag   = (char*)malloc((size_t)hdr->modset_tag_bytes + 1);
-    int rc = (!tag || (hdr->arena_bytes && !arena)) ? -1 : 0;
+    uint8_t* reg   = hdr->registry_bytes ? (uint8_t*)malloc(hdr->registry_bytes) : NULL;
+    int rc = (!tag || (hdr->arena_bytes && !arena) || (hdr->registry_bytes && !reg)) ? -1 : 0;
     if (rc != 0) OPL_ERROR_F("savestate", "%s: out of memory", path);
     if (rc == 0 && fseek(fp, body + (long)skip, SEEK_SET) != 0) {
         OPL_ERROR_F("savestate", "%s: cannot seek to the arena section", path);
@@ -1088,13 +1128,16 @@ static int state_mod_sections_read(FILE* fp, const char* path, long body,
         rc = read_section(fp, path, "arena", arena, hdr->arena_bytes);
     if (rc == 0 && hdr->modset_tag_bytes)
         rc = read_section(fp, path, "modset-tag", tag, hdr->modset_tag_bytes);
+    if (rc == 0 && hdr->registry_bytes)
+        rc = read_section(fp, path, "registry", reg, hdr->registry_bytes);
     if (rc != 0) {
-        free(arena); free(tag);
+        free(arena); free(tag); free(reg);
         return -1;
     }
     tag[hdr->modset_tag_bytes] = '\0';
     *arena_out = arena;
     *tag_out = tag;
+    *reg_out = reg;
     return 0;
 }
 
@@ -1212,7 +1255,8 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     }
     uint8_t* arena_buf = NULL;
     char*    tag_buf   = NULL;
-    if (state_mod_sections_read(fp, path, body, &hdr, &arena_buf, &tag_buf) != 0) {
+    uint8_t* reg_buf   = NULL;
+    if (state_mod_sections_read(fp, path, body, &hdr, &arena_buf, &tag_buf, &reg_buf) != 0) {
         fclose(fp);
         OPL_ERROR_F("savestate", "%s: load refused - running state untouched", path);
         return -1;
@@ -1226,7 +1270,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         hrc = -1;
     }
     if (hrc != 0) {
-        free(arena_buf); free(tag_buf);
+        free(arena_buf); free(tag_buf); free(reg_buf);
         fclose(fp);
         return hrc;
     }
@@ -1270,7 +1314,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
 
     if (rc != 0) {
         free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);
-        free(extra_buf); free(arena_buf); free(tag_buf);
+        free(extra_buf); free(arena_buf); free(tag_buf); free(reg_buf);
         OPL_ERROR_F("savestate", "%s: load refused - running state untouched",
                     path);
         return -1;
@@ -1323,6 +1367,11 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
      * next tick hook may re-park against the restored layout. */
     openpete_mods_arena_state_apply(arena_buf, hdr.arena_bytes);
     free(arena_buf);
+    /* The custom-level registry's host state describes the guest RAM just
+     * restored (the shared slot's claim, the replace declarations); a
+     * state without the section leaves it as it is. */
+    openpete_mods_registry_state_apply(reg_buf, hdr.registry_bytes);
+    free(reg_buf);
 
     /* Broadcast the discontinuity LAST, once engine + game + mod state is
      * fully committed: host caches derived from guest RAM (interp prev/curr
@@ -1395,6 +1444,10 @@ struct openpete_state_mem {
     uint32_t   arena_cap;
     uint32_t   arena_used[OPENPETE_ARENA_RANGES];
     int        arena_external;  /* the owner carries the arena itself */
+    /* Mod registry section (openpete_mods_registry_state_save); grow-only. */
+    uint8_t*   reg;
+    uint32_t   reg_bytes;
+    uint32_t   reg_cap;
 };
 
 openpete_state_mem_t* openpete_state_mem_new(void) {
@@ -1426,6 +1479,7 @@ void openpete_state_mem_free(openpete_state_mem_t* m) {
     free(m->gx);
     free(m->vram);
     free(m->arena);
+    free(m->reg);
     free(m);
 }
 
@@ -1464,6 +1518,14 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
         }
         openpete_mods_arena_mem_save(m->arena, m->arena_used);
     }
+    m->reg_bytes = openpete_mods_registry_state_size();
+    if (m->reg_bytes > m->reg_cap) {
+        uint8_t* grown = (uint8_t*)realloc(m->reg, m->reg_bytes);
+        if (!grown) return -1;
+        m->reg = grown;
+        m->reg_cap = m->reg_bytes;
+    }
+    if (m->reg_bytes) openpete_mods_registry_state_save(m->reg);
     m->valid = 1;
     return 0;
 }
@@ -1509,6 +1571,7 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     (void)PsyX_VRAM_RestoreDelta(m->vram, m->vram_bytes);
     if (!m->arena_external)
         openpete_mods_arena_mem_restore(m->arena, m->arena_used);
+    openpete_mods_registry_state_apply(m->reg, m->reg_bytes);
     SDL_SetAtomicInt(&openpete_vbl, (int)m->vbl);
     SDL_SetAtomicInt(&openpete_vbl_device, (int)m->vbl_device);
     openpete_consume = m->consume;
