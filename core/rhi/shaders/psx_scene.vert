@@ -59,10 +59,11 @@ layout(location = 4) flat out vec2 vRank;
 /* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
 layout(location = 10) flat out float vSrcWalk;
 /* Moby-against-moby key offset (rhi_vertex.akc) of an actor face, flat
- * (psx_key_contest.glsl op_actor_key); on any other face the colour residual
- * (rhi_vertex.rgbq), which no fragment stage reads through vAkc. */
+ * (psx_key_contest.glsl op_actor_key); 0 on any other face. */
 layout(location = 6) in float inAkc;
 layout(location = 5) flat out float vAkc;
+/* Colour residual (rhi_vertex.rgbq) of inColor's R, G and B (op_unorm8q). */
+layout(location = 7) in float inRgbq;
 
 /* Scene depth convention, chosen at pipeline creation (RHI spec constant 0,
  * from the pipeline's depth class and the device's depth format): true =
@@ -84,7 +85,7 @@ void main()
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
     gl_Position = op_scene_clip(inPos.xy, vzo, AFFINE_UV, DEPTH_REVERSED);
     vUV = inUV * q;
-    vColor = op_unorm8q(inColor, inRank.x < -0.5 ? 0.0 : inAkc) * q;
+    vColor = op_unorm8q(inColor, inRgbq) * q;
     vQ = q;
     vKoff = inKoff;
     vRank = inRank;

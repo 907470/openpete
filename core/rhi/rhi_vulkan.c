@@ -8730,7 +8730,7 @@ typedef struct {
     stage_spec                             vspec, fspec;
     VkPipelineShaderStageCreateInfo        stages[2];
     VkVertexInputBindingDescription        bind;
-    VkVertexInputAttributeDescription      attrs[7];
+    VkVertexInputAttributeDescription      attrs[8];
     VkPipelineVertexInputStateCreateInfo   vi;
     VkPipelineInputAssemblyStateCreateInfo ia;
     VkPipelineViewportStateCreateInfo      vp;
@@ -8946,9 +8946,10 @@ static bool pipe_state_fill(const rhi_device *dev, const rhi_pipeline_desc *desc
      * view-Z), read by the scene vertex stages. Location 5 is the terrain
      * og-key slot offset (rhi_vertex.koff), read by the scene vertex stages
      * and the terrain key pass. Location 6 is the moby-against-moby key
-     * offset of an actor face and the colour residual of any other
-     * (rhi_vertex.akc, rgbq), read by the same stages. */
-    static const VkVertexInputAttributeDescription k_attrs[7] = {
+     * offset of an actor face (rhi_vertex.akc), read by the same stages;
+     * location 7 the colour residual of any face (rhi_vertex.rgbq), read by
+     * the scene vertex stages. */
+    static const VkVertexInputAttributeDescription k_attrs[8] = {
         { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(rhi_vertex, x) },
         { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, u) },
         { .location = 2, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,   .offset = offsetof(rhi_vertex, rgba) },
@@ -8956,12 +8957,13 @@ static bool pipe_state_fill(const rhi_device *dev, const rhi_pipeline_desc *desc
         { .location = 4, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, w) },
         { .location = 5, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, koff) },
         { .location = 6, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, akc) },
+        { .location = 7, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, rgbq) },
     };
     memcpy(st->attrs, k_attrs, sizeof k_attrs);
     st->vi = (VkPipelineVertexInputStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &st->bind,
-        .vertexAttributeDescriptionCount = 7, .pVertexAttributeDescriptions = st->attrs,
+        .vertexAttributeDescriptionCount = 8, .pVertexAttributeDescriptions = st->attrs,
     };
     if (desc->terrain_pipeline) terrain_vertex_input(desc, &st->vi);
     if (desc->postfx) {   /* fullscreen triangle: no vertex buffer at all */

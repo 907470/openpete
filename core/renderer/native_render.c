@@ -9909,8 +9909,8 @@ static inline void pack_scene_vert(rhi_vertex *o, const scene_tri_t *st, int k, 
     o->u = u; o->v = v;
     o->rgba = st->v[k].rgba; o->koff = scene_key_channel(st);
     o->sx = scene_rank_channel(st); o->sy = scene_rank_moby(st);
-    if (st->rank < -0.5f) o->akc = st->akc;
-    else o->rgbq = (float)st->v[k].rgbq;
+    o->akc = st->rank < -0.5f ? st->akc : 0.0f;
+    o->rgbq = (float)st->v[k].rgbq;
     rv_drain(o, st, k);
     if (rhi_terrain_source_tint()) {
         /* The terrain source tint's walked-terrain mark (psx_src_tint.glsl):
@@ -11021,6 +11021,7 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
         o->rgba = rgba;
         o->koff = prop_class == 1 ? -0.5f : px ? 0.25f : 0.5f;
         o->akc = px ? T->akc : 0.0f;
+        o->rgbq = 0.0f;
         /* The terrain class carries the face's override inputs; the key
          * stages write its class beside the key (psx_key_cutout.frag). */
         o->sx = (prop_class == 0 && T->kattr) ? OPENPETE_SCENE_KATTR(T->kattr) : 0.0f;

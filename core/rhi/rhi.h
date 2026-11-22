@@ -765,18 +765,18 @@ typedef struct {
                          * scene stages z is the ORDERING view-Z and may carry
                          * a feeder's OT-slot shift, so deriving W from it
                          * warps UV/colour interpolation. Always stated.        */
-    union {             /* location 6, one float read by the rank channel:     */
-        float akc;      /* rank < -0.5, an actor face: its moby-against-moby
-                         * key offset. On an opaque keyed face the key at a
-                         * fragment is the fragment's ordering view-Z plus akc
+    float    akc;       /* location 6: an actor face's (rank < -0.5)
+                         * moby-against-moby key offset, 0 on any other face.
+                         * On an opaque keyed face the key at a fragment is
+                         * the fragment's ordering view-Z plus akc
                          * (psx_key_contest.glsl op_key_loses, and the actor
                          * key pass's per-pixel form, terrain_key.vert).      */
-        float rgbq;     /* any other face: the residual of rgba's R, G and B
-                         * from the vertex's unrounded colour, three signed
-                         * bytes in 1/256 of a level as an integer below 2^24,
-                         * which a float holds exactly (psx_unorm8.glsl
-                         * op_unorm8q). 0 on every vertex but a split node.   */
-    };
+    float    rgbq;      /* location 7: the residual of rgba's R, G and B from
+                         * the vertex's unrounded colour, three signed bytes
+                         * in 1/256 of a level as an integer below 2^24, which
+                         * a float holds exactly (psx_unorm8.glsl op_unorm8q).
+                         * 0 on every vertex but a split terrain node and a
+                         * moby near-cut corner.                              */
 } rhi_vertex;
 
 typedef struct rhi_buffer   rhi_buffer;

@@ -38,10 +38,11 @@ layout(location = 3) in vec2 inRank;
 layout(location = 5) flat out vec2 vRank;
 /* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
 layout(location = 10) flat out float vSrcWalk;
-/* Moby-against-moby key offset or colour residual (rhi_vertex.akc, rgbq) -
+/* Moby-against-moby key offset and colour residual (rhi_vertex.akc, rgbq) -
  * see psx_scene.vert. */
 layout(location = 6) in float inAkc;
 layout(location = 6) flat out float vAkc;
+layout(location = 7) in float inRgbq;
 
 /* Scene depth convention (RHI spec constant 0) - see psx_scene.vert. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
@@ -64,7 +65,7 @@ void main()
     float Wu  = max(op_src_tint_w(inW), 1.0);         /* colour perspective W   */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
     gl_Position = op_scene_clip(inPos.xy, vzo, AFFINE_UV, DEPTH_REVERSED);
-    vColor = op_unorm8q(inColor, inRank.x < -0.5 ? 0.0 : inAkc) * q;
+    vColor = op_unorm8q(inColor, inRgbq) * q;
     vUV = inUV * q;
     vQ = q;
     vKoff = inKoff;

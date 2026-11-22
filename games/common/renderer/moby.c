@@ -5364,8 +5364,24 @@ typedef struct {
     int textured, tpage_x, tpage_y, clut_x, clut_y, bpp;  /* PSX material (VRAM px) */
     int blend;   /* 0 = opaque, 1 = semi-transparent (prim ABE bit) */
     uint8_t tmix;  /* second fogged-CLUT row and weight (moby_texel_fog_mix), 0 = none */
+    uint8_t cut;   /* 1 = a part of a near-cut triangle: its source is mn_cut at its index */
 } ntri_t;
 #define MAX_NTRI (MAX_PRIMS * 2)              /* GT4 quad -> 2 tris */
+
+/* The source of one part of a triangle the near clip cut (emit_wtri_near):
+ * the triangle's three corners as the walk handed them to the clip, and per
+ * part corner the edge a -> b and the parameter t of its point on that edge
+ * (b == a, t == 0 for a source corner kept as is). Everything the scene
+ * builds per vertex from the corners' colours (the colour and its residual,
+ * the heavy-fog cue, the ladder row) is evaluated on the source corners and
+ * interpolated to the part corners (moby_cut_mix), so a cut does not move
+ * them by its position. */
+typedef struct {
+    uint32_t rgb[3];   /* the source corners' colour words */
+    float tvz[3];      /* their unshifted view-Z (ntri_vert.tvz) */
+    double t[3];       /* per part corner: the parameter on its edge */
+    uint8_t a[3], b[3];/* per part corner: its edge's source corners */
+} mn_cut;
 
 /* ---- INDEPENDENT gamestate face-stream walk ------------------------------
  * Derive triangle TOPOLOGY from the moby face stream itself (not the captured
@@ -5618,13 +5634,22 @@ typedef struct {
     uint8_t*  single;
     int16_t*  wbk;
     uint8_t*  cbits;
+    mn_cut*   cut;   /* per triangle, read where ntri_t.cut is set; allocated by mn_out_cut */
     int n, cap;
 } mn_out;
 OPENPETE_WORKER_ELEM(mn_out);
 static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
                          s_wtri_front, s_wtri_mangle, s_wtri_dofs, s_wtri_special,
                          s_wtri_otk, s_wtri_isxy, s_wtri_single, s_wtri_wbk, s_wtri_cbits,
-                         0, MAX_NTRI };
+                         NULL, 0, MAX_NTRI };
+
+/** @brief An emit target's cut-source array (mn_out.cut), allocated at the target's capacity on first use.
+ * @param O The target.
+ * @return The array, or NULL when the allocation failed. */
+static mn_cut* mn_out_cut(mn_out* O) {
+    if (!O->cut) O->cut = (mn_cut*)malloc(sizeof(mn_cut) * (size_t)O->cap);
+    return O->cut;
+}
 
 /* One coincident-face class of moby_coincident_pull: its vertex key, the
  * member the draw paints last, and the member count. */
@@ -5748,6 +5773,8 @@ static int moby_pinned_extent(const proj_xy* const p[3]) {
 typedef struct {
     uint32_t moby;
     int faces, unr, pinned, cut, behind, ext, eye, flip, back, backvis, lost, lostvis, drawnvis;
+    int xc, xq;   /* cut corners, and those whose colour has a nonzero residual */
+    int fogcut;   /* cut faces of a world moby on a heavy-fog level (moby_tri_fog_cue's source path) */
     double err;
 } mnear_row_t;
 #define MNEAR_ROWS 1024
@@ -5783,6 +5810,7 @@ static void mnear_flush(void) {
             sum.eye += r->eye; sum.flip += r->flip;
             sum.back += r->back; sum.backvis += r->backvis;
             sum.lost += r->lost; sum.lostvis += r->lostvis; sum.drawnvis += r->drawnvis;
+            sum.xc += r->xc; sum.xq += r->xq; sum.fogcut += r->fogcut;
             if (r->err > sum.err) sum.err = r->err;
             nm += r->unr > 0;
             if (s_mnear_at == 1 || !(r->unr || r->ext || r->eye)) continue;
@@ -5793,10 +5821,10 @@ static void mnear_flush(void) {
         }
         fprintf(stderr, "[mnear-sum key=%u] mobys=%d unr_mobys=%d faces=%d unr=%d pinned=%d "
                 "maxerr=%.4f cut=%d behind=%d ext=%d eye=%d flip=%d back=%d backvis=%d lost=%d "
-                "lostvis=%d drawnvis=%d\n",
+                "lostvis=%d drawnvis=%d xc=%d xq=%d fogcut=%d\n",
                 s_mnear_key, s_mnear_n, nm, sum.faces, sum.unr, sum.pinned, sum.err, sum.cut,
                 sum.behind, sum.ext, sum.eye, sum.flip, sum.back, sum.backvis, sum.lost,
-                sum.lostvis, sum.drawnvis);
+                sum.lostvis, sum.drawnvis, sum.xc, sum.xq, sum.fogcut);
     }
     s_mnear_n = 0;
 }
@@ -5878,15 +5906,18 @@ static void mnear_store(uint32_t moby, uint32_t fkey, const proj_xy* const p[3],
  * and from its tags (face key, special-material id, bucket word, texel fog
  * mix), a mangle flag when any vertex is unr or sat, its class bits (the
  * context's record word cb_rec and face word cb_face, OPENPETE_CB_MOBY_UNR
- * and _SAT from the vertices) and the integer SXY of each vertex.
+ * and _SAT from the vertices), the integer SXY of each vertex, and for a
+ * part of a near-cut triangle its cut source.
  * @param E The emit context.
  * @param g The triangle's tags.
  * @param p The three vertices, screen position final.
  * @param uv Their texture coordinates.
  * @param col Their colour words.
- * @param m The material. */
+ * @param m The material.
+ * @param cs The cut source of a near-cut part, NULL for any other triangle. */
 static void emit_wtri_store(mn_emit* E, const mn_tag* g, const proj_xy* const p[3],
-                            const float uv[3][2], const uint32_t col[3], const mn_mat* m) {
+                            const float uv[3][2], const uint32_t col[3], const mn_mat* m,
+                            const mn_cut* cs) {
     mn_out* const O = E->out;
     const int i = O->n;
     if (i >= O->cap) return;
@@ -5918,6 +5949,9 @@ static void emit_wtri_store(mn_emit* E, const mn_tag* g, const proj_xy* const p[
     t->textured = m->tex; t->tpage_x = m->tpx; t->tpage_y = m->tpy;
     t->clut_x = m->clx; t->clut_y = m->cly; t->bpp = m->bpp; t->blend = m->blend;
     t->tmix = g->tmix;
+    mn_cut* oc = cs ? mn_out_cut(O) : NULL;
+    t->cut = oc != NULL;
+    if (oc) oc[i] = *cs;
     E->diag->emitted++;
 }
 
@@ -5927,10 +5961,9 @@ static void emit_wtri_store(mn_emit* E, const mn_tag* g, const proj_xy* const p[
  * record (paint key, integer SXY, flags) with the homogeneous position, W,
  * colour and UV from ngte_clip_lerp of the edge at the plane and the depth,
  * key depth and rotated offset at the same parameter, all affine in view
- * space; it is flagged unr. The crossing's colour keeps the bytes and drops
- * the residual ngte_clip_lerp computes: an actor face's vertex carries its
- * key offset in the slot a residual takes (rhi_vertex.akc). A corner flagged
- * unr takes the float projection
+ * space; it is flagged unr. The crossing's colour word holds the bytes; the
+ * scene rebuilds the colour with its residual from the cut's source
+ * (mn_cut, moby_cut_mix). A corner flagged unr takes the float projection
  * of its view-space point, hx / tvz and hy / tvz, in place of the pinned
  * position; any other corner keeps its float projection as computed.
  * @param p The clip's three input vertices.
@@ -6050,17 +6083,29 @@ static int mnear_tri_visible(const proj_xy* const t[3]) {
     return xhi >= s_view.xlo && xlo <= s_view.xhi && yhi >= 0.0 && ylo <= 2.0 * s_view.ofy;
 }
 
-/** @brief Count one near-clipped face into the census: cut, wholly behind, or screen winding flipped against the pinned winding.
+/** @brief Count one near-clipped face into the census: cut, wholly behind, or screen winding flipped against the pinned winding, and its cut corners.
  * @param moby The moby of the record being walked.
  * @param p The face's input vertices, at their pinned positions.
  * @param q The clip's output vertices.
  * @param n The output count, 0 when the face lies behind the plane.
- * @param clipped Nonzero when a corner was cut. */
-static void mnear_clip(uint32_t moby, const proj_xy* const p[3], const proj_xy* q, int n, int clipped) {
+ * @param clipped Nonzero when a corner was cut.
+ * @param ref The clip's output corners, n of them.
+ * @param col The input vertices' colour words.
+ * @param world Nonzero for a world moby's face (HUD tag 0), which a heavy-fog level fogs. */
+static void mnear_clip(uint32_t moby, const proj_xy* const p[3], const proj_xy* q, int n, int clipped,
+                       const ngte_clip_ref* ref, const uint32_t col[3], int world) {
     mnear_row_t* r = mnear_row(moby);
     if (!r) return;
     if (n < 3) { r->behind++; return; }
     r->cut += clipped != 0;
+    r->fogcut += clipped && world && moby_heavy_fog_target() >= 0;
+    for (int k = 0; k < n; k++) {
+        if (!ref[k].cross) continue;
+        uint32_t rq = 0u;
+        (void)ngte_rgb_mix(col[ref[k].a], 0u, col[ref[k].b], 0u, ref[k].t, &rq);
+        r->xc++;
+        r->xq += rq != 0u;
+    }
     r->drawnvis += mnear_tri_visible(p);
     const double a0 = tri_nclip(p[0]->sx, p[0]->sy, p[1]->sx, p[1]->sy, p[2]->sx, p[2]->sy);
     const double a1 = tri_nclip(q[0].sx, q[0].sy, q[1].sx, q[1].sy, q[2].sx, q[2].sy);
@@ -6128,6 +6173,16 @@ static void mnear_select(uint32_t moby, const proj_xy* const v[4], int fsign, in
     mnear_sel_count(r, v, tm & ~pm, 1);
 }
 
+/** @brief Set one corner of a near-cut part's source from the clip output corner it is.
+ * @param cs The cut source, its source corners set.
+ * @param c The part corner, 0 to 2.
+ * @param r The clip's output corner. */
+static void moby_cut_corner(mn_cut* cs, int c, const ngte_clip_ref* r) {
+    cs->a[c] = r->a;
+    cs->b[c] = r->cross ? r->b : r->a;
+    cs->t[c] = r->cross ? r->t : 0.0;
+}
+
 /** @brief Emit a triangle with a vertex in the GTE divide-overflow regime, clipped in view space at the near plane.
  *
  * The face's shape is the projection of its geometry: the triangle is
@@ -6135,7 +6190,8 @@ static void mnear_select(uint32_t moby, const proj_xy* const v[4], int fsign, in
  * far off screen left to the rasterizer's clip, each output corner built by
  * moby_clip_vertex, and the polygon fanned from corner 0 into
  * emit_wtri_store, each part keeping the face's paint key and texel fog
- * row. A face wholly behind the plane (every tvz below MOBY_NEAR_W) is
+ * row and, when a corner was cut, carrying the triangle as its cut source
+ * (mn_cut). A face wholly behind the plane (every tvz below MOBY_NEAR_W) is
  * dropped and counts into nearbehind. The face test that selected the face
  * read its true facing (face_nclips), the side of its plane the eye is on.
  * A face whose pinned screen box exceeds the GPU's primitive extent
@@ -6153,7 +6209,7 @@ static void emit_wtri_near(mn_emit* E, const mn_tag* g, const proj_xy* const p[3
     if (s_mnear_at) mnear_face(E->moby, p);
     if (moby_pinned_extent(p)) return;
     if (p[0]->tvz < MOBY_NEAR_W && p[1]->tvz < MOBY_NEAR_W && p[2]->tvz < MOBY_NEAR_W) {
-        if (s_mnear_at) mnear_clip(E->moby, p, NULL, 0, 0);
+        if (s_mnear_at) mnear_clip(E->moby, p, NULL, 0, 0, NULL, col, 0);
         E->diag->nearbehind++;
         return;
     }
@@ -6165,18 +6221,22 @@ static void emit_wtri_near(mn_emit* E, const mn_tag* g, const proj_xy* const p[3
     float quv[4][2];
     uint32_t qc[4];
     for (int k = 0; k < n; k++) moby_clip_vertex(p, uv, col, &ref[k], &q[k], quv[k], &qc[k]);
-    if (s_mnear_at) mnear_clip(E->moby, p, q, n, clipped);
+    if (s_mnear_at) mnear_clip(E->moby, p, q, n, clipped, ref, col, E->ui == 0);
     if (n < 3) { E->diag->nearbehind++; return; }
     /* A cut triangle's parts take the near-cut bit on top of the face word,
      * restored after them: the face's other triangles may be uncut. */
     const uint8_t fbits = E->cb_face;
     if (clipped) E->cb_face = (uint8_t)(fbits | OPENPETE_CB_MOBY_NEARCUT);
+    mn_cut cs = { { col[0], col[1], col[2] }, { p[0]->tvz, p[1]->tvz, p[2]->tvz },
+                  { 0.0, 0.0, 0.0 }, { 0, 0, 0 }, { 0, 0, 0 } };
     for (int k = 2; k < n; k++) {
         const proj_xy* const T[3] = { &q[0], &q[k - 1], &q[k] };
         const float tuv[3][2] = { { quv[0][0], quv[0][1] }, { quv[k - 1][0], quv[k - 1][1] },
                                   { quv[k][0], quv[k][1] } };
         const uint32_t tc[3] = { qc[0], qc[k - 1], qc[k] };
-        emit_wtri_store(E, g, T, tuv, tc, m);
+        const ngte_clip_ref* const tr[3] = { &ref[0], &ref[k - 1], &ref[k] };
+        for (int c = 0; c < 3; c++) moby_cut_corner(&cs, c, tr[c]);
+        emit_wtri_store(E, g, T, tuv, tc, m, clipped ? &cs : NULL);
     }
     E->cb_face = fbits;
 }
@@ -6219,7 +6279,7 @@ static void emit_wtri(mn_emit* E, const mn_tag* g, proj_xy* a, proj_xy* b, proj_
     const float uv[3][2] = { { ua, va }, { ub, vb }, { uc, vc } };
     const uint32_t col[3] = { ca, cb, cc };
     if (a->unr || b->unr || c->unr) emit_wtri_near(E, g, p, uv, col, m);
-    else emit_wtri_store(E, g, p, uv, col, m);
+    else emit_wtri_store(E, g, p, uv, col, m, NULL);
 }
 
 /** @brief A projected vertex's signed distance to its record's water plane.
@@ -8560,6 +8620,16 @@ static void walk_record_job(int item, int worker, void* arg) {
     s_pre_rec[item].count  = O->n - start;
 }
 
+/** @brief Copy a merged near-cut part's cut source from its worker's slab to s_gout, or clear its flag when s_gout has no cut array.
+ * @param O The slab.
+ * @param from The part's slab index.
+ * @param to Its s_gout index, its ntri_t already copied. */
+static void walk_merge_cut(const mn_out* O, int from, int to) {
+    mn_cut* gc = mn_out_cut(&s_gout);
+    if (gc) gc[to] = O->cut[from];
+    else s_wtri[to].cut = 0;
+}
+
 /** @brief Append each run's triangles from its worker's slab to s_gout, in run order, truncating at MAX_NTRI.
  *
  * Run order is record order, so the merged stream matches the serial walk's.
@@ -8587,6 +8657,8 @@ static void walk_merge_runs(const mn_run* runs, int n) {
         memcpy(&s_wtri_single[d], &O->single[st], (size_t)c);
         memcpy(&s_wtri_wbk[d],    &O->wbk[st],    (size_t)c * sizeof(int16_t));
         memcpy(&s_wtri_cbits[d],  &O->cbits[st],  (size_t)c);
+        for (int k = 0; k < c; k++)
+            if (O->tri[st + k].cut) walk_merge_cut(O, st + k, d + k);
         s_gout.n = d + c;
     }
 }
@@ -12843,12 +12915,62 @@ static int64_t moby_heavy_fog_target(void) {
     return (int64_t)terrain_heavy_fog_colour();
 }
 
+/** @brief The cut source of walk triangle i, NULL unless it is a part of a near-cut triangle.
+ * @param i Walk triangle index.
+ * @return The source. */
+static const mn_cut* moby_wtri_cut(int i) {
+    return s_wtri[i].cut ? &s_gout.cut[i] : NULL;
+}
+
+/** @brief The colour at a near-cut part's corner: two source corners' colours mixed at the corner's edge parameter, with the residual.
+ * @param cs The cut source.
+ * @param c A colour per source corner, 0x00BBGGRR.
+ * @param k The part corner, 0 to 2.
+ * @param q Receives the residual (openpete_scene_vert.rgbq).
+ * @return The colour's bytes, 0x00BBGGRR. */
+static uint32_t moby_cut_mix(const mn_cut* cs, const uint32_t c[3], int k, uint32_t* q) {
+    return ngte_rgb_mix(c[cs->a[k]] & 0xFFFFFFu, 0u, c[cs->b[k]] & 0xFFFFFFu, 0u, cs->t[k], q);
+}
+
+/** @brief Set a near-cut part's vertex colours and residuals from a colour per source corner, keeping each vertex's alpha byte.
+ * @param t The scene triangle.
+ * @param cs Its cut source.
+ * @param c A colour per source corner, 0x00BBGGRR. */
+static void moby_cut_colour(openpete_scene_tri* t, const mn_cut* cs, const uint32_t c[3]) {
+    for (int k = 0; k < 3; k++)
+        t->v[k].rgba = (t->v[k].rgba & 0xFF000000u) | moby_cut_mix(cs, c, k, &t->v[k].rgbq);
+}
+
+/** @brief Blend each vertex colour of a scene triangle toward a target on the terrain's depth curve (terrain_fog_cue).
+ *
+ * A vertex takes the cue at its own unshifted view-Z; a near-cut part takes
+ * it at its source corners, mixed to its corners (moby_cut_colour), as the
+ * uncut triangle's gouraud interpolation of its corners' cues would give.
+ * @param t The scene triangle, vertex colours set; colours rewritten.
+ * @param w The walk triangle it was built from.
+ * @param cs Its cut source, or NULL.
+ * @param target The colour the cue blends toward, 0x00BBGGRR. */
+static void moby_tri_fog_cue(openpete_scene_tri* t, const ntri_t* w, const mn_cut* cs, uint32_t target) {
+    if (cs) {
+        uint32_t f[3];
+        for (int j = 0; j < 3; j++)
+            f[j] = terrain_fog_cue(cs->rgb[j] & 0xFFFFFFu, target, (double)cs->tvz[j] / 16.0);
+        moby_cut_colour(t, cs, f);
+        return;
+    }
+    for (int k = 0; k < 3; k++) {
+        const uint32_t c = t->v[k].rgba;
+        t->v[k].rgba = (c & 0xFF000000u) |
+            terrain_fog_cue(c & 0xFFFFFFu, target, (double)w->v[k].tvz / 16.0);
+    }
+}
+
 /** @brief Fades one scene triangle of a world moby toward a heavy-fog level's fog colour on the terrain's depth curve.
  *
  * Under extended LOD on a heavy-fog level (terrain_heavy_fog) every world
  * moby triangle (actor and actor-front categories) takes the fog its terrain
- * takes at the same depth. Each vertex colour goes through terrain_fog_cue at
- * its own unshifted view-Z: toward the level's fog colour for an opaque or
+ * takes at the same depth. Each vertex colour goes through terrain_fog_cue
+ * (moby_tri_fog_cue): toward the level's fog colour for an opaque or
  * averaging face, toward black for an additive or subtractive one, whose
  * contribution vanishes in the fog. A textured opaque or averaging face's
  * texel goes toward the modulation-neutral 128 on the terrain's texel ladder
@@ -12856,30 +12978,29 @@ static int64_t moby_heavy_fog_target(void) {
  * the face draws it: per pixel under the per-pixel fog form, stepped per
  * triangle at the ladder row of its mean view-Z under the original form
  * (terrain_fog_step_words; row floor(15 t), the row the terrain ladder
- * takes at that depth in each game). Every other triangle clears the fade
- * words.
+ * takes at that depth in each game). A near-cut part takes the row of its
+ * source triangle, so every part of one cut triangle steps alike. Every
+ * other triangle clears the fade words.
  * @param t The scene triangle, vertex colours and blend set; colours rewritten.
  * @param w The walk triangle it was built from (its unshifted view-Z).
+ * @param cs Its cut source (moby_wtri_cut), or NULL.
  * @param cat The triangle's scene category.
  * @param fog The fog colour, 0x00BBGGRR, or -1 when no fade applies.
  * @param hq Receives the two heavy-fog words the triangle is stored with. */
-static void moby_tri_heavy_fog(openpete_scene_tri* t, const ntri_t* w, int cat, int64_t fog, uint32_t hq[2]) {
+static void moby_tri_heavy_fog(openpete_scene_tri* t, const ntri_t* w, const mn_cut* cs, int cat,
+                               int64_t fog, uint32_t hq[2]) {
     const int world = cat == OPENPETE_SCENE_ACTOR || cat == OPENPETE_SCENE_ACTOR_FRONT;
     hq[0] = hq[1] = 0u;
     if (fog < 0 || !world) return;
     const int vanish = t->blend >= 2;
-    const uint32_t target = vanish ? 0u : (uint32_t)fog;
-    for (int k = 0; k < 3; k++) {
-        const uint32_t c = t->v[k].rgba;
-        t->v[k].rgba = (c & 0xFF000000u) |
-            terrain_fog_cue(c & 0xFFFFFFu, target, (double)w->v[k].tvz / 16.0);
-    }
+    moby_tri_fog_cue(t, w, cs, vanish ? 0u : (uint32_t)fog);
     const int tex_fade = t->textured && !vanish;
     if (tex_fade && openpete_fog_mode() == OPENPETE_FOG_ORIGINAL) {
         float ts = 0.0f, tb = 0.0f;
         int row = 0;
         if (texture_pack_fog_ladder_get(&ts, &tb)) {
-            const double vz = ((double)w->v[0].tvz + w->v[1].tvz + w->v[2].tvz) / 3.0;
+            const double vz = cs ? ((double)cs->tvz[0] + cs->tvz[1] + cs->tvz[2]) / 3.0
+                                 : ((double)w->v[0].tvz + w->v[1].tvz + w->v[2].tvz) / 3.0;
             row = (int)floor(15.0 * (vz * ts + tb));
         }
         terrain_fog_step_words(row, hq);
@@ -12968,6 +13089,8 @@ static int moby_emit_face(const moby_emit_env_t* E, const moby_emit_run_t* R, in
         t->v[k].v    = (float)w->v[k].v;
         t->v[k].rgba = (w->v[k].rgb & 0xFFFFFFu) | moby_tri_alpha(w);
     }
+    const mn_cut* cs = moby_wtri_cut(i);
+    if (cs) moby_cut_colour(t, cs, cs->rgb);
     t->textured = w->textured;
     t->tpage_x  = w->tpage_x; t->tpage_y = w->tpage_y;
     t->clut_x   = w->clut_x;  t->clut_y  = w->clut_y;
@@ -13093,7 +13216,7 @@ static void moby_emit_serial(CPUState* cpu, const moby_emit_env_t* E, moby_rank_
          * game's own to make. */
         openpete_native_scene_set_host_added(R.host_added);
         uint32_t hq[2];
-        moby_tri_heavy_fog(&t, &s_wtri[i], cat, E->fog, hq);
+        moby_tri_heavy_fog(&t, &s_wtri[i], moby_wtri_cut(i), cat, E->fog, hq);
         openpete_native_scene_set_hq_fog(hq[0], hq[1]);
         ts = msp_mark(MSP_E_MAT, ts, MSP_STRIDE);
         openpete_native_scene_add_tri(&t, cat, 0);
@@ -13135,7 +13258,7 @@ static void moby_emit_job(int item, int worker, void* arg) {
         openpete_scene_tri t;
         const int cat = moby_emit_face(J->E, R, i, &shell, &t, &s_mef_flags[i], &s_mef_rank[i]);
         uint32_t hq[2];
-        moby_tri_heavy_fog(&t, &s_wtri[i], cat, J->E->fog, hq);
+        moby_tri_heavy_fog(&t, &s_wtri[i], moby_wtri_cut(i), cat, J->E->fog, hq);
         openpete_native_scene_store_tri(J->base + i, &t, cat, OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], R->slot), hq,
                                         R->host_added, &s_mew[worker].pvz_missing);
     }
