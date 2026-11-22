@@ -543,6 +543,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Native moby face-decode cache: on Spyro 1 artisans, Spyro 2 glimmer and
+    # Spyro 3 sunrise_spring, OPENPETE_FCACHE_CHECK=1 rewrites each faceblock's
+    # last Tiledef in guest RAM mid-level and the cache must serve a decode of
+    # the rewritten bytes, then of the restored ones; each row must check at
+    # least one faceblock (engagement). `ctest -L fcache` or the script
+    # directly. Exit 64 = no binary or disc.
+    add_test(NAME fcache_rewrite
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_fcache_rewrite.sh)
+    set_tests_properties(fcache_rewrite PROPERTIES
+        LABELS "slow;presentation;fcache"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1200
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Hor+ presentation symmetry - boots the headless demo at 4:3, 16:9
     # and 21:9, takes a screenshot at the same frame, and pixel-diffs the
     # central 4:3 region. Asserts that widening the GTE projection does

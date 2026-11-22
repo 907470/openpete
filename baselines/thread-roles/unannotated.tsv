@@ -2813,6 +2813,7 @@ games/common/renderer/moby.c	-	s_fc_ovf_n	static	-
 games/common/renderer/moby.c	-	s_fc_ovf_used	static	-	
 games/common/renderer/moby.c	-	s_fc_tmp	static	-	
 games/common/renderer/moby.c	-	s_fcache	static	-	
+games/common/renderer/moby.c	-	s_fck	static	-	test instrument state beside s_fcache, which it shares the resolve pass with and which carries no form
 games/common/renderer/moby.c	-	s_fp_hit	static	-	
 games/common/renderer/moby.c	-	s_fp_miss	static	-	
 games/common/renderer/moby.c	-	s_fpc	static	-	

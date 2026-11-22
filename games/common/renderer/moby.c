@@ -7080,16 +7080,21 @@ static uint8_t moby_face_fog_mix(const moby_fade_t* fd, const int* fcc) {
  * change per present. Re-parsing every face word through cpu->read_word on
  * every pass (canonical, per-present re-extract, SPEC) would be the dominant
  * cost of extraction, so the walk decodes once per faceblock and iterates the
- * decoded array; keyed by vaddr + bytecount + a 3-word content
- * signature so a level load (same vaddr, new model data) re-decodes. Slot
- * collision = evict + re-decode (never lies). Display-only: reads static
- * model RAM; the per-present half (NCLIP emit tree, colours, env, blend map)
- * stays outside the cache. */
+ * decoded array. The decode is a pure function of the faceblock's bytes, so
+ * the key is those bytes, every one the decoder reads: an entry is served
+ * only while guest RAM still holds the bytes it was decoded from. A level
+ * load that refills the address, and any in-place rewrite of a face record
+ * (a mod repointing a face's Tiledef on a level change), re-decodes. Slot
+ * collision = evict + re-decode (never lies). Display-only: reads model RAM;
+ * the per-present half (NCLIP emit tree, colours, env, blend map) stays
+ * outside the cache. */
 /* One decoded face: renderer/moby_game.h owns the layout, since the game's
  * face decoder fills it. */
 typedef moby_wface_t wface_t;
 typedef struct {
-    uint32_t fb, bytecount, sig1, sig2, sig3;
+    uint32_t fb, bytecount;
+    uint32_t keylen;              /* bytes of key[]: the span [fb, fb + keylen) the decode read */
+    const uint8_t* key;           /* the bytes decoded, in the f[] allocation past the faces */
     int      nfaces;              /* emittable faces in f[] */
     int      raw, sprites, skips; /* walkdiag bookkeeping (raw = total stream faces) */
     uint8_t  align;               /* 0 = align_lo, 1 = align_hi, 2 = desync */
@@ -7101,6 +7106,13 @@ typedef struct {
 static fcache_t s_fcache[FC_SLOTS];
 static long s_fc_hit, s_fc_miss;      /* tier-census counters */
 static wface_t s_fc_tmp[8192];        /* decode scratch, sized to the decoder's face cap */
+
+/* Bytes past the stream's end a desynchronized decode may read. Both
+ * decoders walk while fp + 8 <= fb + 4 + bytecount: the S1 record reads up to
+ * fp + 0x17 (a textured fresh record, games/spyro-1/renderer/moby_game.c),
+ * the S2/S3 record up to fp + 0x13 (moby_game_spyro23.c). A decode that ends
+ * on the stream's end (align 0 or 1) reads nothing past it. */
+#define FC_KEY_TAIL 0x10u
 
 /* ---- resolve generation -------------------------------------------------
  * The record prologue hands out an fcache_t* per record and the walk reads
@@ -7154,16 +7166,48 @@ static fcache_t* fcache_victim(fcache_t* C, fcache_t* C2) {
     return fcache_ovf_take();
 }
 
+/** @brief The key span of a faceblock: its count word and stream, word-rounded, plus FC_KEY_TAIL.
+ * @param bytecount The faceblock's byte count word.
+ * @return The span's length in bytes. */
+static uint32_t fcache_span_len(uint32_t bytecount) {
+    return ((4u + bytecount + 3u) & ~3u) + FC_KEY_TAIL;
+}
+
+/** @brief The bytes [fb, fb + len) as the face decoder reads them.
+ *
+ * Resolved through the sub-tick view (openpete_subtick_host_span), which
+ * serves the bytes cpu->read_word serves.
+ * @param fb The faceblock's PSX address.
+ * @param len The span length.
+ * @return The bytes, or NULL when no single region holds the span. */
+static const uint8_t* fcache_block_bytes(uint32_t fb, uint32_t len) {
+    return (const uint8_t*)openpete_subtick_host_span(fb, len);
+}
+
+/** @brief Whether a cache entry holds the decode of the faceblock as guest RAM holds it now.
+ *
+ * The address and byte count are compared first, then every byte the entry
+ * was decoded from. An entry decoded without a key (its span had no host
+ * span) is never served.
+ * @param C The entry.
+ * @param fb The faceblock's PSX address.
+ * @param bytecount The faceblock's current byte count word.
+ * @return Nonzero when the entry may be served. */
+static int fcache_holds(const fcache_t* C, uint32_t fb, uint32_t bytecount) {
+    if (!C->f || !C->key || C->fb != fb || C->bytecount != bytecount) return 0;
+    const uint8_t* cur = fcache_block_bytes(fb, C->keylen);
+    return cur && memcmp(C->key, cur, C->keylen) == 0;
+}
+
 static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
-                              uint32_t s1, uint32_t s2, uint32_t s3, fcache_t* C);
+                              const uint8_t* key, fcache_t* C);
 
 /** @brief The decoded face array of a faceblock, from the two-way cache or freshly decoded.
  *
- * The key is the faceblock address, its byte count and its next three words (fb
- * + 4, + 8, + 12), which change when the game refills the block. A hash pair of
- * two ways is probed; a hit stamps the entry with the current resolve
- * generation, so the open pass keeps it. A miss decodes into the victim of
- * fcache_victim.
+ * An entry is served while guest RAM holds every byte it was decoded from
+ * (fcache_holds). A hash pair of two ways is probed; a hit stamps the entry
+ * with the current resolve generation, so the open pass keeps it. A miss
+ * decodes into the victim of fcache_victim.
  * @param cpu The guest CPU state, read only.
  * @param fb The faceblock's PSX address.
  * @return The entry, valid to the end of the open resolve pass, or NULL when
@@ -7172,20 +7216,18 @@ static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
 static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
     uint32_t bytecount = cpu->read_word(fb);
     if (bytecount == 0 || bytecount > 0x10000u) return NULL;    /* desynchronized block */
-    uint32_t s1 = cpu->read_word(fb + 4u), s2 = cpu->read_word(fb + 8u), s3 = cpu->read_word(fb + 12u);
     /* 2-way probe: a scene holds ~80+ hot faceblocks, so a 1-way map
      * collides and evicts; the second slot absorbs pairs. */
     uint32_t h = (((fb >> 2) * 2654435761u) >> 14) & (FC_SLOTS - 1);
     fcache_t* C = &s_fcache[h];
-    if (C->f && C->fb == fb && C->bytecount == bytecount
-        && C->sig1 == s1 && C->sig2 == s2 && C->sig3 == s3) { s_fc_hit++; C->gen = s_fc_gen; return C; }
+    if (fcache_holds(C, fb, bytecount)) { s_fc_hit++; C->gen = s_fc_gen; return C; }
     fcache_t* C2 = &s_fcache[h ^ 1u];
-    if (C2->f && C2->fb == fb && C2->bytecount == bytecount
-        && C2->sig1 == s1 && C2->sig2 == s2 && C2->sig3 == s3) { s_fc_hit++; C2->gen = s_fc_gen; return C2; }
+    if (fcache_holds(C2, fb, bytecount)) { s_fc_hit++; C2->gen = s_fc_gen; return C2; }
     s_fc_miss++;
     fcache_t* V = fcache_victim(C, C2);
     if (!V) return NULL;
-    if (!fcache_decode_into(cpu, fb, bytecount, s1, s2, s3, V)) return NULL;
+    const uint8_t* key = fcache_block_bytes(fb, fcache_span_len(bytecount));
+    if (!fcache_decode_into(cpu, fb, bytecount, key, V)) return NULL;
     return V;
 }
 
@@ -7201,29 +7243,35 @@ static uint32_t fcache_col_span(const fcache_t* FC, const fcache_t* FCp) {
 /** @brief Decode one faceblock into cache entry C through the game's face decoder.
  *
  * The stream parse is moby_game.decode_faces into the s_fc_tmp scratch (at
- * most 8192 faces); this shell copies the faces into a malloc'd array, frees
- * C's previous array, and stamps C with the key (address, byte count, three
- * signature words), the walk bookkeeping and the current resolve generation.
- * fcache_get and the render-time patched decode (fpcache_get) share it. On
- * failure C is unchanged.
+ * most 8192 faces); this shell copies the faces and the key bytes into one
+ * malloc'd block, frees C's previous one, and stamps C with the key, the walk
+ * bookkeeping and the current resolve generation. The key is the span the
+ * decode read: the count word and the word-rounded stream, plus FC_KEY_TAIL
+ * when the decode ran past the stream's end (align 2). fcache_get and the
+ * render-time patched decode (fpcache_get) share it. On failure C is
+ * unchanged.
  * @param cpu The guest CPU state, read only.
  * @param fb The faceblock's PSX address.
  * @param bytecount The faceblock's byte count word.
- * @param s1 First signature word (fb + 4).
- * @param s2 Second signature word (fb + 8).
- * @param s3 Third signature word (fb + 12).
+ * @param key The bytes [fb, fb + fcache_span_len(bytecount)) as the lookup
+ *        saw them, before any keyframe patch; NULL stores no key, and the
+ *        entry is then never served (fcache_holds).
  * @param C The entry to fill.
  * @return 1 on success, 0 when the decoder or the allocation fails. */
 static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
-                              uint32_t s1, uint32_t s2, uint32_t s3, fcache_t* C) {
+                              const uint8_t* key, fcache_t* C) {
     moby_face_stats_t st = { 0, 0, 0, 2 };
     int n = moby_game.decode_faces(cpu, fb, bytecount, s_fc_tmp, 8192, &st);
     if (n < 0) return 0;
-    wface_t* arr = (wface_t*)malloc(sizeof(wface_t) * (size_t)(n > 0 ? n : 1));
+    const uint32_t keylen = !key ? 0u : fcache_span_len(bytecount) - (st.align == 2 ? 0u : FC_KEY_TAIL);
+    const size_t fbytes = sizeof(wface_t) * (size_t)(n > 0 ? n : 1);
+    wface_t* arr = (wface_t*)malloc(fbytes + keylen);
     if (!arr) return 0;
     memcpy(arr, s_fc_tmp, sizeof(wface_t) * (size_t)n);
+    if (key) memcpy((uint8_t*)arr + fbytes, key, keylen);
     free(C->f);
-    C->fb = fb; C->bytecount = bytecount; C->sig1 = s1; C->sig2 = s2; C->sig3 = s3;
+    C->fb = fb; C->bytecount = bytecount;
+    C->keylen = keylen; C->key = key ? (const uint8_t*)arr + fbytes : NULL;
     C->nfaces = n; C->raw = st.raw; C->sprites = st.sprites; C->skips = st.skips;
     C->align = (uint8_t)st.align;
     C->gen = s_fc_gen;            /* the pass that decoded it holds it */
@@ -7336,8 +7384,8 @@ static int       s_fpc_next;
 
 /** @brief The face decode of a faceblock with a keyframe's patch list applied, cached per keyframe.
  *
- * The 32-slot table s_fpc is keyed by the faceblock, keyframe A and the
- * unpatched signature words. On a miss the patch words are written into the
+ * The 32-slot table s_fpc is keyed by keyframe A and the unpatched faceblock
+ * bytes (fcache_holds). On a miss the patch words are written into the
  * faceblock in guest RAM (moby_frame_patch_apply), the block is decoded
  * (fcache_decode_into), and the originals are written back in forward order
  * before the call returns. On a sub-tick present the faceblock is first staged
@@ -7361,12 +7409,12 @@ static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
                                    uint32_t frameA, uint32_t list) {
     uint32_t bytecount = cpu->read_word(fb);
     if (bytecount == 0 || bytecount > 0x10000u) return NULL;    /* desync, as fcache_get */
-    /* key sigs are the UNPATCHED words (lookup always happens pre-patch) */
-    uint32_t s1 = cpu->read_word(fb + 4u), s2 = cpu->read_word(fb + 8u), s3 = cpu->read_word(fb + 12u);
+    /* The key is the UNPATCHED bytes: the lookup always happens pre-patch. */
     for (int i = 0; i < FP_SLOTS; i++) {
         fcache_t* C = &s_fpc[i];
-        if (C->f && C->fb == fb && s_fpc_frame[i] == frameA && C->bytecount == bytecount
-            && C->sig1 == s1 && C->sig2 == s2 && C->sig3 == s3) { s_fp_hit++; C->gen = s_fc_gen; return C; }
+        if (s_fpc_frame[i] == frameA && fcache_holds(C, fb, bytecount)) {
+            s_fp_hit++; C->gen = s_fc_gen; return C;
+        }
     }
     s_fp_miss++;
     /* The apply writes replacement words into the faceblock and restores them
@@ -7378,6 +7426,11 @@ static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
     if (openpete_subtick_view_active()
         && !moby_frame_patch_stage(cpu, fb, bytecount, header, list))
         return fcache_get(cpu, fb);
+    /* The patch may rewrite the decoded bytes, so the key is copied first. */
+    const uint32_t keyspan = fcache_span_len(bytecount);
+    const uint8_t* cur = fcache_block_bytes(fb, keyspan);
+    uint8_t* key = cur ? (uint8_t*)malloc(keyspan) : NULL;
+    if (key) memcpy(key, cur, keyspan);
     static fpsave_t sv[FPATCH_MAX];
     int n = moby_frame_patch_apply(cpu, header, list, sv);
     if (n <= 0) return fcache_get(cpu, fb);         /* no/oversized list: unpatched decode */
@@ -7391,11 +7444,166 @@ static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
     }
     fcache_t* C = (slot >= 0) ? &s_fpc[slot] : fcache_ovf_take();
     if (slot >= 0) s_fpc_next = (slot + 1) & (FP_SLOTS - 1);
-    int ok = C && fcache_decode_into(cpu, fb, bytecount, s1, s2, s3, C);
+    int ok = C && fcache_decode_into(cpu, fb, bytecount, key, C);
+    free(key);
     for (int k = 0; k < n; k++) cpu->write_word(sv[k].addr, sv[k].val);   /* forward restore (.s order) */
     if (!ok) return NULL;
     if (slot >= 0) s_fpc_frame[slot] = frameA;
     return C;
+}
+
+/* ---- face-cache rewrite check (OPENPETE_FCACHE_CHECK=1) ------------------
+ * Test instrument for the Tier-1 cache's key. Once per faceblock, on a
+ * canonical pass, the Tiledef of the stream's last record (its three last
+ * words, when that record is textured) is rewritten in guest RAM, the cache is
+ * asked for the faceblock, and its faces are compared with an uncached decode
+ * of the same bytes; the words are restored and the comparison repeats against
+ * the original decode. The rewrite and restore are synchronous inside the
+ * resolve pass, as the keyframe patch transient is, so no game code observes
+ * them. One line per faceblock:
+ *   [fcache-check] vbl=<n> fb=<addr> faces=<n> rewritten=ok|STALE restored=ok|STALE
+ *                  checked=<n> ok=<n> fail=<n> skip=<n>
+ * A faceblock whose last decoded face is untextured, or whose rewrite moves
+ * anything besides that face's UV, CLUT and tpage, is skipped. */
+#define FCK_SEEN_MAX 4096
+/* The check's whole state: the latched switch, the verdict counters, the
+ * faceblocks already checked and the two decode buffers. */
+static struct {
+    int      on;                         /* -1 until latched, then 0 or 1 */
+    long     checked, ok, fail, skip;
+    int      nseen;
+    uint32_t seen[FCK_SEEN_MAX];
+    wface_t* orig;                       /* the unmodified decode, 8192 faces */
+    wface_t* flip;                       /* the decode with the rewrite applied */
+} s_fck = { -1, 0, 0, 0, 0, 0, { 0 }, NULL, NULL };
+
+/** @brief Whether OPENPETE_FCACHE_CHECK is set (latched on first use).
+ * @return Nonzero when the rewrite check runs. */
+static int fcache_check_on(void) {
+    if (s_fck.on < 0) { const char* e = getenv("OPENPETE_FCACHE_CHECK"); s_fck.on = (e && *e && *e != '0') ? 1 : 0; }
+    return s_fck.on;
+}
+
+/** @brief Record a faceblock as checked.
+ * @param fb The faceblock's PSX address.
+ * @return 1 on its first visit, 0 when it was checked before or the set is full. */
+static int fck_first_visit(uint32_t fb) {
+    for (int i = 0; i < s_fck.nseen; i++) if (s_fck.seen[i] == fb) return 0;
+    if (s_fck.nseen >= FCK_SEEN_MAX) return 0;
+    s_fck.seen[s_fck.nseen++] = fb;
+    return 1;
+}
+
+/** @brief Flip bits of the three words before a stream end in guest RAM, saving the originals.
+ *
+ * td0 and td1 take 0x00010101 (u, v, and bit 0 of the CLUT or tpage half);
+ * td2 takes 0x01010101 (u2, v2, u3, v3).
+ * @param cpu The guest CPU state; the words are written.
+ * @param e The stream end; the words are e - 12, e - 8 and e - 4.
+ * @param sv Receives the three original words. */
+static void fck_flip(CPUState* cpu, uint32_t e, uint32_t sv[3]) {
+    for (uint32_t k = 0; k < 3u; k++) {
+        const uint32_t mask = (k == 2u) ? 0x01010101u : 0x00010101u;
+        sv[k] = cpu->read_word(e - 12u + 4u * k);
+        cpu->write_word(e - 12u + 4u * k, sv[k] ^ mask);
+    }
+}
+
+/** @brief Write back the three words fck_flip saved.
+ * @param cpu The guest CPU state; the words are written.
+ * @param e The stream end fck_flip was given.
+ * @param sv The original words. */
+static void fck_restore(CPUState* cpu, uint32_t e, const uint32_t sv[3]) {
+    for (uint32_t k = 0; k < 3u; k++) cpu->write_word(e - 12u + 4u * k, sv[k]);
+}
+
+/** @brief Uncached decode of a faceblock into a zeroed array.
+ * @param cpu The guest CPU state, read only.
+ * @param fb The faceblock's PSX address.
+ * @param bc Its byte count word.
+ * @param out Receives up to 8192 faces.
+ * @return The face count, negative on a decoder failure. */
+static int fck_decode(CPUState* cpu, uint32_t fb, uint32_t bc, wface_t* out) {
+    memset(out, 0, sizeof(wface_t) * 8192u);
+    moby_face_stats_t st = { 0, 0, 0, 2 };
+    return moby_game.decode_faces(cpu, fb, bc, out, 8192, &st);
+}
+
+/** @brief Whether a flipped decode differs from the original only in the last face's UV, CLUT and tpage.
+ * @param a The original decode.
+ * @param b The decode with the flip applied.
+ * @param n The original face count.
+ * @param nb The flipped face count.
+ * @return Nonzero when the flip reached exactly the last face's texture fields. */
+static int fck_engaged(const wface_t* a, const wface_t* b, int n, int nb) {
+    if (n < 1 || nb != n || !a[n - 1].textured) return 0;
+    if (memcmp(a, b, sizeof(wface_t) * (size_t)(n - 1)) != 0) return 0;
+    const wface_t* x = &a[n - 1];
+    const wface_t* y = &b[n - 1];
+    return y->u[0] == (uint8_t)(x->u[0] ^ 1u) && y->u[2] == (uint8_t)(x->u[2] ^ 1u)
+        && y->clx != x->clx && y->tpx != x->tpx;
+}
+
+/** @brief The stream end whose last three words are the last face's Tiledef, found by decoding each candidate.
+ *
+ * The candidates are fb + 4 + bytecount and fb + bytecount (the S1 decoder's
+ * two end alignments).
+ * @param cpu The guest CPU state; each candidate is flipped, decoded and restored.
+ * @param fb The faceblock's PSX address.
+ * @param bc Its byte count word.
+ * @param orig The original decode.
+ * @param n Its face count.
+ * @param flip Receives the decode with the accepted candidate flipped.
+ * @return The stream end, or 0 when no candidate engages. */
+static uint32_t fck_find_end(CPUState* cpu, uint32_t fb, uint32_t bc,
+                             const wface_t* orig, int n, wface_t* flip) {
+    const uint32_t cand[2] = { fb + 4u + bc, fb + bc };
+    for (int i = 0; i < 2; i++) {
+        uint32_t e = cand[i] & ~3u, sv[3];
+        if (e < fb + 16u) continue;
+        fck_flip(cpu, e, sv);
+        int nb = fck_decode(cpu, fb, bc, flip);
+        fck_restore(cpu, e, sv);
+        if (fck_engaged(orig, flip, n, nb)) return e;
+    }
+    return 0;
+}
+
+/** @brief Whether a cache entry's faces equal a reference decode.
+ * @param C The entry, or NULL.
+ * @param ref The reference faces.
+ * @param n The reference count.
+ * @return Nonzero when they match face for face. */
+static int fck_same(const fcache_t* C, const wface_t* ref, int n) {
+    return C && C->nfaces == n && memcmp(C->f, ref, sizeof(wface_t) * (size_t)n) == 0;
+}
+
+/** @brief Rewrite one faceblock's last Tiledef in place and check that fcache_get follows it, then restore it.
+ *
+ * Runs once per faceblock under OPENPETE_FCACHE_CHECK=1, never while a
+ * sub-tick view is open (its stores do not reach guest RAM).
+ * @param cpu The guest CPU state; three words are rewritten and restored.
+ * @param fb The faceblock's PSX address. */
+static void fcache_rewrite_check(CPUState* cpu, uint32_t fb) {
+    if (openpete_subtick_view_active() || !fck_first_visit(fb)) return;
+    if (!s_fck.orig) s_fck.orig = (wface_t*)malloc(sizeof(wface_t) * 8192u);
+    if (!s_fck.flip) s_fck.flip = (wface_t*)malloc(sizeof(wface_t) * 8192u);
+    if (!s_fck.orig || !s_fck.flip) return;
+    const uint32_t bc = cpu->read_word(fb);
+    const int n = fck_decode(cpu, fb, bc, s_fck.orig);
+    const uint32_t e = fck_find_end(cpu, fb, bc, s_fck.orig, n, s_fck.flip);
+    if (!e) { s_fck.skip++; return; }
+    uint32_t sv[3];
+    fck_flip(cpu, e, sv);
+    const int ok1 = fck_same(fcache_get(cpu, fb), s_fck.flip, n);
+    fck_restore(cpu, e, sv);
+    const int ok2 = fck_same(fcache_get(cpu, fb), s_fck.orig, n);
+    s_fck.checked++;
+    if (ok1 && ok2) s_fck.ok++; else s_fck.fail++;
+    fprintf(stderr, "[fcache-check] vbl=%u fb=%08X faces=%d rewritten=%s restored=%s "
+            "checked=%ld ok=%ld fail=%ld skip=%ld\n",
+            openpete_frame, fb, n, ok1 ? "ok" : "STALE", ok2 ? "ok" : "STALE",
+            s_fck.checked, s_fck.ok, s_fck.fail, s_fck.skip);
 }
 
 /** @brief The face decode for one (faceblock, header, keyframe) triple.
@@ -7419,7 +7627,9 @@ static const fcache_t* moby_faces_for(CPUState* cpu, uint32_t rec, uint32_t mode
         uint32_t list = moby_game.frame_patch_list(cpu, rec, model, frameA);
         if (list >= 0x80000000u) return fpcache_get(cpu, fb, header, frameA, list);
     }
-    return fcache_get(cpu, fb);
+    const fcache_t* FC = fcache_get(cpu, fb);
+    if (FC && fcache_check_on()) fcache_rewrite_check(cpu, fb);
+    return FC;
 }
 /** @brief The model whose own table resolves the patch list of a keyframe no cull record names.
  *
