@@ -8854,6 +8854,11 @@ uint64_t openpete_native_render_acquire_sheds(void)
     return s_nr.dev ? rhi_acquire_sheds(s_nr.dev) : 0;
 }
 
+void openpete_native_render_take_sheds(uint64_t *fence, uint64_t *acquire)
+{
+    rhi_take_sheds(s_nr.dev, fence, acquire);
+}
+
 uint64_t openpete_native_render_acquire_timeouts(void)
 {
     return s_nr.dev ? rhi_acquire_timeouts(s_nr.dev) : 0;

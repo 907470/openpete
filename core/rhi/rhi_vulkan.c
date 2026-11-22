@@ -672,6 +672,12 @@ struct rhi_device {
      * cannot tell them apart cannot tell a display running at half rate from
      * one running at full rate. */
     uint64_t acquire_sheds;
+    /* fence_sheds and acquire_sheds at the last rhi_take_sheds. */
+    uint64_t fence_sheds_taken, acquire_sheds_taken;
+    /* OPENPETE_ACQUIRE_FAULT window and period in ns (acquire_fault); 0 =
+     * off. fault_read: the variable has been parsed. */
+    Uint64   fault_off_ns, fault_period_ns;
+    bool     fault_read;
     /* Acquire budget in ns, derived from the display refresh at swapchain
      * creation; the derivation is documented at RHI_ACQUIRE_TIMEOUT_NS. */
     Uint64   acquire_budget_ns;
@@ -4733,6 +4739,16 @@ uint64_t rhi_acquire_sheds(const rhi_device *dev)
     return dev ? dev->acquire_sheds : 0;
 }
 
+void rhi_take_sheds(rhi_device *dev, uint64_t *fence, uint64_t *acquire)
+{
+    *fence = *acquire = 0;
+    if (!dev) return;
+    *fence = dev->fence_sheds - dev->fence_sheds_taken;
+    *acquire = dev->acquire_sheds - dev->acquire_sheds_taken;
+    dev->fence_sheds_taken = dev->fence_sheds;
+    dev->acquire_sheds_taken = dev->acquire_sheds;
+}
+
 uint64_t rhi_acquire_timeouts(const rhi_device *dev)
 {
     return dev ? dev->acquire_timeouts : 0;
@@ -4854,6 +4870,37 @@ bool rhi_needs_recreate(const rhi_device *dev)
     return dev && dev->needs_recreate;
 }
 
+/** @brief Fault injection: refuse an acquire as a display that returns images late does, under OPENPETE_ACQUIRE_FAULT.
+ *
+ * OPENPETE_ACQUIRE_FAULT=OFF,PERIOD (harness, milliseconds): in the first
+ * OFF ms of every PERIOD ms of SDL_GetTicksNS, an acquire blocks until the
+ * window ends or the budget runs out, whichever is first, and reports
+ * VK_TIMEOUT without calling vkAcquireNextImageKHR, so no semaphore is
+ * signalled. Read once; unset, malformed or OFF 0 refuses nothing.
+ * @param dev Device whose acquire is tested; holds the parsed window.
+ * @param budget The acquire's budget in nanoseconds.
+ * @return 1 when this acquire is refused, else 0. */
+static int acquire_fault(rhi_device *dev, Uint64 budget)
+{
+    if (!dev->fault_read) {
+        dev->fault_read = true;
+        const char *e = getenv("OPENPETE_ACQUIRE_FAULT");
+        unsigned off = 0, period = 0;
+        if (e && sscanf(e, "%u,%u", &off, &period) == 2 && off > 0 && period > off) {
+            dev->fault_off_ns = (Uint64)off * 1000000ull;
+            dev->fault_period_ns = (Uint64)period * 1000000ull;
+        }
+    }
+    if (!dev->fault_off_ns) return 0;
+    const Uint64 now = SDL_GetTicksNS(); /* clock-guard: wall */ /* fault window */
+    const Uint64 phase = now % dev->fault_period_ns;
+    if (phase >= dev->fault_off_ns) return 0;
+    Uint64 wait = dev->fault_off_ns - phase;
+    if (wait > budget) wait = budget;
+    SDL_DelayNS(wait);
+    return 1;
+}
+
 /** @brief Acquire a swapchain image signalling `sem`, then wait for the submission that last used that image.
  *
  * The acquire waits up to dev->acquire_budget_ns (RHI_ACQUIRE_TIMEOUT_NS when
@@ -4878,7 +4925,8 @@ static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
         const Uint64 budget = dev->capture_mode ? 0
                             : dev->acquire_budget_ns ? dev->acquire_budget_ns
                             : RHI_ACQUIRE_TIMEOUT_NS;
-        VkResult acq = vkAcquireNextImageKHR(dev->device, dev->swapchain, budget,
+        VkResult acq = acquire_fault(dev, budget) ? VK_TIMEOUT
+                     : vkAcquireNextImageKHR(dev->device, dev->swapchain, budget,
                                              sem,
                                              VK_NULL_HANDLE, &dev->image_index);
         rhi_note_stall_phase("acquire", RHI_BLOCK_ACQUIRE, acq_t0);

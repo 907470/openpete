@@ -998,30 +998,45 @@ static void present_detail(uint8_t kind, int64_t done_ns, uint32_t seq, int pair
     pace_emit(&r);
 }
 
+/** @brief Write one SHED record per fence or acquire shed taken.
+ *
+ * A present attempt the swapchain refused is a shed, not a present. Three
+ * refusal paths exist (fence, acquire budget, acquire back-off); every one
+ * is reported, or the display rate reads as full while the user watches
+ * half of it.
+ * @param kind Scene kind the SHED records carry.
+ * @param nf Fence sheds taken.
+ * @param na Acquire sheds taken.
+ * @param blk RHI block times, indexed by RHI_BLOCK_*. */
+static void pace_write_sheds(uint8_t kind, uint64_t nf, uint64_t na, const int64_t *blk)
+{
+    for (uint64_t i = 0; i < nf; i++)
+        openpete_pace_shed(kind, PACE_SHED_SLOT_BUSY, blk[RHI_BLOCK_FENCE], 0);
+    for (uint64_t i = 0; i < na; i++)
+        openpete_pace_shed(kind, PACE_SHED_NO_IMAGE, blk[RHI_BLOCK_ACQUIRE], 0);
+}
+
+/* Documented at the declaration in openpete_pace_log.h. */
+int openpete_pace_record_sheds(uint8_t kind)
+{
+    uint64_t nf = 0, na = 0;
+    openpete_native_render_take_sheds(&nf, &na);
+    if (!nf && !na) return 0;
+    int64_t blk[RHI_BLOCK_PHASE_COUNT] = {0};
+    rhi_take_block_times(blk, RHI_BLOCK_PHASE_COUNT);
+    pace_write_sheds(kind, nf, na, blk);
+    return 1;
+}
+
 /* Refusals since the last call become SHED records; see openpete_pace_log.h. */
 void openpete_pace_record_present(uint8_t kind, double alpha, int paired)
 {
     int64_t blk[RHI_BLOCK_PHASE_COUNT] = {0};
     rhi_take_block_times(blk, RHI_BLOCK_PHASE_COUNT);
     const int64_t now_ns = op_now();
-    /* A present ATTEMPT that the swapchain refused is a shed, not a present.
-     * Three refusal paths exist (fence, acquire budget, acquire back-off);
-     * every one is reported, or the display rate reads as full while the
-     * user watches half of it. */
-    static uint64_t s_prev_fence_sheds, s_prev_acq_sheds;
-    const uint64_t fence_sheds = openpete_native_render_fence_sheds();
-    const uint64_t acq_sheds   = openpete_native_render_acquire_sheds();
-    if (fence_sheds != s_prev_fence_sheds || acq_sheds != s_prev_acq_sheds) {
-        const uint64_t nf = fence_sheds - s_prev_fence_sheds;
-        const uint64_t na = acq_sheds - s_prev_acq_sheds;
-        s_prev_fence_sheds = fence_sheds;
-        s_prev_acq_sheds   = acq_sheds;
-        for (uint64_t i = 0; i < nf; i++)
-            openpete_pace_shed(kind, PACE_SHED_SLOT_BUSY, blk[RHI_BLOCK_FENCE], 0);
-        for (uint64_t i = 0; i < na; i++)
-            openpete_pace_shed(kind, PACE_SHED_NO_IMAGE, blk[RHI_BLOCK_ACQUIRE], 0);
-        return;
-    }
+    uint64_t nf = 0, na = 0;
+    openpete_native_render_take_sheds(&nf, &na);
+    if (nf || na) { pace_write_sheds(kind, nf, na, blk); return; }
     const uint32_t seq = present_record(kind, now_ns, blk[RHI_BLOCK_FENCE], blk[RHI_BLOCK_ACQUIRE],
                                         blk[RHI_BLOCK_PRESENT], blk[RHI_BLOCK_RECREATE],
                                         blk[RHI_BLOCK_IMAGE_FENCE], (int64_t)(alpha * 1e6), paired);

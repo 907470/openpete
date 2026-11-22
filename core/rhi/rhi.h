@@ -580,6 +580,14 @@ uint64_t rhi_fence_sheds(const rhi_device *dev);
  * @param dev Device to query; NULL returns 0.
  * @return The running count. */
 uint64_t rhi_acquire_sheds(const rhi_device *dev);
+/** @brief Return the fence and acquire sheds counted since the previous call, and mark them taken.
+ *
+ * The pace ledger's drain: it writes one SHED record per shed taken. The
+ * monotonic counts rhi_fence_sheds and rhi_acquire_sheds are unchanged.
+ * @param dev Device, or NULL, which yields 0 for both.
+ * @param fence Receives the fence sheds counted since the previous call.
+ * @param acquire Receives the acquire sheds counted since the previous call. */
+void     rhi_take_sheds(rhi_device *dev, uint64_t *fence, uint64_t *acquire);
 /** @brief Return the number of swapchain acquires that expired their time budget.
  *
  * @param dev Device to query; NULL returns 0.

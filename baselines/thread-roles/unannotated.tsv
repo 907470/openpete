@@ -174,8 +174,6 @@ core/diag/pace_log.c	openpete_pace_inject_present	s_calls	local	-
 core/diag/pace_log.c	openpete_pace_inject_present	s_init	local	-	
 core/diag/pace_log.c	openpete_pace_inject_present	s_us	local	-	
 core/diag/pace_log.c	openpete_pace_inject_present	s_vbl	local	-	owed: declared with no form and no row before the new-global refusal
-core/diag/pace_log.c	openpete_pace_record_present	s_prev_acq_sheds	local	-	
-core/diag/pace_log.c	openpete_pace_record_present	s_prev_fence_sheds	local	-	
 core/diag/perf_stats.c	-	s_level_cached	static	-	
 core/diag/perf_stats.c	-	s_line_n	static	-	
 core/diag/perf_stats.c	-	s_lines	static	-	
@@ -2140,7 +2138,6 @@ core/runtime/present_thread.c	-	s_stage_next	static	-
 core/runtime/present_thread.c	-	s_staged	static	-	
 core/runtime/present_thread.c	compose_guard_ns	g	local	once	= -1, one filler, first reference tests it
 core/runtime/present_thread.c	openpete_present_thread_lattice_enabled	on	local	once	= -1, one filler, first reference tests it
-core/runtime/present_thread.c	present_thread_main	staged_on	local	-	
 core/runtime/present_thread.c	pt_dbg	on	local	once	= -1, one filler, first reference tests it
 core/runtime/present_thread.c	pt_fault_store	on	local	once	= -1, one filler, first reference tests it
 core/runtime/present_thread.c	pt_stall	ns	local	once	= -1, one filler, first reference tests it

@@ -94,6 +94,15 @@ static struct {
     SDL_AtomicInt rewarm;     /* renders left in which a cost below an average replaces it (openpete_present_thread_rewarm) */
     unsigned  render_refused; /* the render frame could not begin (rebuild pending, fence bound) */
     unsigned  discarded;      /* staged frames never presented (deactivated, stages rebuilt) */
+    int       acq_first;      /* acquire before rendering: set by a refused present step */
+    int       acq_ok_run;     /* consecutive presents made in acquire-first order */
+    int       pre_held;       /* an image acquired ahead of the next render is held */
+    int       last_kind;      /* kind of the last scene rendered, for a shed with no scene */
+    int       staged_on;      /* render into stage images ahead of the instant (OPENPETE_PT_STAGED) */
+    int       acq_first_ok;   /* a refused present may switch to acquire-first (OPENPETE_PT_ACQ_FIRST) */
+    unsigned  acq_first_entries;  /* switches from render-first to acquire-first order */
+    unsigned  acq_first_renders;  /* renders made on an image acquired before them */
+    unsigned  acq_first_refused;  /* acquires refused before a render: renders not made */
     int       flip_pending;   /* a present is queued whose flip has not been observed */
     int       flip_holdoff;   /* presents left to make without a flip wait, after a timeout */
     unsigned  flips;          /* flips observed (present_wait returned at one) */
@@ -117,6 +126,11 @@ static int s_enabled = -1;
  * the next frame ahead. At 0.9 the present returns in ~20 us and a 1.5 ms
  * render still finishes 0.6 ms before the following instant. */
 enum { PT_COMPOSE_GUARD_NS = 900000, PT_MIN_LEAD_NS = 800000, PT_FLIP_HOLDOFF = 3 };
+
+/* Presents the thread makes in acquire-first order after a refused present
+ * step before it returns to render-first order; any refusal in between
+ * restarts the count. */
+enum { PT_ACQ_FIRST_EXIT = 8 };
 
 /** @brief Report whether OPENPETE_PT_DBG enables the present thread's timing trace.
  *
@@ -529,6 +543,7 @@ static void pt_begin_activation(void)
     lattice_reset();
     s_pt.flip_pending = 0; s_pt.flip_holdoff = 0;
     if (s_staged.valid) { s_staged.valid = 0; s_pt.discarded++; }
+    s_pt.pre_held = 0;   /* the deactivation released any held image */
     openpete_native_display_claim();
 }
 
@@ -560,6 +575,297 @@ static void pt_cost_fold(_Atomic op_time_t *ema, op_time_t c, int render) {
 /* Documented at the declaration in openpete_present_thread.h. */
 void openpete_present_thread_rewarm(int renders) { SDL_SetAtomicInt(&s_pt.rewarm, renders > 0 ? renders : 0); }
 
+/* One step of the present thread's loop; pt_next_step_locked chooses it.
+ * Render-first order runs RENDER (which also takes the image) then
+ * PRESENT; acquire-first order runs ACQUIRE, RENDER, PRESENT. */
+enum pt_step { PT_STEP_IDLE, PT_STEP_ACQUIRE, PT_STEP_RENDER, PT_STEP_PRESENT };
+
+/** @brief Mark the thread busy and release the mutex before a call that touches the renderer or the swapchain.
+ *
+ * A deactivation waits for busy == 0 before the sim thread presents on the
+ * same swapchain and queue, which are externally synchronised. Called with
+ * the mutex held; returns with it released. */
+static void pt_busy_enter_locked(void)
+{
+    s_pt.busy = 1;
+    SDL_UnlockMutex(s_pt.mx);
+}
+
+/** @brief Retake the mutex, clear busy and wake a deactivation waiting for it.
+ *
+ * Called with the mutex released; returns with it held. */
+static void pt_busy_leave(void)
+{
+    SDL_LockMutex(s_pt.mx);
+    s_pt.busy = 0;
+    SDL_SignalCondition(s_pt.idle_cv);
+}
+
+/** @brief Count one present that went out and arm the flip wait unless a holdoff remains; the mutex is held.
+ * @param kind Scene kind of the present. */
+static void pt_count_present_locked(int kind)
+{
+    s_pt.presents++;
+    s_pt.presents_inter += kind == OP_PACE_INTERMEDIATE;
+    if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--;
+    else s_pt.flip_pending = 1;
+}
+
+/** @brief Choose the loop's next step from the staged frame, the scene ring and the acquire order; the mutex is held.
+ *
+ * A staged frame is presented first. With nothing pending the thread idles.
+ * In acquire-first order (s_pt.acq_first, staged renders only) the image is
+ * taken before the scene is picked: a refused acquire then costs no render,
+ * and the pick that follows takes the scene nearest the present that can
+ * now go out. Render-first order is the default because under FIFO the
+ * acquire blocks until a vblank frees an image, and rendering first keeps
+ * the render inside that wait.
+ * @return The step to run. */
+static enum pt_step pt_next_step_locked(void)
+{
+    if (s_staged.valid) return PT_STEP_PRESENT;
+    if (!openpete_native_scene_next_target()) return PT_STEP_IDLE;
+    if (s_pt.acq_first && !s_pt.pre_held && s_pt.staged_on && openpete_native_stage_count() > 0)
+        return PT_STEP_ACQUIRE;
+    return PT_STEP_RENDER;
+}
+
+/** @brief Idle step: nothing is pending; the mutex is held.
+ *
+ * The flip of the last present is still worth observing (it keeps the
+ * lattice current); otherwise sleep until a publish kicks the thread.
+ * Bounded so a lost kick cannot park the display for good.
+ * @param now The loop's clock reading. */
+static void pt_step_idle_locked(op_time_t now)
+{
+    if (s_pt.flip_pending) wait_flip_locked(now + 4000000);
+    else SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, 4);
+}
+
+/** @brief Acquire step: take the swapchain image before rendering, in acquire-first order; the mutex is held and released around the acquire.
+ *
+ * A refusal makes no render, so no finished render is discarded. It drains
+ * the RHI shed counters into SHED records under the kind of the last scene
+ * rendered, so the next present's record is a PRESENT. A refusal that
+ * returned in under 1 ms (a pending rebuild, a settling resize, a
+ * minimized window) waits on the kick condition up to 4 ms, so the thread
+ * does not spin. */
+static void pt_step_acquire_locked(void)
+{
+    pt_busy_enter_locked();
+    const op_time_t t0 = op_now();
+    const int ok = openpete_native_present_stage_acquire();
+    const op_time_t dt = op_now() - t0;
+    if (!ok) openpete_pace_record_sheds((uint8_t)s_pt.last_kind);
+    pt_busy_leave();
+    if (ok) { s_pt.pre_held = 1; return; }
+    s_pt.acq_first_refused++;
+    if (dt < 1000000) SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, 4);
+}
+
+/** @brief Render a picked ring slot into a stage image, or unstaged at its instant straight to the swapchain; the mutex is released.
+ * @param slot_idx Ring slot the pick returned.
+ * @param stage Stage image, or -1 for the unstaged path.
+ * @param kind Scene kind, for the profiler flag.
+ * @param at The unstaged path's compose instant; unused when staged.
+ * @param c0 The render's start, the staged path's capture instant for --record.
+ * @return 1 when the render went out, else 0. */
+static int pt_render_slot(int slot_idx, int stage, int kind, op_time_t at, op_time_t c0)
+{
+    const uint32_t pflags = kind == OP_PACE_INTERMEDIATE ? OP_PROF_F_INTERMEDIATE : 0u;
+    if (stage >= 0) {
+        /* One scene's render: the profiler's root region "render". */
+        OP_PROF_FLAGS_SCOPE("render", pflags);
+        return openpete_native_render_scene_to_stage(slot_idx, stage, (uint64_t)(c0 / 1000));
+    }
+    /* Unstaged: wait for the instant here, then render and present in one. */
+    if (op_now() < at) op_sleep_until(at);
+    OP_PROF_FLAGS_SCOPE("render", pflags);
+    return openpete_native_render_scene(slot_idx, (uint64_t)(op_now() / 1000));
+}
+
+/** @brief Take the swapchain image for a staged render and record the staged frame; the mutex is held and released around the acquire.
+ *
+ * An image the display let go of at the last vblank is not available until
+ * the driver has processed the release, and a present on it blocks until
+ * then (1.3-1.7 ms, measured); held here, it is ready by the instant. In
+ * acquire-first order the image is held already and the call returns at
+ * once. A refusal drains its shed now: the present step retries the
+ * acquire, and a present that then goes out is recorded as a PRESENT
+ * rather than consumed by this shed.
+ * @param stage Stage image the render filled.
+ * @param gen Stage generation the render was made under.
+ * @param target Present instant of the scene.
+ * @param alpha Sub-tick alpha of the scene.
+ * @param paired Paired flag of the scene.
+ * @param kind Scene kind. */
+static void pt_stage_hold_locked(int stage, uint32_t gen, op_time_t target, double alpha, int paired, int kind)
+{
+    s_pt.acq_first_renders += s_pt.pre_held;
+    s_pt.pre_held = 0;
+    pt_busy_enter_locked();
+    if (!openpete_native_present_stage_acquire()) openpete_pace_record_sheds((uint8_t)kind);
+    pt_busy_leave();
+    s_staged.valid = 1; s_staged.stage = stage; s_staged.gen = gen;
+    s_staged.target = target; s_staged.alpha = alpha; s_staged.paired = paired; s_staged.kind = kind;
+}
+
+/** @brief Render step: pick the scene for the next present instant and render it ahead, while the display still shows the last one; the mutex is held and released around the render.
+ *
+ * The render (0.3 ms on a light scene, up to 1.5 ms on a heavy vista) is
+ * then off the path between the compose instant and the vblank; what
+ * remains there is an acquire and a blit. The pick is made against the
+ * first vblank whose present instant (a guard after the vblank before it) a
+ * render started now can meet, else against now: the animation moment
+ * nearest the flip. Picking by the earliest target would, once behind,
+ * render every stale scene in turn and never catch up; this retires the
+ * older ones instead.
+ * @param now The loop's clock reading.
+ * @param slot The display slot in nanoseconds, 0 when unknown. */
+static void pt_step_render_locked(op_time_t now, double slot)
+{
+    const op_time_t pick_at = (s_lat.locked && slot > 0.0)
+        ? lattice_ceil_locked(now + pt_ema(&s_pt.render_ema) + 100000
+                              + (op_time_t)(s_lat.period + 0.5) - compose_guard_ns())
+        : now;
+    const int slot_idx = openpete_native_scene_pick(pick_at);
+    if (slot_idx < 0) return;
+    op_time_t t_ns = 0; double alpha = 0.0; int paired = 0, kind = OP_PACE_INTERMEDIATE;
+    openpete_native_scene_slot_info(slot_idx, &t_ns, &alpha, &paired, &kind);
+    const int nstages = s_pt.staged_on ? openpete_native_stage_count() : 0;
+    const int stage = nstages > 0 ? (s_stage_next++ % nstages) : -1;
+    const op_time_t at1 = stage < 0 ? compose_at_locked(t_ns, slot) : 0;
+    if (pt_dbg() && s_dbg_n < PT_DBG_MAX) {
+        s_dbg_n++;
+        fprintf(stderr, "[pt] render target=%.0f now=%.0f stage=%d\n", dbg_rel(t_ns), dbg_rel(now), stage);
+    }
+    pt_busy_enter_locked();
+    pt_stall();
+    pt_fault_store();
+    const op_time_t c0 = op_now();
+    const uint32_t gen = openpete_native_stage_gen();
+    const int did = pt_render_slot(slot_idx, stage, kind, at1, c0);
+    const op_time_t c = op_now() - c0;
+    openpete_pace_split_add(OP_PACE_SPLIT_RENDER, c);
+    pt_busy_leave();
+    if (!did) { s_pt.render_refused++; return; }
+    s_pt.last_kind = kind;
+    if (stage < 0) {
+        openpete_pace_record_present((uint8_t)kind, alpha, paired);
+        if (s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
+        pt_count_present_locked(kind);
+        return;
+    }
+    pt_cost_fold(&s_pt.render_ema, c, 1);
+    pt_stage_hold_locked(stage, gen, t_ns, alpha, paired, kind);
+}
+
+/** @brief Wait toward the staged frame's present instant; the mutex is held.
+ *
+ * With a flip pending, the previous flip is due a guard before @p at: wait
+ * for it, never past @p at (the present instant is the lattice's, not the
+ * flip's: a present that waited for a late flip would itself be late, and
+ * so would every one after it), and never longer than a slot.
+ * @param now The loop's clock reading.
+ * @param at The present instant.
+ * @param slot The display slot in nanoseconds, 0 when unknown. */
+static void pt_wait_instant_locked(op_time_t now, op_time_t at, double slot)
+{
+    if (!s_pt.flip_pending) { wait_until_locked(at); return; }
+    op_time_t bound = at;
+    const op_time_t cap = now + (op_time_t)(slot > 0.0 ? slot : 4e6) + PT_COMPOSE_GUARD_NS;
+    if (bound > cap) bound = cap;
+    wait_flip_locked(bound);
+}
+
+/** @brief Account a present's lateness and drop the staged frame when the deep-queue pattern has accrued; the mutex is held.
+ *
+ * Sustained lateness with newer scenes already pending is the deep-queue
+ * equilibrium, not load: after a stall (a swapchain rebuild is ~40 ms) the
+ * backlog goes out back-to-back, stacking presents with no vblank between,
+ * and a FIFO queue that deep never drains on its own - the blocking acquire
+ * then eats a whole refresh per frame, and from then on presents run a slot
+ * late in a stable alternating pattern (one a slot late, the next fired at
+ * once). Because it alternates, the detector is a leaky counter, not a
+ * consecutive run: +2 on a present more than 1 ms late, -1 on a punctual
+ * one, so the pattern accrues while healthy jitter decays. One dropped
+ * frame shrinks the queue by one; the cooldown keeps this off a machine
+ * that is merely slow (its lateness survives any number of drops, so
+ * dropping would only shed frames it could have shown).
+ * @param late How far past its present instant the frame is, nanoseconds.
+ * @return 1 when the staged frame was dropped, else 0. */
+static int pt_late_drop_locked(op_time_t late)
+{
+    if (late <= 1000000) {
+        if (s_pt.late_run > 0) s_pt.late_run--;
+        return 0;
+    }
+    s_pt.late++; s_pt.late_ns += late;
+    if (late > s_pt.late_max_ns) s_pt.late_max_ns = late;
+    if (s_pt.drop_cooldown > 0) { s_pt.drop_cooldown--; return 0; }
+    if ((s_pt.late_run += 2) < 16) return 0;
+    const int64_t nt = openpete_native_scene_next_target();
+    if (!nt || nt <= s_staged.target) return 0;
+    s_staged.valid = 0;
+    s_pt.late_drops++;
+    s_pt.late_run = 0;
+    s_pt.drop_cooldown = 16;
+    return 1;
+}
+
+/** @brief Account a present step's outcome and move the acquire order; the mutex is held.
+ *
+ * A refused present discards its render and switches to acquire-first order
+ * (when OPENPETE_PT_ACQ_FIRST allows); PT_ACQ_FIRST_EXIT consecutive
+ * presents in that order return to render-first order.
+ * @param did Nonzero when the present went out.
+ * @param kind Scene kind of the present.
+ * @param cost The present step's duration in nanoseconds. */
+static void pt_present_outcome_locked(int did, int kind, op_time_t cost)
+{
+    if (!did) {
+        s_pt.refused++;
+        s_pt.acq_ok_run = 0;
+        if (!s_pt.acq_first && s_pt.acq_first_ok) { s_pt.acq_first = 1; s_pt.acq_first_entries++; }
+        return;
+    }
+    pt_count_present_locked(kind);
+    pt_cost_fold(&s_pt.present_ema, cost, 0);
+    if (s_pt.acq_first && ++s_pt.acq_ok_run >= PT_ACQ_FIRST_EXIT) { s_pt.acq_first = 0; s_pt.acq_ok_run = 0; }
+}
+
+/** @brief Present step: present the staged frame at its instant, a guard after the previous vblank on the lattice, else at its target; the mutex is held and released around the present.
+ * @param now The loop's clock reading.
+ * @param slot The display slot in nanoseconds, 0 when unknown. */
+static void pt_step_present_locked(op_time_t now, double slot)
+{
+    const op_time_t at = compose_at_locked(s_staged.target, slot);
+    if (now < at) { pt_wait_instant_locked(now, at, slot); return; }
+    if (pt_dbg() && s_dbg_n < PT_DBG_MAX) {
+        s_dbg_n++;
+        fprintf(stderr, "[pt] present target=%.0f at=%.0f now=%.0f stage=%d\n",
+                dbg_rel(s_staged.target), dbg_rel(at), dbg_rel(now), s_staged.stage);
+    }
+    if (pt_late_drop_locked(now - at)) return;
+    const int kind = s_staged.kind, paired = s_staged.paired, stage = s_staged.stage;
+    const double alpha = s_staged.alpha;
+    s_staged.valid = 0;
+    if (s_staged.gen != openpete_native_stage_gen()) { s_pt.discarded++; return; }   /* the stages were rebuilt under it */
+    pt_busy_enter_locked();
+    const op_time_t c0 = op_now();
+    int did;
+    { OP_PROF_FLAGS_SCOPE("present", kind == OP_PACE_INTERMEDIATE ? OP_PROF_F_INTERMEDIATE : 0u);
+      did = openpete_native_present_stage(stage); }
+    const op_time_t c = op_now() - c0;
+    openpete_pace_split_add(OP_PACE_SPLIT_PRESENT, c);
+    /* The refusal ledger is what turns a declined swapchain into SHED
+     * records; run it even without a present. */
+    openpete_pace_record_present((uint8_t)kind, alpha, paired);
+    if (did && s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
+    pt_busy_leave();
+    pt_present_outcome_locked(did, kind, c);
+}
+
 /** @brief Body of the present thread: present scenes from the ring while eager production is active. */
 static int present_thread_main(void *unused)
 {
@@ -570,194 +876,27 @@ static int present_thread_main(void *unused)
      * model the guest rewrites while this thread draws. */
     openpete_vram_bind_composed();
     unsigned served = 0;   /* the activation this thread last claimed the display for; 0 = none */
+    /* OPENPETE_PT_STAGED=0: render at the instant instead (A/B).
+     * OPENPETE_PT_ACQ_FIRST=0 (A/B): keep render-first order through refused presents. */
+    const char *staged_env = getenv("OPENPETE_PT_STAGED");
+    const char *acq_first_env = getenv("OPENPETE_PT_ACQ_FIRST");
     SDL_LockMutex(s_pt.mx);
+    s_pt.staged_on = !(staged_env && *staged_env == '0');
+    s_pt.acq_first_ok = !(acq_first_env && *acq_first_env == '0');
     for (;;) {
         if (s_pt.quit) break;
         if (!s_pt.active) { SDL_WaitCondition(s_pt.cv, s_pt.mx); continue; }
         if (served != s_pt.activation) { served = s_pt.activation; pt_begin_activation(); }
+        /* Every step returns to here: the clock and the activation are
+         * re-read after any step that released the mutex. */
         const double slot = display_slot_ns();
-        op_time_t now = op_now();
-        const int on_lattice = s_lat.locked && slot > 0.0;
-
-        if (!s_staged.valid) {
-            /* Nothing rendered ahead: render the scene for the next present
-             * instant NOW, while the display is still showing the last one.
-             * The render (0.3 ms on a light scene, up to 1.5 ms on a heavy
-             * vista) is then off the path between the compose instant and
-             * the vblank; what remains there is an acquire and a blit. */
-            const op_time_t target = openpete_native_scene_next_target();
-            if (!target) {
-                /* Nothing pending: the flip of the last present is still
-                 * worth observing (it keeps the lattice current); otherwise
-                 * sleep until a publish kicks us. Bounded so a lost kick
-                 * cannot park the display for good. */
-                if (s_pt.flip_pending) wait_flip_locked(now + 4000000);
-                else SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, 4);
-                continue;
-            }
-            /* Pick against the first vblank whose PRESENT instant (a guard
-             * after the vblank before it) a render started now can meet,
-             * else against now: the animation moment nearest the flip.
-             * Picking by the earliest target would, once behind, render
-             * every stale scene in turn and never catch up; this retires
-             * the older ones instead. */
-            const op_time_t pick_at = on_lattice
-                ? lattice_ceil_locked(now + pt_ema(&s_pt.render_ema) + 100000
-                                      + (op_time_t)(s_lat.period + 0.5) - compose_guard_ns())
-                : now;
-            const int slot_idx = openpete_native_scene_pick(pick_at);
-            if (slot_idx < 0) continue;
-            op_time_t t_ns = 0; double alpha = 0.0; int paired = 0, kind = OP_PACE_INTERMEDIATE;
-            openpete_native_scene_slot_info(slot_idx, &t_ns, &alpha, &paired, &kind);
-            /* OPENPETE_PT_STAGED=0: render at the instant instead (A/B). */
-            static int staged_on = -1;
-            if (staged_on < 0) { const char *e = getenv("OPENPETE_PT_STAGED"); staged_on = !(e && *e == '0'); }
-            const int nstages = staged_on ? openpete_native_stage_count() : 0;
-            const int stage = nstages > 0 ? (s_stage_next++ % nstages) : -1;
-            if (pt_dbg() && s_dbg_n < PT_DBG_MAX) {
-                s_dbg_n++;
-                fprintf(stderr, "[pt] render target=%.0f now=%.0f stage=%d\n",
-                        dbg_rel(t_ns), dbg_rel(now), stage);
-            }
-            s_pt.busy = 1;
-            SDL_UnlockMutex(s_pt.mx);
-            pt_stall();
-            pt_fault_store();
-            const op_time_t c0 = op_now();
-            const uint32_t gen = openpete_native_stage_gen();
-            int did;
-            if (stage >= 0) {
-                /* One scene's render: the profiler's root region "render". */
-                OP_PROF_FLAGS_SCOPE("render", kind == OP_PACE_INTERMEDIATE ? OP_PROF_F_INTERMEDIATE : 0u);
-                did = openpete_native_render_scene_to_stage(slot_idx, stage, (uint64_t)(c0 / 1000));
-            } else {
-                /* Unstaged: wait for the instant here, then render and present in one. */
-                const op_time_t at1 = compose_at_locked(t_ns, slot);
-                if (op_now() < at1) op_sleep_until(at1);
-                OP_PROF_FLAGS_SCOPE("render", kind == OP_PACE_INTERMEDIATE ? OP_PROF_F_INTERMEDIATE : 0u);
-                did = openpete_native_render_scene(slot_idx, (uint64_t)(op_now() / 1000));
-            }
-            const op_time_t c = op_now() - c0;
-            openpete_pace_split_add(OP_PACE_SPLIT_RENDER, c);
-            SDL_LockMutex(s_pt.mx);
-            s_pt.busy = 0;
-            SDL_SignalCondition(s_pt.idle_cv);
-            if (!did) { s_pt.render_refused++; continue; }
-            if (stage < 0) {
-                openpete_pace_record_present((uint8_t)kind, alpha, paired);
-                if (s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
-                s_pt.presents++;
-                s_pt.presents_inter += kind == OP_PACE_INTERMEDIATE;
-                if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--; else s_pt.flip_pending = 1;
-                continue;
-            }
-            pt_cost_fold(&s_pt.render_ema, c, 1);
-            /* And the swapchain image, now: an image the display let go of
-             * at the last vblank is not available until the driver has
-             * processed the release, and a present on it blocks until
-             * then (1.3-1.7 ms, measured). Held here, it is ready by the
-             * instant.
-             *
-             * Counts as busy: the acquire touches the swapchain, and the
-             * swapchain is externally synchronised. Without the flag a
-             * deactivation (interpolation toggled off) sees busy == 0,
-             * returns at once, and the sim thread starts inline presents
-             * on the same swapchain and queue while this thread is still
-             * inside the blocking vkAcquireNextImageKHR - a fault in the
-             * driver after a handful of toggles. */
-            s_pt.busy = 1;
-            SDL_UnlockMutex(s_pt.mx);
-            openpete_native_present_stage_acquire();
-            SDL_LockMutex(s_pt.mx);
-            s_pt.busy = 0;
-            SDL_SignalCondition(s_pt.idle_cv);
-            s_staged.valid = 1; s_staged.stage = stage; s_staged.gen = gen;
-            s_staged.target = t_ns; s_staged.alpha = alpha; s_staged.paired = paired; s_staged.kind = kind;
-            continue;
+        const op_time_t now = op_now();
+        switch (pt_next_step_locked()) {
+        case PT_STEP_IDLE:    pt_step_idle_locked(now); break;
+        case PT_STEP_ACQUIRE: pt_step_acquire_locked(); break;
+        case PT_STEP_RENDER:  pt_step_render_locked(now, slot); break;
+        case PT_STEP_PRESENT: pt_step_present_locked(now, slot); break;
         }
-
-        /* A frame is staged: present it at its instant -- a guard after the
-         * previous vblank on the lattice, else at its target. */
-        const op_time_t at = compose_at_locked(s_staged.target, slot);
-        if (now < at) {
-            if (s_pt.flip_pending) {
-                /* The previous flip is due a guard before `at`: wait for
-                 * it, never past `at` (the present instant is the lattice's,
-                 * not the flip's -- a present that waited for a LATE flip
-                 * would itself be late, and so would every one after it),
-                 * and never longer than a slot. */
-                op_time_t bound = at;
-                const op_time_t cap = now + (op_time_t)(slot > 0.0 ? slot : 4e6) + PT_COMPOSE_GUARD_NS;
-                if (bound > cap) bound = cap;
-                wait_flip_locked(bound);
-                continue;
-            }
-            wait_until_locked(at);
-            continue;
-        }
-        if (pt_dbg() && s_dbg_n < PT_DBG_MAX) {
-            s_dbg_n++;
-            fprintf(stderr, "[pt] present target=%.0f at=%.0f now=%.0f stage=%d\n",
-                    dbg_rel(s_staged.target), dbg_rel(at), dbg_rel(now), s_staged.stage);
-        }
-        if (now - at > 1000000) {          /* >1 ms past its present instant */
-            s_pt.late++; s_pt.late_ns += now - at;
-            if (now - at > s_pt.late_max_ns) s_pt.late_max_ns = now - at;
-            /* Sustained lateness with newer scenes already pending is the
-             * deep-queue equilibrium, not load: after a stall (a swapchain
-             * rebuild is ~40 ms) the backlog goes out back-to-back,
-             * stacking presents with no vblank between, and a FIFO queue
-             * that deep never drains on its own - the blocking acquire
-             * then eats a whole refresh per frame, and from then on
-             * presents run a slot late in a stable alternating pattern
-             * (one a slot late, the next fired at once). Because it
-             * alternates, the detector is a leaky counter, not a
-             * consecutive run: +2 on a late present, -1 on a punctual
-             * one, so the pattern accrues while healthy jitter decays.
-             * One dropped frame shrinks the queue by one; the cooldown
-             * keeps this off a machine that is merely slow (its lateness
-             * survives any number of drops, so dropping would only shed
-             * frames it could have shown). */
-            if (s_pt.drop_cooldown > 0) s_pt.drop_cooldown--;
-            else if ((s_pt.late_run += 2) >= 16) {
-                const int64_t nt = openpete_native_scene_next_target();
-                if (nt && nt > s_staged.target) {
-                    s_staged.valid = 0;
-                    s_pt.late_drops++;
-                    s_pt.late_run = 0;
-                    s_pt.drop_cooldown = 16;
-                    continue;
-                }
-            }
-        } else if (s_pt.late_run > 0) s_pt.late_run--;
-        const int kind = s_staged.kind, paired = s_staged.paired;
-        const double alpha = s_staged.alpha;
-        const int stage = s_staged.stage;
-        const int stale_gen = s_staged.gen != openpete_native_stage_gen();
-        s_staged.valid = 0;
-        if (stale_gen) { s_pt.discarded++; continue; }   /* the stages were rebuilt under it */
-        s_pt.busy = 1;
-        SDL_UnlockMutex(s_pt.mx);
-        const op_time_t c0 = op_now();
-        int did;
-        { OP_PROF_FLAGS_SCOPE("present", kind == OP_PACE_INTERMEDIATE ? OP_PROF_F_INTERMEDIATE : 0u);
-          did = openpete_native_present_stage(stage); }
-        const op_time_t c = op_now() - c0;
-        openpete_pace_split_add(OP_PACE_SPLIT_PRESENT, c);
-        /* The refusal ledger is what turns a declined swapchain into SHED
-         * records; run it even without a present. */
-        openpete_pace_record_present((uint8_t)kind, alpha, paired);
-        if (did && s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
-        SDL_LockMutex(s_pt.mx);
-        s_pt.busy = 0;
-        if (did) {
-            s_pt.presents++;
-            s_pt.presents_inter += kind == OP_PACE_INTERMEDIATE;
-            pt_cost_fold(&s_pt.present_ema, c, 0);
-            if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--;
-            else s_pt.flip_pending = 1;
-        } else s_pt.refused++;
-        SDL_SignalCondition(s_pt.idle_cv);
     }
     SDL_UnlockMutex(s_pt.mx);
     return 0;
@@ -882,6 +1021,10 @@ void openpete_present_thread_report(void)
                (double)s_pt.late_max_ns / 1e6, s_pt.late_drops,
                (double)pt_ema(&s_pt.render_ema) / 1e6, (double)pt_ema(&s_pt.present_ema) / 1e6, s_pt.drains,
                (double)s_pt.drain_wait_ns / 1e6, (double)s_pt.drain_wait_max_ns / 1e6, s_pt.presents_inter);
+    OPL_INFO_F("present-thread",
+               "acquire order: %u switch(es) to acquire-first, %u render(s) made on an image acquired first, "
+               "%u acquire(s) refused before a render (renders not made), %u render(s) discarded by a refused present",
+               s_pt.acq_first_entries, s_pt.acq_first_renders, s_pt.acq_first_refused, s_pt.refused);
     if (s_pt.flips || s_pt.flip_timeouts)
         OPL_INFO_F("present-thread",
                    "display: %u flip(s) observed, %u wait(s) ran to their bound (overrun %.3f ms mean, %.3f ms max); "

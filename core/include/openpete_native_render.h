@@ -500,6 +500,12 @@ int openpete_native_render_present_wait(uint64_t timeout_ns, uint64_t *out_id,
  * counts the subset that expired the acquire budget.
  * @return The cumulative count, or 0 before the device exists. */
 uint64_t openpete_native_render_acquire_sheds(void);
+/** @brief Return the fence and acquire sheds counted since the previous call, and mark them taken.
+ *
+ * Forwards rhi_take_sheds; both are 0 before the device exists.
+ * @param fence Receives the fence sheds since the previous call.
+ * @param acquire Receives the acquire sheds since the previous call. */
+void     openpete_native_render_take_sheds(uint64_t *fence, uint64_t *acquire);
 /** @brief Return the number of swapchain acquires that expired their time budget.
  *
  * Forwards rhi_acquire_timeouts. Monotonic.

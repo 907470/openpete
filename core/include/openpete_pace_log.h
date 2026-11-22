@@ -451,6 +451,18 @@ void openpete_pace_flip(uint64_t id, int64_t t_ns, int64_t waited_ns);
  * @param paired 0 when the image had no prev/curr pair. */
 void openpete_pace_record_present(uint8_t kind, double alpha, int paired);
 
+/** @brief Write the fence and acquire refusals since the last record as SHED records, without recording a present.
+ *
+ * For a refused acquire that no present attempt follows at once (the
+ * present thread's acquire ahead of a render): the next
+ * openpete_pace_record_present then records its present as a PRESENT. The
+ * RHI block times are taken only when a shed is written, so a later
+ * present's record keeps them otherwise. Same thread rule as
+ * openpete_pace_record_present.
+ * @param kind Scene kind the SHED records carry.
+ * @return 1 when any SHED record was written, else 0. */
+int openpete_pace_record_sheds(uint8_t kind);
+
 /** @brief Record one present attempt with its block times and alpha, and update the present census.
  *
  * The census counts the present by kind and updates the display-cadence
