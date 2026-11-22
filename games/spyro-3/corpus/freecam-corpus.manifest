@@ -219,3 +219,6 @@ spooky_swamp@partglow-014-near | pos=(23008, 24071, 7900) yaw=1024 pitch=160 | 2
 spooky_swamp@partglow-014-far | pos=(23008, -6929, 9400) yaw=1024 pitch=53 | 2000 | --player-pose 20960,29600,4608,0
 spooky_swamp:2@partglow-06d-near | pos=(66916, 126339, 5858) yaw=512 pitch=160 | 3700 | OPENPETE_FREECAM_AT_VBL=3500 --bk2 games/spyro-3/bk2/area-dismiss.bk2 --player-pose 68500,126000,3900,0@3300
 spooky_swamp:2@partglow-06d-far | pos=(44996, 104419, 7358) yaw=512 pitch=53 | 3700 | OPENPETE_FREECAM_AT_VBL=3500 --bk2 games/spyro-3/bk2/area-dismiss.bk2 --player-pose 68500,126000,3900,0@3300
+# An L-shaped stone slab authored under the ice (area 1 sector 54 face 0)
+# shows only through the terrain key contest's bias reach; true depth hides it.
+icy_peak:1@sunkslab | pos=(62948, 39502, 14647) yaw=-302 pitch=900
