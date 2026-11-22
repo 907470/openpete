@@ -26,12 +26,6 @@
 # section, the state a build without the section writes: negative
 # control; the warp then takes the manifest's replace mode).
 #
-# Carve-out: the press-state compare's spu section (PsyCross voice state)
-# differs by 2 or 3 bytes near offset 0x1E64 on some Spyro 1 bundles while
-# every hash row matches, also on a recording with no mod, no card and no
-# toggle; a replay with that difference alone reads SPU-ONLY and counts as
-# reproduced. Any other section, or any row, still fails.
-#
 # Instrument: warps.txt; the recording's `custom level "Warp Fixture"
 # entering (id 65` line; each replay's verdict line (`bug-report-replay:
 # IDENTICAL | DIVERGED tick=T ...`), its `warp custom_mode to 0 queued at
@@ -40,11 +34,11 @@
 #
 # Pass criterion: mode's warps.txt holds one custom_mode line to 0 (row 0,
 # slot) and one custom_warp line to 0 after the anchor, the toggle first,
-# and the recording enters the slot; mode IDENTICAL (or SPU-ONLY) with the toggle taken at
+# and the recording enters the slot; mode IDENTICAL with the toggle taken at
 # its recorded frame (2 queued, 0 past their frame, 0 not reached) and a
 # fresh card provisioned for port 1; mode-old DIVERGED at or after the
 # toggle's frame. claim's warps.txt holds custom_mode:0 and custom_warp:0 at
-# or before the anchor and one custom_warp:0 after it; claim IDENTICAL (or SPU-ONLY),
+# or before the anchor and one custom_warp:0 after it; claim IDENTICAL,
 # entering the slot (id 65) at the second warp (1 queued, 0 past their
 # frame, 0 not reached); claim-bare DIVERGED at or after that warp's frame.
 #
@@ -147,9 +141,6 @@ record() {
 }
 
 # replay TAG BUNDLE: one replay; sets LOG, V (verdict word) and T (divergent tick).
-# A DIVERGED replay whose every hash row matched and whose press-state
-# compare differs in the spu section alone reads SPU-ONLY (see the carve-out
-# above).
 replay() {
     LOG="$OUT/replay-$1.log"
     PG_CAPTURE_ENV=("OPENPETE_BUGREPORT_REPLAY_DIR=$OUT/scratch-$1")
@@ -158,14 +149,10 @@ replay() {
     V="${V#bug-report-replay: }"
     V="${V:-none}"
     T="$(grep -oE '^bug-report-replay: DIVERGED tick=[0-9]+' "$LOG" | tail -n 1 | grep -oE '[0-9]+$')"
-    if [[ "$V" == DIVERGED ]] && grep -qE '^bug-report-replay: DIVERGED tick=0 region=none ' "$LOG" &&
-       grep -qE '^bug-report-replay: sections differing: spu\+0x[0-9A-F]+ \([0-9]+ byte\(s\)\)$' "$LOG"; then
-        V=SPU-ONLY
-    fi
 }
 
-# same V: 0 when a replay reproduced the recording (IDENTICAL, or SPU-ONLY).
-same() { [[ "$1" == IDENTICAL || "$1" == SPU-ONLY ]]; }
+# same V: 0 when a replay reproduced the recording.
+same() { [[ "$1" == IDENTICAL ]]; }
 
 # ---- leg mode: the toggle after the anchor, on a first-run card ----
 m_frame=none v_mode=none v_mold=none t_mold=none
