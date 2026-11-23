@@ -743,37 +743,40 @@ int drain_sub_slot(int a, int b, int c, int h) {
     return top == 2 ? j * 4 + i : (3 - j) * 4 + (3 - i);
 }
 
-/* Pack keys[] (on[] the sub-cells the drain inserts, slot[] their entries)
- * over their least key, clamped to 0x3FFE, a skipped sub-cell as the
- * sentinel 0x3FFF (OP_DRAIN_SKIP); grid in entry 0's top bits (terrain.c
- * tn_keycells_pack). */
-void dtab_pack(inout dtab T, float keys[16], bool on[16], int slot[16], int cnt, uint grid) {
+/* Pack keys[] (bit i of onm: the sub-cells the drain inserts, slot[] their
+ * entries) over their least key, clamped to 0x3FFE, a skipped sub-cell as
+ * the sentinel 0x3FFF (OP_DRAIN_SKIP); grid in entry 0's top bits
+ * (terrain.c tn_keycells_pack). */
+void dtab_pack(inout dtab T, float keys[16], uint onm, int slot[16], int cnt, uint grid) {
     T.t0 = uvec4(0u); T.t1 = uvec4(0u);
     if (T.n == 0) return;
     for (int i = 0; i < cnt; i++)
-        dtab_put(T, slot[i], on[i] ? min(uint(keys[i] - T.kmin), 0x3FFEu) : 0x3FFFu);
+        dtab_put(T, slot[i], ((onm >> uint(i)) & 1u) != 0u ? min(uint(keys[i] - T.kmin), 0x3FFEu)
+                                                           : 0x3FFFu);
     T.t0.x |= grid << 14;
 }
 
-uint quad_fold_mask(vec3 G[25], bool on[16]);
+uint quad_fold_mask(vec3 TL, vec3 TR, vec3 BL, vec3 BR, uint onm);
 
 /* tn_quad_cell_keys mirror: the keys of the 16 cells the drain inserts a
  * tier-4 quad as, over the grid of corners TL, TR, BL, BR; a cell whose key
  * is 0 carries none, nor, when `cull` (a straddling single-sided face), one
  * facing away over both of its triples (nc4_front). A folded quadrant q
- * (quad_fold_mask) sets bit 14 of entry 2 + q (tn_keycells_fold). */
+ * (quad_fold_mask) sets bit 14 of entry 2 + q (tn_keycells_fold). Each
+ * cell's four grid nodes are rebuilt by nc4_node where they are read, not
+ * held for the whole table: nc4_node is a pure function of its operands,
+ * so a node read twice is the same value, and the vertex stage keeps no
+ * 25-node array live. */
 dtab quad_cells_tab(vec3 TL, vec3 TR, vec3 BL, vec3 BR, bool cull, bool flip)
 {
-    vec3 G[25];
-    for (int r = 0; r < 5; r++)
-        for (int c = 0; c < 5; c++) G[r * 5 + c] = nc4_node(r, c, TL, TR, BL, BR);
     dtab T;
     T.kmin = 0.0; T.n = 0;
-    float keys[16]; bool on[16]; int slot[16];
+    float keys[16]; int slot[16];
+    uint onm = 0u;
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
-        vec3 tl = G[r * 5 + c], tr = G[r * 5 + c + 1];
-        vec3 bl = G[r * 5 + c + 5], br = G[r * 5 + c + 6];
+        vec3 tl = nc4_node(r, c, TL, TR, BL, BR), tr = nc4_node(r, c + 1, TL, TR, BL, BR);
+        vec3 bl = nc4_node(r + 1, c, TL, TR, BL, BR), br = nc4_node(r + 1, c + 1, TL, TR, BL, BR);
         float key = drain_key4(tl.z, tr.z, bl.z, br.z);
         bool f = true;
         if (cull) {
@@ -785,14 +788,14 @@ dtab quad_cells_tab(vec3 TL, vec3 TR, vec3 BL, vec3 BR, bool cull, bool flip)
             }
         }
         keys[i] = key; slot[i] = i;
-        on[i] = f && key > 0.0;
-        if (!on[i]) continue;
+        if (!(f && key > 0.0)) continue;
+        onm |= 1u << uint(i);
         if (T.n == 0 || key < T.kmin) T.kmin = key;
         T.n++;
     }
-    dtab_pack(T, keys, on, slot, 16, 1u);
+    dtab_pack(T, keys, onm, slot, 16, 1u);
     if (T.n > 0) {
-        uint fm = quad_fold_mask(G, on);
+        uint fm = quad_fold_mask(TL, TR, BL, BR, onm);
         for (int q = 0; q < 4; q++)
             if ((fm & (1u << q)) != 0u) dtab_put(T, 2 + q, 0x4000u);
     }
@@ -801,19 +804,20 @@ dtab quad_cells_tab(vec3 TL, vec3 TR, vec3 BL, vec3 BR, bool cull, bool flip)
 
 /* tn_tri_cell_keys mirror: the same over a triangle's tier-4 (16) or tier-2
  * (4) sub-triangles, a sub-triangle facing away over its own triple
- * skipped when `cull`. */
+ * skipped when `cull`. The 15 grid nodes are rebuilt by nt4_node where they
+ * are read, as quad_cells_tab rebuilds its nodes. */
 dtab tri_cells_tab(vec3 A, vec3 B, vec3 C, bool tier2, bool cull, bool flip)
 {
-    vec3 N[15];
-    for (int k = 0; k < 15; k++) N[k] = nt4_node(k, A, B, C);
     int base = tier2 ? 16 : 0, cnt = tier2 ? 4 : 16;
     dtab T;
     T.kmin = 0.0; T.n = 0;
-    float keys[16]; bool on[16]; int slot[16];
-    for (int i = 0; i < 16; i++) { keys[i] = 0.0; on[i] = false; slot[i] = 0; }
+    float keys[16]; int slot[16];
+    uint onm = 0u;
+    for (int i = 0; i < 16; i++) { keys[i] = 0.0; slot[i] = 0; }
     for (int i = 0; i < cnt; i++) {
         int t = (base + i) * 3;
-        vec3 a = N[NT_SUB[t]], b = N[NT_SUB[t + 1]], c = N[NT_SUB[t + 2]];
+        vec3 a = nt4_node(NT_SUB[t], A, B, C), b = nt4_node(NT_SUB[t + 1], A, B, C);
+        vec3 c = nt4_node(NT_SUB[t + 2], A, B, C);
         float key = drain_key3(a.z, b.z, c.z);
         bool f = true;
         if (cull) {
@@ -822,12 +826,12 @@ dtab tri_cells_tab(vec3 A, vec3 B, vec3 C, bool tier2, bool cull, bool flip)
         }
         keys[i] = key;
         slot[i] = drain_sub_slot(NT_SUB[t], NT_SUB[t + 1], NT_SUB[t + 2], tier2 ? 2 : 1);
-        on[i] = f && key > 0.0;
-        if (!on[i]) continue;
+        if (!(f && key > 0.0)) continue;
+        onm |= 1u << uint(i);
         if (T.n == 0 || key < T.kmin) T.kmin = key;
         T.n++;
     }
-    dtab_pack(T, keys, on, slot, cnt, tier2 ? 3u : 2u);
+    dtab_pack(T, keys, onm, slot, cnt, tier2 ? 3u : 2u);
     return T;
 }
 
@@ -862,14 +866,15 @@ vec2 quad_side_fl(vec3 Q0, vec3 Q1, vec3 Q2, vec3 Q3, vec3 V) {
 
 /* terrain.c tn_quad_folds mirror, term by term: bit q set when a drawn cell
  * of 2x2 quadrant q has a node strictly (1e-6 of the scale) across one of
- * the quadrant's isoline eye planes into a skipped cell's slot. G is the
- * 5x5 node grid, on[] the drawn cells. */
-uint quad_fold_mask(vec3 G[25], bool on[16]) {
+ * the quadrant's isoline eye planes into a skipped cell's slot. The 5x5
+ * node grid is nc4_node over corners TL, TR, BL, BR; bit i of onm is drawn
+ * cell i. */
+uint quad_fold_mask(vec3 TL, vec3 TR, vec3 BL, vec3 BR, uint onm) {
     uint fm = 0u;
     for (int qd = 0; qd < 4; qd++) {
         int r0 = (qd >> 1) * 2, c0 = (qd & 1) * 2;
-        vec3 Q0 = G[r0 * 5 + c0], Q1 = G[r0 * 5 + c0 + 2];
-        vec3 Q2 = G[(r0 + 2) * 5 + c0], Q3 = G[(r0 + 2) * 5 + c0 + 2];
+        vec3 Q0 = nc4_node(r0, c0, TL, TR, BL, BR), Q1 = nc4_node(r0, c0 + 2, TL, TR, BL, BR);
+        vec3 Q2 = nc4_node(r0 + 2, c0, TL, TR, BL, BR), Q3 = nc4_node(r0 + 2, c0 + 2, TL, TR, BL, BR);
         precise vec3 ct = (Q0 + Q1) * 0.5, cb = (Q2 + Q3) * 0.5;
         precise vec3 rl = (Q0 + Q2) * 0.5, rr = (Q1 + Q3) * 0.5;
         vec3 nc = eye_normal(ct, cb), nr = eye_normal(rl, rr);
@@ -879,13 +884,14 @@ uint quad_fold_mask(vec3 G[25], bool on[16]) {
         bool f = false;
         for (int k = 0; k < 4 && !f; k++) {
             int lr = k >> 1, lc = k & 1;
-            if (!on[(r0 + lr) * 4 + c0 + lc]) continue;
+            if (((onm >> uint((r0 + lr) * 4 + c0 + lc)) & 1u) == 0u) continue;
             for (int n = 0; n < 4 && !f; n++) {
-                vec3 v = G[(r0 + lr + (n >> 1)) * 5 + c0 + lc + (n & 1)];
+                vec3 v = nc4_node(r0 + lr + (n >> 1), c0 + lc + (n & 1), TL, TR, BL, BR);
                 float fx = eye_side(nc, v) / sc, fy = eye_side(nr, v) / sr;
                 int xc = (lc != 0 ? fx < -1e-6 : fx > 1e-6) ? 1 : 0;
                 int xr = (lr != 0 ? fy < -1e-6 : fy > 1e-6) ? 1 : 0;
-                if ((xc | xr) != 0 && !on[(r0 + (lr ^ xr)) * 4 + c0 + (lc ^ xc)]) f = true;
+                if ((xc | xr) != 0 && ((onm >> uint((r0 + (lr ^ xr)) * 4 + c0 + (lc ^ xc))) & 1u) == 0u)
+                    f = true;
             }
         }
         if (f) fm |= 1u << qd;
