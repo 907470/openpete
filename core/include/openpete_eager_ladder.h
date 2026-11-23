@@ -150,6 +150,33 @@ static inline int64_t op_eager_span_continue(int64_t last, int64_t first, int64_
     return f;
 }
 
+/** @brief Return a span's first instant when it continues the previous span's grid, keeping that grid while its next instant lies inside the span.
+ *
+ * The continuation is the previous span's last instant plus one period,
+ * strictly after every instant the previous span planned. It stands while
+ * it lies at or before the span's lag-extended end or within a period of
+ * the span's first slot: the old span's scenes then cover every instant
+ * before it and the new span retargets none of them. Past both, the old
+ * grid ran ahead of the plan instant (a period floored at a present-thread
+ * cost above the tick advances the chain faster than time) and only its
+ * phase is kept, as op_eager_span_continue does: the instant lands in
+ * [first, first + period). The first instant thus lies at or before
+ * max(end, first + period) whatever the previous lead was. The caller
+ * checks last + period > first.
+ * @param last The previous span's last instant.
+ * @param first The span's first render-grid slot.
+ * @param end The span's last admissible instant, lag extension included.
+ * @param period The planned grid period, positive.
+ * @param prev Receives the old grid's instant one period before the result.
+ * @return The span's first instant. */
+static inline int64_t op_eager_span_continue_in(int64_t last, int64_t first, int64_t end, int64_t period,
+                                                int64_t *prev)
+{
+    const int64_t f = last + period;
+    if (f <= end) { *prev = last; return f; }
+    return op_eager_span_continue(last, first, period, prev);
+}
+
 /* Why a span ended with planned scenes unproduced. Only a deadline cut says
  * the plan held more scenes than their cost lets the budget produce. */
 typedef enum {

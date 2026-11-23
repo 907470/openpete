@@ -48,8 +48,11 @@
  * present-thread cost of 200 ms over the 33.4 ms tick, on the display-grid
  * and the free planner, from no lead and from a lead of three periods: each
  * span's first instant stays under one period past its own first slot
- * (op_eager_span_continue), with the continuation that kept whole periods as
- * the control.
+ * (op_eager_span_continue_in), with the continuation that kept whole periods
+ * as the control. The retarget rows run the display-grid chain at a 480 Hz
+ * period under the tick: no span's first instant is at or before the
+ * previous span's last (op_eager_span_continue_in), with the phase-only
+ * continuation (op_eager_span_continue) as the control.
  *
  * `eager_ladder_test replay` prints the per-row table. */
 
@@ -286,15 +289,30 @@ static void test_free(int print)
 /** @brief The previous continuation: whole periods of the old grid's lead kept.
  * @param last The previous span's last instant.
  * @param first The span's first render-grid slot.
+ * @param end The span's lag-extended end, unused.
  * @param period The planned grid period.
  * @param prev Receives the previous span's last instant.
  * @return The span's first instant. */
-static int64_t old_span_continue(int64_t last, int64_t first, int64_t period, int64_t *prev)
+static int64_t old_span_continue(int64_t last, int64_t first, int64_t end, int64_t period, int64_t *prev)
 {
+    (void)end;
     int64_t f = last + period;
     *prev = last;
     if (f - first > period) f = first + ((f - first) / period) * period;
     return f;
+}
+
+/** @brief The phase-only continuation, which keeps the old grid's phase whenever it lies a period past the span's slot.
+ * @param last The previous span's last instant.
+ * @param first The span's first render-grid slot.
+ * @param end The span's lag-extended end, unused.
+ * @param period The planned grid period.
+ * @param prev Receives the old grid's instant before the result.
+ * @return The span's first instant. */
+static int64_t phase_span_continue(int64_t last, int64_t first, int64_t end, int64_t period, int64_t *prev)
+{
+    (void)end;
+    return op_eager_span_continue(last, first, period, prev);
 }
 
 /** @brief Run CHAIN_SPANS spans of one planner and continuation rule from a seeded lead.
@@ -304,7 +322,7 @@ static int64_t old_span_continue(int64_t last, int64_t first, int64_t period, in
  * @param max_over Receives the largest first instant minus the span's own first slot, nanoseconds.
  * @param last_lead Receives the last span's first instant minus its plan instant, nanoseconds.
  * @param max_lead Receives the largest first instant minus plan instant, nanoseconds. */
-static void chain_run(int64_t (*cont)(int64_t, int64_t, int64_t, int64_t *), int free_span, int seed,
+static void chain_run(int64_t (*cont)(int64_t, int64_t, int64_t, int64_t, int64_t *), int free_span, int seed,
                       int64_t *max_over, int64_t *last_lead, int64_t *max_lead)
 {
     const int64_t base = 1000 * MS;
@@ -317,7 +335,7 @@ static void chain_run(int64_t (*cont)(int64_t, int64_t, int64_t, int64_t *), int
         int64_t end = now + CHAIN_TICK;
         if (end < first) end = first;
         end += CHAIN_LAG;
-        if (last && last + CHAIN_P > first) first = cont(last, first, CHAIN_P, &prev);
+        if (last && last + CHAIN_P > first) first = cont(last, first, end, CHAIN_P, &prev);
         int k = 1;
         if (free_span) {
             const int64_t start = prev ? prev : first;
@@ -343,7 +361,7 @@ static void test_chain(void)
     for (int fs = 0; fs < 2; fs++)
         for (size_t si = 0; si < sizeof seeds / sizeof seeds[0]; si++) {
             int64_t over, last_lead, max_lead, oover, olast, omax;
-            chain_run(op_eager_span_continue, fs, seeds[si], &over, &last_lead, &max_lead);
+            chain_run(op_eager_span_continue_in, fs, seeds[si], &over, &last_lead, &max_lead);
             chain_run(old_span_continue, fs, seeds[si], &oover, &olast, &omax);
             snprintf(what, sizeof what,
                      "chain %s seed %dP: first instant %.3f ms past the span's slot, under P %.0f ms (lead max %.3f ms)",
@@ -353,6 +371,51 @@ static void test_chain(void)
                      planner[fs], seeds[si], (double)olast / MS);
             check(olast > CHAIN_P, what);
         }
+}
+
+/* The retarget chain: a 480 Hz display-grid period under the tick, the lag
+ * of a 4.5 ms tick tail, spans T apart with up to 2 ms of start jitter. */
+#define RETARGET_P   2083333LL
+#define RETARGET_LAG 4500000LL
+
+/** @brief Run CHAIN_SPANS display-grid spans at RETARGET_P and count the spans whose first instant is at or before the previous span's last.
+ * @param cont The continuation rule.
+ * @param max_over Receives the largest first instant minus the span's lag-extended end, nanoseconds.
+ * @return The spans that retarget an instant the previous span planned. */
+static int retarget_run(int64_t (*cont)(int64_t, int64_t, int64_t, int64_t, int64_t *), int64_t *max_over)
+{
+    const int64_t base = 1000 * MS;
+    int64_t last = 0;
+    int back = 0;
+    *max_over = INT64_MIN;
+    for (int n = 0; n < CHAIN_SPANS; n++) {
+        const int64_t now = base + n * CHAIN_TICK + (n % 3) * MS;
+        const int64_t slot = ((now + RETARGET_P - 1) / RETARGET_P) * RETARGET_P;
+        int64_t first = slot, prev = 0;
+        const int64_t end = now + CHAIN_TICK + RETARGET_LAG;
+        if (last && last + RETARGET_P > first) first = cont(last, first, end, RETARGET_P, &prev);
+        back += last && first <= last;
+        if (first - end > *max_over) *max_over = first - end;
+        int k = 1;
+        while (first + RETARGET_P * k <= end) k++;
+        last = first + RETARGET_P * (k - 1);
+    }
+    return back;
+}
+
+/** @brief Check that with the period under the tick no continued span retargets an instant the previous span planned, and that its first instant stays inside its own span. */
+static void test_retarget(void)
+{
+    char what[192];
+    int64_t over, pover;
+    const int back = retarget_run(op_eager_span_continue_in, &over);
+    const int pback = retarget_run(phase_span_continue, &pover);
+    snprintf(what, sizeof what, "retarget: %d of %d spans start at or before the previous last instant, first at most %.3f ms past the end",
+             back, CHAIN_SPANS, (double)over / MS);
+    check(back == 0 && over <= 0, what);
+    snprintf(what, sizeof what, "control retarget: the phase-only continuation starts %d of %d spans at or before the previous last instant",
+             pback, CHAIN_SPANS);
+    check(pback > CHAIN_SPANS / 2, what);
 }
 
 static const unsigned char k_stone_hill_sum[] = {
@@ -1384,6 +1447,7 @@ int main(int argc, char **argv)
     test_fill();
     test_free(argc > 1 && !strcmp(argv[1], "replay"));
     test_chain();
+    test_retarget();
     test_count_steps();
     test_count(argc > 1 && !strcmp(argv[1], "replay"));
     test_count_transition(argc > 1 && !strcmp(argv[1], "replay"));
