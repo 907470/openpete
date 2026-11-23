@@ -1,4 +1,4 @@
-M4: The drain does not wait for the present thread's busy bracket to close before it claims the display.
+The drain does not wait for the present thread's busy bracket to close before it claims the display.
 
 --- a/core/runtime/present_thread.c
 +++ b/core/runtime/present_thread.c

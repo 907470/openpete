@@ -1,4 +1,4 @@
-M3: The drain gives back no held swapchain image: the stage release after the drain's claim is removed.
+The drain gives back no held swapchain image: the stage release after the drain's claim is removed.
 
 --- a/core/runtime/present_thread.c
 +++ b/core/runtime/present_thread.c

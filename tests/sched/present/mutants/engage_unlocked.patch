@@ -1,4 +1,4 @@
-M10: Engaging takes no lock: set_active(1) writes s_pt.active and s_pt.activation while the present thread reads them under s_pt.mx. The race detector's negative control (present_sched_tsan); no property names it.
+Engaging takes no lock: set_active(1) writes s_pt.active and s_pt.activation while the present thread reads them under s_pt.mx. The race detector's negative control (present_sched_tsan); no property names it.
 
 --- a/core/runtime/present_thread.c
 +++ b/core/runtime/present_thread.c

@@ -73,16 +73,16 @@ device call, at each present, at each drain's return or at quiescence.
 
 | Scenario | Drives |
 |---|---|
-| S1 | a borrow, inline present and return while the present thread sleeps unlocked toward a staged scene's instant, then a publish under the new activation; twice |
-| S1b | S1 with no inline present: the sim makes no device call while it holds the display |
-| S2 | a drain while an acquired image is held for a staged scene far ahead |
-| S3 | a resize seen by the compose on both threads, a minimised window, a display change from the pump thread, out-of-date and suboptimal outcomes, a borrow |
-| S4 | ring pressure on a ring of 3 (`present_sched_r3`): supersede at pick and ring-full refusal |
-| S5, S5u | the guest-discontinuity flush concurrent with pick and render; S5u with `OPENPETE_PT_STAGED=0` |
-| S6 | stop while the present thread waits on a flip or sleeps |
-| S7 | device loss offered at every modelled call |
-| S8 | acquire-first order after a refused present, across a borrow |
-| SR | (soak only) 48 client actions drawn by uniform choices: publish with strictly increasing targets, sleep, borrow with inline present, disengage and engage, flush, resize, minimise |
+| `borrow_asleep` | a borrow, inline present and return while the present thread sleeps unlocked toward a staged scene's instant, then a publish under the new activation; twice |
+| `borrow_asleep_no_inline` | `borrow_asleep` with no inline present: the sim makes no device call while it holds the display |
+| `drain_staged_hold` | a drain while an acquired image is held for a staged scene far ahead |
+| `swapchain_change` | a resize seen by the compose on both threads, a minimised window, a display change from the pump thread, out-of-date and suboptimal outcomes, a borrow |
+| `ring_pressure` | ring pressure on a ring of 3 (`present_sched_r3`): supersede at pick and ring-full refusal |
+| `discontinuity_flush`, `discontinuity_flush_unstaged` | the guest-discontinuity flush concurrent with pick and render; the second with `OPENPETE_PT_STAGED=0` |
+| `stop_waiting` | stop while the present thread waits on a flip or sleeps |
+| `device_loss` | device loss offered at every modelled call |
+| `acquire_first` | acquire-first order after a refused present, across a borrow |
+| `random_clients` | (soak only) 48 client actions drawn by uniform choices: publish with strictly increasing targets, sleep, borrow with inline present, disengage and engage, flush, resize, minimise |
 
 Each scenario runs in both present-timing configurations (`OPENPETE_PRESENT_TIMING`
 0, the shipped default, and 1). Every scenario has a virtual-time horizon.
@@ -92,18 +92,18 @@ Passing it fails the schedule as a livelock; it is never a truncation.
 
 | ctest | Label | Runs |
 |---|---|---|
-| `present_sched` | `unit` | S1-S8 exhaustively at each scenario's bound, both timings, both ring sizes; the engagement verdict; then the negative controls; about 45 s at 16 jobs |
-| `present_sched_soak` | `slow` | PCT over every scenario and SR, 10 minutes, one worker per job, base seed from the date |
-| `present_sched_tsan` | `slow` | the race-detector build: PCT over every scenario and SR for 60 s under ThreadSanitizer, then the control M10, which must report its race |
+| `present_sched` | `unit` | every scenario but `random_clients` exhaustively at its bound, both timings, both ring sizes; the engagement verdict; then the negative controls; about 45 s at 16 jobs |
+| `present_sched_soak` | `slow` | PCT over every scenario, 10 minutes, one worker per job, base seed from the date |
+| `present_sched_tsan` | `slow` | the race-detector build: PCT over every scenario for 60 s under ThreadSanitizer, then the control `engage_unlocked`, which must report its race |
 | `sched_calibrate` | `unit` | the scheduler's calibration |
 | `sched_seams`, `sched_seams_selftest` | `fence` | the upkeep fence and its fixtures |
 
 ```
 ctest --test-dir build/linux-release -R '^present_sched$' --output-on-failure
-build/linux-release/tests/sched/present/present_sched --only S2 --timing 0 --out /tmp/pt
+build/linux-release/tests/sched/present/present_sched --only drain_staged_hold --timing 0 --out /tmp/pt
 ```
 
-`--only S` and `--timing T` select one scenario and configuration; `--p`
+`--only NAME` and `--timing T` select one scenario and configuration; `--p`
 and `--d` override the bound and `--max-schedules` caps the count. The run
 prints one line per scenario: schedules, bound reached, steps per
 schedule and wall time. The engagement report lists hits per seam site
@@ -118,7 +118,7 @@ found, the choice string (`choices 0,0,2,...`) and the trace file
 per step: step, virtual time, thread, operation, object and code address.
 
 ```
-present_sched --only S1 --timing 0 --replay 0,0,0,2 --out /tmp/pt
+present_sched --only borrow_asleep --timing 0 --replay 0,0,0,2 --out /tmp/pt
 ```
 
 reruns that schedule alone and rewrites the trace. A soak failure prints
@@ -166,12 +166,12 @@ does a manual run:
 
 ```
 setarch "$(uname -m)" -R build/linux-release/tests/sched/present/present_sched_tsan \
-  --out /tmp/pt --soak 60 --tsan-control build/linux-release/tests/sched/present/mutants/present_sched_tsan_M10
+  --out /tmp/pt --soak 60 --tsan-control build/linux-release/tests/sched/present/mutants/present_sched_tsan_engage_unlocked
 ```
 
-M10 (`mutants/M10.patch`) removes the lock around `set_active(1)`'s
-writes of `s_pt.active` and `s_pt.activation`. Its binary,
-`present_sched_tsan_M10`, runs the same soak with one worker and
+`engage_unlocked` (`mutants/engage_unlocked.patch`) removes the lock around
+`set_active(1)`'s writes of `s_pt.active` and `s_pt.activation`. Its binary,
+`present_sched_tsan_engage_unlocked`, runs the same soak with one worker and
 `--expect-race`, and passes only on a schedule failing with an
 unclassified race. A noise run whose control goes undetected is VACUOUS.
 The target builds where the toolchain links `-fsanitize=thread`
@@ -179,10 +179,10 @@ The target builds where the toolchain links `-fsanitize=thread`
 
 ## Negative controls
 
-Each control is a unified diff in `tests/sched/present/mutants/` (a
+Each mutant is a unified diff `tests/sched/present/mutants/<mutant>.patch` (a
 description line, then the diff) against `present_thread.c` or
 `native_render.c`. At build time `apply_mutant.py` applies it to a copy,
-and the copy is linked into `build/.../present/mutants/present_sched_<M>`.
+and the copy is linked into `build/.../present/mutants/present_sched_<mutant>`.
 The context must match exactly; only the line offset may move. A patch that
 no longer applies fails the build with the mutant's name. `present_sched
 --mutants DIR` runs each control after HEAD with only its expected
@@ -193,16 +193,16 @@ property detects no control (VACUOUS).
 
 | Control | Mutation | Scenario | Armed |
 |---|---|---|---|
-| M1 | claim keyed on a flag reset only when the thread sees `active == 0` | S1 | P-OWNER, P-CLAIM |
-| M1b | M1 | S1b | P-CLAIM |
-| M2 | ring slots retire one render serial early | S6 | P-RETIRE |
-| M3 | the drain's stage release removed | S2 | P-ACQUIRE |
-| M4 | the drain's wait for the busy bracket removed | S2 | P-OWNER |
-| M5 | the drain releases before it claims | S3 | P-OWNER |
-| M6 | the drain's ring flush removed | S1 | P-PRESENT |
-| M7 | the `presented` census increment removed | S1 | P-ACCOUNT |
-| M8 | the `idle_cv` signal leaving a busy bracket removed | S2 | P-DRAIN |
-| M9 | the kick's signal removed and the idle wait made untimed | S8 | P-SERVE |
+| `claim_by_flag` | claim keyed on a flag reset only when the thread sees `active == 0` | `borrow_asleep` | P-OWNER, P-CLAIM |
+| `claim_by_flag_no_inline` | `claim_by_flag` | `borrow_asleep_no_inline` | P-CLAIM |
+| `retire_early` | ring slots retire one render serial early | `stop_waiting` | P-RETIRE |
+| `drain_no_release` | the drain's stage release removed | `drain_staged_hold` | P-ACQUIRE |
+| `drain_no_busy_wait` | the drain's wait for the busy bracket removed | `drain_staged_hold` | P-OWNER |
+| `drain_release_before_claim` | the drain releases before it claims | `swapchain_change` | P-OWNER |
+| `drain_no_flush` | the drain's ring flush removed | `borrow_asleep` | P-PRESENT |
+| `census_no_presented` | the `presented` census increment removed | `borrow_asleep` | P-ACCOUNT |
+| `busy_exit_no_signal` | the `idle_cv` signal leaving a busy bracket removed | `drain_staged_hold` | P-DRAIN |
+| `kick_no_signal` | the kick's signal removed and the idle wait made untimed | `acquire_first` | P-SERVE |
 
 ## Changing a protocol file
 

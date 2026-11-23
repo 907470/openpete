@@ -1,4 +1,4 @@
-M2: Ring slots retire one render serial early: a slot is freed while the GPU may still read its scene.
+Ring slots retire one render serial early: a slot is freed while the GPU may still read its scene.
 
 --- a/core/renderer/native_render.c
 +++ b/core/renderer/native_render.c

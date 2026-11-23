@@ -1,4 +1,4 @@
-M7: A scene render that went out is not counted in the ring census.
+A scene render that went out is not counted in the ring census.
 
 --- a/core/renderer/native_render.c
 +++ b/core/renderer/native_render.c

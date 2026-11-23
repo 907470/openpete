@@ -1,4 +1,4 @@
-M6: The drain does not flush pending scenes: a scene for an instant the inline path presents stays pickable.
+The drain does not flush pending scenes: a scene for an instant the inline path presents stays pickable.
 
 --- a/core/runtime/present_thread.c
 +++ b/core/runtime/present_thread.c

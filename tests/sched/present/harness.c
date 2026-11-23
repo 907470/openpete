@@ -661,8 +661,8 @@ static void quiesce_checks(void)
 
 /* ---------------------------------------------------------- scenarios */
 
-/** @brief S1, borrow while asleep: one scene presented, then two published with the present thread asleep toward the first (or, with present timing, waiting on the previous flip); the sim borrows, presents inline, returns and publishes a scene the present thread must render under its new activation; twice. */
-static void sc_s1(void)
+/** @brief Borrow while asleep: one scene presented, then two published with the present thread asleep toward the first (or, with present timing, waiting on the previous flip); the sim borrows, presents inline, returns and publishes a scene the present thread must render under its new activation; twice. */
+static void sc_borrow_asleep(void)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -681,8 +681,8 @@ static void sc_s1(void)
     drv_stop();
 }
 
-/** @brief S1b: S1 whose sim thread makes no device call while it holds the display (no inline present). */
-static void sc_s1b(void)
+/** @brief Borrow while asleep with no inline present: the sim thread makes no device call while it holds the display. */
+static void sc_borrow_asleep_no_inline(void)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -699,8 +699,8 @@ static void sc_s1b(void)
     drv_stop();
 }
 
-/** @brief S2, drain during a staged hold: after one present, a scene rendered and its image held for an instant far ahead; the sim disengages and engages, then borrows. */
-static void sc_s2(void)
+/** @brief Drain during a staged hold: after one present, a scene rendered and its image held for an instant far ahead; the sim disengages and engages, then borrows. */
+static void sc_drain_staged_hold(void)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -728,8 +728,8 @@ static int pump_main(void *arg)
     return 0;
 }
 
-/** @brief S3, swapchain change: a resize the compose sees on the present thread and inline, a minimised window across several acquires, a display change from the pump, out-of-date outcomes, then a borrow. */
-static void sc_s3(void)
+/** @brief Swapchain change: a resize the compose sees on the present thread and inline, a minimised window across several acquires, a display change from the pump, out-of-date outcomes, then a borrow. */
+static void sc_swapchain_change(void)
 {
     static int64_t pump_at;
     drv_begin();
@@ -758,8 +758,8 @@ static void sc_s3(void)
     drv_stop();
 }
 
-/** @brief S4, ring pressure (ring of 3): a slowed present thread while the producer publishes faster; supersede at pick and ring-full refusal. */
-static void sc_s4(void)
+/** @brief Ring pressure (ring of 3): a slowed present thread while the producer publishes faster; supersede at pick and ring-full refusal. */
+static void sc_ring_pressure(void)
 {
     setenv("OPENPETE_PRESENT_STALL_MS", "3", 1);
     drv_begin();
@@ -772,8 +772,8 @@ static void sc_s4(void)
     drv_stop();
 }
 
-/** @brief S5, discontinuity: the guest-discontinuity flush concurrent with the present thread's pick and render. */
-static void sc_s5(void)
+/** @brief Discontinuity flush: the guest-discontinuity flush concurrent with the present thread's pick and render. */
+static void sc_discontinuity_flush(void)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -787,15 +787,15 @@ static void sc_s5(void)
     drv_stop();
 }
 
-/** @brief S5u: S5 with renders made at their instant straight to the swapchain (OPENPETE_PT_STAGED=0). */
-static void sc_s5u(void)
+/** @brief Discontinuity flush with renders made at their instant straight to the swapchain (OPENPETE_PT_STAGED=0). */
+static void sc_discontinuity_flush_unstaged(void)
 {
     setenv("OPENPETE_PT_STAGED", "0", 1);
-    sc_s5();
+    sc_discontinuity_flush();
 }
 
-/** @brief S6, stop: deactivation then quit while the present thread waits on a flip (present timing) or sleeps toward an instant. */
-static void sc_s6(void)
+/** @brief Stop while waiting: deactivation then quit while the present thread waits on a flip (present timing) or sleeps toward an instant. */
+static void sc_stop_waiting(void)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -805,8 +805,8 @@ static void sc_s6(void)
     drv_stop();
 }
 
-/** @brief S7, device loss: a publish, a borrow with an inline present and a stop, with device loss offered at every modelled call. */
-static void sc_s7(void)
+/** @brief Device loss: a publish, a borrow with an inline present and a stop, with device loss offered at every modelled call. */
+static void sc_device_loss(void)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -820,8 +820,8 @@ static void sc_s7(void)
     drv_stop();
 }
 
-/** @brief S8, acquire-first order: the first staged present is refused (its acquire times out twice), so the next renders are made on images acquired before them, across a borrow. */
-static void sc_s8(void)
+/** @brief Acquire-first order: the first staged present is refused (its acquire times out twice), so the next renders are made on images acquired before them, across a borrow. */
+static void sc_acquire_first(void)
 {
     fakevk_force(FK_CALL_ACQUIRE, 0, VK_TIMEOUT);
     fakevk_force(FK_CALL_ACQUIRE, 1, VK_TIMEOUT);
@@ -839,8 +839,8 @@ static void sc_s8(void)
     drv_stop();
 }
 
-/** @brief SR, random clients (PCT soak only): a long sequence of client actions drawn by uniform choices: publish, sleep, borrow with an inline present, disengage and engage, flush, a window resize, a minimised window. */
-static void sc_sr(void)
+/** @brief Random clients (PCT soak only): a long sequence of client actions drawn by uniform choices: publish, sleep, borrow with an inline present, disengage and engage, flush, a window resize, a minimised window. */
+static void sc_random_clients(void)
 {
     drv_begin();
     int w = 1280;
@@ -883,28 +883,37 @@ typedef struct pt_scenario {
 #define GPU_DEFAULT { 200000 }, 1, 2083333
 #define FENCE_BOUND_NS 500000000LL
 static const pt_scenario k_scenarios[] = {
-    { "S1", sc_s1, 48, 1, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 1 },
-    { "S1b", sc_s1b, 48, 1, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 1 },
-    { "S2", sc_s2, 48, 1, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 1 },
-    { "S3", sc_s3, 48, 1, 1, 0, 3000000000LL,
+    { "borrow_asleep", sc_borrow_asleep, 48, 1, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 1 },
+    { "borrow_asleep_no_inline", sc_borrow_asleep_no_inline, 48, 1, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 1 },
+    { "drain_staged_hold", sc_drain_staged_hold, 48, 1, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 1 },
+    { "swapchain_change", sc_swapchain_change, 48, 1, 1, 0, 3000000000LL,
       { { [FK_CALL_ACQUIRE] = FK_OUT_OUT_OF_DATE | FK_OUT_SUBOPTIMAL,
           [FK_CALL_PRESENT] = FK_OUT_OUT_OF_DATE | FK_OUT_SUBOPTIMAL }, GPU_DEFAULT }, 0 },
-    { "S4", sc_s4, 3, 2, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 0 },
-    { "S5", sc_s5, 48, 2, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 0 },
-    { "S5u", sc_s5u, 48, 2, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 0 },
-    { "S6", sc_s6, 48, 2, 1, 0, 2000000000LL, { { 0 }, { 200000, FENCE_BOUND_NS + 1 }, 2, 2083333 }, 0 },
-    { "S7", sc_s7, 48, 1, 1, 0, 3000000000LL,
+    { "ring_pressure", sc_ring_pressure, 3, 2, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 0 },
+    { "discontinuity_flush", sc_discontinuity_flush, 48, 2, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 0 },
+    { "discontinuity_flush_unstaged", sc_discontinuity_flush_unstaged, 48, 2, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 0 },
+    { "stop_waiting", sc_stop_waiting, 48, 2, 1, 0, 2000000000LL, { { 0 }, { 200000, FENCE_BOUND_NS + 1 }, 2, 2083333 }, 0 },
+    { "device_loss", sc_device_loss, 48, 1, 1, 0, 3000000000LL,
       { { [FK_CALL_ACQUIRE] = FK_OUT_DEVICE_LOST, [FK_CALL_SUBMIT] = FK_OUT_DEVICE_LOST,
           [FK_CALL_PRESENT] = FK_OUT_DEVICE_LOST, [FK_CALL_FENCE_WAIT] = FK_OUT_DEVICE_LOST,
           [FK_CALL_PRESENT_WAIT] = FK_OUT_DEVICE_LOST }, GPU_DEFAULT }, 1 },
-    { "S8", sc_s8, 48, 2, 1, 0, 3000000000LL, { { 0 }, GPU_DEFAULT }, 0 },
-    { "SR", sc_sr, 0, 0, 0, 0, 30000000000LL,
+    { "acquire_first", sc_acquire_first, 48, 2, 1, 0, 3000000000LL, { { 0 }, GPU_DEFAULT }, 0 },
+    { "random_clients", sc_random_clients, 0, 0, 0, 0, 30000000000LL,
       { { [FK_CALL_ACQUIRE] = FK_OUT_OUT_OF_DATE | FK_OUT_SUBOPTIMAL,
           [FK_CALL_PRESENT] = FK_OUT_OUT_OF_DATE | FK_OUT_SUBOPTIMAL }, GPU_DEFAULT }, 1 },
 };
 enum { N_SCENARIOS = (int)(sizeof k_scenarios / sizeof k_scenarios[0]) };
 
 static const pt_scenario *g_sc;
+
+/** @brief Find a scenario by name, in any ring size.
+ * @param name The name.
+ * @return The scenario, or NULL when none has that name. */
+static const pt_scenario *scenario_named(const char *name)
+{
+    for (int i = 0; i < N_SCENARIOS; i++) if (!strcmp(k_scenarios[i].name, name)) return &k_scenarios[i];
+    return NULL;
+}
 
 /** @brief Attribute the scheduler's own failures to P-DRAIN: a deadlock anywhere, a passed horizon or step limit inside a drain.
  * @param msg The failure message, rewritten in place.
@@ -1133,7 +1142,7 @@ static int soak_failure(const pt_opts *o, const pt_scenario *sc, int timing, uin
     return race ? 0 : 1;
 }
 
-/** @brief One soak worker: PCT over every scenario of the shipped ring and SR in turn, until the deadline.
+/** @brief One soak worker: PCT over every scenario of the shipped ring and random_clients in turn, until the deadline.
  * @param o Options (seed, out, expect_race).
  * @param timing The present-timing configuration.
  * @param worker The worker's index, mixed into each seed.
@@ -1220,16 +1229,16 @@ typedef struct pt_mutant {
 } pt_mutant;
 
 static const pt_mutant k_mutants[] = {
-    { "M1",  "M1", "S1",  0, PB(P_OWNER) | PB(P_CLAIM) },
-    { "M1b", "M1", "S1b", 0, PB(P_CLAIM) },
-    { "M2",  "M2", "S6",  0, PB(P_RETIRE) },
-    { "M3",  "M3", "S2",  0, PB(P_ACQUIRE) },
-    { "M4",  "M4", "S2",  0, PB(P_OWNER) },
-    { "M5",  "M5", "S3",  0, PB(P_OWNER) },
-    { "M6",  "M6", "S1",  0, PB(P_PRESENT) },
-    { "M7",  "M7", "S1",  0, PB(P_ACCOUNT) },
-    { "M8",  "M8", "S2",  0, PB(P_DRAIN) },
-    { "M9",  "M9", "S8",  0, PB(P_SERVE) },
+    { "claim_by_flag",              "claim_by_flag",              "borrow_asleep",           0, PB(P_OWNER) | PB(P_CLAIM) },
+    { "claim_by_flag_no_inline",    "claim_by_flag",              "borrow_asleep_no_inline", 0, PB(P_CLAIM) },
+    { "retire_early",               "retire_early",               "stop_waiting",            0, PB(P_RETIRE) },
+    { "drain_no_release",           "drain_no_release",           "drain_staged_hold",       0, PB(P_ACQUIRE) },
+    { "drain_no_busy_wait",         "drain_no_busy_wait",         "drain_staged_hold",       0, PB(P_OWNER) },
+    { "drain_release_before_claim", "drain_release_before_claim", "swapchain_change",        0, PB(P_OWNER) },
+    { "drain_no_flush",             "drain_no_flush",             "borrow_asleep",           0, PB(P_PRESENT) },
+    { "census_no_presented",        "census_no_presented",        "borrow_asleep",           0, PB(P_ACCOUNT) },
+    { "busy_exit_no_signal",        "busy_exit_no_signal",        "drain_staged_hold",       0, PB(P_DRAIN) },
+    { "kick_no_signal",             "kick_no_signal",             "acquire_first",           0, PB(P_SERVE) },
 };
 enum { N_MUTANTS = (int)(sizeof k_mutants / sizeof k_mutants[0]) };
 _Static_assert((int)N_MUTANTS <= (int)PT_MAX_MUTANTS, "PT_MAX_MUTANTS too small");
@@ -1272,8 +1281,7 @@ static int run_mutant(const pt_opts *o)
     for (int i = 0; i < N_MUTANTS; i++) if (!strcmp(k_mutants[i].name, o->mutant)) mi = i;
     if (mi < 0) { fprintf(stderr, "present_sched: no negative control %s\n", o->mutant); return 2; }
     const pt_mutant *m = &k_mutants[mi];
-    const pt_scenario *sc = NULL;
-    for (int i = 0; i < N_SCENARIOS; i++) if (!strcmp(k_scenarios[i].name, m->scenario)) sc = &k_scenarios[i];
+    const pt_scenario *sc = scenario_named(m->scenario);
     if (!sc || sc->ring != SCENE_RING) { fprintf(stderr, "present_sched: %s: scenario %s not in this binary\n", m->name, m->scenario); return 2; }
     g_report = g_ctr;
     g_ctr = mmap(NULL, sizeof(pt_counters), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
@@ -1357,16 +1365,16 @@ static int mutant_verdict(void)
         const pt_mut_result *r = &g_ctr->mut[i];
         const pt_mutant *m = &k_mutants[i];
         prop_set(m->expect, set, sizeof set);
-        if (!r->ran) { printf("  %-4s %-20s NOT RUN\n", m->name, set); bad = 1; continue; }
+        if (!r->ran) { printf("  %-26s %-20s NOT RUN\n", m->name, set); bad = 1; continue; }
         if (r->prop <= 0) {
-            printf("  %-4s %-20s %s (%ld schedules, %s %s, %.2f s)%s%s\n", m->name, set,
+            printf("  %-26s %-20s %s (%ld schedules, %s %s, %.2f s)%s%s\n", m->name, set,
                    r->prop < 0 ? "FAILED UNATTRIBUTED" : "UNDETECTED", r->schedules, m->scenario,
                    m->timing ? "timing=1" : "timing=0", r->wall_s, r->prop < 0 ? ": " : "", r->prop < 0 ? r->msg : "");
             bad = 1;
             continue;
         }
         detecting |= PB(r->prop - 1);
-        printf("  %-4s %-20s %-10s (%d,%d) %8ld %6ld %7.2f s  %s timing=%d: %s\n", m->name, set,
+        printf("  %-26s %-20s %-10s (%d,%d) %8ld %6ld %7.2f s  %s timing=%d: %s\n", m->name, set,
                k_prop_names[r->prop - 1], r->p, r->d, r->schedules, r->trace_lines, r->wall_s, m->scenario, m->timing, r->msg);
     }
     for (int p = 0; p < P_COUNT; p++)
@@ -1532,7 +1540,7 @@ int main(int argc, char **argv)
 {
     pt_opts o;
     if (parse(argc, argv, &o) != 0) {
-        fprintf(stderr, "usage: %s [--out DIR] [--only Sn] [--timing 0|1] [--replay CHOICES] [--jobs N] "
+        fprintf(stderr, "usage: %s [--out DIR] [--only SCENARIO] [--timing 0|1] [--replay CHOICES] [--jobs N] "
                         "[--max-schedules N] [--p P] [--d D] [--counters FILE] [--sub BINARY] [--mutants DIR] "
                         "[--mutant NAME] [--soak SECONDS] [--seed N] [--tsan-control BINARY] [--expect-race] "
                         "[--no-verdict]\n", argv[0]);
@@ -1552,6 +1560,10 @@ int main(int argc, char **argv)
         const int nm = sched_tsan_markers(code, 3, maps, 3);
         if (nm < 0) return 2;
         printf("present_sched: race detector: %d sched: once|unordered marker(s) in the protocol sources\n", nm);
+    }
+    if (o.only && !scenario_named(o.only)) {
+        fprintf(stderr, "present_sched: --only %s names no scenario\n", o.only);
+        return 2;
     }
     if (o.replay && (!o.only || o.timing < 0)) {
         fprintf(stderr, "present_sched: --replay needs --only and --timing\n");

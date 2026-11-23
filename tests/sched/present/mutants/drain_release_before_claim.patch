@@ -1,4 +1,4 @@
-M5: The drain releases the held swapchain image before it claims the display.
+The drain releases the held swapchain image before it claims the display.
 
 --- a/core/runtime/present_thread.c
 +++ b/core/runtime/present_thread.c

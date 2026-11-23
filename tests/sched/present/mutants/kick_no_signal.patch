@@ -1,4 +1,4 @@
-M9: The kick does not signal the present thread and the idle wait has no timeout: a published scene waits for an unrelated wake.
+The kick does not signal the present thread and the idle wait has no timeout: a published scene waits for an unrelated wake.
 
 --- a/core/runtime/present_thread.c
 +++ b/core/runtime/present_thread.c

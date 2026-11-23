@@ -1,4 +1,4 @@
-M1: The claim keyed on a flag reset only when the thread observes active == 0, as before activation numbers: a borrow and return that complete while the thread waits with the mutex released leave the flag set and the claim skipped.
+The claim is keyed on a flag reset only when the thread observes active == 0, not on the activation number: a borrow and return that complete while the thread waits with the mutex released leave the flag set and the claim skipped.
 
 --- a/core/runtime/present_thread.c
 +++ b/core/runtime/present_thread.c

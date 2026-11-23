@@ -1,4 +1,4 @@
-M8: Leaving a busy bracket does not signal idle_cv: a drain waiting for the bracket is never woken.
+Leaving a busy bracket does not signal idle_cv: a drain waiting for the bracket is never woken.
 
 --- a/core/runtime/present_thread.c
 +++ b/core/runtime/present_thread.c

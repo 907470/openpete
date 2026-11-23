@@ -134,12 +134,13 @@ endif()
 # Negative controls: each mutant is a unified diff applied to a copy of one protocol file at build
 # time (apply_mutant.py refuses a patch that no longer applies, naming the mutant); its binary links
 # the mutated copy in place of the original. Mutants of present_thread.c and of the scene ring.
-set(PT_MUTANTS_PT M1 M3 M4 M5 M6 M8 M9)
-set(PT_MUTANTS_RING M2 M7)
+set(PT_MUTANTS_PT claim_by_flag drain_no_release drain_no_busy_wait drain_release_before_claim
+    drain_no_flush busy_exit_no_signal kick_no_signal)
+set(PT_MUTANTS_RING retire_early census_no_presented)
 # The race detector's controls (present_thread.c, noise build only): a lock removed around a protocol access.
 set(PT_MUTANTS_NOISE)
 if(OPENPETE_SCHED_HAVE_TSAN)
-    set(PT_MUTANTS_NOISE M10)
+    set(PT_MUTANTS_NOISE engage_unlocked)
 endif()
 set(PT_MUT_BIN ${CMAKE_CURRENT_BINARY_DIR}/mutants)
 file(MAKE_DIRECTORY ${PT_MUT_BIN})
@@ -232,21 +233,21 @@ add_test(NAME sched_seams_selftest
          COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/fences/tests/test_sched_seams.py)
 set_tests_properties(sched_seams_selftest PROPERTIES LABELS "fence" SKIP_RETURN_CODE 64)
 
-# The PCT soak (label slow): every scenario of the shipped ring and the random-client scenario SR,
+# The PCT soak (label slow): every scenario of the shipped ring and the random_clients scenario,
 # 2,000-step change-point range, ten minutes, base seed from the date; run at the end of a change to
 # a protocol file.
 add_test(NAME present_sched_soak
          COMMAND present_sched --out ${CMAKE_CURRENT_BINARY_DIR}/soak --soak 600)
 set_tests_properties(present_sched_soak PROPERTIES LABELS "slow" TIMEOUT 900)
 
-# The race-detector soak (label slow): PCT over every scenario of the shipped ring and SR under the real
-# ThreadSanitizer, every report classified by its sched: marker or failing the schedule; then the control
-# M10's soak must report its race, or the run is VACUOUS. The sanitizer's shadow layout needs the
-# kernel's address-space randomisation off for the process (setarch -R).
+# The race-detector soak (label slow): PCT over every scenario of the shipped ring and random_clients
+# under the real ThreadSanitizer, every report classified by its sched: marker or failing the schedule;
+# then the control engage_unlocked's soak must report its race, or the run is VACUOUS. The sanitizer's
+# shadow layout needs the kernel's address-space randomisation off for the process (setarch -R).
 if(OPENPETE_SCHED_HAVE_TSAN)
     add_test(NAME present_sched_tsan
              COMMAND setarch ${CMAKE_SYSTEM_PROCESSOR} -R $<TARGET_FILE:present_sched_tsan>
                      --out ${CMAKE_CURRENT_BINARY_DIR}/tsan --soak 60
-                     --tsan-control $<TARGET_FILE:present_sched_tsan_M10>)
+                     --tsan-control $<TARGET_FILE:present_sched_tsan_engage_unlocked>)
     set_tests_properties(present_sched_tsan PROPERTIES LABELS "slow" TIMEOUT 300)
 endif()
