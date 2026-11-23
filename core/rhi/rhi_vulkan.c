@@ -2313,7 +2313,7 @@ static VkResult fault_swapchain_create(rhi_device *dev, const VkSwapchainCreateI
  * and handed to the driver as oldSwapchain, so the window passes from the old
  * swapchain to the new one without a moment in which neither holds it; the
  * caller destroys @p old afterwards. dev->swapchain is written only on
- * success.
+ * success, and with it the present-id sequence restarts at 1.
  * @param dev Windowed device.
  * @param old The swapchain being replaced, or VK_NULL_HANDLE.
  * @return VK_SUCCESS; the vkCreateSwapchainKHR result when it fails;
@@ -2380,6 +2380,12 @@ static VkResult create_swapchain(rhi_device *dev, VkSwapchainKHR old)
         return r;
     }
     dev->swapchain = sc;
+    /* Present ids belong to a swapchain: every new one starts its sequence at
+     * 1 (0 is VK_KHR_present_id's "no id", which no vkWaitForPresentKHR can
+     * confirm), and any id outstanding against a replaced one never completes. */
+    dev->present_id_next = 1;
+    dev->present_id_submitted = 0;
+    dev->present_id_seen = 0;
 
     dev->sc_format = pick.format;
     dev->sc_extent = extent;
@@ -3626,7 +3632,7 @@ static bool swapchain_replace(rhi_device *dev)
 
 /** @brief Rebuild the swapchain and every object sized to it, restarting the acquire and present synchronization.
  *
- * Waits for the device to go idle, resets the present-id counters, replaces
+ * Waits for the device to go idle, replaces
  * every acquire semaphore and slot fence (a binary semaphore left signaled
  * cannot be reused, and a fence left unsignaled would stall its next wait),
  * clears the staged-present acquire flag, destroys the swapchain-sized
@@ -3653,11 +3659,6 @@ static bool recreate(rhi_device *dev)
     const VkExtent2D pxt_old = dev->sc_extent;
     const uint64_t pxt_t0 = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
     vkDeviceWaitIdle(dev->device);
-    /* Present ids belong to a swapchain. The new one starts its sequence over,
-     * and any id still outstanding against the old one can never complete. */
-    dev->present_id_next = 1;
-    dev->present_id_submitted = 0;
-    dev->present_id_seen = 0;
     /* The acquire semaphores and slot fences start over too. A binary
      * acquire semaphore can be left ARMED with no waiter (an acquire whose
      * frame was refused or superseded before its submit), and Vulkan has no

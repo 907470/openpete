@@ -109,7 +109,7 @@ int      openpete_present_thread_lattice(int64_t *base_ns, double *period_ns);
 void     openpete_present_thread_report(void);
 /** @brief Return the number of scenes the present thread has presented.
  *
- * @return The count, read without the thread's mutex. */
+ * @return The count, a relaxed atomic load without the thread's mutex, safe on any thread. */
 unsigned openpete_present_thread_presents(void);
 /** @brief Return what one present costs the present thread, render plus present step, as a moving average.
  *

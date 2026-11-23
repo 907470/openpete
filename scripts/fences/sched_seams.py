@@ -86,6 +86,7 @@ ATOMICS = {
         "s_pt.render_ema": ("excluded", "relaxed cost average the planner reads"),
         "s_pt.present_ema": ("excluded", "relaxed cost average the planner reads"),
         "s_pt.service_ema": ("excluded", "relaxed cost average the planner reads"),
+        "s_pt.presents": ("watched", "sched_watch_guarded(&s_pt,"),
         "s_pt.picks": ("excluded", "relaxed statistic"),
         "s_pt.starved": ("excluded", "relaxed statistic"),
         "re:op_prof_id_\\d+": ("once", "profiler zone id, registered on first use"),

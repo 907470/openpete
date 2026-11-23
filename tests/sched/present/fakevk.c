@@ -250,6 +250,7 @@ typedef struct fk_sc {
     uint32_t n;
     int retired, destroyed;
     uint64_t flipped_id;     /* newest present id on screen */
+    uint64_t presented_id;   /* newest present id queued */
     int64_t last_flip_at;    /* the latest flip scheduled */
     int shown;               /* image on screen, or -1 */
     int inside;              /* thread inside a call on it, or -1 */
@@ -751,6 +752,28 @@ static VkResult f_AcquireNextImageKHR(VkDevice d, VkSwapchainKHR s, uint64_t to,
     fk_end(&c, NULL);
     return r;
 }
+/** @brief Read a present's VkPresentIdKHR and record it on the swapchain, checking P-PRESENT's id clause.
+ *
+ * A present that carries the id chain carries an id vkWaitForPresentKHR can
+ * confirm: nonzero (0 is VK_KHR_present_id's "no id") and above every id
+ * queued on the swapchain before it.
+ * @param sc The swapchain presented to.
+ * @param pi The present.
+ * @param act Nonzero inside a schedule, where a violation fails it.
+ * @return The present id, 0 when the present carries none. */
+static uint64_t present_id_take(fk_sc *sc, const VkPresentInfoKHR *pi, int act)
+{
+    for (const VkBaseInStructure *p = pi->pNext; p; p = p->pNext) {
+        if (p->sType != VK_STRUCTURE_TYPE_PRESENT_ID_KHR) continue;
+        const uint64_t id = ((const VkPresentIdKHR *)p)->pPresentIds[0];
+        if (act && id <= sc->presented_id)
+            sched_fail("P-PRESENT: vkQueuePresentKHR carries present id %llu after id %llu on its swapchain (ids start "
+                       "at 1 and increase)", (unsigned long long)id, (unsigned long long)sc->presented_id);
+        if (id > sc->presented_id) sc->presented_id = id;
+        return id;
+    }
+    return 0;
+}
 static VkResult f_QueuePresentKHR(VkQueue q, const VkPresentInfoKHR *pi)
 {
     (void)q; R(vkQueuePresentKHR);
@@ -770,9 +793,7 @@ static VkResult f_QueuePresentKHR(VkQueue q, const VkPresentInfoKHR *pi)
         if (sm->pending && sm->pending->done_at > ready) ready = sm->pending->done_at;
         sm->signaled = 0; sm->pending = NULL;
     }
-    uint64_t id = 0;
-    for (const VkBaseInStructure *p = pi->pNext; p; p = p->pNext)
-        if (p->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR) id = ((const VkPresentIdKHR *)p)->pPresentIds[0];
+    const uint64_t id = present_id_take(sc, pi, act);
     VkResult r = fk_outcome(FK_CALL_PRESENT, FK_OUT_SUBOPTIMAL | FK_OUT_OUT_OF_DATE | FK_OUT_DEVICE_LOST, "present");
     if (r == VK_SUCCESS && (sc->retired || sc->destroyed)) r = VK_ERROR_OUT_OF_DATE_KHR;
     if (s_hooks.shown && act) {

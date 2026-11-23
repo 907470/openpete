@@ -319,7 +319,7 @@ static void track_staged(void)
     }
     const struct { unsigned now, *last; pt_bin bin; } c[4] = {
         { s_pt.discarded, &g.discarded, B_DISCARDED }, { s_pt.late_drops, &g.drops, B_DROPPED },
-        { s_pt.refused, &g.refused, B_REFUSED_PRESENT }, { s_pt.presents, &g.presents, B_PRESENTED },
+        { s_pt.refused, &g.refused, B_REFUSED_PRESENT }, { atomic_load_explicit(&s_pt.presents, memory_order_relaxed), &g.presents, B_PRESENTED },
     };
     for (int k = 0; k < 4; k++) {
         while (*c[k].last < c[k].now) {
@@ -653,8 +653,9 @@ static void quiesce_checks(void)
         prop_fail(P_ACCOUNT, "ring census superseded %u, harness binned %u", s_ring_census.superseded, n[B_SUPERSEDED]);
     if (s_ring_census.presented != rendered)
         prop_fail(P_ACCOUNT, "ring census presented %u, harness saw %u scenes rendered", s_ring_census.presented, rendered);
-    if (s_pt.presents != n[B_PRESENTED] + n[B_PRESENTED_DIRECT])
-        prop_fail(P_ACCOUNT, "present thread counted %u presents, harness binned %u", s_pt.presents,
+    const unsigned presents = atomic_load_explicit(&s_pt.presents, memory_order_relaxed);
+    if (presents != n[B_PRESENTED] + n[B_PRESENTED_DIRECT])
+        prop_fail(P_ACCOUNT, "present thread counted %u presents, harness binned %u", presents,
                   n[B_PRESENTED] + n[B_PRESENTED_DIRECT]);
 }
 
@@ -1019,10 +1020,6 @@ static int config_setup(int timing)
     const void *chg = fakevk_display_changed_addr();
     if (!chg) { fprintf(stderr, "present_sched: the display-change flag was not found\n"); return -1; }
     sched_watch(chg, 1, "dev->display_changed");
-    /* One inline present before the first fork, as boot presents before eager production starts:
-     * every schedule starts from a device that has presented. */
-    openpete_native_display_claim();
-    pt_inline_compose(0x80000000u);
     return 0;
 }
 

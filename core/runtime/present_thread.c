@@ -77,7 +77,10 @@ static struct {
     openpete_present_thread_cb cb; void *cb_ctx;
 
     /* census */
-    unsigned  presents;       /* scenes that went out */
+    /* Scenes that went out. Written by this thread under mx, read without mx
+     * by the sim thread's planner (openpete_present_thread_presents): a
+     * relaxed atomic. */
+    _Atomic unsigned presents;
     unsigned  presents_inter; /* of those, scenes of kind OP_PACE_INTERMEDIATE */
     unsigned  refused;        /* compose ran but the swapchain declined */
     unsigned  late;           /* compose instant already passed when picked */
@@ -617,7 +620,7 @@ static void pt_busy_leave(void)
  * @param kind Scene kind of the present. */
 static void pt_count_present_locked(int kind)
 {
-    s_pt.presents++;
+    atomic_fetch_add_explicit(&s_pt.presents, 1u, memory_order_relaxed);
     s_pt.presents_inter += kind == OP_PACE_INTERMEDIATE;
     if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--;
     else s_pt.flip_pending = 1;
@@ -1036,12 +1039,13 @@ void openpete_present_thread_stop(void)
 
 void openpete_present_thread_report(void)
 {
-    if (!s_pt.presents && !s_pt.refused) return;
+    const unsigned presents = atomic_load_explicit(&s_pt.presents, memory_order_relaxed);
+    if (!presents && !s_pt.refused) return;
     OPL_INFO_F("present-thread",
                "%u scene(s) presented, %u refused by the swapchain, %u render(s) refused, %u staged frame(s) discarded; "
                "%u presented late (%.3f ms mean, %.3f ms max), %u dropped to drain the queue; render %.3f ms ema, present step %.3f ms ema; "
                "%u drain(s), %.3f ms waited total, %.3f ms max; %u intermediate scene(s) presented",
-               s_pt.presents, s_pt.refused, s_pt.render_refused, s_pt.discarded, s_pt.late,
+               presents, s_pt.refused, s_pt.render_refused, s_pt.discarded, s_pt.late,
                s_pt.late ? (double)s_pt.late_ns / s_pt.late / 1e6 : 0.0,
                (double)s_pt.late_max_ns / 1e6, s_pt.late_drops,
                (double)pt_ema(&s_pt.render_ema) / 1e6, (double)pt_ema(&s_pt.present_ema) / 1e6, s_pt.drains,
@@ -1067,7 +1071,7 @@ void openpete_present_thread_report(void)
     openpete_native_scene_ring_report();
 }
 
-unsigned openpete_present_thread_presents(void) { return s_pt.presents; }
+unsigned openpete_present_thread_presents(void) { return atomic_load_explicit(&s_pt.presents, memory_order_relaxed); }
 /* What one present costs this thread, compose to submit, EMA. With vsync
  * off this is the display's real throughput ceiling; the planner spaces
  * targets no denser than it, or most scenes are made only to be superseded. */
