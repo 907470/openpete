@@ -1389,49 +1389,86 @@ static void test_replan(int print)
  * pick, two retired scenes per span) arms after the base need; a starved
  * pick while capped raises the slack, and one while uncapped disarms and
  * doubles the next need. */
-static void test_cap_gate(void)
+/* op_eager_cap_step() rows: picks, starved, retired, capped, then busy as
+ * service and wall time; S10 = 10 ms service, so 3 picks over W30 = 30 ms
+ * is busy 1.0. */
+#define S10 (10 * MS)
+#define W30 (30 * MS)
+
+/** @brief Check the presenter cap gate's arming: behind blocks arm it, a keeping-up presenter or no retired scene never does. */
+static void test_cap_gate_arming(void)
 {
     op_eager_cap_t c = {0};
     /* Keeping up: three of four picks starved (the least starved fraction of
      * a presenter that keeps up at 480 Hz), a scene retired per span. */
-    for (int k = 0; k < 400; k++) op_eager_cap_step(&c, 12, 9, 1, 0, 16, 256);
+    for (int k = 0; k < 400; k++) op_eager_cap_step(&c, 12, 9, 1, 0, 2 * MS, 25 * MS, 16, 256);
     check(!c.armed && c.arms == 0, "cap gate: a presenter that starves three picks in four never arms");
     memset(&c, 0, sizeof c);
-    for (int k = 0; k < 400; k++) op_eager_cap_step(&c, 12, 0, 0, 0, 16, 256);
+    for (int k = 0; k < 400; k++) op_eager_cap_step(&c, 12, 0, 0, 0, 2 * MS, 25 * MS, 16, 256);
     check(!c.armed, "cap gate: no retired scene, no arming");
     memset(&c, 0, sizeof c);
     /* Behind: about one pick in ten starved (an acquire with no image-fence
      * wait, a pick ahead of the nearest scene), three scenes retired per span. */
-    for (int k = 0; k < 15; k++) op_eager_cap_step(&c, 3, k % 3 == 0, 3, 0, 16, 256);
+    for (int k = 0; k < 15; k++) op_eager_cap_step(&c, 3, k % 3 == 0, 3, 0, S10, W30, 16, 256);
     check(!c.armed, "cap gate: 15 spans of backlog do not arm at need 16");
-    op_eager_cap_step(&c, 0, 0, 0, 0, 16, 256);
+    op_eager_cap_step(&c, 0, 0, 0, 0, S10, W30, 16, 256);
     check(!c.armed && c.b_spans == 15, "cap gate: a span with no pick carries no evidence");
-    op_eager_cap_step(&c, 3, 0, 3, 0, 16, 256);
+    op_eager_cap_step(&c, 3, 0, 3, 0, S10, W30, 16, 256);
     check(c.armed && c.arms == 1 && c.slack == 0, "cap gate: the 16th backlog span arms despite isolated starved picks");
     memset(&c, 0, sizeof c);
-    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, k < 13, 3, 0, 16, 256);
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, k < 13, 3, 0, S10, W30, 16, 256);
     check(!c.armed, "cap gate: a block with more than a quarter of its picks starved does not arm");
-    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, 0, 3, 0, 16, 256);
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, 0, 3, 0, S10, W30, 16, 256);
     check(c.armed, "cap gate: the next behind block arms");
-    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, k < 16, 0, 1, 16, 256);
+}
+
+/** @brief Check the armed presenter cap gate: capped blocks judged by busy, uncapped ones by starved picks, the slack and the need. */
+static void test_cap_gate_armed(void)
+{
+    op_eager_cap_t c = {0};
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, 0, 3, 0, S10, W30, 16, 256);
+    check(c.armed, "cap gate: armed for the armed-block rows");
+    /* A saturated presenter under the cap: 9.4 picks per span at 3.6 ms
+     * service over 34 ms, busy 1.0, two picks in three starved. */
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 9 + (k % 5 < 2), 6, 0, k < 14, 3600000, 34 * MS, 16, 256);
+    check(c.armed && c.disarms == 0 && c.slack == 0,
+          "cap gate: a capped saturated block stays armed whatever its starved picks, slack unchanged");
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, 3, 0, 1, S10, 35 * MS, 16, 256);
     check(c.armed && c.slack == 1 && c.loosened == 1,
-          "cap gate: a capped block with a third of its picks starved raises the slack by one");
-    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, 0, 2, 1, 16, 256);
-    check(c.slack == 0, "cap gate: a clean capped block retiring two scenes per span gives one back");
-    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, k < 16, 0, 0, 16, 256);
+          "cap gate: a capped block busy 0.86 raises the slack by one");
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, 2, 1, 1, S10, W30, 16, 256);
+    check(c.armed && c.slack == 0,
+          "cap gate: a saturated capped block retiring a scene per span gives one back whatever its starved picks");
+    c.slack = 1;
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, 2, 0, 1, S10, W30, 16, 256);
+    check(c.slack == 1, "cap gate: a saturated capped block retiring under a scene per span keeps the slack");
+    c.slack = 0;
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, k < 16, 0, 0, S10, W30, 16, 256);
     check(!c.armed && c.disarms == 1 && c.need == 32 && c.slack == 0,
           "cap gate: an uncapped block with a third of its picks starved disarms and doubles the need");
-    for (int k = 0; k < 31; k++) op_eager_cap_step(&c, 2, 0, 2, 0, 16, 256);
+    for (int k = 0; k < 31; k++) op_eager_cap_step(&c, 2, 0, 2, 0, S10, 20 * MS, 16, 256);
     check(!c.armed, "cap gate: after a disarm 31 spans do not arm at need 32");
-    op_eager_cap_step(&c, 2, 0, 2, 0, 16, 256);
+    op_eager_cap_step(&c, 2, 0, 2, 0, S10, 20 * MS, 16, 256);
     check(c.armed, "cap gate: the 32nd span re-arms");
-    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 2, 2, 1, 1, 16, 256);
-    check(!c.armed && c.disarms == 2 && c.need == 64, "cap gate: a capped block with every pick starved disarms");
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 2, 0, 1, 1, S10, 40 * MS, 16, 256);
+    check(!c.armed && c.disarms == 2 && c.need == 64,
+          "cap gate: a capped idle block (busy 0.5) disarms with no starved pick");
     memset(&c, 0, sizeof c);
-    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 2, 0, 2, 0, 16, 256);
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 3, 0, 3, 0, S10, W30, 16, 256);
+    check(c.armed, "cap gate: armed for the keep-up row");
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 4, 3, 0, 0, 2 * MS, 8 * MS + MS / 3, 16, 256);
+    check(!c.armed && c.disarms == 1,
+          "cap gate: an uncapped keep-up block (three picks in four starved, busy 0.96) disarms");
+    memset(&c, 0, sizeof c);
+    for (int k = 0; k < 16; k++) op_eager_cap_step(&c, 2, 0, 2, 0, S10, 20 * MS, 16, 256);
     c.need = 64;
-    for (int k = 0; k < 256; k++) op_eager_cap_step(&c, 2, 0, 1, 1, 16, 256);
+    for (int k = 0; k < 256; k++) op_eager_cap_step(&c, 2, 0, 1, 1, S10, 20 * MS, 16, 256);
     check(c.armed && c.need == 16, "cap gate: a long armed run restores the base need");
+}
+
+/** @brief Check the presenter cap count: consumption over the span at the service time, plus the slack, plus one. */
+static void test_cap_count(void)
+{
     int64_t sp = 0;
     check(op_eager_cap_count(33 * MS, 15 * MS, 0, 48, &sp) == 4 && sp == 11 * MS,
           "cap count: 33 ms at 15 ms service consumes 3, cap 4, spacing 11 ms");
@@ -1460,7 +1497,9 @@ int main(int argc, char **argv)
     test_fill_recovery();
     test_fill_cut_causes();
     test_replan(argc > 1 && !strcmp(argv[1], "replay"));
-    test_cap_gate();
+    test_cap_gate_arming();
+    test_cap_gate_armed();
+    test_cap_count();
     printf("eager_ladder_test: %s\n", g_fail ? "FAIL" : "PASS");
     return g_fail;
 }

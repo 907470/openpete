@@ -150,6 +150,7 @@ static struct {
     unsigned  picks_seen, starved_seen;   /* openpete_present_thread_picks() at the last plan */
     unsigned  sup_seen;               /* openpete_native_scene_ring_superseded() at the last plan */
     unsigned  span_sup;               /* scenes the ring retired unpresented between the last two plans */
+    op_time_t cap_plan_at;            /* op_now() at the last plan; 0 before the first */
     eager_cap_ab_t ab;                /* OPENPETE_EAGER_CAP_AB */
     int       count_spare;            /* OPENPETE_EAGER_COUNT_SPARE: room a clean span leaves, in scenes */
     int       count_runs;             /* OPENPETE_EAGER_COUNT_RUNS: clean spans that give back one scene */
@@ -770,26 +771,31 @@ static op_time_t eager_free_floor(op_time_t grid_period, int with_cap)
     return floor_ns;
 }
 
-/** @brief Step the presenter cap's backlog gate on the present thread's picks, starved picks and the ring's retirements since the previous plan.
+/** @brief Step the presenter cap's backlog gate on the present thread's picks, starved picks, busy time and the ring's retirements since the previous plan.
  *
  * Reads the deltas of openpete_present_thread_picks and
  * openpete_native_scene_ring_superseded, keeps the retirements in span_sup
  * for the EAGER_PLAN record, and steps the gate (op_eager_cap_step) while
- * the world is live, with the cap flag of the span those picks consumed.
- * Counts the spans the cap lowered. Runs at each plan before
- * eager_cap_afford. */
-static void eager_cap_step(void)
+ * the world is live, with the cap flag of the span those picks consumed,
+ * the present thread's service time (openpete_present_thread_service_ns)
+ * and the wall time since the previous plan: the gate's busy fraction is
+ * the picks times service over the wall time of the same spans. Counts
+ * the spans the cap lowered. Runs at each plan before eager_cap_afford.
+ * @param now The plan instant on the op_now() clock. */
+static void eager_cap_step(op_time_t now)
 {
     unsigned picks, starved;
     openpete_present_thread_picks(&picks, &starved);
     const unsigned sup = openpete_native_scene_ring_superseded();
     const unsigned dp = picks - s_eager.picks_seen, dz = starved - s_eager.starved_seen;
+    const op_time_t wall = s_eager.cap_plan_at > 0 ? now - s_eager.cap_plan_at : 0;
+    s_eager.cap_plan_at = now;
     s_eager.span_sup = sup - s_eager.sup_seen;
     s_eager.picks_seen = picks; s_eager.starved_seen = starved; s_eager.sup_seen = sup;
     s_eager.capped_spans += (unsigned)s_eager.span_capped;
     if (s_eager.world_live)
         op_eager_cap_step(&s_eager.cap, dp, dz, s_eager.span_sup, s_eager.span_capped,
-                          EAGER_CAP_ARM_SPANS, EAGER_CAP_ARM_MAX);
+                          openpete_present_thread_service_ns(), wall, EAGER_CAP_ARM_SPANS, EAGER_CAP_ARM_MAX);
 }
 
 /** @brief Cap a span's afford at the scenes the present thread can consume over it, while the backlog gate is armed.
@@ -1074,7 +1080,7 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
 {
     eager_close_span();   /* the previous span's books first */
     eager_cap_ab_step(now);
-    eager_cap_step();
+    eager_cap_step(now);
     /* Precondition check: under eager the host loop keeps the render grid's
      * next slot within one period of now, so this trims nothing. A slot that
      * led by more would leave this tick's span one slot, or none past the
