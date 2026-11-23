@@ -1,0 +1,14 @@
+M5: The drain releases the held swapchain image before it claims the display.
+
+--- a/core/runtime/present_thread.c
++++ b/core/runtime/present_thread.c
+@@ -1012,8 +1012,8 @@
+         SDL_UnlockMutex(s_pt.mx);
+         /* This thread owns the display from here (seam fence) - including
+          * for the release below, which touches the swapchain. */
+-        openpete_native_display_claim();
+         openpete_native_present_stage_release();
++        openpete_native_display_claim();
+         SDL_LockMutex(s_pt.mx);
+     }
+     SDL_UnlockMutex(s_pt.mx);

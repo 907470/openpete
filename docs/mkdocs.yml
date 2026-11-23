@@ -223,6 +223,7 @@ nav:
       - GTE: developer/gte.md
       - GTE trace vs reference: developer/gte-trace-vs-reference.md
       - RAM diff vs pcsx-redux: developer/ram-diff-vs-pcsxr.md
+      - Present-thread harness: developer/present-thread-harness.md
   - Spyro:
       - spyro/index.md
       - Level format: spyro/level-format.md

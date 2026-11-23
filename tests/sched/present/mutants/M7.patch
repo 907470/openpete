@@ -1,0 +1,13 @@
+M7: A scene render that went out is not counted in the ring census.
+
+--- a/core/renderer/native_render.c
++++ b/core/renderer/native_render.c
+@@ -23847,7 +23847,7 @@
+      * `after`": the retirement window is keyed on render frames, whether the
+      * frame went to the swapchain or to a stage image. */
+     SDL_LockMutex(ring_mx());
+-    if (did) { sl->state = SS_PRESENTED; sl->presented_serial = after; s_ring_census.presented++; }
++    if (did) { sl->state = SS_PRESENTED; sl->presented_serial = after; }
+     else      sl->state = SS_FREE;
+     SDL_UnlockMutex(ring_mx());
+     return did;

@@ -61,13 +61,34 @@ static const char *const k_site_names[PT_SITE_COUNT] = {
  * the classification is wrong). */
 static const pt_site k_site_optional[] = { PT_SITE_STATE_UNLOCKED };
 
+enum { PT_MAX_MUTANTS = 16 };
+
+/** One negative control's outcome, written by the mutant's process. */
+typedef struct pt_mut_result {
+    int ran;              /**< the mutant's process ran its exploration */
+    int prop;             /**< detecting property + 1; 0 undetected; -1 a failure no armed property names */
+    int p, d;             /**< bound pair at detection */
+    long schedules;       /**< schedules run until detection (all workers) */
+    long trace_lines;     /**< lines of the failing schedule's trace */
+    double wall_s;        /**< exploration wall time */
+    char msg[240];        /**< the failure message */
+} pt_mut_result;
+
 /** Suite-wide counters, in memory shared by every process of a run. */
 typedef struct pt_counters {
     unsigned long site[PT_SITE_COUNT];
     unsigned long prop_eval[P_COUNT];
     unsigned long drains, drains_multi_bracket;
+    pt_mut_result mut[PT_MAX_MUTANTS];
 } pt_counters;
-static pt_counters *g_ctr;
+static pt_counters *g_ctr;      /* engagement counters of this run */
+static pt_counters *g_report;   /* the suite's shared counters, where a mutant's process writes its result */
+
+/* Properties that fail a schedule; a disarmed property's violation is noted
+ * in the failure message of an armed one instead. A negative control arms
+ * the properties it expects, so each is shown to detect the mutant on its
+ * own, and reports which disarmed property fired first. */
+static unsigned g_armed = ~0u;
 
 void pt_site_hit(pt_site site) { if (g_ctr && site < PT_SITE_COUNT) __atomic_add_fetch(&g_ctr->site[site], 1, __ATOMIC_RELAXED); }
 /** @brief Count one evaluation of a property.
@@ -106,6 +127,7 @@ static struct {
     int64_t serve_t0, serve_call0, serve_adv0; unsigned serve_picks0, serve_acq_refused0; unsigned long serve_refusals0;
     unsigned pt_cb_calls;
     int named_ring;
+    int disarmed_first; long disarmed_step;   /* first violation of a disarmed property: property + 1, step */
 } g;
 
 /* ------------------------------------------------------ step-hook checks */
@@ -113,14 +135,21 @@ static struct {
 /** @brief Fail the schedule naming a property.
  * @param p The property.
  * @param fmt printf format of the detail. */
-static void prop_fail(pt_prop p, const char *fmt, ...) __attribute__((format(printf, 2, 3), noreturn));
+static void prop_fail(pt_prop p, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 static void prop_fail(pt_prop p, const char *fmt, ...)
 {
+    if (!(g_armed & (1u << p))) {
+        if (!g.disarmed_first) { g.disarmed_first = (int)p + 1; g.disarmed_step = sched_steps(); }
+        return;
+    }
     char msg[400];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
+    if (g.disarmed_first)
+        sched_fail("%s: %s [disarmed %s fired first, at step %ld]", k_prop_names[p], msg,
+                   k_prop_names[g.disarmed_first - 1], g.disarmed_step);
     sched_fail("%s: %s", k_prop_names[p], msg);
 }
 
@@ -188,7 +217,7 @@ static void classify(sched_op_kind kind, const void *obj)
  * @param to The new bin. */
 static void bin_move(uint32_t id, pt_bin from, pt_bin to)
 {
-    if (id == 0 || id >= MAX_SCENES) prop_fail(P_ACCOUNT, "scene id %u out of the harness's range", id);
+    if (id == 0 || id >= MAX_SCENES) { prop_fail(P_ACCOUNT, "scene id %u out of the harness's range", id); return; }
     if (from != B_NONE && g.scene[id].bin != (int)from)
         prop_fail(P_ACCOUNT, "scene %u moved to %s from %s, expected from %s", id, k_bin_names[to],
                   k_bin_names[g.scene[id].bin], k_bin_names[from]);
@@ -573,16 +602,20 @@ static void drv_disengage(void)
     drain_end();
 }
 
-/** @brief Present inline on the sim thread through the compose, showing the instant of the newest scene still pending, else now.
+/** @brief Present inline on the sim thread through the compose, showing the instant of the newest scene still pending, else now, and always after every instant already shown.
  *
  * The inline path presents the current moment, which the producer may
  * already have extracted a scene for; a deactivation flushes such scenes,
- * so in a correct schedule none is pending here. */
+ * so in a correct schedule none is pending here. The host loop's moment
+ * never goes back past what the display showed, so the instant is also
+ * later than every instant presented before it. */
 static void drv_inline(void)
 {
     int64_t at = sched_now();
     for (int i = 0; i < SCENE_RING; i++)
         if (s_ring[i].state == SS_PENDING && s_ring[i].target_ns > at) at = s_ring[i].target_ns;
+    for (int i = 0; i < g.nshown; i++)
+        if (g.shown_instant[i] >= at) at = g.shown_instant[i] + 1;
     const uint32_t tag = 0x80000000u | ++g.inline_next;
     if (g.ninl < MAX_INLINE) { g.inl[g.ninl].tag = tag; g.inl[g.ninl].instant = at; g.ninl++; }
     pt_inline_compose(tag);
@@ -627,7 +660,7 @@ static void quiesce_checks(void)
 
 /* ---------------------------------------------------------- scenarios */
 
-/** @brief S1, borrow while asleep: one scene presented, then two published with the present thread asleep toward the first (or, with present timing, waiting on the previous flip); the sim borrows, presents inline, returns; twice. */
+/** @brief S1, borrow while asleep: one scene presented, then two published with the present thread asleep toward the first (or, with present timing, waiting on the previous flip); the sim borrows, presents inline, returns and publishes a scene the present thread must render under its new activation; twice. */
 static void sc_s1(void)
 {
     drv_begin();
@@ -641,6 +674,25 @@ static void sc_s1(void)
         const int was = drv_borrow();
         drv_inline();
         drv_return(was);
+        drv_publish(sched_now() + 1000000, OP_PACE_CANONICAL);
+    }
+    drv_sleep(6000000);
+    drv_stop();
+}
+
+/** @brief S1b: S1 whose sim thread makes no device call while it holds the display (no inline present). */
+static void sc_s1b(void)
+{
+    drv_begin();
+    const int64_t t0 = sched_now();
+    drv_publish(t0 + 500000, OP_PACE_CANONICAL);
+    drv_sleep(1000000);
+    drv_publish(t0 + 3000000, OP_PACE_CANONICAL);
+    drv_publish(t0 + 5000000, OP_PACE_INTERMEDIATE);
+    for (int k = 0; k < 2; k++) {
+        drv_sleep(500000);
+        drv_return(drv_borrow());
+        drv_publish(sched_now() + 1000000, OP_PACE_CANONICAL);
     }
     drv_sleep(6000000);
     drv_stop();
@@ -786,11 +838,40 @@ static void sc_s8(void)
     drv_stop();
 }
 
+/** @brief SR, random clients (PCT soak only): a long sequence of client actions drawn by uniform choices: publish, sleep, borrow with an inline present, disengage and engage, flush, a window resize, a minimised window. */
+static void sc_sr(void)
+{
+    drv_begin();
+    int w = 1280;
+    int64_t last_target = 0;
+    for (int k = 0; k < 48; k++) {
+        switch (sched_choose_uniform(8, "client action")) {
+        case 0: case 1: {
+            /* The producer's targets strictly increase: no two scenes share an instant. */
+            int64_t t = sched_now() + 250000 * (int64_t)(1 + sched_choose_uniform(16, "target"));
+            if (t <= last_target) t = last_target + 250000;
+            last_target = t;
+            drv_publish(t, k & 1 ? OP_PACE_INTERMEDIATE : OP_PACE_CANONICAL);
+            break;
+        }
+        case 2: drv_sleep(250000 * (int64_t)(1 + sched_choose_uniform(16, "sleep"))); break;
+        /* An inline present shows its tick's moment: a tick's work separates two of them. */
+        case 3: { drv_sleep(1000000); const int was = drv_borrow(); drv_inline(); drv_return(was); break; }
+        case 4: drv_sleep(1000000); drv_disengage(); drv_inline(); openpete_present_thread_set_active(1); break;
+        case 5: openpete_native_scene_ring_flush(); break;
+        case 6: w = w == 1280 ? 1600 : 1280; fakevk_set_window(w, w * 9 / 16); break;
+        default: fakevk_set_window(0, 0); drv_sleep(3000000); fakevk_set_window(w, w * 9 / 16); break;
+        }
+    }
+    drv_sleep(8000000);
+    drv_stop();
+}
+
 /** One scenario: its script, ring size, bounds and device domain. */
 typedef struct pt_scenario {
     const char *name;
     void (*fn)(void);
-    int ring;
+    int ring;             /**< the binary's ring size it runs in; 0 = PCT soak only */
     int max_p, max_d;
     long max_schedules;
     int64_t horizon_ns;
@@ -802,6 +883,7 @@ typedef struct pt_scenario {
 #define FENCE_BOUND_NS 500000000LL
 static const pt_scenario k_scenarios[] = {
     { "S1", sc_s1, 48, 1, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 1 },
+    { "S1b", sc_s1b, 48, 1, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 1 },
     { "S2", sc_s2, 48, 1, 1, 0, 2000000000LL, { { 0 }, GPU_DEFAULT }, 1 },
     { "S3", sc_s3, 48, 1, 1, 0, 3000000000LL,
       { { [FK_CALL_ACQUIRE] = FK_OUT_OUT_OF_DATE | FK_OUT_SUBOPTIMAL,
@@ -815,10 +897,25 @@ static const pt_scenario k_scenarios[] = {
           [FK_CALL_PRESENT] = FK_OUT_DEVICE_LOST, [FK_CALL_FENCE_WAIT] = FK_OUT_DEVICE_LOST,
           [FK_CALL_PRESENT_WAIT] = FK_OUT_DEVICE_LOST }, GPU_DEFAULT }, 1 },
     { "S8", sc_s8, 48, 2, 1, 0, 3000000000LL, { { 0 }, GPU_DEFAULT }, 0 },
+    { "SR", sc_sr, 0, 0, 0, 0, 30000000000LL,
+      { { [FK_CALL_ACQUIRE] = FK_OUT_OUT_OF_DATE | FK_OUT_SUBOPTIMAL,
+          [FK_CALL_PRESENT] = FK_OUT_OUT_OF_DATE | FK_OUT_SUBOPTIMAL }, GPU_DEFAULT }, 1 },
 };
 enum { N_SCENARIOS = (int)(sizeof k_scenarios / sizeof k_scenarios[0]) };
 
 static const pt_scenario *g_sc;
+
+/** @brief Attribute the scheduler's own failures to P-DRAIN: a deadlock anywhere, a passed horizon or step limit inside a drain.
+ * @param msg The failure message, rewritten in place.
+ * @param cap Its capacity. */
+static void fail_hook(char *msg, size_t cap)
+{
+    if (!strncmp(msg, "P-", 2) || !(g_armed & (1u << P_DRAIN))) return;
+    if (strncmp(msg, "deadlock", 8) != 0 && !(g.draining && strstr(msg, "livelock"))) return;
+    char tmp[512];
+    snprintf(tmp, sizeof tmp, "%s: %s%s", k_prop_names[P_DRAIN], msg, g.draining ? " (inside a drain)" : "");
+    snprintf(msg, cap, "%s", tmp);
+}
 
 /** @brief The scheduled thread 0 of every schedule: install the hooks, run the scenario's script, check quiescence.
  * @param arg Unused. */
@@ -833,6 +930,7 @@ static void scenario_main(void *arg)
     fakevk_set_hooks(&hk);
     sched_sdl_admit("openpete-present");
     sched_set_step_hook(step_hook, NULL);
+    sched_set_fail_hook(fail_hook);
     g_sc->fn();
     quiesce_checks();
 }
@@ -841,9 +939,12 @@ static void scenario_main(void *arg)
 
 /** Command-line options. */
 typedef struct pt_opts {
-    const char *out, *only, *replay, *counters, *sub;
+    const char *out, *only, *replay, *counters, *sub, *mutant, *mutants;
     int timing, jobs, verdict, list, p, d;
     long max_schedules;
+    long soak_s;          /**< PCT soak duration in seconds; 0 = exhaustive scenarios */
+    uint64_t seed;        /**< PCT base seed */
+    long pct_runs;        /**< PCT schedules per exploration */
 } pt_opts;
 
 /** @brief Map the suite counters from a file, creating and zeroing it when asked.
@@ -925,6 +1026,54 @@ static int config_setup(int timing)
     return 0;
 }
 
+/** @brief Explore one scenario in the current present-timing configuration and print its engagement line.
+ * @param o Options.
+ * @param sc The scenario.
+ * @param timing The configuration.
+ * @param trace Path of the failing (or replayed) schedule's trace.
+ * @param r Receives the result.
+ * @param wall_s Receives the exploration's wall time in seconds, or NULL.
+ * @return sched_explore's status: 2 on an error. */
+static int explore_scenario(const pt_opts *o, const pt_scenario *sc, int timing, const char *trace, sched_result *r,
+                            double *wall_s)
+{
+    g_sc = sc;
+    char label[64];
+    snprintf(label, sizeof label, "%s timing=%d", sc->name, timing);
+    sched_config c = {0};
+    c.scenario = scenario_main;
+    c.mode = o->replay ? SCHED_MODE_REPLAY : o->soak_s > 0 ? SCHED_MODE_PCT : SCHED_MODE_DFS;
+    c.replay = o->replay;
+    c.seed = o->seed;
+    c.pct_runs = o->pct_runs;
+    c.pct_steps = 2000;
+    c.max_preemptions = o->p >= 0 ? o->p : sc->max_p;
+    c.max_deviations = o->d >= 0 ? o->d : sc->max_d;
+    c.jobs = o->jobs;
+    c.max_schedules = o->max_schedules ? o->max_schedules : sc->max_schedules;
+    c.stop_on_fail = 1;
+    c.trace_path = trace;
+    c.horizon_ns = 1000000000LL + sc->horizon_ns;
+    c.max_steps = 200000;
+    c.quiet = 1;
+    /* The advance domain: a compute slice and a 480 Hz display slot. */
+    static const int64_t k_advance[] = { 50000, 2083333 };
+    if (sc->advance || getenv("PT_ADVANCE")) { c.advance = k_advance; c.n_advance = 2; }
+    struct timespec a, b;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    const int e = sched_explore(&c, r);
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    const double wall = (double)(b.tv_sec - a.tv_sec) + (double)(b.tv_nsec - a.tv_nsec) / 1e9;
+    if (!o->soak_s || r->found) sched_print_result(label, r);
+    if (!o->soak_s)
+        printf("present_sched: %s: %.2f s wall, %.3f ms/schedule\n", label, wall,
+               r->schedules ? wall * 1e3 / (double)r->schedules : 0.0);
+    if (r->found) printf("present_sched: %s: %s, trace %s\n", label, g_armed == ~0u ? "FAIL" : "DETECTED", trace);
+    fflush(stdout);
+    if (wall_s) *wall_s = wall;
+    return e;
+}
+
 /** @brief Run every selected scenario of this binary's ring size in one present-timing configuration.
  * @param o Options.
  * @param timing The configuration.
@@ -935,42 +1084,254 @@ static int run_config(const pt_opts *o, int timing)
     int rc = 0;
     for (int i = 0; i < N_SCENARIOS; i++) {
         const pt_scenario *sc = &k_scenarios[i];
-        if (sc->ring != SCENE_RING) continue;
+        if (sc->ring != SCENE_RING && !(sc->ring == 0 && o->only && SCENE_RING == 48)) continue;
         if (o->only && strcmp(o->only, sc->name)) continue;
-        g_sc = sc;
-        char trace[1024], label[64];
+        char trace[1024];
         snprintf(trace, sizeof trace, "%s/present_sched-%s-timing%d.trace", o->out, sc->name, timing);
-        snprintf(label, sizeof label, "%s timing=%d", sc->name, timing);
-        sched_config c = {0};
-        c.scenario = scenario_main;
-        c.mode = o->replay ? SCHED_MODE_REPLAY : SCHED_MODE_DFS;
-        c.replay = o->replay;
-        c.max_preemptions = o->p >= 0 ? o->p : sc->max_p;
-        c.max_deviations = o->d >= 0 ? o->d : sc->max_d;
-        c.jobs = o->jobs;
-        c.max_schedules = o->max_schedules ? o->max_schedules : sc->max_schedules;
-        c.stop_on_fail = 1;
-        c.trace_path = trace;
-        c.horizon_ns = 1000000000LL + sc->horizon_ns;
-        c.max_steps = 200000;
-        c.quiet = 1;
-        /* The advance domain: a compute slice and a 480 Hz display slot. */
-        static const int64_t k_advance[] = { 50000, 2083333 };
-        if (sc->advance || getenv("PT_ADVANCE")) { c.advance = k_advance; c.n_advance = 2; }
         sched_result r;
-        struct timespec a, b;
-        clock_gettime(CLOCK_MONOTONIC, &a);
-        const int e = sched_explore(&c, &r);
-        clock_gettime(CLOCK_MONOTONIC, &b);
-        sched_print_result(label, &r);
-        printf("present_sched: %s: %.2f s wall, %.3f ms/schedule\n", label,
-               (double)(b.tv_sec - a.tv_sec) + (double)(b.tv_nsec - a.tv_nsec) / 1e9,
-               r.schedules ? ((double)(b.tv_sec - a.tv_sec) * 1e3 + (double)(b.tv_nsec - a.tv_nsec) / 1e6) / (double)r.schedules : 0.0);
+        const int e = explore_scenario(o, sc, timing, trace, &r, NULL);
         if (e == 2) return 2;
-        if (r.found) { printf("present_sched: %s: FAIL, trace %s\n", label, trace); rc = 1; }
-        fflush(stdout);
+        if (r.found) rc = 1;
     }
     return rc;
+}
+
+/* ------------------------------------------------------------------ soak */
+
+/** @brief One soak worker: PCT over every scenario of the shipped ring and SR in turn, until the deadline.
+ * @param o Options (seed, out).
+ * @param timing The present-timing configuration.
+ * @param worker The worker's index, mixed into each seed.
+ * @param deadline Wall-clock end.
+ * @return 0 no failure, 1 a schedule failed (its seed, choices and trace printed), 2 an error. */
+static int soak_worker(const pt_opts *o, int timing, int worker, time_t deadline)
+{
+    if (config_setup(timing) != 0) return 2;
+    pt_opts w = *o;
+    w.pct_runs = 50;
+    long schedules = 0;
+    for (unsigned round = 0; time(NULL) < deadline; round++) {
+        for (int i = 0; i < N_SCENARIOS && time(NULL) < deadline; i++) {
+            const pt_scenario *sc = &k_scenarios[i];
+            if (sc->ring != SCENE_RING && sc->ring != 0) continue;
+            w.seed = o->seed ^ ((uint64_t)worker << 48) ^ ((uint64_t)round << 16) ^ (uint64_t)i;
+            char trace[1024];
+            snprintf(trace, sizeof trace, "%s/present_sched-soak-%s-timing%d-w%d.trace", o->out, sc->name, timing, worker);
+            sched_result r;
+            if (explore_scenario(&w, sc, timing, trace, &r, NULL) == 2) return 2;
+            schedules += r.schedules;
+            if (r.found) {
+                printf("present_sched: soak: %s timing=%d seed %#llx failed; replay with --only %s --timing %d "
+                       "--replay <the choices above>\n", sc->name, timing, (unsigned long long)w.seed, sc->name, timing);
+                fflush(stdout);
+                return 1;
+            }
+        }
+    }
+    printf("present_sched: soak worker %d timing=%d: %ld schedules, no failure\n", worker, timing, schedules);
+    fflush(stdout);
+    return schedules > 0 ? 0 : 1;   /* a worker that ran nothing is vacuous */
+}
+
+/** @brief The PCT soak: o->jobs workers, alternating present-timing configurations, for o->soak_s seconds; the base seed is o->seed, else the date.
+ * @param o Options.
+ * @return The worst worker status. */
+static int run_soak(const pt_opts *o)
+{
+    pt_opts w = *o;
+    if (!w.seed) {
+        const time_t now = time(NULL);
+        struct tm tm;
+        localtime_r(&now, &tm);
+        w.seed = (uint64_t)((tm.tm_year + 1900) * 10000 + (tm.tm_mon + 1) * 100 + tm.tm_mday);
+    }
+    printf("present_sched: soak %ld s, %d workers, base seed %llu\n", w.soak_s, w.jobs, (unsigned long long)w.seed);
+    fflush(NULL);
+    const time_t deadline = time(NULL) + w.soak_s;
+    pid_t pid[64];
+    const int n = w.jobs < 64 ? w.jobs : 64;
+    for (int k = 0; k < n; k++) {
+        pid[k] = fork();
+        if (pid[k] < 0) { perror("fork"); return 2; }
+        if (pid[k] == 0) _exit(soak_worker(&w, k & 1, k, deadline));
+    }
+    int rc = 0;
+    for (int k = 0; k < n; k++) {
+        int ws = 0;
+        while (waitpid(pid[k], &ws, 0) < 0 && errno == EINTR) {}
+        const int e = WIFEXITED(ws) ? WEXITSTATUS(ws) : 2;
+        if (e > rc) rc = e;
+    }
+    return rc;
+}
+
+/* ------------------------------------------------------ negative controls */
+
+#define PB(p) (1u << (p))
+
+/** One negative control: a mutant binary (built from a patched copy of a protocol file), the scenario
+ * and present-timing configuration it runs, and the properties armed, each of which must detect it. */
+typedef struct pt_mutant {
+    const char *name;     /**< the control */
+    const char *bin;      /**< mutants/<bin>.patch; the binary is present_sched_<bin> */
+    const char *scenario;
+    int timing;
+    unsigned expect;      /**< the armed properties */
+} pt_mutant;
+
+static const pt_mutant k_mutants[] = {
+    { "M1",  "M1", "S1",  0, PB(P_OWNER) | PB(P_CLAIM) },
+    { "M1b", "M1", "S1b", 0, PB(P_CLAIM) },
+    { "M2",  "M2", "S6",  0, PB(P_RETIRE) },
+    { "M3",  "M3", "S2",  0, PB(P_ACQUIRE) },
+    { "M4",  "M4", "S2",  0, PB(P_OWNER) },
+    { "M5",  "M5", "S3",  0, PB(P_OWNER) },
+    { "M6",  "M6", "S1",  0, PB(P_PRESENT) },
+    { "M7",  "M7", "S1",  0, PB(P_ACCOUNT) },
+    { "M8",  "M8", "S2",  0, PB(P_DRAIN) },
+    { "M9",  "M9", "S8",  0, PB(P_SERVE) },
+};
+enum { N_MUTANTS = (int)(sizeof k_mutants / sizeof k_mutants[0]) };
+_Static_assert((int)N_MUTANTS <= (int)PT_MAX_MUTANTS, "PT_MAX_MUTANTS too small");
+
+/** @brief Return the property a failure message names by its prefix.
+ * @param msg The message.
+ * @return The property, or -1. */
+static int msg_prop(const char *msg)
+{
+    for (int p = 0; p < P_COUNT; p++) {
+        const size_t n = strlen(k_prop_names[p]);
+        if (!strncmp(msg, k_prop_names[p], n) && msg[n] == ':') return p;
+    }
+    return -1;
+}
+
+/** @brief Count the lines of a file.
+ * @param path The file.
+ * @return The count, or -1 when it cannot be read. */
+static long count_lines(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    long n = 0;
+    for (int c; (c = fgetc(f)) != EOF;) n += c == '\n';
+    fclose(f);
+    return n;
+}
+
+/** @brief Run one negative control in this (mutant) binary: its scenario with only its expected properties armed, until the first failure.
+ *
+ * The result goes to the suite's shared counters; the engagement counters of
+ * the exploration stay private, so a site reached only under a mutant never
+ * counts toward the suite's engagement.
+ * @param o Options (--mutant names the control).
+ * @return 0 when the exploration ran, 2 on an error. */
+static int run_mutant(const pt_opts *o)
+{
+    int mi = -1;
+    for (int i = 0; i < N_MUTANTS; i++) if (!strcmp(k_mutants[i].name, o->mutant)) mi = i;
+    if (mi < 0) { fprintf(stderr, "present_sched: no negative control %s\n", o->mutant); return 2; }
+    const pt_mutant *m = &k_mutants[mi];
+    const pt_scenario *sc = NULL;
+    for (int i = 0; i < N_SCENARIOS; i++) if (!strcmp(k_scenarios[i].name, m->scenario)) sc = &k_scenarios[i];
+    if (!sc || sc->ring != SCENE_RING) { fprintf(stderr, "present_sched: %s: scenario %s not in this binary\n", m->name, m->scenario); return 2; }
+    g_report = g_ctr;
+    g_ctr = mmap(NULL, sizeof(pt_counters), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (g_ctr == MAP_FAILED) { g_ctr = NULL; perror("mmap"); return 2; }
+    if (config_setup(m->timing) != 0) return 2;
+    g_armed = m->expect;
+    char trace[1024];
+    snprintf(trace, sizeof trace, "%s/present_sched-%s-%s-timing%d.trace", o->out, m->name, sc->name, m->timing);
+    unlink(trace);
+    sched_result r;
+    double wall = 0.0;
+    if (explore_scenario(o, sc, m->timing, trace, &r, &wall) == 2) return 2;
+    pt_mut_result *res = &g_report->mut[mi];
+    memset(res, 0, sizeof *res);
+    res->ran = 1;
+    res->schedules = r.schedules;
+    res->wall_s = wall;
+    if (r.found) {
+        const int p = msg_prop(r.message);
+        res->prop = p >= 0 ? p + 1 : -1;
+        res->p = r.found_p; res->d = r.found_d;
+        res->trace_lines = count_lines(trace);
+        snprintf(res->msg, sizeof res->msg, "%.*s", (int)sizeof res->msg - 1, r.message);
+    }
+    return 0;
+}
+
+/** @brief Format a set of properties as names joined by '|'.
+ * @param mask The set.
+ * @param buf Receives the text.
+ * @param cap Its capacity.
+ * @return buf. */
+static const char *prop_set(unsigned mask, char *buf, size_t cap)
+{
+    buf[0] = 0;
+    for (int p = 0; p < P_COUNT; p++)
+        if (mask & PB(p)) snprintf(buf + strlen(buf), cap - strlen(buf), "%s%s", buf[0] ? "|" : "", k_prop_names[p]);
+    return buf;
+}
+
+/** @brief Run every negative control's binary from a directory, each on the shared counters.
+ * @param o Options (--mutants names the directory).
+ * @param counters The counters file.
+ * @return 0 when every binary ran, 2 when one could not. */
+static int run_mutants(const pt_opts *o, const char *counters)
+{
+    char jobs[16];
+    snprintf(jobs, sizeof jobs, "%d", o->jobs);
+    int rc = 0;
+    for (int i = 0; i < N_MUTANTS; i++) {
+        char bin[1024];
+        snprintf(bin, sizeof bin, "%s/present_sched_%s", o->mutants, k_mutants[i].bin);
+        fflush(NULL);
+        const pid_t pid = fork();
+        if (pid < 0) { perror("fork"); return 2; }
+        if (pid == 0) {
+            execl(bin, bin, "--out", o->out, "--jobs", jobs, "--counters", counters, "--mutant", k_mutants[i].name,
+                  "--no-verdict", (char *)NULL);
+            perror(bin);
+            _exit(2);
+        }
+        int ws = 0;
+        while (waitpid(pid, &ws, 0) < 0 && errno == EINTR) {}
+        if (!WIFEXITED(ws) || WEXITSTATUS(ws) != 0) {
+            printf("present_sched: negative control %s: binary %s did not run\n", k_mutants[i].name, bin);
+            rc = 2;
+        }
+    }
+    return rc;
+}
+
+/** @brief Print the negative controls' table and judge it: each control detected by an armed property, every property detecting one.
+ * @return 0 when every control was detected and no property is vacuous, 1 otherwise. */
+static int mutant_verdict(void)
+{
+    int bad = 0;
+    unsigned detecting = 0;
+    char set[128];
+    printf("present_sched: negative controls (control, armed, detected by, bound, schedules, trace lines, wall)\n");
+    for (int i = 0; i < N_MUTANTS; i++) {
+        const pt_mut_result *r = &g_ctr->mut[i];
+        const pt_mutant *m = &k_mutants[i];
+        prop_set(m->expect, set, sizeof set);
+        if (!r->ran) { printf("  %-4s %-20s NOT RUN\n", m->name, set); bad = 1; continue; }
+        if (r->prop <= 0) {
+            printf("  %-4s %-20s %s (%ld schedules, %s %s, %.2f s)%s%s\n", m->name, set,
+                   r->prop < 0 ? "FAILED UNATTRIBUTED" : "UNDETECTED", r->schedules, m->scenario,
+                   m->timing ? "timing=1" : "timing=0", r->wall_s, r->prop < 0 ? ": " : "", r->prop < 0 ? r->msg : "");
+            bad = 1;
+            continue;
+        }
+        detecting |= PB(r->prop - 1);
+        printf("  %-4s %-20s %-10s (%d,%d) %8ld %6ld %7.2f s  %s timing=%d: %s\n", m->name, set,
+               k_prop_names[r->prop - 1], r->p, r->d, r->schedules, r->trace_lines, r->wall_s, m->scenario, m->timing, r->msg);
+    }
+    for (int p = 0; p < P_COUNT; p++)
+        if (!(detecting & PB(p))) { printf("present_sched: %s detects no negative control: VACUOUS\n", k_prop_names[p]); bad = 1; }
+    return bad;
 }
 
 /** @brief Print the suite's engagement and judge it: a seam site never reached or a property never evaluated is VACUOUS.
@@ -1020,6 +1381,10 @@ static int parse(int argc, char **argv, pt_opts *o)  // complexity-ratchet: one 
         else if (!strcmp(a, "--max-schedules") && v) { o->max_schedules = atol(v); i++; }
         else if (!strcmp(a, "--counters") && v) { o->counters = v; i++; }
         else if (!strcmp(a, "--sub") && v) { o->sub = v; i++; }
+        else if (!strcmp(a, "--mutant") && v) { o->mutant = v; i++; }
+        else if (!strcmp(a, "--mutants") && v) { o->mutants = v; i++; }
+        else if (!strcmp(a, "--soak") && v) { o->soak_s = atol(v); i++; }
+        else if (!strcmp(a, "--seed") && v) { o->seed = strtoull(v, NULL, 0); i++; }
         else if (!strcmp(a, "--p") && v) { o->p = atoi(v); i++; }
         else if (!strcmp(a, "--d") && v) { o->d = atoi(v); i++; }
         else if (!strcmp(a, "--no-verdict")) o->verdict = 0;
@@ -1064,7 +1429,37 @@ static int run_sub(const pt_opts *o, const char *counters)
     return WIFEXITED(ws) ? WEXITSTATUS(ws) : 2;
 }
 
-/** @brief Entry: run every scenario of this ring size in both present-timing configurations (or the selected one), the sub-harness, and the engagement verdict.
+/** @brief Return the worse of two run statuses (0 pass, 1 fail, 2 error).
+ * @param a A status.
+ * @param b A status.
+ * @return The larger. */
+static int worst(int a, int b) { return a > b ? a : b; }
+
+/** @brief Name a run status.
+ * @param rc 0, 1 or 2.
+ * @return "PASS", "FAIL" or "ERROR". */
+static const char *status_text(int rc) { return rc == 0 ? "PASS" : rc == 1 ? "FAIL" : "ERROR"; }
+
+/** @brief Run the exhaustive suite: each selected present-timing configuration, the sub-harness, the engagement verdict and the negative controls.
+ * @param o Options.
+ * @param cpath The shared counters file.
+ * @return 0 pass, 1 a property failed, a control went undetected or the run was vacuous, 2 error. */
+static int run_suite(const pt_opts *o, const char *cpath)
+{
+    int rc = 0;
+    for (int t = 0; t <= 1; t++)
+        if (o->timing < 0 || t == o->timing) rc = worst(rc, fork_config(o, t));
+    if (o->sub) rc = worst(rc, run_sub(o, cpath));
+    const int whole = o->verdict && !o->only && o->timing < 0;
+    if (whole && engagement_verdict()) rc = worst(rc, 1);
+    if (o->mutants) {
+        rc = worst(rc, run_mutants(o, cpath));
+        if (mutant_verdict()) rc = worst(rc, 1);
+    }
+    return rc;
+}
+
+/** @brief Entry: a negative control (--mutant), the PCT soak (--soak), a replay (--replay), or the exhaustive suite.
  * @param argc Argument count.
  * @param argv Arguments.
  * @return 0 pass, 1 a property failed or the run was vacuous, 2 error. */
@@ -1073,7 +1468,8 @@ int main(int argc, char **argv)
     pt_opts o;
     if (parse(argc, argv, &o) != 0) {
         fprintf(stderr, "usage: %s [--out DIR] [--only Sn] [--timing 0|1] [--replay CHOICES] [--jobs N] "
-                        "[--max-schedules N] [--p P] [--d D] [--counters FILE] [--sub BINARY] [--no-verdict]\n", argv[0]);
+                        "[--max-schedules N] [--p P] [--d D] [--counters FILE] [--sub BINARY] [--mutants DIR] "
+                        "[--mutant NAME] [--soak SECONDS] [--seed N] [--no-verdict]\n", argv[0]);
         return 2;
     }
     mkdir(o.out, 0755);
@@ -1081,21 +1477,13 @@ int main(int argc, char **argv)
     if (o.counters) snprintf(cpath, sizeof cpath, "%s", o.counters);
     else snprintf(cpath, sizeof cpath, "%s/present_sched.counters", o.out);
     if (counters_map(cpath, !o.counters) != 0) return 2;
-    if (o.replay) {
-        if (!o.only || o.timing < 0) { fprintf(stderr, "present_sched: --replay needs --only and --timing\n"); return 2; }
-        return run_config(&o, o.timing);
+    if (o.mutant) return run_mutant(&o);
+    if (o.replay && (!o.only || o.timing < 0)) {
+        fprintf(stderr, "present_sched: --replay needs --only and --timing\n");
+        return 2;
     }
-    int rc = 0;
-    for (int t = 0; t <= 1; t++) {
-        if (o.timing >= 0 && t != o.timing) continue;
-        const int e = fork_config(&o, t);
-        if (e > rc) rc = e;
-    }
-    if (o.sub) {
-        const int e = run_sub(&o, cpath);
-        if (e > rc) rc = e;
-    }
-    if (o.verdict && !o.only && o.timing < 0 && engagement_verdict() && rc == 0) rc = 1;
-    printf("present_sched: %s\n", rc == 0 ? "PASS" : rc == 1 ? "FAIL" : "ERROR");
+    if (o.replay) return run_config(&o, o.timing);
+    const int rc = o.soak_s > 0 ? run_soak(&o) : run_suite(&o, cpath);
+    printf("present_sched: %s%s\n", o.soak_s > 0 ? "soak " : "", status_text(rc));
     return rc;
 }

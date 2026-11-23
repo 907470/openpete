@@ -88,6 +88,7 @@ static struct {
     void *hook_arg;
     int in_hook;
     int64_t advanced;
+    sched_fail_hook fail_hook;
 } s;
 
 static __thread int tl_id = -1;
@@ -268,6 +269,11 @@ void sched_fail(const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
+    if (s.fail_hook) {
+        const sched_fail_hook h = s.fail_hook;
+        s.fail_hook = NULL;   /* a hook that fails again reports its own message */
+        h(msg, sizeof msg);
+    }
     trace_add("FAIL %s\n", msg);
     if (!s.plan->cfg->quiet) {
         char ch[4096];
@@ -495,6 +501,8 @@ static void run_hook(int id, sched_op_kind kind, const void *obj, const void *ra
 }
 
 void sched_set_step_hook(sched_step_hook fn, void *arg) { s.hook = fn; s.hook_arg = arg; }
+
+void sched_set_fail_hook(sched_fail_hook fn) { s.fail_hook = fn; }
 long sched_steps(void) { return s.steps; }
 int64_t sched_advanced_ns(void) { return s.advanced; }
 
@@ -560,6 +568,18 @@ int sched_choose(int n, const char *site)
     for (int k = 0; k < n; k++) dd[k] = k ? 1 : 0;
     int pct = 0;
     if (s.plan->pct && rng_unit() < s.plan->cfg->pct_deviation) pct = 1 + (int)(splitmix(&s.rng) % (uint64_t)(n - 1));
+    const int idx = take_choice(n, dp, dd, pct);
+    trace_add("choose %s = %d/%d\n", site ? site : "?", idx, n);
+    return idx;
+}
+
+int sched_choose_uniform(int n, const char *site)
+{
+    if (n <= 1 || !sched_active()) return 0;
+    uint8_t dp[SCHED_MAX_ALTS] = {0}, dd[SCHED_MAX_ALTS];
+    if (n > SCHED_MAX_ALTS) n = SCHED_MAX_ALTS;
+    for (int k = 0; k < n; k++) dd[k] = k ? 1 : 0;
+    const int pct = s.plan->pct ? (int)(splitmix(&s.rng) % (uint64_t)n) : 0;
     const int idx = take_choice(n, dp, dd, pct);
     trace_add("choose %s = %d/%d\n", site ? site : "?", idx, n);
     return idx;

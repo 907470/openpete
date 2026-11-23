@@ -1,0 +1,12 @@
+M3: The drain gives back no held swapchain image: the stage release after the drain's claim is removed.
+
+--- a/core/runtime/present_thread.c
++++ b/core/runtime/present_thread.c
+@@ -1013,7 +1013,6 @@
+         /* This thread owns the display from here (seam fence) - including
+          * for the release below, which touches the swapchain. */
+         openpete_native_display_claim();
+-        openpete_native_present_stage_release();
+         SDL_LockMutex(s_pt.mx);
+     }
+     SDL_UnlockMutex(s_pt.mx);

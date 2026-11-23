@@ -72,15 +72,38 @@ add_custom_command(
 set_source_files_properties(${PT_GEN}/present_thread.sched.o ${PT_GEN}/rhi_vulkan.sched.o
     PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 
-# One harness per ring size: the shipped ring, and a ring of 3 for ring pressure.
-function(present_sched_harness name ring)
-    add_executable(${name}
-        ${PT_DIR}/harness.c ${PT_DIR}/fakevk.c ${PT_DIR}/stubs.c ${PT_GEN}/ring_extract.c ${PT_GEN}/vk_list.h
-        ${PT_GEN}/present_thread.sched.o ${PT_GEN}/rhi_vulkan.sched.o)
+# The harness's own objects, once per ring size.
+function(present_sched_objects ring)
+    add_library(present_sched_obj${ring} OBJECT
+        ${PT_DIR}/harness.c ${PT_DIR}/fakevk.c ${PT_DIR}/stubs.c ${PT_GEN}/vk_list.h)
+    target_include_directories(present_sched_obj${ring} PRIVATE ${PT_INCLUDES})
+    target_compile_definitions(present_sched_obj${ring} PRIVATE VK_NO_PROTOTYPES PT_SCENE_RING=${ring})
+    target_compile_options(present_sched_obj${ring} PRIVATE -Wall -Wextra)
+    target_link_libraries(present_sched_obj${ring} PRIVATE SDL3::Headers)
+    set_target_properties(present_sched_obj${ring} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+    add_dependencies(present_sched_obj${ring} present_sched_gen)
+endfunction()
+present_sched_objects(48)
+present_sched_objects(3)
+
+# A copy of the scene ring, instrumented, for a ring size.
+function(present_sched_ring name ring src)
+    add_library(${name} OBJECT ${src})
     target_include_directories(${name} PRIVATE ${PT_INCLUDES})
     target_compile_definitions(${name} PRIVATE VK_NO_PROTOTYPES PT_SCENE_RING=${ring})
-    target_compile_options(${name} PRIVATE -Wall -Wextra)
-    set_source_files_properties(${PT_GEN}/ring_extract.c TARGET_DIRECTORY ${name} PROPERTIES COMPILE_OPTIONS "${PT_TSAN}")
+    target_compile_options(${name} PRIVATE ${PT_TSAN})
+    target_link_libraries(${name} PRIVATE SDL3::Headers)
+    set_target_properties(${name} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+    add_dependencies(${name} present_sched_gen)
+endfunction()
+present_sched_ring(present_sched_ring48 48 ${PT_GEN}/ring_extract.c)
+present_sched_ring(present_sched_ring3 3 ${PT_GEN}/ring_extract.c)
+
+# One harness binary: the harness's objects for a ring size, a copy of the ring (an object
+# library), and an instrumented present-thread object.
+function(present_sched_harness name ring ring_lib pt_obj)
+    add_executable(${name} $<TARGET_OBJECTS:present_sched_obj${ring}> $<TARGET_OBJECTS:${ring_lib}>
+        ${pt_obj} ${PT_GEN}/rhi_vulkan.sched.o)
     set_target_properties(${name} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
     add_dependencies(${name} present_sched_gen openpete_rhi)
     target_link_options(${name} PRIVATE -Wl,--wrap=rhi_display_claim)
@@ -88,9 +111,102 @@ function(present_sched_harness name ring)
     # the scheduler's; no SDL, no libtsan.
     target_link_libraries(${name} PRIVATE $<TARGET_FILE:openpete_rhi> openpete_sched m)
 endfunction()
-present_sched_harness(present_sched 48)
-present_sched_harness(present_sched_r3 3)
+present_sched_harness(present_sched 48 present_sched_ring48 ${PT_GEN}/present_thread.sched.o)
+present_sched_harness(present_sched_r3 3 present_sched_ring3 ${PT_GEN}/present_thread.sched.o)
+
+# Negative controls: each mutant is a unified diff applied to a copy of one protocol file at build
+# time (apply_mutant.py refuses a patch that no longer applies, naming the mutant); its binary links
+# the mutated copy in place of the original. Mutants of present_thread.c and of the scene ring.
+set(PT_MUTANTS_PT M1 M3 M4 M5 M6 M8 M9)
+set(PT_MUTANTS_RING M2 M7)
+set(PT_MUT_BIN ${CMAKE_CURRENT_BINARY_DIR}/mutants)
+file(MAKE_DIRECTORY ${PT_MUT_BIN})
+set(PT_MUTANT_TARGETS "")
+foreach(m IN LISTS PT_MUTANTS_PT PT_MUTANTS_RING)
+    set(mgen ${PT_GEN}/${m})
+    file(MAKE_DIRECTORY ${mgen})
+    if(m IN_LIST PT_MUTANTS_PT)
+        set(msrc ${CMAKE_SOURCE_DIR}/core/runtime/present_thread.c)
+        set(mout ${mgen}/present_thread.c)
+    else()
+        set(msrc ${CMAKE_SOURCE_DIR}/core/renderer/native_render.c)
+        set(mout ${mgen}/native_render.c)
+    endif()
+    add_custom_command(
+        OUTPUT ${mout}
+        COMMAND ${Python3_EXECUTABLE} ${PT_DIR}/apply_mutant.py ${m} ${msrc} ${PT_DIR}/mutants/${m}.patch ${mout}
+        DEPENDS ${PT_DIR}/apply_mutant.py ${PT_DIR}/mutants/${m}.patch ${msrc}
+        COMMENT "present_sched: mutant ${m}"
+        VERBATIM)
+    if(m IN_LIST PT_MUTANTS_PT)
+        add_library(present_sched_pt_${m} OBJECT ${mout})
+        target_include_directories(present_sched_pt_${m} PRIVATE ${PT_INCLUDES} ${CMAKE_SOURCE_DIR}/core/runtime)
+        target_compile_definitions(present_sched_pt_${m} PRIVATE VK_NO_PROTOTYPES OPENPETE_ENGINE_BUILD)
+        target_compile_options(present_sched_pt_${m} PRIVATE ${PT_TSAN})
+        target_link_libraries(present_sched_pt_${m} PRIVATE SDL3::Headers)
+        set_target_properties(present_sched_pt_${m} PROPERTIES C_STANDARD 99 C_EXTENSIONS ON)
+        add_custom_command(
+            OUTPUT ${mgen}/present_thread.sched.o
+            COMMAND ${CMAKE_OBJCOPY} --globalize-symbol=s_pt --globalize-symbol=s_staged --globalize-symbol=s_lat
+                    $<TARGET_OBJECTS:present_sched_pt_${m}> ${mgen}/present_thread.sched.o
+            DEPENDS present_sched_pt_${m} $<TARGET_OBJECTS:present_sched_pt_${m}>
+            COMMAND_EXPAND_LISTS VERBATIM)
+        set_source_files_properties(${mgen}/present_thread.sched.o PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+        present_sched_harness(present_sched_${m} 48 present_sched_ring48 ${mgen}/present_thread.sched.o)
+    else()
+        add_custom_command(
+            OUTPUT ${mgen}/ring_extract.c ${mgen}/pt_state.h
+            COMMAND ${Python3_EXECUTABLE} ${PT_DIR}/extract_ring.py
+                    ${mout} ${CMAKE_SOURCE_DIR}/core/runtime/present_thread.c
+                    ${mgen}/ring_extract.c ${mgen}/pt_state.h
+            DEPENDS ${PT_DIR}/extract_ring.py ${mout} ${CMAKE_SOURCE_DIR}/core/runtime/present_thread.c
+            VERBATIM)
+        present_sched_ring(present_sched_ring_${m} 48 ${mgen}/ring_extract.c)
+        present_sched_harness(present_sched_${m} 48 present_sched_ring_${m} ${PT_GEN}/present_thread.sched.o)
+    endif()
+    set_target_properties(present_sched_${m} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PT_MUT_BIN})
+    list(APPEND PT_MUTANT_TARGETS present_sched_${m})
+endforeach()
+add_custom_target(present_sched_mutants DEPENDS ${PT_MUTANT_TARGETS})
+add_dependencies(present_sched present_sched_mutants)
 
 add_test(NAME present_sched
          COMMAND present_sched --out ${CMAKE_CURRENT_BINARY_DIR}/run
-                 --sub $<TARGET_FILE:present_sched_r3>)
+                 --sub $<TARGET_FILE:present_sched_r3> --mutants ${PT_MUT_BIN})
+
+# The upkeep fence (scripts/fences/sched_seams.py): the protocol objects' synchronisation calls are
+# wrapped, their atomics known to the harness, the ring extractable, the compose stand-in equal to
+# render_frame_common's protocol events, no source seam, every handoff client modelled. Reruns when a
+# protocol file, the harness, the stand-in or the fence changes.
+set(PT_SEAMS_ARGS
+    --root ${CMAKE_SOURCE_DIR} --db ${CMAKE_BINARY_DIR}/compile_commands.json --nm ${CMAKE_NM}
+    --objects ${PT_GEN}/present_thread.sched.o ${PT_GEN}/rhi_vulkan.sched.o $<TARGET_OBJECTS:present_sched_ring48>
+    --harness-objects $<TARGET_OBJECTS:present_sched_obj48> $<TARGET_FILE:openpete_sched>
+    --wraps "${SCHED_SDL_WRAPS};rhi_display_claim" --ring ${PT_GEN}/ring_extract.c)
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/sched_seams.stamp
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/fences/sched_seams.py check ${PT_SEAMS_ARGS}
+            --stamp ${CMAKE_CURRENT_BINARY_DIR}/sched_seams.stamp
+    DEPENDS ${CMAKE_SOURCE_DIR}/scripts/fences/sched_seams.py ${CMAKE_SOURCE_DIR}/scripts/fences/seam_guard.py
+            ${PT_DIR}/harness.c ${PT_DIR}/ring_epilogue.h ${PT_DIR}/extract_ring.py
+            ${CMAKE_SOURCE_DIR}/core/runtime/present_thread.c ${CMAKE_SOURCE_DIR}/core/renderer/native_render.c
+            ${CMAKE_SOURCE_DIR}/core/rhi/rhi_vulkan.c
+            ${PT_GEN}/present_thread.sched.o ${PT_GEN}/rhi_vulkan.sched.o
+            present_sched_ring48 present_sched_obj48 openpete_sched
+    COMMENT "present_sched: upkeep fence (sched_seams.py)"
+    COMMAND_EXPAND_LISTS VERBATIM)
+add_custom_target(present_sched_seams ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/sched_seams.stamp)
+add_test(NAME sched_seams
+         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/fences/sched_seams.py check ${PT_SEAMS_ARGS}
+         COMMAND_EXPAND_LISTS)
+set_tests_properties(sched_seams PROPERTIES LABELS "fence" SKIP_RETURN_CODE 64)
+add_test(NAME sched_seams_selftest
+         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/fences/tests/test_sched_seams.py)
+set_tests_properties(sched_seams_selftest PROPERTIES LABELS "fence" SKIP_RETURN_CODE 64)
+
+# The PCT soak (label slow): every scenario of the shipped ring and the random-client scenario SR,
+# 2,000-step change-point range, ten minutes, base seed from the date; run at the end of a change to
+# a protocol file.
+add_test(NAME present_sched_soak
+         COMMAND present_sched --out ${CMAKE_CURRENT_BINARY_DIR}/soak --soak 600)
+set_tests_properties(present_sched_soak PROPERTIES LABELS "slow" TIMEOUT 900)

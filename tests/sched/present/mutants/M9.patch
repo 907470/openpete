@@ -1,0 +1,21 @@
+M9: The kick does not signal the present thread and the idle wait has no timeout: a published scene waits for an unrelated wake.
+
+--- a/core/runtime/present_thread.c
++++ b/core/runtime/present_thread.c
+@@ -651,7 +651,7 @@
+ static void pt_step_idle_locked(op_time_t now)
+ {
+     if (s_pt.flip_pending) wait_flip_locked(now + 4000000);
+-    else SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, 4);
++    else SDL_WaitCondition(s_pt.cv, s_pt.mx);
+ }
+ 
+ /** @brief Acquire step: take the swapchain image before rendering, in acquire-first order; the mutex is held and released around the acquire.
+@@ -953,7 +953,6 @@
+ {
+     if (!s_pt.thr) return;
+     SDL_LockMutex(s_pt.mx);
+-    SDL_SignalCondition(s_pt.cv);
+     SDL_UnlockMutex(s_pt.mx);
+ }
+ 

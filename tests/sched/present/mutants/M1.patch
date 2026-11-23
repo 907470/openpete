@@ -1,0 +1,24 @@
+M1: The claim keyed on a flag reset only when the thread observes active == 0, as before activation numbers: a borrow and return that complete while the thread waits with the mutex released leave the flag set and the claim skipped.
+
+--- a/core/runtime/present_thread.c
++++ b/core/runtime/present_thread.c
+@@ -900,7 +900,7 @@
+     /* Compose-time VRAM reads see the scene's journaled texels, not the
+      * model the guest rewrites while this thread draws. */
+     openpete_vram_bind_composed();
+-    unsigned served = 0;   /* the activation this thread last claimed the display for; 0 = none */
++    int claimed = 0;   /* this thread has claimed the display for the current activation */
+     /* OPENPETE_PT_STAGED=0: render at the instant instead (A/B).
+      * OPENPETE_PT_ACQ_FIRST=0 (A/B): keep render-first order through refused presents. */
+     const char *staged_env = getenv("OPENPETE_PT_STAGED");
+@@ -910,8 +910,8 @@
+     s_pt.acq_first_ok = !(acq_first_env && *acq_first_env == '0');
+     for (;;) {
+         if (s_pt.quit) break;
+-        if (!s_pt.active) { SDL_WaitCondition(s_pt.cv, s_pt.mx); continue; }
+-        if (served != s_pt.activation) { served = s_pt.activation; pt_begin_activation(); }
++        if (!s_pt.active) { claimed = 0; SDL_WaitCondition(s_pt.cv, s_pt.mx); continue; }
++        if (!claimed) { claimed = 1; pt_begin_activation(); }
+         /* Every step returns to here: the clock and the activation are
+          * re-read after any step that released the mutex. */
+         const double slot = display_slot_ns();

@@ -118,6 +118,16 @@ void sched_point_ra(sched_op_kind kind, const void *obj, const void *ra);
  * @return The chosen alternative. */
 int sched_choose(int n, const char *site);
 
+/** @brief Make a data choice among n alternatives, uniform under PCT.
+ *
+ * Under PCT every alternative is equally likely (sched_choose takes a
+ * non-default one only with probability pct_deviation); under DFS and replay
+ * it is sched_choose. For a scenario that draws its own client sequence.
+ * @param n Alternatives (at most SCHED_MAX_ALTS are offered).
+ * @param site Trace name of the choice.
+ * @return The chosen index, 0 when unscheduled. */
+int sched_choose_uniform(int n, const char *site);
+
 /** @brief Report whether the calling thread is scheduled (inside a child's run).
  * @return 1 when it is, else 0. */
 int sched_active(void);
@@ -251,6 +261,17 @@ typedef void (*sched_step_hook)(void *arg, int thread, sched_op_kind kind, const
  * @param fn The hook, or NULL.
  * @param arg Its argument. */
 void sched_set_step_hook(sched_step_hook fn, void *arg);
+
+/** Hook run by sched_fail on its formatted message, which it may rewrite in place. */
+typedef void (*sched_fail_hook)(char *msg, size_t cap);
+
+/** @brief Install a hook that may rewrite a failure message before it is traced and reported.
+ *
+ * The scheduler's own failures (a deadlock, a passed horizon or step limit)
+ * carry no property; the hook lets the code under test attribute them to
+ * one. It runs on the failing thread, at most once per failure.
+ * @param fn The hook, or NULL. */
+void sched_set_fail_hook(sched_fail_hook fn);
 
 /** @brief Return the virtual time the schedule has advanced by deviation (a time advance while a thread was enabled).
  * @return Nanoseconds. */

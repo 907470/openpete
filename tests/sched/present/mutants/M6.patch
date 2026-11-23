@@ -1,0 +1,12 @@
+M6: The drain does not flush pending scenes: a scene for an instant the inline path presents stays pickable.
+
+--- a/core/runtime/present_thread.c
++++ b/core/runtime/present_thread.c
+@@ -993,7 +993,6 @@
+         s_pt.drains++;
+         /* Nothing pending survives: a scene extracted for a moment the
+          * inline path is about to present would be shown twice. */
+-        openpete_native_scene_ring_flush();
+         const op_time_t t0 = op_now();
+         while (s_pt.busy) SDL_WaitCondition(s_pt.idle_cv, s_pt.mx);
+         const op_time_t w = op_now() - t0;
