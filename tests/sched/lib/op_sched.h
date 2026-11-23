@@ -324,6 +324,52 @@ unsigned long sched_watch_guarded_count(void);
  * @param name The SDL thread name (kept by pointer). */
 void sched_sdl_admit(const char *name);
 
+/* ---- the race-detector runtime (tsan_hooks.c or tsan_noise.c) ----
+ *
+ * The scheduler links one of two runtimes. tsan_hooks.c (openpete_sched)
+ * defines the __tsan_* entry points itself: watched accesses are yields and
+ * these calls do nothing. tsan_noise.c (openpete_sched_noise) runs over the
+ * real ThreadSanitizer runtime: the scheduler's baton is hidden from it,
+ * the scheduler's model mutexes, threads and SDL atomics publish their
+ * happens-before edges through these calls, and every report the detector
+ * makes is classified by the `sched:` marker on the source line of its
+ * accesses. */
+
+/** @brief Report whether the real ThreadSanitizer runtime detects races in this binary.
+ * @return 1 under tsan_noise.c, 0 under tsan_hooks.c. */
+int sched_noise(void);
+
+/** @brief Publish a release on a synchronisation object (a model mutex unlock, a thread's start or end, an atomic store).
+ * @param obj The object's address. */
+void sched_tsan_release(const void *obj);
+
+/** @brief Publish an acquire on a synchronisation object (a model mutex lock, a join, an atomic load).
+ * @param obj The object's address. */
+void sched_tsan_acquire(const void *obj);
+
+/** @brief Load the `sched:` markers of the source files that code addresses were compiled from, for classifying race reports.
+ *
+ * A report is classified, and suppressed, when the innermost frame of one of
+ * its accesses lies on a line carrying `sched: once` or `sched: unordered`;
+ * any other report fails the schedule at the next yield. Each address names
+ * its file through the debug information, so a binary built from a patched
+ * copy of a source reads the copy's markers. Call before the first fork: the
+ * table and the counters are shared by every process.
+ * @param code One code address (a function) per source file.
+ * @param n Their count.
+ * @param maps The build's file-prefix maps reversed, "recorded=directory" (the recorded prefix of a
+ *        debug-information path and the directory it stands for), longest recorded prefix first; an
+ *        entry "=directory" names the directory a relative recorded path is resolved against.
+ * @param nmaps Their count.
+ * @return The number of markers loaded, or -1 when a file cannot be named or read. */
+int sched_tsan_markers(const void *const *code, int n, const char *const *maps, int nmaps);
+
+/** @brief Print the race detector's counts and the classified sites, all processes of the run.
+ * @param out The stream.
+ * @param unclassified Receives the unclassified report count; may be NULL.
+ * @return The classified report count. */
+unsigned long sched_tsan_summary(void *out, unsigned long *unclassified);
+
 #ifdef __cplusplus
 }
 #endif

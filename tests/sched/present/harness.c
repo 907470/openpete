@@ -941,6 +941,8 @@ static void scenario_main(void *arg)
 /** Command-line options. */
 typedef struct pt_opts {
     const char *out, *only, *replay, *counters, *sub, *mutant, *mutants;
+    const char *tsan_control;  /**< noise build: the binary whose soak must report an unclassified race */
+    int expect_race;      /**< soak: pass only on a schedule failing with an unclassified race report */
     int timing, jobs, verdict, list, p, d;
     long max_schedules;
     long soak_s;          /**< PCT soak duration in seconds; 0 = exhaustive scenarios */
@@ -1018,7 +1020,8 @@ static int config_setup(int timing)
     sched_watch_guarded(&s_ring_census, sizeof s_ring_census, "s_ring_census", (void *const *)&s_ring_mx);
     sched_watch(s_display_owner, sizeof(SDL_ThreadID), "s_display_owner");
     const void *chg = fakevk_display_changed_addr();
-    if (!chg) { fprintf(stderr, "present_sched: the display-change flag was not found\n"); return -1; }
+    /* Under the real race detector no access is a yield and the probe that finds the flag is inert. */
+    if (!chg && !sched_noise()) { fprintf(stderr, "present_sched: the display-change flag was not found\n"); return -1; }
     sched_watch(chg, 1, "dev->display_changed");
     return 0;
 }
@@ -1095,18 +1098,56 @@ static int run_config(const pt_opts *o, int timing)
 
 /* ------------------------------------------------------------------ soak */
 
+/** @brief Return the worse of two run statuses (0 pass, 1 fail, 2 error).
+ * @param a A status.
+ * @param b A status.
+ * @return The larger. */
+static int worst(int a, int b) { return a > b ? a : b; }
+
+
+/** @brief Judge a soak worker's failing schedule: a regression to replay, or, in a race-detector control's run (--expect-race), the detection the control must make.
+ * @param o Options.
+ * @param sc The scenario.
+ * @param timing The present-timing configuration.
+ * @param seed The exploration's PCT seed.
+ * @param schedules Schedules the worker ran up to and including the failure.
+ * @param t0 The worker's start (monotonic clock).
+ * @param r The exploration's result.
+ * @return The worker's status: 0 for a control's race, 1 otherwise. */
+static int soak_failure(const pt_opts *o, const pt_scenario *sc, int timing, uint64_t seed, long schedules,
+                        const struct timespec *t0, const sched_result *r)
+{
+    if (!o->expect_race) {
+        printf("present_sched: soak: %s timing=%d seed %#llx failed; replay with --only %s --timing %d "
+               "--replay <the choices above>\n", sc->name, timing, (unsigned long long)seed, sc->name, timing);
+        fflush(stdout);
+        return 1;
+    }
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    const int race = !strncmp(r->message, "TSAN:", 5);
+    printf("present_sched: control %s: %s timing=%d seed %#llx, %ld schedules, %.2f s: %s\n",
+           race ? "DETECTED" : "FAILED OTHERWISE", sc->name, timing, (unsigned long long)seed, schedules,
+           (double)(t1.tv_sec - t0->tv_sec) + (double)(t1.tv_nsec - t0->tv_nsec) / 1e9, r->message);
+    fflush(stdout);
+    return race ? 0 : 1;
+}
+
 /** @brief One soak worker: PCT over every scenario of the shipped ring and SR in turn, until the deadline.
- * @param o Options (seed, out).
+ * @param o Options (seed, out, expect_race).
  * @param timing The present-timing configuration.
  * @param worker The worker's index, mixed into each seed.
  * @param deadline Wall-clock end.
- * @return 0 no failure, 1 a schedule failed (its seed, choices and trace printed), 2 an error. */
+ * @return 0 no failure (a control's run: its race detected), 1 a schedule failed (its seed, choices and trace
+ *         printed; a control's run: no race by the deadline), 2 an error. */
 static int soak_worker(const pt_opts *o, int timing, int worker, time_t deadline)
 {
     if (config_setup(timing) != 0) return 2;
     pt_opts w = *o;
     w.pct_runs = 50;
     long schedules = 0;
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     for (unsigned round = 0; time(NULL) < deadline; round++) {
         for (int i = 0; i < N_SCENARIOS && time(NULL) < deadline; i++) {
             const pt_scenario *sc = &k_scenarios[i];
@@ -1117,17 +1158,14 @@ static int soak_worker(const pt_opts *o, int timing, int worker, time_t deadline
             sched_result r;
             if (explore_scenario(&w, sc, timing, trace, &r, NULL) == 2) return 2;
             schedules += r.schedules;
-            if (r.found) {
-                printf("present_sched: soak: %s timing=%d seed %#llx failed; replay with --only %s --timing %d "
-                       "--replay <the choices above>\n", sc->name, timing, (unsigned long long)w.seed, sc->name, timing);
-                fflush(stdout);
-                return 1;
-            }
+            if (r.found) return soak_failure(o, sc, timing, w.seed, schedules, &t0, &r);
         }
     }
-    printf("present_sched: soak worker %d timing=%d: %ld schedules, no failure\n", worker, timing, schedules);
+    printf("present_sched: soak worker %d timing=%d: %ld schedules, no failure%s\n", worker, timing, schedules,
+           o->expect_race ? ": control UNDETECTED" : "");
     fflush(stdout);
-    return schedules > 0 ? 0 : 1;   /* a worker that ran nothing is vacuous */
+    /* A worker that ran nothing is vacuous; a control's worker that saw no race failed to detect it. */
+    return schedules > 0 && !o->expect_race ? 0 : 1;
 }
 
 /** @brief The PCT soak: o->jobs workers, alternating present-timing configurations, for o->soak_s seconds; the base seed is o->seed, else the date.
@@ -1158,6 +1196,11 @@ static int run_soak(const pt_opts *o)
         while (waitpid(pid[k], &ws, 0) < 0 && errno == EINTR) {}
         const int e = WIFEXITED(ws) ? WEXITSTATUS(ws) : 2;
         if (e > rc) rc = e;
+    }
+    if (sched_noise()) {
+        unsigned long unclassified = 0;
+        sched_tsan_summary(stdout, &unclassified);
+        if (unclassified && !w.expect_race) rc = worst(rc, 1);
     }
     return rc;
 }
@@ -1384,6 +1427,8 @@ static int parse(int argc, char **argv, pt_opts *o)  // complexity-ratchet: one 
         else if (!strcmp(a, "--seed") && v) { o->seed = strtoull(v, NULL, 0); i++; }
         else if (!strcmp(a, "--p") && v) { o->p = atoi(v); i++; }
         else if (!strcmp(a, "--d") && v) { o->d = atoi(v); i++; }
+        else if (!strcmp(a, "--tsan-control") && v) { o->tsan_control = v; i++; }
+        else if (!strcmp(a, "--expect-race")) o->expect_race = 1;
         else if (!strcmp(a, "--no-verdict")) o->verdict = 0;
         else return -1;
     }
@@ -1426,11 +1471,34 @@ static int run_sub(const pt_opts *o, const char *counters)
     return WIFEXITED(ws) ? WEXITSTATUS(ws) : 2;
 }
 
-/** @brief Return the worse of two run statuses (0 pass, 1 fail, 2 error).
- * @param a A status.
- * @param b A status.
- * @return The larger. */
-static int worst(int a, int b) { return a > b ? a : b; }
+/** @brief Run the race detector's negative control: its binary's soak, one worker, must fail on an unclassified race report.
+ *
+ * A noise run that reports no race is evidence only when the same detector,
+ * scenarios and seeds report the race a mutant adds (a lock removed around a
+ * protocol access); a control that goes undetected makes the run VACUOUS.
+ * @param o Options (--tsan-control names the binary, --soak bounds it, --seed and --out pass through).
+ * @return 0 when the control was detected, 1 when not, 2 when it could not run. */
+static int run_tsan_control(const pt_opts *o)
+{
+    char soak[32], seed[32];
+    snprintf(soak, sizeof soak, "%ld", o->soak_s);
+    snprintf(seed, sizeof seed, "%llu", (unsigned long long)o->seed);
+    fflush(NULL);
+    const pid_t pid = fork();
+    if (pid < 0) { perror("fork"); return 2; }
+    if (pid == 0) {
+        execl(o->tsan_control, o->tsan_control, "--out", o->out, "--jobs", "1", "--soak", soak, "--seed", seed,
+              "--expect-race", (char *)NULL);
+        perror(o->tsan_control);
+        _exit(2);
+    }
+    int ws = 0;
+    while (waitpid(pid, &ws, 0) < 0 && errno == EINTR) {}
+    const int e = WIFEXITED(ws) ? WEXITSTATUS(ws) : 2;
+    printf("present_sched: race detector control %s: %s\n", o->tsan_control,
+           e == 0 ? "detected" : e == 1 ? "UNDETECTED: the noise run is VACUOUS" : "did not run");
+    return e;
+}
 
 /** @brief Name a run status.
  * @param rc 0, 1 or 2.
@@ -1466,7 +1534,8 @@ int main(int argc, char **argv)
     if (parse(argc, argv, &o) != 0) {
         fprintf(stderr, "usage: %s [--out DIR] [--only Sn] [--timing 0|1] [--replay CHOICES] [--jobs N] "
                         "[--max-schedules N] [--p P] [--d D] [--counters FILE] [--sub BINARY] [--mutants DIR] "
-                        "[--mutant NAME] [--soak SECONDS] [--seed N] [--no-verdict]\n", argv[0]);
+                        "[--mutant NAME] [--soak SECONDS] [--seed N] [--tsan-control BINARY] [--expect-race] "
+                        "[--no-verdict]\n", argv[0]);
         return 2;
     }
     mkdir(o.out, 0755);
@@ -1475,12 +1544,22 @@ int main(int argc, char **argv)
     else snprintf(cpath, sizeof cpath, "%s/present_sched.counters", o.out);
     if (counters_map(cpath, !o.counters) != 0) return 2;
     if (o.mutant) return run_mutant(&o);
+    if (sched_noise()) {
+        /* The race detector classifies reports by the markers of the sources this binary was built from. */
+        const void *const code[] = { (const void *)openpete_present_thread_start,
+                                     (const void *)openpete_native_scene_publish, (const void *)rhi_create };
+        const char *const maps[] = { "openpete-build=" PT_BINARY_DIR, "openpete=" PT_SOURCE_DIR, "=" PT_BINARY_DIR };
+        const int nm = sched_tsan_markers(code, 3, maps, 3);
+        if (nm < 0) return 2;
+        printf("present_sched: race detector: %d sched: once|unordered marker(s) in the protocol sources\n", nm);
+    }
     if (o.replay && (!o.only || o.timing < 0)) {
         fprintf(stderr, "present_sched: --replay needs --only and --timing\n");
         return 2;
     }
     if (o.replay) return run_config(&o, o.timing);
-    const int rc = o.soak_s > 0 ? run_soak(&o) : run_suite(&o, cpath);
+    int rc = o.soak_s > 0 ? run_soak(&o) : run_suite(&o, cpath);
+    if (o.tsan_control && rc == 0) rc = worst(rc, run_tsan_control(&o));
     printf("present_sched: %s%s\n", o.soak_s > 0 ? "soak " : "", status_text(rc));
     return rc;
 }

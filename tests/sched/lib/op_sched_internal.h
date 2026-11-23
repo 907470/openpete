@@ -39,4 +39,15 @@ void sched_child_run(const sched_child_plan *plan) __attribute__((noreturn));
  * @return 0 on success, -1 on error. */
 int sched_write_all(int fd, const void *buf, size_t n);
 
+/** @brief Hide (on = 1) or show (on = 0) the calling thread's accesses and synchronisation from the race detector; nests.
+ *
+ * The scheduler's own state and its baton are ordered by the baton alone, which
+ * the detector must not see: a baton edge orders every pair of steps and would
+ * hide each race the code under test has.
+ * @param on 1 to begin hiding, 0 to end the innermost bracket, -1 to end every open bracket (before the process exits). */
+void sched_tsan_ignore(int on);
+
+/** @brief Fail the schedule when the race detector made an unclassified report since the last poll. */
+void sched_tsan_poll(void);
+
 #endif

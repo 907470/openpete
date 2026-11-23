@@ -1,0 +1,23 @@
+M10: Engaging takes no lock: set_active(1) writes s_pt.active and s_pt.activation while the present thread reads them under s_pt.mx. The race detector's negative control (present_sched_tsan); no property names it.
+
+--- a/core/runtime/present_thread.c
++++ b/core/runtime/present_thread.c
+@@ -979,17 +979,16 @@
+ void openpete_present_thread_set_active(int on)
+ {
+     if (!s_pt.thr) return;
+-    SDL_LockMutex(s_pt.mx);
+     if (on) {
+         if (!s_pt.active) {
+             s_pt.active = 1;
+             /* Never 0, which the thread's served number starts at. */
+             if (++s_pt.activation == 0) s_pt.activation = 1;
+             SDL_SignalCondition(s_pt.cv);
+         }
+-        SDL_UnlockMutex(s_pt.mx);
+         return;
+     }
++    SDL_LockMutex(s_pt.mx);
+     if (s_pt.active) {
+         s_pt.active = 0;
+         SDL_SignalCondition(s_pt.cv);

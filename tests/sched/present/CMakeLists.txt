@@ -77,7 +77,9 @@ function(present_sched_objects ring)
     add_library(present_sched_obj${ring} OBJECT
         ${PT_DIR}/harness.c ${PT_DIR}/fakevk.c ${PT_DIR}/stubs.c ${PT_GEN}/vk_list.h)
     target_include_directories(present_sched_obj${ring} PRIVATE ${PT_INCLUDES})
-    target_compile_definitions(present_sched_obj${ring} PRIVATE VK_NO_PROTOTYPES PT_SCENE_RING=${ring})
+    # The build's file-prefix maps (top-level CMakeLists.txt), which the race detector reverses to read sources.
+    target_compile_definitions(present_sched_obj${ring} PRIVATE VK_NO_PROTOTYPES PT_SCENE_RING=${ring}
+        PT_SOURCE_DIR="${CMAKE_SOURCE_DIR}" PT_BINARY_DIR="${CMAKE_BINARY_DIR}")
     target_compile_options(present_sched_obj${ring} PRIVATE -Wall -Wextra)
     target_link_libraries(present_sched_obj${ring} PRIVATE SDL3::Headers)
     set_target_properties(present_sched_obj${ring} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
@@ -114,18 +116,38 @@ endfunction()
 present_sched_harness(present_sched 48 present_sched_ring48 ${PT_GEN}/present_thread.sched.o)
 present_sched_harness(present_sched_r3 3 present_sched_ring3 ${PT_GEN}/present_thread.sched.o)
 
+# The race-detector (noise) build: the same harness objects, scenarios and instrumented protocol objects,
+# linked against the scheduler's noise runtime and the real ThreadSanitizer runtime instead of the
+# scheduler's own __tsan_* entry points.
+function(present_sched_noise name ring_lib pt_obj)
+    add_executable(${name} $<TARGET_OBJECTS:present_sched_obj48> $<TARGET_OBJECTS:${ring_lib}>
+        ${pt_obj} ${PT_GEN}/rhi_vulkan.sched.o)
+    set_target_properties(${name} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+    add_dependencies(${name} present_sched_gen openpete_rhi)
+    target_link_options(${name} PRIVATE -Wl,--wrap=rhi_display_claim)
+    target_link_libraries(${name} PRIVATE $<TARGET_FILE:openpete_rhi> openpete_sched_noise m)
+endfunction()
+if(OPENPETE_SCHED_HAVE_TSAN)
+    present_sched_noise(present_sched_tsan present_sched_ring48 ${PT_GEN}/present_thread.sched.o)
+endif()
+
 # Negative controls: each mutant is a unified diff applied to a copy of one protocol file at build
 # time (apply_mutant.py refuses a patch that no longer applies, naming the mutant); its binary links
 # the mutated copy in place of the original. Mutants of present_thread.c and of the scene ring.
 set(PT_MUTANTS_PT M1 M3 M4 M5 M6 M8 M9)
 set(PT_MUTANTS_RING M2 M7)
+# The race detector's controls (present_thread.c, noise build only): a lock removed around a protocol access.
+set(PT_MUTANTS_NOISE)
+if(OPENPETE_SCHED_HAVE_TSAN)
+    set(PT_MUTANTS_NOISE M10)
+endif()
 set(PT_MUT_BIN ${CMAKE_CURRENT_BINARY_DIR}/mutants)
 file(MAKE_DIRECTORY ${PT_MUT_BIN})
 set(PT_MUTANT_TARGETS "")
-foreach(m IN LISTS PT_MUTANTS_PT PT_MUTANTS_RING)
+foreach(m IN LISTS PT_MUTANTS_PT PT_MUTANTS_RING PT_MUTANTS_NOISE)
     set(mgen ${PT_GEN}/${m})
     file(MAKE_DIRECTORY ${mgen})
-    if(m IN_LIST PT_MUTANTS_PT)
+    if(m IN_LIST PT_MUTANTS_PT OR m IN_LIST PT_MUTANTS_NOISE)
         set(msrc ${CMAKE_SOURCE_DIR}/core/runtime/present_thread.c)
         set(mout ${mgen}/present_thread.c)
     else()
@@ -138,7 +160,7 @@ foreach(m IN LISTS PT_MUTANTS_PT PT_MUTANTS_RING)
         DEPENDS ${PT_DIR}/apply_mutant.py ${PT_DIR}/mutants/${m}.patch ${msrc}
         COMMENT "present_sched: mutant ${m}"
         VERBATIM)
-    if(m IN_LIST PT_MUTANTS_PT)
+    if(m IN_LIST PT_MUTANTS_PT OR m IN_LIST PT_MUTANTS_NOISE)
         add_library(present_sched_pt_${m} OBJECT ${mout})
         target_include_directories(present_sched_pt_${m} PRIVATE ${PT_INCLUDES} ${CMAKE_SOURCE_DIR}/core/runtime)
         target_compile_definitions(present_sched_pt_${m} PRIVATE VK_NO_PROTOTYPES OPENPETE_ENGINE_BUILD)
@@ -152,6 +174,12 @@ foreach(m IN LISTS PT_MUTANTS_PT PT_MUTANTS_RING)
             DEPENDS present_sched_pt_${m} $<TARGET_OBJECTS:present_sched_pt_${m}>
             COMMAND_EXPAND_LISTS VERBATIM)
         set_source_files_properties(${mgen}/present_thread.sched.o PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+        if(m IN_LIST PT_MUTANTS_NOISE)
+            present_sched_noise(present_sched_tsan_${m} present_sched_ring48 ${mgen}/present_thread.sched.o)
+            set_target_properties(present_sched_tsan_${m} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PT_MUT_BIN})
+            add_dependencies(present_sched_tsan present_sched_tsan_${m})
+            continue()
+        endif()
         present_sched_harness(present_sched_${m} 48 present_sched_ring48 ${mgen}/present_thread.sched.o)
     else()
         add_custom_command(
@@ -210,3 +238,15 @@ set_tests_properties(sched_seams_selftest PROPERTIES LABELS "fence" SKIP_RETURN_
 add_test(NAME present_sched_soak
          COMMAND present_sched --out ${CMAKE_CURRENT_BINARY_DIR}/soak --soak 600)
 set_tests_properties(present_sched_soak PROPERTIES LABELS "slow" TIMEOUT 900)
+
+# The race-detector soak (label slow): PCT over every scenario of the shipped ring and SR under the real
+# ThreadSanitizer, every report classified by its sched: marker or failing the schedule; then the control
+# M10's soak must report its race, or the run is VACUOUS. The sanitizer's shadow layout needs the
+# kernel's address-space randomisation off for the process (setarch -R).
+if(OPENPETE_SCHED_HAVE_TSAN)
+    add_test(NAME present_sched_tsan
+             COMMAND setarch ${CMAKE_SYSTEM_PROCESSOR} -R $<TARGET_FILE:present_sched_tsan>
+                     --out ${CMAKE_CURRENT_BINARY_DIR}/tsan --soak 60
+                     --tsan-control $<TARGET_FILE:present_sched_tsan_M10>)
+    set_tests_properties(present_sched_tsan PROPERTIES LABELS "slow" TIMEOUT 300)
+endif()

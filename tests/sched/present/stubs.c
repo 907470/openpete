@@ -91,10 +91,17 @@ char **SDL_GlobDirectory(const char *p, const char *pat, SDL_GlobFlags f, int *n
 bool SDL_RemovePath(const char *p) { (void)p; return false; }
 void SDL_free(void *p) { free(p); }
 /* The scene ring's once-created mutex slot: an idempotent first-use cache (once). */
-void *SDL_GetAtomicPointer(void **a) { return __atomic_load_n(a, __ATOMIC_SEQ_CST); }
+void *SDL_GetAtomicPointer(void **a)
+{
+    sched_tsan_acquire(a);
+    return __atomic_load_n(a, __ATOMIC_SEQ_CST);
+}
 bool SDL_CompareAndSwapAtomicPointer(void **a, void *oldval, void *newval)
 {
-    return __atomic_compare_exchange_n(a, &oldval, newval, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    sched_tsan_acquire(a);
+    const bool ok = __atomic_compare_exchange_n(a, &oldval, newval, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    if (ok) sched_tsan_release(a);
+    return ok;
 }
 
 /* ---- engine externals: no-yield, no effect ---- */

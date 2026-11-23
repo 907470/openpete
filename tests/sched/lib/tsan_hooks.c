@@ -8,9 +8,10 @@
  * through. Atomic operations execute sequentially consistent whatever
  * memory order was asked for. libtsan is never linked: a __tsan_* entry
  * this file does not define is a link error. */
-#include "op_sched.h"
+#include "op_sched_internal.h"
 
 #include <stdint.h>
+#include <stdio.h>
 
 enum { MAX_WATCH = 64, MAX_EXCLUDE = 64 };
 
@@ -192,3 +193,21 @@ ATOMICS(8, int8_t)
 ATOMICS(16, int16_t)
 ATOMICS(32, int32_t)
 ATOMICS(64, int64_t)
+
+/* The race-detector runtime interface: no detector runs in this build. */
+int sched_noise(void) { return 0; }
+void sched_tsan_release(const void *obj) { (void)obj; }
+void sched_tsan_acquire(const void *obj) { (void)obj; }
+void sched_tsan_ignore(int on) { (void)on; }
+void sched_tsan_poll(void) {}
+int sched_tsan_markers(const void *const *code, int n, const char *const *maps, int nmaps)
+{
+    (void)code; (void)n; (void)maps; (void)nmaps;
+    return 0;
+}
+unsigned long sched_tsan_summary(void *out, unsigned long *unclassified)
+{
+    (void)out;
+    if (unclassified) *unclassified = 0;
+    return 0;
+}

@@ -26,13 +26,37 @@ foreach(sym IN LISTS SCHED_SDL_WRAPS)
 endforeach()
 set(SCHED_WRAP_LINK ${SCHED_WRAP_LINK} PARENT_SCOPE)
 
-add_library(openpete_sched STATIC
-    lib/sched.c lib/explore.c lib/sdl_wraps.c lib/tsan_hooks.c)
+# The scheduler, the explorer and the SDL wraps, shared by both runtimes.
+add_library(openpete_sched_core OBJECT lib/sched.c lib/explore.c lib/sdl_wraps.c)
+target_include_directories(openpete_sched_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib)
+target_compile_options(openpete_sched_core PRIVATE -Wall -Wextra)
+set_target_properties(openpete_sched_core PROPERTIES C_STANDARD 11)
+target_link_libraries(openpete_sched_core PUBLIC SDL3::Headers)
+
+# The scripted runtime: the scheduler's own __tsan_* entry points (watched accesses are yields), no libtsan.
+add_library(openpete_sched STATIC $<TARGET_OBJECTS:openpete_sched_core> lib/tsan_hooks.c)
 target_include_directories(openpete_sched PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 target_compile_options(openpete_sched PRIVATE -Wall -Wextra)
 set_target_properties(openpete_sched PROPERTIES C_STANDARD 11)
 target_link_libraries(openpete_sched PUBLIC SDL3::Headers Threads::Threads ${CMAKE_DL_LIBS})
 target_link_options(openpete_sched INTERFACE ${SCHED_WRAP_LINK})
+
+# The noise runtime: the same scheduler over the real ThreadSanitizer runtime (tsan_noise.c), for the
+# race-detector build of a harness. Built where the toolchain links -fsanitize=thread.
+include(CheckCSourceCompiles)
+set(CMAKE_REQUIRED_FLAGS -fsanitize=thread)
+set(CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=thread)
+check_c_source_compiles("int main(void) { return 0; }" OPENPETE_SCHED_HAVE_TSAN)
+unset(CMAKE_REQUIRED_FLAGS)
+unset(CMAKE_REQUIRED_LINK_OPTIONS)
+if(OPENPETE_SCHED_HAVE_TSAN)
+    add_library(openpete_sched_noise STATIC $<TARGET_OBJECTS:openpete_sched_core> lib/tsan_noise.c)
+    target_include_directories(openpete_sched_noise PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib)
+    target_compile_options(openpete_sched_noise PRIVATE -Wall -Wextra)
+    set_target_properties(openpete_sched_noise PROPERTIES C_STANDARD 11)
+    target_link_libraries(openpete_sched_noise PUBLIC SDL3::Headers Threads::Threads ${CMAKE_DL_LIBS})
+    target_link_options(openpete_sched_noise INTERFACE ${SCHED_WRAP_LINK} -fsanitize=thread)
+endif()
 
 # The toy whose shared accesses the hooks see.
 add_library(sched_toy_tsan OBJECT toys/toy_counter.c)

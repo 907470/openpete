@@ -94,6 +94,7 @@ Passing it fails the schedule as a livelock; it is never a truncation.
 |---|---|---|
 | `present_sched` | `unit` | S1-S8 exhaustively at each scenario's bound, both timings, both ring sizes; the engagement verdict; then the negative controls; about 45 s at 16 jobs |
 | `present_sched_soak` | `slow` | PCT over every scenario and SR, 10 minutes, one worker per job, base seed from the date |
+| `present_sched_tsan` | `slow` | the race-detector build: PCT over every scenario and SR for 60 s under ThreadSanitizer, then the control M10, which must report its race |
 | `sched_calibrate` | `unit` | the scheduler's calibration |
 | `sched_seams`, `sched_seams_selftest` | `fence` | the upkeep fence and its fixtures |
 
@@ -123,6 +124,58 @@ present_sched --only S1 --timing 0 --replay 0,0,0,2 --out /tmp/pt
 reruns that schedule alone and rewrites the trace. A soak failure prints
 its scenario, timing and seed. Replay it the same way with the choice
 string printed above that line.
+
+## Race-detector build
+
+A thread runs without interruption between two yields, so the scripted
+build interleaves only accesses the address filter watches. An unlocked
+access the filter misses is never interleaved, and the scripted build
+cannot see its race. `present_sched_tsan` closes that population with
+ThreadSanitizer's happens-before detector.
+
+It links the same harness objects, scenarios, fake device and
+instrumented protocol objects as `present_sched`. The scheduler links
+`lib/tsan_noise.c` in place of `lib/tsan_hooks.c` (`openpete_sched_noise`
+in place of `openpete_sched`), and libtsan is linked:
+
+- The instrumented code calls libtsan, which records every access; no
+  access is a yield.
+- The scheduler still runs one thread at a time. Its baton and its own
+  state are hidden from the detector (ignore annotations), so the baton
+  orders nothing the detector sees. The model mutexes, thread start and
+  join, and the SDL atomics publish their happens-before edges
+  (`sched_tsan_acquire`, `sched_tsan_release`). C11 atomics reach libtsan
+  directly.
+- The detector is happens-before based. It reports two accesses no edge
+  orders whether or not they ran at the same moment. The PCT seeds vary
+  which lock-order edges each schedule makes, and a race is replayed by
+  its choice string like any failure.
+
+Each report is classified in libtsan's report hook. A report is counted
+and suppressed when the innermost frame of one of its accesses lies on a
+source line whose trailing comment carries `sched: once` (an idempotent
+first-use cache) or `sched: unordered` (a statistic no protocol decision
+reads). Any other report is printed with both stacks and fails the
+schedule with `TSAN: data-race: ...`. A `sched: owned` access is ordered
+by a handoff the detector sees, so a report on it is a defect, not a
+class. The run prints the report count and every classified site.
+
+The kernel's address-space randomisation can exceed the sanitizer's
+shadow layout. The ctest runs the binary under `setarch <arch> -R`, and so
+does a manual run:
+
+```
+setarch "$(uname -m)" -R build/linux-release/tests/sched/present/present_sched_tsan \
+  --out /tmp/pt --soak 60 --tsan-control build/linux-release/tests/sched/present/mutants/present_sched_tsan_M10
+```
+
+M10 (`mutants/M10.patch`) removes the lock around `set_active(1)`'s
+writes of `s_pt.active` and `s_pt.activation`. Its binary,
+`present_sched_tsan_M10`, runs the same soak with one worker and
+`--expect-race`, and passes only on a schedule failing with an
+unclassified race. A noise run whose control goes undetected is VACUOUS.
+The target builds where the toolchain links `-fsanitize=thread`
+(`OPENPETE_SCHED_HAVE_TSAN`).
 
 ## Negative controls
 
@@ -185,7 +238,8 @@ in the same change set:
       `_borrow` or `_return`, or joins `seam_guard.py`'s `RHI_ALLOW`, is
       modelled by the driver and listed in `CLIENTS` with the call
       sequence it models.
-3. Run `present_sched` and, at the end of the change, `present_sched_soak`.
+3. Run `present_sched` and, at the end of the change, `present_sched_soak`
+   and `present_sched_tsan`.
 
 ### Adding a seam or a stub
 
@@ -218,3 +272,5 @@ in the same change set:
   routed through the host loop); `seam_guard.py` rules B and C fence it.
 - The fake device allows one outstanding acquire per swapchain, the RHI's
   own invariant.
+- The race-detector build orders threads through the scheduler's model
+  mutexes and conditions; SDL's own implementations are not run.

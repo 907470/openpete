@@ -244,6 +244,7 @@ static void trace_flush(void)
 static void child_end(int status, const char *msg) __attribute__((noreturn));
 static void child_end(int status, const char *msg)
 {
+    if (status == SCHED_CHILD_PASS) sched_tsan_poll();
     char ch[4096];
     choices_string(ch, sizeof ch);
     if (status != SCHED_CHILD_PASS || s.plan->trace_always) trace_flush();
@@ -259,11 +260,13 @@ static void child_end(int status, const char *msg)
         sched_write_all(fd, &cl, 2); sched_write_all(fd, ch, cl);
     }
     fflush(NULL);
+    sched_tsan_ignore(-1);
     _exit(status);
 }
 
 void sched_fail(const char *fmt, ...)
 {
+    sched_tsan_ignore(1);
     char msg[512];
     va_list ap;
     va_start(ap, fmt);
@@ -514,6 +517,8 @@ static void yield_op(sched_op_kind kind, const void *obj, const char *site, cons
 {
     const int me = tl_id;
     thr *t = &s.t[me];
+    sched_tsan_ignore(1);
+    sched_tsan_poll();
     t->op = kind; t->obj = obj; t->ra = ra;
     snprintf(t->site, sizeof t->site, "%s", site ? site : "?");
     if (t->starter < 0) run_hook(me, kind, obj, ra);
@@ -531,6 +536,7 @@ static void yield_op(sched_op_kind kind, const void *obj, const char *site, cons
     }
     while (s.running != me) pthread_cond_wait(&t->cv, &s.mx);
     pthread_mutex_unlock(&s.mx);
+    sched_tsan_ignore(0);
 }
 
 /** @brief Yield with a site named by a code address.
@@ -568,8 +574,10 @@ int sched_choose(int n, const char *site)
     for (int k = 0; k < n; k++) dd[k] = k ? 1 : 0;
     int pct = 0;
     if (s.plan->pct && rng_unit() < s.plan->cfg->pct_deviation) pct = 1 + (int)(splitmix(&s.rng) % (uint64_t)(n - 1));
+    sched_tsan_ignore(1);
     const int idx = take_choice(n, dp, dd, pct);
     trace_add("choose %s = %d/%d\n", site ? site : "?", idx, n);
+    sched_tsan_ignore(0);
     return idx;
 }
 
@@ -580,8 +588,10 @@ int sched_choose_uniform(int n, const char *site)
     if (n > SCHED_MAX_ALTS) n = SCHED_MAX_ALTS;
     for (int k = 0; k < n; k++) dd[k] = k ? 1 : 0;
     const int pct = s.plan->pct ? (int)(splitmix(&s.rng) % (uint64_t)n) : 0;
+    sched_tsan_ignore(1);
     const int idx = take_choice(n, dp, dd, pct);
     trace_add("choose %s = %d/%d\n", site ? site : "?", idx, n);
+    sched_tsan_ignore(0);
     return idx;
 }
 
@@ -629,6 +639,7 @@ static void mutex_take(sched_mutex *m, int depth, const void *ra)
     me->blk = BLK_NONE; me->bm = NULL;
     if (m->owner == tl_id) m->depth += depth;
     else { m->owner = tl_id; m->depth = depth; }
+    sched_tsan_acquire(m);
 }
 
 void sched_mutex_lock(sched_mutex *m, const void *ra)
@@ -644,6 +655,7 @@ int sched_mutex_trylock(sched_mutex *m, const void *ra)
     if (m->owner >= 0 && m->owner != tl_id) return 0;
     if (m->owner == tl_id) m->depth++;
     else { m->owner = tl_id; m->depth = 1; }
+    sched_tsan_acquire(m);
     return 1;
 }
 
@@ -652,6 +664,7 @@ void sched_mutex_unlock(sched_mutex *m, const void *ra)
     if (!sched_active()) return;
     yield_ra(SCHED_OP_UNLOCK, m, ra);
     if (m->owner != tl_id) sched_fail("unlock of a mutex T%d does not hold (owner T%d)", tl_id, m->owner);
+    sched_tsan_release(m);
     if (--m->depth == 0) m->owner = -1;
 }
 
@@ -662,6 +675,7 @@ int sched_cond_wait(sched_cond *c, sched_mutex *m, int64_t timeout_ns, const voi
     yield_ra(SCHED_OP_COND_WAIT, c, ra);
     if (m->owner != tl_id) sched_fail("condition wait without its mutex (T%d, owner T%d)", tl_id, m->owner);
     const int depth = m->depth;
+    sched_tsan_release(m);
     m->owner = -1; m->depth = 0;
     me->blk = BLK_COND; me->bc = c; me->woken = 0; me->wait_seq = ++s.wait_seq;
     me->deadline = timeout_ns >= 0 ? s.clock + timeout_ns : -1;
@@ -708,6 +722,8 @@ void sched_cond_broadcast(sched_cond *c, const void *ra)
 static void thread_finish(void)
 {
     const int me = tl_id;
+    sched_tsan_release(&s.t[me].done);
+    sched_tsan_ignore(1);
     if (s.t[me].starter < 0) run_hook(me, SCHED_OP_KINDS, NULL, NULL);
     pthread_mutex_lock(&s.mx);
     s.t[me].done = 1;
@@ -724,6 +740,7 @@ static void thread_finish(void)
         hand_to(decide());
     }
     pthread_mutex_unlock(&s.mx);
+    sched_tsan_ignore(0);
 }
 
 /** @brief Body of every scheduled pthread: wait for the baton, run the thread function, finish.
@@ -733,9 +750,12 @@ static void *thread_trampoline(void *p)
 {
     const int id = (int)(intptr_t)p;
     tl_id = id;
+    sched_tsan_ignore(1);
     pthread_mutex_lock(&s.mx);
     while (s.running != id) pthread_cond_wait(&s.t[id].cv, &s.mx);
     pthread_mutex_unlock(&s.mx);
+    sched_tsan_ignore(0);
+    sched_tsan_acquire(&s.t[id]);
     s.t[id].ret = s.t[id].fn(s.t[id].arg);
     thread_finish();
     return NULL;
@@ -767,21 +787,26 @@ int sched_thread_create(int (*fn)(void *), void *arg, const char *name, const vo
      * yield, so its pending operation is a visible one, then the creator
      * continues. */
     const int me = tl_id;
+    sched_tsan_ignore(1);
     const int id = thread_slot(name);
     if (id < 0) sched_fail("thread limit %d reached", MAX_THREADS);
     s.t[id].fn = fn; s.t[id].arg = arg; s.t[id].starter = me;
     trace_add("create T%d(%s) by T%d\n", id, name ? name : "?", me);
+    sched_tsan_ignore(0);
+    sched_tsan_release(&s.t[id]);
     pthread_attr_t at;
     pthread_attr_init(&at);
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
     if (pthread_create(&s.t[id].pt, &at, thread_trampoline, (void *)(intptr_t)id) != 0)
         sched_fail("pthread_create failed");
     pthread_attr_destroy(&at);
+    sched_tsan_ignore(1);
     pthread_mutex_lock(&s.mx);
     s.running = id;
     pthread_cond_signal(&s.t[id].cv);
     while (s.running != me) pthread_cond_wait(&s.t[me].cv, &s.mx);
     pthread_mutex_unlock(&s.mx);
+    sched_tsan_ignore(0);
     return id;
 }
 
@@ -792,6 +817,7 @@ int sched_thread_join(int id, const void *ra)
     me->blk = BLK_JOIN; me->join_id = id;
     yield_ra(SCHED_OP_JOIN, &s.t[id], ra);
     me->blk = BLK_NONE;
+    sched_tsan_acquire(&s.t[id].done);
     return s.t[id].ret;
 }
 
@@ -827,6 +853,7 @@ void sched_child_run(const sched_child_plan *plan)
     s.active = 1;
     plan->cfg->scenario(plan->cfg->arg);
     thread_finish();
+    sched_tsan_ignore(1);
     pthread_mutex_lock(&s.mx);
     while (!s.finished) pthread_cond_wait(&s.all_done, &s.mx);
     pthread_mutex_unlock(&s.mx);

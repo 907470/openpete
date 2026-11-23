@@ -6,7 +6,9 @@
  * opaque handles. Every call is a yield inside a scheduled run and runs
  * straight through outside one (the explorer process before its first
  * fork is single-threaded). Clock reads and delays use the virtual clock.
- * A thread is created only when the scenario admitted its name. */
+ * A thread is created only when the scenario admitted its name. The SDL
+ * atomics publish SDL's sequentially consistent ordering to the race
+ * detector of the noise build (sched_tsan_acquire, sched_tsan_release). */
 #include "op_sched.h"
 
 #include <SDL3/SDL.h>
@@ -206,6 +208,7 @@ int __wrap_SDL_GetAtomicInt(SDL_AtomicInt *a);
 int __wrap_SDL_GetAtomicInt(SDL_AtomicInt *a)
 {
     sched_point_ra(SCHED_OP_ATOMIC, a, __builtin_return_address(0));
+    sched_tsan_acquire(a);
     return a->value;
 }
 
@@ -217,8 +220,10 @@ int __wrap_SDL_SetAtomicInt(SDL_AtomicInt *a, int v);
 int __wrap_SDL_SetAtomicInt(SDL_AtomicInt *a, int v)
 {
     sched_point_ra(SCHED_OP_ATOMIC, a, __builtin_return_address(0));
+    sched_tsan_acquire(a);
     const int old = a->value;
     a->value = v;
+    sched_tsan_release(a);
     return old;
 }
 
@@ -230,8 +235,10 @@ int __wrap_SDL_AddAtomicInt(SDL_AtomicInt *a, int v);
 int __wrap_SDL_AddAtomicInt(SDL_AtomicInt *a, int v)
 {
     sched_point_ra(SCHED_OP_ATOMIC, a, __builtin_return_address(0));
+    sched_tsan_acquire(a);
     const int old = a->value;
     a->value = old + v;
+    sched_tsan_release(a);
     return old;
 }
 
@@ -244,7 +251,9 @@ bool __wrap_SDL_CompareAndSwapAtomicInt(SDL_AtomicInt *a, int oldval, int newval
 bool __wrap_SDL_CompareAndSwapAtomicInt(SDL_AtomicInt *a, int oldval, int newval)
 {
     sched_point_ra(SCHED_OP_ATOMIC, a, __builtin_return_address(0));
+    sched_tsan_acquire(a);
     if (a->value != oldval) return false;
     a->value = newval;
+    sched_tsan_release(a);
     return true;
 }
