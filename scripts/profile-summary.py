@@ -8,10 +8,15 @@ Usage:
 
 Notes:
   * Spans bin to markers (_opp_reader.py): SCENE records under eager
-    production, PRESENT records on the inline path. "present_busy" is the
-    wall-time union of all CPU spans binned to a marker (the real CPU cost;
-    parent/child scope overlap is de-duplicated); "presents_total" and the
-    per-kind "presents" count markers.
+    production, PRESENT records on the inline path. Spans raised on the
+    present thread (eager production) bin to that thread's own PRESENT
+    records instead, one bin per present, of the kind of the scene the
+    present's render consumed. [cpu.scope] rows are per marker, [cpu.present]
+    rows per present (the JSON's cpu_scopes "per" field: "scene" or
+    "present"). "present_busy" is the wall-time union of all CPU spans binned
+    to a marker (the real CPU cost; parent/child scope overlap is
+    de-duplicated), "present_thread_busy" the same per present-thread
+    present; "presents_total" and the per-kind "presents" count markers.
   * "fps" and [present] are the cadence of PRESENT records, each written at a
     present to the display (includes pacing/vsync waits). [scene] is the
     cadence of SCENE records, each written when a scene is published to the
@@ -46,7 +51,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _opp_reader import (read_opp, present_busy_us, partition_transients,  # noqa: E402
-                         OppTraceError, KIND_CANONICAL, KIND_INTERMEDIATE,
+                         OppTraceError, KIND_CANONICAL, KIND_INTERMEDIATE, KIND_NAME,
                          REGION_GUEST, REGION_WAIT, REGION_INTERMEDIATE)
 
 
@@ -679,6 +684,8 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
     funcs = tr.funcs
     presents = [p for p in tr.markers if p.canon_tick >= skip_ticks]
     presents, transients = partition_transients(presents, transient_ms * 1000)
+    pbins = [p for p in tr.present_bins if p.canon_tick >= skip_ticks]
+    pbins, pt_transients = partition_transients(pbins, transient_ms * 1000)
     transient_ids = set(id(p) for p in transients)
 
     kinds = {KIND_CANONICAL: "canonical", KIND_INTERMEDIATE: "intermediate"}
@@ -690,6 +697,11 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
         "transients_excluded": len(transients),
         "transients_total_ms": round(sum(present_busy_us(p) for p in transients) / 1000.0, 1),
         "transient_ms_threshold": transient_ms,
+        "present_thread_presents": len(pbins),
+        "present_thread_transients_excluded": len(pt_transients),
+        "present_thread_multi_render": sum(
+            1 for p in pbins
+            if sum(1 for r in p.regions if r.name == "render" and r.parent is None) > 1),
         "kinds": {},
         "threads": tr.threads,
         "cpu_scopes": [],
@@ -717,18 +729,28 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
     for p in presents:
         busy_by_kind.setdefault(p.kind, []).append(present_busy_us(p))
 
+    pbusy_by_kind = {}
+    for p in pbins:
+        pbusy_by_kind.setdefault(p.kind, []).append(present_busy_us(p))
+
     for k, kname in kinds.items():
         b = sorted(busy_by_kind[k])
+        pb = sorted(pbusy_by_kind.get(k, []))
         out["kinds"][kname] = {
             "presents": len(b),
             "busy_p50_us": pct(b, 0.50),
             "busy_p99_us": pct(b, 0.99),
             "busy_max_us": max(b) if b else 0,
+            "present_thread_presents": len(pb),
+            "present_thread_busy_p50_us": pct(pb, 0.50),
+            "present_thread_busy_p99_us": pct(pb, 0.99),
+            "present_thread_busy_max_us": max(pb) if pb else 0,
         }
 
     # fps from the cadence of PRESENT records (all kinds interleaved, time
     # order). A PRESENT that is a marker and a load transient is dropped, as
-    # its marker is; a present-thread PRESENT carries no spans and never is.
+    # its marker is; a present-thread PRESENT stays in the cadence whatever its
+    # bin's busy time (a long render is a long interval, not a load).
     shown = [p for p in tr.presents
              if p.canon_tick >= skip_ticks and id(p) not in transient_ids]
     all_t = sorted(p.t_now_us for p in shown)
@@ -756,11 +778,12 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
         }
 
     # ---- per-scope aggregation (CPU) --------------------------------------
-    def agg(pick):
-        # pick(present) -> dict name->summed_us for this present
-        rows = {}  # (kind, name) -> list of per-present sums
+    def agg(bins, pick, per, busy):
+        # pick(bin) -> dict (name, tid)->summed_us for this bin; one row per
+        # (kind, name), p50/p99/max over the bins that raised the scope.
+        rows = {}  # (kind, name) -> list of per-bin sums
         totals = {}  # (kind,name) -> total us
-        for p in presents:
+        for p in bins:
             d = pick(p)
             for (name, _tid), us in d.items():
                 rows.setdefault((p.kind, name), []).append(us)
@@ -770,7 +793,8 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
             sv = sorted(vals)
             result.append({
                 "scope": name,
-                "kind": kinds[k],
+                "kind": KIND_NAME.get(k, "?"),
+                "per": per,
                 "p50_us": pct(sv, 0.50),
                 "p99_us": pct(sv, 0.99),
                 "max_us": max(sv),
@@ -779,7 +803,7 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
                 "_kraw": k,
             })
         # share% of the kind's total busy
-        busy_sum = {k: sum(busy_by_kind[k]) for k in kinds}
+        busy_sum = {k: sum(v) for k, v in busy.items()}
         for r in result:
             bs = busy_sum.get(r["_kraw"], 0)
             r["share_pct"] = round(100.0 * (r["sum_ms"] * 1000.0) / bs, 1) if bs else 0.0
@@ -794,13 +818,15 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
             d[key] = d.get(key, 0) + dur
         return d
 
-    out["cpu_scopes"] = agg(cpu_pick)
+    out["cpu_scopes"] = sorted(agg(presents, cpu_pick, "scene", busy_by_kind) +
+                               agg(pbins, cpu_pick, "present", pbusy_by_kind),
+                               key=lambda r: -r["sum_ms"])
 
     # ---- per-thread scope counts -------------------------------------------
     # One row per (scope, thread): a scope that moves between the sim worker and
     # the present thread when a default flips shows here as two rows.
     per_thread = {}
-    for p in presents:
+    for p in presents + pbins:
         for (_d, name, _t0, dur, _a, tid) in p.spans:
             e = per_thread.setdefault((tid, name), [0, 0])
             e[0] += 1
@@ -856,11 +882,11 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
     canon = [p for p in presents if p.kind == KIND_CANONICAL]
     nc = len(canon) or 1
     out["sim_split"] = sim_split_regions(presents, nc) or sim_split_legacy(canon)
-    out["scene_split"] = scene_split_regions(presents)
+    out["scene_split"] = scene_split_regions(presents + pbins)
 
     # ---- census -----------------------------------------------------------
     cen = {}
-    for p in presents:
+    for p in presents + pbins:
         for name, val in p.counts.items():
             if name.startswith(("eager.", "pt.")):
                 continue   # the scheduler's counters: [scheduler]
@@ -896,6 +922,16 @@ def render_text(s):
     L.append("# present_busy_us p50/p99/max: canonical %d/%d/%d  intermediate %d/%d/%d"
              % (ck.get("busy_p50_us", 0), ck.get("busy_p99_us", 0), ck.get("busy_max_us", 0),
                 ik.get("busy_p50_us", 0), ik.get("busy_p99_us", 0), ik.get("busy_max_us", 0)))
+    if s.get("present_thread_presents"):
+        L.append("# present_thread_busy_us p50/p99/max per present: canonical %d/%d/%d (%d)  "
+                 "intermediate %d/%d/%d (%d); %d present(s) carry more than one render; "
+                 "excluded %d load-transient present(s)"
+                 % (ck.get("present_thread_busy_p50_us", 0), ck.get("present_thread_busy_p99_us", 0),
+                    ck.get("present_thread_busy_max_us", 0), ck.get("present_thread_presents", 0),
+                    ik.get("present_thread_busy_p50_us", 0), ik.get("present_thread_busy_p99_us", 0),
+                    ik.get("present_thread_busy_max_us", 0), ik.get("present_thread_presents", 0),
+                    s.get("present_thread_multi_render", 0),
+                    s.get("present_thread_transients_excluded", 0)))
     f = s.get("fps", {})
     L.append("# fps avg %s  1%%low %s  frame_p99_us %s"
              % (f.get("avg", "?"), f.get("1pct_low", "?"), f.get("frame_p99_us", "?")))
@@ -984,7 +1020,8 @@ def render_text(s):
         render_region_tree(t, L, "%s.%s" % (root, kind[:5]),
                            "per %s scene %s (%d)" % (kind, words, t["instances"]), root,
                            "thread %s" % ",".join(str(x) for x in t["threads"]))
-    table("cpu.scope", s["cpu_scopes"])
+    table("cpu.scope", [r for r in s["cpu_scopes"] if r.get("per", "scene") == "scene"])
+    table("cpu.present", [r for r in s["cpu_scopes"] if r.get("per") == "present"])
     if s["gpu_zones"]:
         table("gpu.zone", s["gpu_zones"])
     else:

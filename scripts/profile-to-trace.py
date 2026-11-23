@@ -82,6 +82,17 @@ def main():
                        "dur": max(1, dur), "pid": PID_GPU, "tid": 0,
                        "args": {"frame_serial": serial}})
 
+    # Present-thread spans bin to that thread's PRESENT records (_opp_reader.py).
+    for p in tr.present_bins:
+        if not in_window(p):
+            continue
+        for (_depth, name, t0, dur, aux, tid) in p.spans:
+            e = {"name": name, "ph": "X", "ts": t0, "dur": max(1, dur),
+                 "pid": PID_CPU, "tid": tid}
+            if aux:
+                e["args"] = {"aux": aux}
+            ev.append(e)
+
     for p in presents:
         # CPU spans (Perfetto reconstructs nesting from ts+dur on one tid)
         for (_depth, name, t0, dur, aux, tid) in p.spans:

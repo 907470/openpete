@@ -166,7 +166,8 @@ def main():
     except OppTraceError as e:
         sys.stderr.write("profile-flamegraph: %s\n" % e)
         return 2
-    presents, funcs = tr.markers, tr.funcs
+    # Markers and the present thread's own PRESENT bins (_opp_reader.py).
+    presents, funcs = tr.markers + tr.present_bins, tr.funcs
     presents = [p for p in presents if p.canon_tick >= args.skip_ticks]
     presents, transients = partition_transients(presents, args.transient_ms * 1000)
     if transients:

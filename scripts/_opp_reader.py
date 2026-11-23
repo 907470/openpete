@@ -16,18 +16,25 @@ Markers:
     cadence is the publication cadence, not the present cadence.
   * The binning threads are the threads that write SCENE, or, in a trace with
     no SCENE, the threads that write PRESENT. Every SCENE or PRESENT on a
-    binning thread is a marker (Trace.markers); a PRESENT on another thread
-    is a cadence record only.
+    binning thread is a marker (Trace.markers).
+  * A present thread is a thread that writes PRESENT and is not a binning
+    thread (the present thread under eager production). Its PRESENT records
+    are its own bins (Trace.present_bins), outside Trace.markers. Each one is
+    written after the present it records, and carries the kind of the scene
+    that present's render consumed (present_thread.c renders a picked ring
+    slot, presents it, then records the PRESENT with the slot's kind).
 
 Binning:
-  * SPAN/COUNT raised on a binning thread bin by that thread's stream order,
-    to the next marker in it.
+  * SPAN/COUNT raised on a binning thread or a present thread bin by that
+    thread's stream order, to the next marker or PRESENT in it: on a present
+    thread, a present's bin holds its render, acquire and present steps,
+    and any render since the previous present that did not go out (dropped,
+    refused, discarded). Records after a thread's last bin bind to that bin.
   * SPAN/COUNT raised on any other thread bin by interval containment: the
     first marker whose time is at or after the span's t0.
   * GPUZ records are keyed by the RHI frame serial of the frame that submitted
     them, and group per rendered frame, not per marker. A GPUZ raised on a
-    binning thread also binds to that marker (the inline render path), so an
-    eager-off trace keeps its per-present GPU view.
+    binning thread or a present thread also binds to that thread's bin.
 
 Regions:
   * A SPAN record with bit 15 of its u16 at byte 4 set is a region of the
@@ -115,10 +122,13 @@ class Trace:
     [dict]. gpu_frames: {frame_serial: [(depth, name, t0_rel_us, dur_us, tid)]}
     - one entry per frame that actually rendered. threads: sorted tid list.
     present_tids / scene_tids: threads that wrote PRESENT / SCENE. bin_tids:
-    the binning threads."""
+    the binning threads. present_bins: the PRESENT records of the present
+    threads (present_tids less bin_tids), in time order, each with the spans,
+    counts, regions and GPU zones its thread raised since its previous
+    PRESENT; empty when no thread presents apart from the binning threads."""
     __slots__ = ("names", "markers", "presents", "scenes", "funcs",
                  "gpu_frames", "threads", "present_tids", "scene_tids",
-                 "bin_tids", "version")
+                 "bin_tids", "present_bins", "version")
 
     def __init__(self):
         self.names = {}
@@ -131,6 +141,7 @@ class Trace:
         self.present_tids = set()
         self.scene_tids = set()
         self.bin_tids = set()
+        self.present_bins = []
         self.version = FORMAT_VERSION
 
 
@@ -277,6 +288,8 @@ def read_opp(path):
             "partial trace." % (path, off, n))
     tr.bin_tids = set(tr.scene_tids) if tr.scenes else set(tr.present_tids)
     tr.markers = [p for p in tr.presents + tr.scenes if p.tid in tr.bin_tids]
+    tr.present_bins = [p for p in tr.presents if p.tid not in tr.bin_tids]
+    stream_tids = tr.bin_tids | {p.tid for p in tr.present_bins}
     if not tr.markers:
         raise OppTraceError(
             "%s: no PRESENT or SCENE records; nothing to bin spans into." % path)
@@ -302,13 +315,16 @@ def read_opp(path):
     tr.markers.sort(key=lambda p: p.t_now_us)
     tr.presents.sort(key=lambda p: p.t_now_us)
     tr.scenes.sort(key=lambda p: p.t_now_us)
+    tr.present_bins.sort(key=lambda p: p.t_now_us)
     tr.threads = sorted(threads)
 
-    # Binning threads: stream order. Other threads: containment.
+    # Binning threads and present threads: stream order. Other threads:
+    # containment.
     unbinned = 0
     for tid in tr.threads:
         items = streams.get(tid, [])
-        if tid in tr.bin_tids:
+        if tid in stream_tids:
+            own = [pl for k, pl in items if k == "marker"]
             pend_spans, pend_counts, pend_gpuz = [], [], []
             for kind, payload in items:
                 if kind == "span":
@@ -326,9 +342,9 @@ def read_opp(path):
                     for (_s, d, nid, t0r, dur, _t) in pend_gpuz:
                         p.gpuz.append((d, nm(nid), t0r, dur))
                     pend_spans, pend_counts, pend_gpuz = [], [], []
-            # Tail after the last marker: the close-time flush. Bind to the last
-            # marker rather than drop it.
-            last = tr.markers[-1]
+            # Tail after the thread's last bin: the close-time flush. Bind to
+            # that bin rather than drop it.
+            last = max(own, key=lambda p: p.t_now_us) if own else tr.markers[-1]
             for sp in pend_spans:
                 bind(last, sp)
             for (nid, val) in pend_counts:
@@ -352,7 +368,7 @@ def read_opp(path):
     # their position between that thread's own spans. Walk the stream once more
     # and attribute each to the marker the surrounding spans landed in.
     for tid in tr.threads:
-        if tid in tr.bin_tids:
+        if tid in stream_tids:
             continue
         cur = None
         for kind, payload in streams.get(tid, []):

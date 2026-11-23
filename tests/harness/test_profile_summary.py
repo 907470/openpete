@@ -21,6 +21,16 @@ Earlier trace: the same spans with no region fields (as written before the
 region tree) read, and the split is the inclusive hook table with its
 "unattributed" remainder.
 
+Present thread: a synthetic eager trace whose sim worker (thread 0)
+publishes a SCENE every 6 ms and whose present thread (thread 1) presents
+every 2 ms, each present a "render" root holding "render.compose" of a known
+duration per kind, and one present preceded by a render that did not go out.
+The present thread's chunk follows the sim worker's in the file. Its spans
+bind to its own PRESENT records, one bin per present, and none to a SCENE
+marker; [cpu.present] gives the known per-present compose p50 per kind with
+one row entry per present, the present carrying two renders is counted, and
+the sim worker's scopes stay per marker.
+
 Scheduler gaps: free-span counter rows give the count controller's deficit
 and the plan's slack below capacity as ms per present; display-grid rows and
 rows without a measured capacity are not counted; rows written before the
@@ -190,6 +200,86 @@ class Earlier(Base):
         self.assertEqual(rows["terrain_native"]["srend_us"], 100.0)
         self.assertEqual(ss["unattributed_us"], 1000.0 - 300 - 400 - 100)
         self.assertIn("trace without region records", ps.render_text(ps.summarize(p)))
+
+
+def eager_trace(scenes=6, per_scene=3, compose=None, extra_render_at=4):
+    """A format 3 eager trace: thread 0 writes `scenes` SCENE markers 6 ms
+    apart, each after a 2000 us "scene" region (every 4th canonical); thread 1
+    writes `per_scene` presents per scene 2 ms apart, each after a "render"
+    root holding "render.compose" of compose[kind] us, the present at index
+    `extra_render_at` preceded by one more render that did not go out. The
+    present thread's records follow the sim worker's in the file."""
+    compose = compose or {rd.KIND_CANONICAL: 1500, rd.KIND_INTERMEDIATE: 1200}
+    names = ["scene", "render", "render.compose"]
+    nid = {n: i for i, n in enumerate(names)}
+    out = [b"OPPR" + struct.pack("<IQQ", 3, 1000000, 0) + bytes(8)]
+    for n in names:
+        b = n.encode()
+        out.append(struct.pack("<BHH", 1, nid[n], len(b)) + b)
+
+    def span(tid, name, parent, root, t0, dur, self_us, flags):
+        r = bytearray(32)
+        r[0] = 3
+        struct.pack_into("<H", r, 2, nid[name])
+        struct.pack_into("<HH", r, 4, 0x8000 | (nid[parent] + 1 if parent else 0), nid[root])
+        struct.pack_into("<QII", r, 8, t0, dur, 1)
+        struct.pack_into("<I", r, 24, self_us)
+        r[28], r[29] = tid, flags
+        return bytes(r)
+
+    def marker(typ, tid, kind, idx, tick, t):
+        r = bytearray(32)
+        r[0], r[1] = typ, kind
+        struct.pack_into("<IIIQ", r, 4, idx, tick, 0, t)
+        r[28] = tid
+        return bytes(r)
+
+    def render(t, kind):
+        fl = INTER if kind == rd.KIND_INTERMEDIATE else 0
+        c = compose[kind]
+        return [span(1, "render.compose", "render", "render", t + 50, c, c, fl),
+                span(1, "render", None, "render", t, c + 100, 100, fl)]
+
+    sim, pt = [], []
+    t, pidx = 10000, 0
+    for i in range(scenes):
+        kind = rd.KIND_CANONICAL if i % 4 == 0 else rd.KIND_INTERMEDIATE
+        sim.append(span(0, "scene", None, "scene", t, 2000, 2000,
+                        INTER if kind == rd.KIND_INTERMEDIATE else 0))
+        sim.append(marker(rd.REC_SCENE, 0, kind, i, i // 4 + 1, t + 2100))
+        for j in range(per_scene):
+            tp = t + 2200 + 2000 * j
+            if pidx == extra_render_at:
+                pt += render(tp - 1900, kind)
+            pt += render(tp, kind)
+            pt.append(marker(rd.REC_PRESENT, 1, kind, pidx, i // 4 + 1, tp + compose[kind] + 200))
+            pidx += 1
+        t += 6000
+    return b"".join(out + sim + pt)
+
+
+class PresentThread(Base):
+    def test_reader(self):
+        tr = rd.read_opp(self.write(eager_trace()))
+        self.assertEqual(len(tr.markers), 6)
+        self.assertEqual(len(tr.present_bins), 18)
+        self.assertTrue(all(s[5] == 0 for p in tr.markers for s in p.spans))
+        self.assertEqual([len(p.spans) for p in tr.present_bins],
+                         [4 if i == 4 else 2 for i in range(18)])
+
+    def test_summary(self):
+        s = ps.summarize(self.write(eager_trace()))
+        rows = {(r["per"], r["scope"], r["kind"]): r for r in s["cpu_scopes"]}
+        can = rows[("present", "render.compose", "canonical")]
+        inter = rows[("present", "render.compose", "intermediate")]
+        self.assertEqual((can["p50_us"], can["n"]), (1500, 6))
+        self.assertEqual((inter["p50_us"], inter["n"]), (1200, 12))
+        self.assertEqual(inter["max_us"], 2400)
+        self.assertEqual(rows[("scene", "scene", "intermediate")]["p50_us"], 2000)
+        self.assertNotIn(("scene", "render.compose", "canonical"), rows)
+        self.assertEqual(s["present_thread_multi_render"], 1)
+        self.assertEqual(s["kinds"]["canonical"]["present_thread_presents"], 6)
+        self.assertIn("[cpu.present]", ps.render_text(s))
 
 
 class SchedulerGaps(unittest.TestCase):
