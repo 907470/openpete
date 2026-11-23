@@ -10,7 +10,13 @@
  * visited in order of p + d, then p; a prefix whose cost exceeds the pair
  * under exploration but fits the configured limits is deferred to the
  * first later pair that covers it, so no schedule runs twice and a failure
- * is found at the smallest pair that covers its cost. */
+ * is found at the smallest pair that covers its cost.
+ *
+ * DFS runs its schedules through fork servers: worker processes forked once
+ * from the explorer, each of which forks one child per schedule it is sent
+ * and forwards the child's report, framed with the child's pid and wait
+ * status. The explorer's memory (a created device, say) is copied once per
+ * worker, and the per-schedule forks run in parallel. */
 #define _GNU_SOURCE
 #include "op_sched_internal.h"
 
@@ -239,43 +245,6 @@ static void account(const sched_config *cfg, const child *c, const child_report 
              rep->status < 0 ? "child ended without a report (crash or abort)" : rep->msg);
 }
 
-/** @brief Wait for one child's pipe to close, reap it, and decode its report into the stacks and result.
- * @param cfg The configuration.
- * @param kids Running children.
- * @param nk Their count; the reaped child is removed.
- * @param bd Bounds.
- * @param now Current-pair stack.
- * @param later Deferred stack.
- * @param r Result.
- * @return 0, or -1 on an explorer error. */
-static int reap_one(const sched_config *cfg, child *kids, int *nk, const bounds *bd,
-                    pstack *now, pstack *later, sched_result *r)
-{
-    struct pollfd pf[64];
-    for (int i = 0; i < *nk; i++) pf[i] = (struct pollfd){ kids[i].fd, POLLIN, 0 };
-    for (;;) {
-        if (poll(pf, (nfds_t)*nk, -1) < 0) { if (errno == EINTR) continue; return -1; }
-        for (int i = 0; i < *nk; i++) {
-            if (!pf[i].revents) continue;
-            const int e = child_read(&kids[i]);
-            if (e < 0) return -1;
-            if (e == 0) continue;
-            child *c = &kids[i];
-            int ws = 0;
-            close(c->fd);
-            waitpid(c->pid, &ws, 0);
-            child_report rep;
-            memset(&rep, 0, sizeof rep);
-            if (child_expand(c, bd, now, later, r, &rep) != 0) rep.status = -1;
-            if (rep.status == SCHED_CHILD_PASS && !(WIFEXITED(ws) && WEXITSTATUS(ws) == 0)) rep.status = -1;
-            account(cfg, c, &rep, bd, r);
-            free(c->buf); free(c->pre.ch);
-            kids[i] = kids[--*nk];
-            return 0;
-        }
-    }
-}
-
 /** @brief Report whether exploration must stop: a failure under stop_on_fail, or the schedule cap.
  * @param cfg The configuration.
  * @param r The result so far.
@@ -286,29 +255,217 @@ static int must_stop(const sched_config *cfg, const sched_result *r)
     return cfg->max_schedules > 0 && r->schedules >= cfg->max_schedules;
 }
 
-/** @brief Run every prefix on the current-pair stack (and the prefixes they spawn) to completion.
+/** A fork server and the schedule it is running. */
+typedef struct worker {
+    pid_t pid;
+    int cmd_fd, rep_fd;
+    int busy;
+    child c;              /* the schedule in flight: its prefix, and its report once framed */
+    uint8_t *raw; size_t rlen, rcap;
+} worker;
+
+/** @brief Read exactly n bytes, retrying short reads.
+ * @param fd Descriptor.
+ * @param buf Destination.
+ * @param n Length.
+ * @return 0, or -1 at end of file or on error. */
+static int read_all(int fd, void *buf, size_t n)
+{
+    char *p = buf;
+    while (n) {
+        const ssize_t r = read(fd, p, n);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) return -1;
+        p += r; n -= (size_t)r;
+    }
+    return 0;
+}
+
+/** @brief Body of a fork server: for each prefix received, run it in a child (child_spawn), collect its report, and send the report framed with the child's pid and wait status.
  * @param cfg The configuration.
+ * @param cmd_fd Prefixes arrive here (int32 length, then the choices; -1 ends the server).
+ * @param rep_fd Frames go here (int32 pid, int32 wait status, uint64 length, report bytes). */
+static void worker_main(const sched_config *cfg, int cmd_fd, int rep_fd) __attribute__((noreturn));
+static void worker_main(const sched_config *cfg, int cmd_fd, int rep_fd)
+{
+    prefix pre = { calloc(SCHED_MAX_CHOICES, sizeof(uint16_t)), 0, 0, 0 };
+    if (!pre.ch) _exit(2);
+    for (;;) {
+        int32_t n;
+        if (read_all(cmd_fd, &n, 4) != 0 || n < 0 || n > SCHED_MAX_CHOICES) _exit(0);
+        if (n && read_all(cmd_fd, pre.ch, (size_t)n * sizeof(uint16_t)) != 0) _exit(0);
+        pre.len = n;
+        child c;
+        if (child_spawn(cfg, pre, 0, 0, 0, &c) != 0) _exit(2);
+        int e;
+        while ((e = child_read(&c)) == 0) {}
+        close(c.fd);
+        int ws = 0;
+        while (waitpid(c.pid, &ws, 0) < 0 && errno == EINTR) {}
+        const int32_t hdr[2] = { (int32_t)c.pid, e < 0 ? -1 : (int32_t)ws };
+        const uint64_t len = c.len;
+        if (sched_write_all(rep_fd, hdr, sizeof hdr) || sched_write_all(rep_fd, &len, 8) ||
+            sched_write_all(rep_fd, c.buf, c.len))
+            _exit(2);
+        free(c.buf);
+    }
+}
+
+/** @brief Start the fork servers.
+ * @param cfg The configuration.
+ * @param w The servers.
+ * @param n How many.
+ * @return 0, or -1 when a fork or pipe failed. */
+static int workers_start(const sched_config *cfg, worker *w, int n)
+{
+    for (int i = 0; i < n; i++) {
+        int cmd[2], rep[2];
+        if (pipe(cmd) != 0) return -1;
+        if (pipe(rep) != 0) return -1;
+        fflush(NULL);
+        const pid_t pid = fork();
+        if (pid < 0) return -1;
+        if (pid == 0) {
+            close(cmd[1]); close(rep[0]);
+            for (int k = 0; k < i; k++) { close(w[k].cmd_fd); close(w[k].rep_fd); }
+            worker_main(cfg, cmd[0], rep[1]);
+        }
+        close(cmd[0]); close(rep[1]);
+        memset(&w[i], 0, sizeof w[i]);
+        w[i].pid = pid; w[i].cmd_fd = cmd[1]; w[i].rep_fd = rep[0];
+    }
+    return 0;
+}
+
+/** @brief End the fork servers and reap them.
+ * @param w The servers.
+ * @param n How many. */
+static void workers_stop(worker *w, int n)
+{
+    for (int i = 0; i < n; i++) {
+        const int32_t q = -1;
+        (void)sched_write_all(w[i].cmd_fd, &q, 4);
+        close(w[i].cmd_fd);
+    }
+    for (int i = 0; i < n; i++) {
+        int ws;
+        while (waitpid(w[i].pid, &ws, 0) < 0 && errno == EINTR) {}
+        close(w[i].rep_fd);
+        free(w[i].raw);
+    }
+}
+
+/** @brief Send a prefix to an idle fork server.
+ * @param w The server.
+ * @param pre The prefix (ownership moves to the server's record).
+ * @return 0, or -1 on a write error. */
+static int worker_send(worker *w, prefix pre)
+{
+    const int32_t n = pre.len;
+    if (sched_write_all(w->cmd_fd, &n, 4) || (n && sched_write_all(w->cmd_fd, pre.ch, (size_t)n * sizeof(uint16_t))))
+        return -1;
+    memset(&w->c, 0, sizeof w->c);
+    w->c.pre = pre;
+    w->busy = 1;
+    w->rlen = 0;
+    return 0;
+}
+
+/** @brief Read what a busy server sent; when a whole frame is in, decode it into the stacks and the result.
+ * @param cfg The configuration.
+ * @param w The server.
+ * @param bd Bounds.
+ * @param now Current-pair stack.
+ * @param later Deferred stack.
+ * @param r Result.
+ * @return 0, or -1 on an explorer error. */
+static int worker_read(const sched_config *cfg, worker *w, const bounds *bd, pstack *now, pstack *later, sched_result *r)
+{
+    if (w->rcap - w->rlen < 65536) {
+        w->rcap = w->rcap ? w->rcap * 2 : 131072;
+        w->raw = realloc(w->raw, w->rcap);
+        if (!w->raw) return -1;
+    }
+    const ssize_t got = read(w->rep_fd, w->raw + w->rlen, w->rcap - w->rlen);
+    if (got < 0) return errno == EINTR ? 0 : -1;
+    if (got == 0) return -1;
+    w->rlen += (size_t)got;
+    if (w->rlen < 16) return 0;
+    int32_t hdr[2]; uint64_t len;
+    memcpy(hdr, w->raw, 8); memcpy(&len, w->raw + 8, 8);
+    if (w->rlen < 16 + len) return 0;
+    child *c = &w->c;
+    c->pid = hdr[0];
+    c->buf = w->raw + 16; c->len = (size_t)len;
+    child_report rep;
+    memset(&rep, 0, sizeof rep);
+    if (child_expand(c, bd, now, later, r, &rep) != 0) rep.status = -1;
+    const int ws = hdr[1];
+    if (rep.status == SCHED_CHILD_PASS && !(WIFEXITED(ws) && WEXITSTATUS(ws) == 0)) rep.status = -1;
+    account(cfg, c, &rep, bd, r);
+    free(c->pre.ch);
+    c->buf = NULL;
+    w->busy = 0;
+    w->rlen = 0;
+    return 0;
+}
+
+/** @brief Give every idle fork server a prefix from the current-pair stack, unless exploration is stopping.
+ * @param w The servers.
+ * @param nw How many.
+ * @param now Current-pair stack.
+ * @param stopped Nonzero once no new schedule may start.
+ * @return The servers busy afterwards, or -1 on a write error. */
+static int servers_feed(worker *w, int nw, pstack *now, int stopped)
+{
+    int busy = 0;
+    for (int i = 0; i < nw; i++) {
+        if (!w[i].busy && !stopped && now->n > 0 && worker_send(&w[i], now->v[--now->n]) != 0) return -1;
+        busy += w[i].busy;
+    }
+    return busy;
+}
+
+/** @brief Wait until a busy server has sent data, and read it from every server that has.
+ * @param cfg The configuration.
+ * @param w The servers.
+ * @param nw How many.
+ * @param bd Bounds.
+ * @param now Current-pair stack.
+ * @param later Deferred stack.
+ * @param r Result.
+ * @return 0, or -1 on an explorer error. */
+static int servers_collect(const sched_config *cfg, worker *w, int nw, const bounds *bd, pstack *now, pstack *later,
+                           sched_result *r)
+{
+    struct pollfd pf[64];
+    int np = 0, idx[64];
+    for (int i = 0; i < nw; i++)
+        if (w[i].busy) { pf[np] = (struct pollfd){ w[i].rep_fd, POLLIN, 0 }; idx[np++] = i; }
+    if (poll(pf, (nfds_t)np, -1) < 0) return errno == EINTR ? 0 : -1;
+    for (int k = 0; k < np; k++)
+        if (pf[k].revents && worker_read(cfg, &w[idx[k]], bd, now, later, r) != 0) return -1;
+    return 0;
+}
+
+/** @brief Run every prefix on the current-pair stack (and the prefixes they spawn) to completion on the fork servers.
+ * @param cfg The configuration.
+ * @param w The servers.
+ * @param nw How many.
  * @param bd Bounds.
  * @param now Current-pair stack.
  * @param later Deferred stack.
  * @param r Result.
  * @return 0, 1 when stopped early, -1 on an explorer error. */
-static int run_pair(const sched_config *cfg, const bounds *bd, pstack *now, pstack *later, sched_result *r)
+static int run_pair_servers(const sched_config *cfg, worker *w, int nw, const bounds *bd, pstack *now, pstack *later,
+                            sched_result *r)
 {
-    child kids[64];
-    int nk = 0;
-    const int jobs = cfg->jobs > 1 ? (cfg->jobs < 64 ? cfg->jobs : 64) : 1;
-    int stopped = 0;
-    while (now->n > 0 || nk > 0) {
-        while (!stopped && now->n > 0 && nk < jobs) {
-            if (child_spawn(cfg, now->v[--now->n], 0, 0, 0, &kids[nk]) != 0) return -1;
-            nk++;
-        }
-        if (nk == 0) break;
-        if (reap_one(cfg, kids, &nk, bd, now, later, r) != 0) return -1;
-        if (must_stop(cfg, r)) stopped = 1;
+    for (;;) {
+        const int busy = servers_feed(w, nw, now, must_stop(cfg, r));
+        if (busy < 0) return -1;
+        if (busy == 0) return must_stop(cfg, r);
+        if (servers_collect(cfg, w, nw, bd, now, later, r) != 0) return -1;
     }
-    return stopped;
 }
 
 /** @brief Move every deferred prefix the pair covers onto the current-pair stack.
@@ -334,20 +491,25 @@ static int explore_dfs(const sched_config *cfg, sched_result *r)
     pstack now = {0}, later = {0};
     ps_push(&now, (prefix){ NULL, 0, 0, 0 });
     const int mp = cfg->max_preemptions, md = cfg->max_deviations;
+    const int nw = cfg->jobs > 1 ? (cfg->jobs < 64 ? cfg->jobs : 64) : 1;
+    worker w[64];
+    if (workers_start(cfg, w, nw) != 0) return -1;
     r->reached_p = r->reached_d = -1;
-    for (int sum = 0; sum <= mp + md; sum++) {
+    int e = 0;
+    for (int sum = 0; sum <= mp + md && e == 0; sum++) {
         for (int p = 0; p <= sum && p <= mp; p++) {
             const int d = sum - p;
             if (d > md) continue;
             const bounds bd = { p, d, mp, md };
             undefer(&bd, &now, &later);
-            const int e = run_pair(cfg, &bd, &now, &later, r);
-            if (e < 0) return -1;
-            if (e > 0) return 0;
+            e = run_pair_servers(cfg, w, nw, &bd, &now, &later, r);
+            if (e != 0) break;
             r->reached_p = p; r->reached_d = d;
         }
     }
-    r->complete = later.n == 0;
+    workers_stop(w, nw);
+    if (e < 0) return -1;
+    if (e == 0) r->complete = later.n == 0;
     free(now.v); free(later.v);
     return 0;
 }

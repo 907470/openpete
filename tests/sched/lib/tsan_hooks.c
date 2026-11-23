@@ -12,20 +12,62 @@
 
 #include <stdint.h>
 
-enum { MAX_WATCH = 64 };
+enum { MAX_WATCH = 64, MAX_EXCLUDE = 64 };
 
-static struct { uintptr_t lo, hi; const char *name; } s_watch[MAX_WATCH];
+/** A watched range, with the slot of the mutex that guards it and its ownership predicate (either may be NULL). */
+static struct { uintptr_t lo, hi; const char *name; void *const *guard; int (*owned)(const void *, int); } s_watch[MAX_WATCH];
 static int s_nwatch;
-static unsigned long s_seen, s_hits;
+static struct { uintptr_t lo, hi; } s_excl[MAX_EXCLUDE];
+static int s_nexcl;
+static unsigned long s_seen, s_hits, s_guarded;
+static int s_probe_on;
+static const void *s_probe_addr;
 
-void sched_watch(const void *addr, size_t len, const char *name)
+void sched_watch_guarded(const void *addr, size_t len, const char *name, void *const *guard_slot)
 {
     if (s_nwatch >= MAX_WATCH) return;
     s_watch[s_nwatch].lo = (uintptr_t)addr;
     s_watch[s_nwatch].hi = (uintptr_t)addr + len;
     s_watch[s_nwatch].name = name;
+    s_watch[s_nwatch].guard = guard_slot;
+    s_watch[s_nwatch].owned = NULL;
     s_nwatch++;
     sched_name(addr, name);
+}
+
+void sched_watch_owned(const void *addr, size_t len, const char *name, int (*owned)(const void *addr, int thread))
+{
+    sched_watch_guarded(addr, len, name, NULL);
+    if (s_nwatch > 0 && s_watch[s_nwatch - 1].lo == (uintptr_t)addr) s_watch[s_nwatch - 1].owned = owned;
+}
+
+void sched_watch(const void *addr, size_t len, const char *name) { sched_watch_guarded(addr, len, name, NULL); }
+
+void sched_watch_exclude(const void *addr, size_t len)
+{
+    if (s_nexcl >= MAX_EXCLUDE) return;
+    s_excl[s_nexcl].lo = (uintptr_t)addr;
+    s_excl[s_nexcl].hi = (uintptr_t)addr + len;
+    s_nexcl++;
+}
+
+const void *sched_watch_probe(int on)
+{
+    const void *a = s_probe_addr;
+    s_probe_on = on;
+    if (on) s_probe_addr = NULL;
+    return a;
+}
+
+unsigned long sched_watch_guarded_count(void) { return s_guarded; }
+
+/** @brief Report whether the calling thread holds the mutex a guard slot names.
+ * @param slot The slot, or NULL.
+ * @return 1 when it does. */
+static int guard_held(void *const *slot)
+{
+    if (!slot || !*slot) return 0;
+    return ((const sched_mutex *)*slot)->owner == sched_self();
 }
 
 unsigned long sched_watch_counts(unsigned long *hits)
@@ -43,12 +85,23 @@ static void hook(sched_op_kind kind, const volatile void *a, const void *ra)
     s_seen++;
     if (!sched_active()) return;
     const uintptr_t p = (uintptr_t)a;
+    for (int i = 0; i < s_nexcl; i++)
+        if (p >= s_excl[i].lo && p < s_excl[i].hi) return;
     for (int i = 0; i < s_nwatch; i++) {
         if (p < s_watch[i].lo || p >= s_watch[i].hi) continue;
+        if (guard_held(s_watch[i].guard) ||
+            (s_watch[i].owned && s_watch[i].owned((const void *)(uintptr_t)a, sched_self()))) { s_guarded++; return; }
         s_hits++;
-        sched_point_ra(kind, (const void *)s_watch[i].lo, ra);
+        sched_point_ra(kind, (const void *)(uintptr_t)a, ra);
         return;
     }
+}
+
+/** @brief Record an atomic store's address while the probe is on and nothing is recorded yet.
+ * @param a The address. */
+static void probe(const volatile void *a)
+{
+    if (s_probe_on && !s_probe_addr) s_probe_addr = (const void *)a;
 }
 
 /* Plain accesses. */
@@ -111,7 +164,7 @@ void __tsan_atomic_signal_fence(int mo) { (void)mo; }
     T __tsan_atomic##n##_load(const volatile T *a, int mo) \
         { (void)mo; hook(SCHED_OP_ATOMIC, a, RA); return __atomic_load_n(a, SC); } \
     void __tsan_atomic##n##_store(volatile T *a, T v, int mo) \
-        { (void)mo; hook(SCHED_OP_ATOMIC, a, RA); __atomic_store_n(a, v, SC); } \
+        { (void)mo; probe(a); hook(SCHED_OP_ATOMIC, a, RA); __atomic_store_n(a, v, SC); } \
     T __tsan_atomic##n##_exchange(volatile T *a, T v, int mo) \
         { (void)mo; hook(SCHED_OP_ATOMIC, a, RA); return __atomic_exchange_n(a, v, SC); } \
     T __tsan_atomic##n##_fetch_add(volatile T *a, T v, int mo) \

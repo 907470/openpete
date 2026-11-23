@@ -45,3 +45,4 @@ set_target_properties(sched_calibrate PROPERTIES C_STANDARD 11)
 target_link_libraries(sched_calibrate PRIVATE openpete_sched)
 add_test(NAME sched_calibrate
          COMMAND sched_calibrate ${CMAKE_CURRENT_BINARY_DIR}/calibrate 4)
+add_subdirectory(present)

@@ -22,7 +22,7 @@
 enum { MAX_THREADS = 32, MAX_EVENTS = 256, MAX_NAMES = 256, SITE_LEN = 96 };
 
 /** What a thread at a yield waits for. */
-typedef enum { BLK_NONE, BLK_MUTEX, BLK_COND, BLK_SLEEP, BLK_JOIN } blk_kind;
+typedef enum { BLK_NONE, BLK_MUTEX, BLK_COND, BLK_SLEEP, BLK_JOIN, BLK_PRED } blk_kind;
 
 /** One scheduled thread. */
 typedef struct thr {
@@ -45,6 +45,9 @@ typedef struct thr {
     uint64_t wait_seq;
     double prio;           /* PCT priority */
     int starter;           /* creator waiting for this thread's first yield, or -1 */
+    int (*pred)(void *);   /* BLK_PRED: wake predicate */
+    void *pred_arg;
+    const void *ra;        /* pending operation's code address, for the step hook */
 } thr;
 
 /** A pending timed event. */
@@ -81,6 +84,10 @@ static struct {
     long change_at[16];
     int nchange;
     int active;
+    sched_step_hook hook;
+    void *hook_arg;
+    int in_hook;
+    int64_t advanced;
 } s;
 
 static __thread int tl_id = -1;
@@ -283,6 +290,7 @@ static int enabled(int i)
     case BLK_COND:  return t->woken || (t->deadline >= 0 && s.clock >= t->deadline);
     case BLK_SLEEP: return s.clock >= t->deadline;
     case BLK_JOIN:  return s.t[t->join_id].done;
+    case BLK_PRED:  return t->pred(t->pred_arg) || (t->deadline >= 0 && s.clock >= t->deadline);
     }
     return 0;
 }
@@ -295,7 +303,7 @@ static int64_t next_deadline(void)
     for (int i = 0; i < s.n; i++) {
         const thr *t = &s.t[i];
         if (!t->used || t->done || enabled(i)) continue;
-        if ((t->blk == BLK_COND || t->blk == BLK_SLEEP) && t->deadline >= 0 &&
+        if ((t->blk == BLK_COND || t->blk == BLK_SLEEP || t->blk == BLK_PRED) && t->deadline >= 0 &&
             (best < 0 || t->deadline < best)) best = t->deadline;
     }
     for (int k = 0; k < s.nev; k++)
@@ -444,7 +452,11 @@ static int decide(void)
         const alt ch = a[idx];
         if (ch.kind == ALT_THREAD) return ch.val;
         if (ch.kind == ALT_SPURIOUS) { s.t[ch.val].woken = 1; trace_add("spurious-wake T%d\n", ch.val); continue; }
-        if (ch.kind == ALT_ADVANCE) { clock_to(s.clock + s.plan->cfg->advance[ch.val]); continue; }
+        if (ch.kind == ALT_ADVANCE) {
+            s.advanced += s.plan->cfg->advance[ch.val];
+            clock_to(s.clock + s.plan->cfg->advance[ch.val]);
+            continue;
+        }
         clock_to(next_deadline());
     }
 }
@@ -469,16 +481,34 @@ static void hand_to(int next)
     pthread_cond_signal(&s.t[next].cv);
 }
 
+/** @brief Run the step hook, if any, with the scheduler inactive for the caller.
+ * @param id The yielding thread.
+ * @param kind Its pending operation, or SCHED_OP_KINDS at a finish.
+ * @param obj The operation's object.
+ * @param ra The operation's code address. */
+static void run_hook(int id, sched_op_kind kind, const void *obj, const void *ra)
+{
+    if (!s.hook || s.in_hook) return;
+    s.in_hook = 1;
+    s.hook(s.hook_arg, id, kind, obj, ra);
+    s.in_hook = 0;
+}
+
+void sched_set_step_hook(sched_step_hook fn, void *arg) { s.hook = fn; s.hook_arg = arg; }
+long sched_steps(void) { return s.steps; }
+int64_t sched_advanced_ns(void) { return s.advanced; }
+
 /** @brief Record the calling thread's pending operation, decide, and run when chosen.
  * @param kind Operation kind.
  * @param obj Object.
  * @param site Site text. */
-static void yield_op(sched_op_kind kind, const void *obj, const char *site)
+static void yield_op(sched_op_kind kind, const void *obj, const char *site, const void *ra)
 {
     const int me = tl_id;
     thr *t = &s.t[me];
-    t->op = kind; t->obj = obj;
+    t->op = kind; t->obj = obj; t->ra = ra;
     snprintf(t->site, sizeof t->site, "%s", site ? site : "?");
+    if (t->starter < 0) run_hook(me, kind, obj, ra);
     pthread_mutex_lock(&s.mx);
     if (t->starter >= 0) {
         /* The first yield after creation: the pending operation is now
@@ -503,17 +533,17 @@ static void yield_ra(sched_op_kind kind, const void *obj, const void *ra)
 {
     char site[SITE_LEN];
     site_of_ra(ra, site, sizeof site);
-    yield_op(kind, obj, site);
+    yield_op(kind, obj, site, ra);
 }
 
-int sched_active(void) { return s.active && tl_id >= 0; }
+int sched_active(void) { return s.active && tl_id >= 0 && !s.in_hook; }
 int sched_self(void) { return tl_id; }
 int64_t sched_now(void) { return s.clock; }
 
 void sched_point(sched_op_kind kind, const void *obj, const char *site)
 {
     if (!sched_active()) return;
-    yield_op(kind, obj, site);
+    yield_op(kind, obj, site, NULL);
 }
 
 void sched_point_ra(sched_op_kind kind, const void *obj, const void *ra)
@@ -548,6 +578,17 @@ void sched_sleep_until(int64_t t, const void *ra)
     me->blk = BLK_SLEEP; me->deadline = t;
     yield_ra(SCHED_OP_SLEEP, NULL, ra);
     me->blk = BLK_NONE; me->deadline = -1;
+}
+
+int sched_wait_pred(int (*pred)(void *), void *arg, int64_t deadline, const void *obj, const void *ra)
+{
+    if (!sched_active()) return pred(arg);
+    thr *me = &s.t[tl_id];
+    me->blk = BLK_PRED; me->pred = pred; me->pred_arg = arg; me->deadline = deadline;
+    yield_ra(SCHED_OP_DEVICE, obj, ra);
+    const int ok = pred(arg);
+    me->blk = BLK_NONE; me->pred = NULL; me->pred_arg = NULL; me->deadline = -1;
+    return ok;
 }
 
 void sched_mutex_init(sched_mutex *m, const char *name)
@@ -647,6 +688,7 @@ void sched_cond_broadcast(sched_cond *c, const void *ra)
 static void thread_finish(void)
 {
     const int me = tl_id;
+    if (s.t[me].starter < 0) run_hook(me, SCHED_OP_KINDS, NULL, NULL);
     pthread_mutex_lock(&s.mx);
     s.t[me].done = 1;
     s.cur = me;

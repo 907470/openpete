@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: ebd1703ba8679e8157dfa71408ad0d3af3d43d43
+# head: dfa147689f4f1de0b3a693afbf104e6c22db112b
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -184,5 +184,6 @@ games/spyro-3/renderer/terrain_probe.c	probe_report	32	0
 games/spyro-3/renderer/terrain_probe.c	pv_match	35	0	
 games/spyro-3/renderer/terrain_probe.c	pv_midpoint	42	0	
 tests/bench/record_encode_bench.c	main	57	0	
+tests/sched/present/harness.c	parse	29	1	
 tests/unit/knob_registry_test.c	main	62	0	
 tests/unit/mod_shader_compile_test.c	main	26	0	

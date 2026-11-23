@@ -24,9 +24,12 @@ import ratchet_lib as lib
 from ratchet_lib import git, is_header
 
 # In-scope headers no database entry includes: the stub a game's regions
-# replace, and the headers the generated C includes.
+# replace, the headers the generated C includes, and the scene-ring
+# harness's prelude and epilogue, which only the ring source it extracts
+# into the build tree includes.
 NO_TU_HEADERS = ("games/common/state_regions_none.h", "games/spyro-1/module_imports.h",
-                 "games/spyro-2/module_imports.h", "games/spyro-3/module_imports.h")
+                 "games/spyro-2/module_imports.h", "games/spyro-3/module_imports.h",
+                 "tests/sched/present/ring_prelude.h", "tests/sched/present/ring_epilogue.h")
 
 UNANNOTATED = "baselines/thread-roles/unannotated.tsv"
 DEFERRED = "baselines/thread-roles/deferred.tsv"

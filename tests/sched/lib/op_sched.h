@@ -227,6 +227,78 @@ void sched_watch(const void *addr, size_t len, const char *name);
  * @return Every access seen. */
 unsigned long sched_watch_counts(unsigned long *hits);
 
+/** @brief Block the calling thread until pred(arg) holds or the virtual clock reaches deadline (a yield).
+ *
+ * The scheduler evaluates pred at every decision while the thread waits, so
+ * pred must only read state that scheduled code or timed events change. Used
+ * by modelled blocking device calls.
+ * @param pred The wake predicate.
+ * @param arg Its argument.
+ * @param deadline Timeout instant, or a negative value for none.
+ * @param obj The object waited on, for the trace.
+ * @param ra The caller's code address.
+ * @return 1 when pred held at the wake, 0 on timeout. */
+int sched_wait_pred(int (*pred)(void *), void *arg, int64_t deadline, const void *obj, const void *ra);
+
+/** Hook run at every yield with the yielding thread's pending operation, before the decision. */
+typedef void (*sched_step_hook)(void *arg, int thread, sched_op_kind kind, const void *obj, const void *ra);
+
+/** @brief Install a hook run at every yield before the scheduling decision, and once when a thread finishes.
+ *
+ * The hook runs on the yielding thread with the scheduler inactive for it:
+ * a seam reached inside the hook runs straight through. It may call
+ * sched_fail. A finish calls it with kind SCHED_OP_KINDS.
+ * @param fn The hook, or NULL.
+ * @param arg Its argument. */
+void sched_set_step_hook(sched_step_hook fn, void *arg);
+
+/** @brief Return the virtual time the schedule has advanced by deviation (a time advance while a thread was enabled).
+ * @return Nanoseconds. */
+int64_t sched_advanced_ns(void);
+
+/** @brief Return the number of the current step of the schedule.
+ * @return The step count. */
+long sched_steps(void);
+
+/** @brief Register an address range whose instrumented accesses yield unless the calling thread holds a guard mutex.
+ *
+ * As sched_watch, with *guard_slot read at each access: an access made while
+ * the calling thread owns that mutex (an SDL_Mutex created by the scheduler
+ * wraps) runs through and counts as guarded. A NULL slot or a NULL mutex
+ * guards nothing.
+ * @param addr Start of the range.
+ * @param len Its length in bytes.
+ * @param name Trace name.
+ * @param guard_slot Where the guarding mutex pointer is stored, or NULL. */
+void sched_watch_guarded(const void *addr, size_t len, const char *name, void *const *guard_slot);
+
+/** @brief Register an address range whose instrumented accesses yield unless a predicate names the calling thread the owner of the address.
+ *
+ * As sched_watch, with owned(addr, thread) asked at each access: an access
+ * by the thread the protocol makes the address's single owner at that
+ * moment runs through and counts as guarded.
+ * @param addr Start of the range.
+ * @param len Its length in bytes.
+ * @param name Trace name.
+ * @param owned The ownership predicate. */
+void sched_watch_owned(const void *addr, size_t len, const char *name, int (*owned)(const void *addr, int thread));
+
+/** @brief Exclude an address range from every watched range: its accesses run through.
+ * @param addr Start of the range.
+ * @param len Its length in bytes. */
+void sched_watch_exclude(const void *addr, size_t len);
+
+/** @brief Start or stop recording the address of the first instrumented atomic store.
+ *
+ * Used before the first fork to find an atomic the harness cannot name.
+ * @param on Nonzero starts (and clears the recording), zero stops.
+ * @return The address recorded since the last start, or NULL. */
+const void *sched_watch_probe(int on);
+
+/** @brief Return the instrumented accesses that hit a watched range but ran through under its guard mutex.
+ * @return The count. */
+unsigned long sched_watch_guarded_count(void);
+
 /** @brief Admit a thread name for the SDL_CreateThread wrap; any other name fails the schedule (sdl_wraps.c).
  * @param name The SDL thread name (kept by pointer). */
 void sched_sdl_admit(const char *name);
