@@ -95,10 +95,11 @@ an enemy, a chest, a 3D HUD element.
 
 A moby interpolates between ticks only while it stays allocated: a moby
 freed and another allocated in its slot within one tick are two mobys, the
-old one drawn until the tick's state takes over, never blended. A moby a
+old one drawn until the tick's state takes over, never blended. Mobys a
 mod allocates through `api->call` for each tick's draw and frees before
-the next update keeps interpolating while every tick hands it the same
-slot.
+the next update keep interpolating when the mod allocates them in the same
+order every tick: the n-th such allocation of a tick continues the n-th of
+the tick before, in whichever slot the game's allocator hands it.
 
 ### mutative
 

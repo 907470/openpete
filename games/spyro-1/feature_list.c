@@ -20,6 +20,7 @@ extern const feature_module_t spyro1_portal_module;
 extern const feature_module_t transition_module;
 extern const feature_module_t cheats_module;
 extern const feature_module_t credits_skip_module;
+extern const feature_module_t host_hop_test_module;
 extern const feature_module_t spyro1_levelwarp_module;
 extern const feature_module_t text_moby_id_module;
 extern const feature_module_t crash_demo_woah_module;
@@ -113,6 +114,10 @@ static const feature_module_t* const k_modules[] = {
      * InitCreditsSequence from a GamestateUpdate entry hook). Inert unless
      * armed by game_set_skip_to_cutscene. */
     &credits_skip_module,
+    /* OPENPETE_S1_HOST_HOP_TEST: a draw-time host-allocated moby whose slot
+     * moves onto a game moby's slot on a schedule (the sub-tick identity
+     * check of renderer/moby_serial.h). Inert unless the variable is set. */
+    &host_hop_test_module,
     /* Dev-overlay level warp (M menu): a level dropdown + Warp button that
      * rides the game's own exit-level -> load sequence to any level, plus
      * the shared level id/name table --skip-to-level resolves against.

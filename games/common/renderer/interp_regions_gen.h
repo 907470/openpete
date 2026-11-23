@@ -18,6 +18,7 @@
 #include <stdint.h>
 
 #include "openpete_interp_objs.h"   /* openpete_interp_obj_capture_fn */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -96,7 +97,7 @@ int game_interp_row_index(const char* name);
  * stash's served and differing counts per call. Read-only against guest RAM.
  * Call between openpete_interp_objs_begin_tick() and
  * openpete_interp_objs_end_tick(); game_interp_register_common() does. */
-void game_interp_capture_moby_array(void);
+void game_interp_capture_moby_array(void) OP_REQUIRES(sim);
 
 /** @brief Capture the moby record at @p m under @p key without a slot serial: one record and no bytes of the next.
  *

@@ -25,9 +25,21 @@
 #
 # Pass per row: no lerp line in the window and at least one line (engaged).
 #
+# Host-hop row: Artisans (level 10) from --skip-to-level, 6000 VBLs, with
+# OPENPETE_S1_HOST_HOP_TEST=20 (games/spyro-1/features/host_hop_test.c): a
+# moby allocated from a host call at every draw and freed before the next
+# update, whose slot moves when the game frees or takes a slot below it. A
+# native screenshot request keeps the native scene live, so each headless
+# re-extract runs the sub-tick moby pass. Instrument: the totals line
+#   [host-hop-test] hops=H captured=C presents=P absent=A
+# (captured: hops into a slot the previous capture tracked a record in;
+# absent: sub-tick presents whose passes drew no record of the check moby).
+# Pass: A = 0 with C > 0 (engaged).
+#
 # Usage: tests/harness/check_moby_serial_census.sh [--out DIR] [--filter SUBSTR]
 #   OPENPETE_BIN selects another binary (the pre-fix build, for the negative leg).
-# Exit: 0 = PASS, 2 = FAIL (a lerped reuse, a row with no reuse, or a failed
+# Exit: 0 = PASS, 2 = FAIL (a lerped reuse, a row with no reuse, an absent
+#       host-hop present, a host-hop run with no captured hop, or a failed
 #       run), 64 = SKIP (binary or disc missing).
 set -uo pipefail
 export OPENPETE_VIBRATION=0   # unattended runs (scripts/fences/rumble_guard.py)
@@ -79,6 +91,18 @@ run_row() {
   echo "$?" > "$log.rc"
 }
 
+# Run the host-hop row and keep its log.
+run_hop() {
+  local log="$OUT/host-hop.log" shot="$OUT/host-hop-shot.png"
+  rm -f "$log" "$log.rc" "$shot"
+  op_own_run env OPENPETE_S1_HOST_HOP_TEST=20 OPENPETE_HEADLESS_REEXTRACT=1 \
+      timeout -k 10 1500 "$PG_BIN" --headless --no-config --disc "$PG_DISC" --disc-cache 0 \
+      --renderer vk --mute 1 --aspect 4:3 --lod original --no-card "${PG_RUN_ARGS[@]}" \
+      --skip-to-level 10 --screenshot-on-frame 5990 --screenshot-native-only \
+      --screenshot-output "$shot" --frame-limit 6000 > "$log" 2>&1
+  echo "$?" > "$log.rc"
+}
+
 for r in "${ROWS[@]}"; do
   IFS='|' read -r name bk2 _lo _hi flim <<<"$r"
   [[ -n "$FILTER" && "$name" != *"$FILTER"* ]] && continue
@@ -86,6 +110,10 @@ for r in "${ROWS[@]}"; do
   while (( $(jobs -rp | wc -l) >= 2 )); do wait -n; done
   run_row "$name" "$bk2" "$flim" &
 done
+if [[ -z "$FILTER" || "host-hop" == *"$FILTER"* ]]; then
+  while (( $(jobs -rp | wc -l) >= 2 )); do wait -n; done
+  run_hop &
+fi
 wait
 
 fail=0 rows=0
@@ -110,6 +138,22 @@ for r in "${ROWS[@]}"; do
   elif (( held == 0 )); then verdict="FAIL (VACUOUS: no reuse in the window)"; fail=1; fi
   echo "[moby-serial-census] $name window $lo-$hi: reuses=$((held + lerp)) lerped=$lerp held=$held; run ${tot#\[moby-serial-census\] }: $verdict"
 done
+if [[ -z "$FILTER" || "host-hop" == *"$FILTER"* ]]; then
+  rows=$((rows + 1))
+  log="$OUT/host-hop.log"
+  rc="$(cat "$log.rc" 2>/dev/null || echo none)"
+  tot="$(grep '^\[host-hop-test\] hops=' "$log" 2>/dev/null | tail -1)"
+  if [[ ! -f "$log" || "$rc" != 0 || -z "$tot" ]]; then
+    echo "[moby-serial-census] host-hop: FAIL run rc=$rc ($log)"; fail=1
+  else
+    captured="$(sed -n 's/.* captured=\([0-9]*\) .*/\1/p' <<<"$tot")"
+    absent="$(sed -n 's/.* absent=\([0-9]*\).*/\1/p' <<<"$tot")"
+    verdict=PASS
+    if (( absent > 0 )); then verdict=FAIL; fail=1
+    elif (( captured == 0 )); then verdict="FAIL (VACUOUS: no hop into a tracked slot)"; fail=1; fi
+    echo "[moby-serial-census] host-hop: ${tot#\[host-hop-test\] }: $verdict"
+  fi
+fi
 (( rows )) || { echo "[moby-serial-census] FAIL: no row matched '$FILTER'"; exit 2; }
 if (( fail )); then echo "[moby-serial-census] verdict: FAIL"; exit 2; fi
 echo "[moby-serial-census] verdict: PASS"

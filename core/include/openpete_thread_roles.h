@@ -194,6 +194,7 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
 #define OP_ROLE_BINDING_TABLE(ROW) \
     ROW("c:run.c@F@openpete_sim_thread", "prop:SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER", "sim") /* thread-roles: the sim thread entry binds sim */ \
     ROW("c:run.c@F@game_fiber_entry", "arg:openpete_fiber_create_guarded", "sim") /* thread-roles: the game fiber runs on the thread holding sim */ \
+    ROW("c:interp_regions_gen.c@F@capture_objs_common", "arg:game_interp_rows_obj_capture", "sim") /* thread-roles: the per-object capture runs from the tick tail on sim (openpete_interp_objs_run_capture) */ \
     ROW("c:portal_sky_s23.c@F@psk_worker", "arg:SDL_CreateThreadRuntime", "portalsky") /* thread-roles: the portal-sky build thread binds portalsky */ \
     ROW("c:cyclorama.c@F@on_sky_draw_cyc", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:cyclorama.c@F@cyc_pre", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket pre step, run inside on_sky_draw_cyc */ \
@@ -243,6 +244,8 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:crash_demo_woah.c@F@on_titlescreen_play_sound", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:credits_skip.c@F@on_gamestate_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:credits_skip.c@F@on_gamestate_update", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:host_hop_test.c@F@on_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:host_hop_test.c@F@on_update", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:ctr_demo_egg.c@F@on_call", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:cutscene_skip.c@F@on_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:flame.c@F@on_flame_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \

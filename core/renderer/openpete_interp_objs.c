@@ -432,6 +432,75 @@ static void evicted_keep(const openpete_interp_obj_t* e) {
     s_ev_n++;
 }
 
+/** @brief Clear the table and insert the first @p nsurv entries of the survivor buffer under their keys, so every linear-probe chain is intact.
+ * @param nsurv The survivors. */
+static void table_reinsert(int nsurv) {
+    table_clear(s_tab);
+    s_count = 0;
+    for (int k = 0; k < nsurv; ++k) {
+        int found;
+        uint32_t i = probe(s_surv[k].key, &found);
+        if (i >= SLOTS) continue;   /* defensive: never full during rehash (nsurv <= SLOTS) */
+        entry_move(&s_tab[i], &s_surv[k]);
+        s_count++;
+    }
+}
+
+/** @brief Whether @p v is one of the first @p n entries of @p list.
+ * @param list The entries.
+ * @param n Their count.
+ * @param v The value.
+ * @return 1 when present, else 0. */
+static int index_in(const uint32_t* list, unsigned n, uint32_t v) {
+    for (unsigned j = 0; j < n; ++j)
+        if (list[j] == v) return 1;
+    return 0;
+}
+
+static _Atomic(unsigned long) s_rekeyed;   /* entries moved to a new key, since startup */
+
+unsigned long openpete_interp_objs_rekey_count(void) { return s_rekeyed; }
+
+int openpete_interp_objs_rekey(const uint32_t* from, const uint32_t* to, unsigned n) {
+    if (!s_tab || !n) return 0;
+    /* Every lookup runs before any key changes, since a cleared or renamed
+     * key breaks the probe chains through it; the rehash then restores the
+     * chains. A chain of moves (a to b, b to c) moves both entries, and the
+     * entry under b is not evicted. */
+    enum { REKEY_MAX = 64 };
+    if (n > REKEY_MAX) n = REKEY_MAX;
+    uint32_t idx[REKEY_MAX], dsp[REKEY_MAX];
+    unsigned m = 0;
+    for (unsigned k = 0; k < n; ++k) {
+        int found;
+        uint32_t i = probe(from[k], &found);
+        idx[k] = found ? i : SLOTS;
+        i = probe(to[k], &found);
+        dsp[k] = found ? i : SLOTS;
+    }
+    for (unsigned k = 0; k < n; ++k)
+        if (idx[k] < SLOTS && dsp[k] < SLOTS && !index_in(idx, n, dsp[k])) {
+            evicted_keep(&s_tab[dsp[k]]);
+            s_tab[dsp[k]].key = 0u;   /* the rehash below drops it */
+        }
+    for (unsigned k = 0; k < n; ++k) {
+        if (idx[k] >= SLOTS) continue;
+        s_tab[idx[k]].key = to[k];
+        m++;
+    }
+    if (!m) return 0;
+    int nsurv = 0;
+    for (uint32_t i = 0; i < SLOTS; ++i)
+        if (s_tab[i].key) entry_move(&s_surv[nsurv++], &s_tab[i]);
+    table_reinsert(nsurv);
+    s_rekeyed += m;
+    if (openpete_interp_objs_keylog())
+        for (unsigned k = 0; k < n; ++k)
+            if (idx[k] < SLOTS)
+                fprintf(stderr, "[interp-objs] f=%u rekey %08x -> %08x\n", openpete_frame, from[k], to[k]);
+    return (int)m;
+}
+
 void openpete_interp_objs_end_tick(void) {
     /* Evict unseen (despawned) entries, then rehash-compact the survivors so
      * linear-probe chains stay intact for next tick's lookups. */
@@ -449,15 +518,7 @@ void openpete_interp_objs_end_tick(void) {
         }
     }
 
-    table_clear(s_tab);
-    s_count = 0;
-    for (int k = 0; k < nsurv; ++k) {
-        int found;
-        uint32_t i = probe(s_surv[k].key, &found);
-        if (i >= SLOTS) continue;   /* defensive: never full during rehash (nsurv <= SLOTS) */
-        entry_move(&s_tab[i], &s_surv[k]);
-        s_count++;
-    }
+    table_reinsert(nsurv);
 
     s_stat_tracked   = nsurv;
     s_stat_paired    = paired;

@@ -196,6 +196,26 @@ int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t 
 int openpete_interp_objs_capture_serial(uint32_t key, const void* data, uint32_t len, int shown,
                                         uint32_t serial_off, int respawn);
 
+/** @brief Move tracked entries to new keys: the entry under each `from[k]` continues under `to[k]`.
+ *
+ * Called between begin_tick and the captures of the tick, for a record whose
+ * identity moved to another key (a moby the allocator handed another slot).
+ * An entry already under a `to` key that is not itself moved goes to the
+ * evicted set at its curr state, as a reborn capture's does. A pair whose
+ * `from` key is not tracked is skipped. The moved entry keeps its states,
+ * stamps and seen flag, so the capture under its new key pairs against its
+ * history.
+ * @param from The keys the entries are tracked under.
+ * @param to Their new keys, pairwise distinct.
+ * @param n The pairs.
+ * @return The entries moved. */
+int openpete_interp_objs_rekey(const uint32_t* from, const uint32_t* to, unsigned n);
+
+/** @brief Return the entries openpete_interp_objs_rekey has moved since startup.
+ *
+ * @return The count. */
+unsigned long openpete_interp_objs_rekey_count(void);
+
 /** @brief Return the captures since startup that found a tracked key's serial changed (openpete_interp_objs_capture_serial).
  *
  * @return The count. */

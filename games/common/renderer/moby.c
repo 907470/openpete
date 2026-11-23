@@ -19749,6 +19749,17 @@ static void occl_pass_culled(uint32_t moby, int is_spec, uint32_t* list, int* n)
     if (!is_spec && *n < MAX_RECORDS) list[(*n)++] = moby;
 }
 
+/** @brief Tell the host-hop check whether this sub-tick pass drew its moby: a record at the check slot whose bytes, as this present reads them, carry the check class.
+ * @param cpu The guest CPU state, read only. */
+static void rex_hop_probe_note(CPUState* cpu) {
+    uint32_t pm; uint16_t pc;
+    if (!moby_serial_hop_probe_target(&pm, &pc)) return;
+    int drawn = 0;
+    for (int r = 0; r < s_nrecs && !drawn; r++)
+        drawn = s_recs[r].moby == pm && cpu->read_half(pm + game_layout.moby.class_off) == pc;
+    moby_serial_hop_probe_pass((int64_t)openpete_interp_present_now(), drawn);
+}
+
 static int s_mrex_records_pid = -1;   /* the profiler name id of "mrex.records" */
 
 /** @brief Open the sub-tick record loop's profiler region "mrex.records" while a trace is open.
@@ -20391,6 +20402,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     { OP_PROF_ACCUM_SCOPE("moby.build");
       build_walk_tris(cpu); }                   /* SPEC: build_walk_tris dedups vs s_reg_moby */
     rex_bug_record(cpu, is_spec, n_loop);
+    rex_hop_probe_note(cpu);
     push_scene_moby(cpu);
     occl_pass_census(mat, 1);
     moby_rot_census(mat, rot_bins);

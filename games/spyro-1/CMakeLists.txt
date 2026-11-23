@@ -64,6 +64,7 @@ openpete_add_game(spyro-1
         features/vibration.c
         features/cheats.c
         features/credits_skip.c
+        features/host_hop_test.c
         features/crash_demo_woah.c
         features/levelwarp.c
         ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c

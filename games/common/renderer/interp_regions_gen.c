@@ -467,8 +467,30 @@ const uint8_t* game_interp_capture_moby_record(uint32_t key, uint32_t m) {
     return host;
 }
 
-void game_interp_capture_moby_array(void) {
+/** @brief Move the record of each continued host allocation that took another slot (moby_serial_take_hops) to its new slot's key, before the walk captures either slot.
+ *
+ * A move applies only when the record tracked under the old slot's key is the
+ * one that moved: its curr declared the slot serial and carries the move's
+ * serial. The record the new slot's key held before goes to the evicted set
+ * (openpete_interp_objs_rekey). */
+static void moby_apply_hops(void) OP_REQUIRES(sim) {
+    uint32_t from[64], to[64], serial[64], vf[64], vt[64];
+    const uint32_t n = moby_serial_take_hops(from, to, serial, 64u);
+    const uint32_t so = game_layout.moby.array_stride;
+    uint32_t v = 0;
+    for (uint32_t k = 0; k < n; ++k) {
+        const openpete_interp_obj_t* o = openpete_interp_objs_find(game_credits_letter_key(from[k]));
+        if (!o || o->curr_serial_off != so || memcmp(o->curr + so, &serial[k], 4u) != 0) continue;
+        vf[v] = game_credits_letter_key(from[k]);
+        vt[v] = game_credits_letter_key(to[k]);
+        v++;
+    }
+    if (v) openpete_interp_objs_rekey(vf, vt, v);
+}
+
+void game_interp_capture_moby_array(void) OP_REQUIRES(sim) {
     stash_walk_t sw = { stash_prepare(), 0, 0, 0, stash_census_on() };
+    if (moby_serial_enabled()) moby_apply_hops();
 
     const uint32_t head = game_layout.moby.array_head;
     if (!head) return;
@@ -685,6 +707,7 @@ static void (*s_extra_pools)(void);
  * table's population when openpete_frame is a multiple of 120. Reads guest RAM
  * only. */
 static void capture_objs_common(void) {
+    OP_ROLE_ASSERT(sim);
     openpete_interp_objs_begin_tick();
     game_credits_track();
     game_interp_capture_moby_array();
