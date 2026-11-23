@@ -57,6 +57,16 @@
       }
     },
     {
+      "name": "ios-arm64",
+      "displayName": "iOS device arm64 (experimental; engine only for now)",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build/ios-arm64",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/ios.cmake",
+      "cacheVariables": {
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/ios-arm64.cmake"
+      }
+    },
+    {
       "name": "wasm",
       "displayName": "WebAssembly via Emscripten (browser)",
       "generator": "Ninja",
@@ -115,6 +125,10 @@
     {
       "name": "macos-universal",
       "configurePreset": "macos-universal"
+    },
+    {
+      "name": "ios-arm64",
+      "configurePreset": "ios-arm64"
     },
     {
       "name": "wasm",

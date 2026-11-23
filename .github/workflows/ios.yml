@@ -1,0 +1,53 @@
+name: iOS build (experimental)
+
+# First milestone: configure and build the engine libraries for iOS arm64 on a
+# GitHub-hosted Mac. No game is built (-DOPENPETE_GAMES=): the recompiled game
+# C is generated from the PSYQ SDK headers and a disc dump, which are your own
+# copies and must never be committed to a public repository.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios-port]
+
+jobs:
+  engine:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Init only the submodules the configure reads
+        run: |
+          git submodule update --init --depth 1 -- \
+            third_party/SDL third_party/glslang third_party/imgui third_party/PsyCross
+          git submodule update --init --recursive --depth 1 -- third_party/PsyCross
+
+      - name: Host tools
+        run: |
+          brew install cmake python glslang spirv-tools
+          cmake --version
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Configure (iOS arm64, engine only)
+        run: |
+          cmake --preset ios-arm64 -DOPENPETE_GAMES= 2>&1 | tee configure.log
+
+      - name: Build
+        run: |
+          cmake --build build/ios-arm64 --config Release -- \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build.log
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-engine-logs
+          path: |
+            configure.log
+            build.log
+            build/ios-arm64/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
