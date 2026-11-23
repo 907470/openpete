@@ -1441,3 +1441,7 @@ target_include_directories(audio_feed_sim PRIVATE
 target_include_directories(audio_feed_sim PRIVATE ${OPENAL_INCLUDE_DIR})
 target_link_libraries(audio_feed_sim PRIVATE SDL3::SDL3-static ${OPENAL_LIBRARY})
 set_target_properties(audio_feed_sim PROPERTIES CXX_STANDARD 20)
+
+# The interleaving scheduler and its harnesses (tests/sched), which carry
+# their own `unit` label.
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests/sched ${CMAKE_BINARY_DIR}/tests/sched)
