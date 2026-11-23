@@ -43,6 +43,7 @@ class TimingLockTest(unittest.TestCase):
         os.environ.pop(timing_lock.TOKEN_ENV, None)
 
     def tearDown(self):
+        timing_lock.release_shared()
         for k, v in self.old.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -339,6 +340,7 @@ class TimingLockTest(unittest.TestCase):
         tree = self._scratch_tree({
             "copy": ["scripts/container.sh", "scripts/lib/container.sh",
                      "scripts/lib/conmon-no-session-bus", "scripts/lib/timing_gate.sh",
+                     "scripts/lib/flock_hold.py",
                      "scripts/bench/timing_lock.py", "packaging/dev-image.Dockerfile",
                      "packaging/dev-image.sh", "packaging/dev-image-packages.txt"],
             "stub": []})
@@ -353,6 +355,7 @@ class TimingLockTest(unittest.TestCase):
         tree = self._scratch_tree({
             "copy": ["scripts/release-container.sh", "scripts/lib/container.sh",
                      "scripts/lib/conmon-no-session-bus", "scripts/lib/timing_gate.sh",
+                     "scripts/lib/flock_hold.py",
                      "scripts/lib/tools_dir.sh", "scripts/lib/release_archive.sh",
                      "scripts/bench/timing_lock.py", "packaging/linux-release.Dockerfile"],
             "stub": ["scripts/setup_linux_clang.sh", "scripts/setup_appimagetool.sh"]})
@@ -409,6 +412,166 @@ class TimingLockTest(unittest.TestCase):
                        "beat": time.time(), "ret": 1}, f)
         self.assertIn("gone", timing_lock.display_hold_state()["why"])
         h.release()
+
+
+GATE_SH = os.path.join(ROOT, "scripts", "lib", "timing_gate.sh")
+TL = os.path.join(BENCH, "timing_lock.py")
+
+
+def _wait_for(path, timeout=20.0):
+    end = time.monotonic() + timeout
+    while not os.path.exists(path):
+        if time.monotonic() > end:
+            raise AssertionError("timed out waiting for %s" % path)
+        time.sleep(0.02)
+
+
+class LaunchHoldTest(unittest.TestCase):
+    """The gate holds the window shut from its return until the launch
+    exits: the check-then-act gap between a launch's gate and its start is
+    closed, and a waiting timing job takes the window at a later gate."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="timing-hold-test.")
+        self.old = {k: os.environ.get(k) for k in
+                    ("OPENPETE_BENCH_DIR", timing_lock.TOKEN_ENV, timing_lock.COVERED_ENV)}
+        os.environ["OPENPETE_BENCH_DIR"] = self.dir
+        os.environ.pop(timing_lock.TOKEN_ENV, None)
+        os.environ.pop(timing_lock.COVERED_ENV, None)
+        self.procs = []
+
+    def tearDown(self):
+        open(self.f("release"), "w").close()
+        for p in self.procs:
+            try:
+                p.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+        timing_lock.release_shared()
+        for k, v in self.old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def f(self, name):
+        return os.path.join(self.dir, name)
+
+    def bash(self, script, **env_extra):
+        """Start bash running `script` with GATE (the gate library) and D
+        (the scratch directory) set; it is waited for at teardown."""
+        env = dict(os.environ, GATE=GATE_SH, D=self.dir, TL=TL, **env_extra)
+        p = subprocess.Popen(["bash", "-c", script], env=env, text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.procs.append(p)
+        return p
+
+    def writer(self, name):
+        """Start a timing job (`run`) that touches <name>.got once it holds the
+        window and releases when the scratch `release` file appears."""
+        p = subprocess.Popen(
+            [sys.executable, TL, "run", "--purpose", name, "--", "bash", "-c",
+             'touch "$D/%s.got"; until [ -e "$D/%s.go" ] || [ -e "$D/release" ]; '
+             'do sleep 0.05; done' % (name, name)],
+            env=dict(os.environ, D=self.dir), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.procs.append(p)
+        return p
+
+    def test_gate_then_launch_excludes_timing_job(self):
+        # Scripted order of the race: the launch's gate returns, a timing job
+        # tries to take the window, then the launch starts. Before the hold
+        # the timing job won and the launch ran beside its legs.
+        launch = self.bash('source "$GATE"; op_timing_gate launch || exit 9; '
+                           'touch "$D/gated"; until [ -e "$D/go" ]; do sleep 0.05; done; '
+                           'touch "$D/launched"; until [ -e "$D/release" ]; do sleep 0.05; done')
+        _wait_for(self.f("gated"))
+        self.assertIsNone(timing_lock.try_acquire("timing job"),
+                          "a timing job took the window between a launch's gate and its start")
+        open(self.f("go"), "w").close()
+        _wait_for(self.f("launched"))
+        self.assertIsNone(timing_lock.try_acquire("timing job"))
+        open(self.f("release"), "w").close()
+        launch.wait(timeout=20)
+        end = time.monotonic() + 10
+        h = None
+        while h is None and time.monotonic() < end:
+            h = timing_lock.try_acquire("timing job")
+            time.sleep(0.05)
+        self.assertIsNotNone(h, "the hold outlived its shell")
+        h.release()
+
+    def test_waiting_timing_job_blocks_new_launches_and_takes_the_next_gate(self):
+        harness = self.bash('source "$GATE"; op_timing_gate first || exit 9; touch "$D/held"; '
+                            'until [ -e "$D/next" ]; do sleep 0.05; done; '
+                            'op_timing_gate second || exit 8; touch "$D/second"; '
+                            'until [ -e "$D/release" ]; do sleep 0.05; done')
+        _wait_for(self.f("held"))
+        w = self.writer("w")
+        end = time.monotonic() + 10
+        while not timing_lock.state()["wanted"] and time.monotonic() < end:
+            time.sleep(0.05)
+        self.assertTrue(timing_lock.state()["wanted"], "the timing job does not want the window")
+        self.assertFalse(os.path.exists(self.f("w.got")), "the window opened beside a held launch")
+        late = subprocess.run(["bash", "-c", 'source "$GATE"; op_timing_gate late; echo rc=$?'],
+                              env=dict(os.environ, GATE=GATE_SH, OPENPETE_TIMING_GATE_TIMEOUT="1"),
+                              capture_output=True, text=True, timeout=30)
+        self.assertIn("rc=75", late.stdout, "a new launch started ahead of a waiting timing job")
+        open(self.f("next"), "w").close()          # the harness's next gate yields
+        _wait_for(self.f("w.got"))
+        self.assertFalse(os.path.exists(self.f("second")), "the yielded gate returned inside the window")
+        open(self.f("w.go"), "w").close()
+        self.assertEqual(w.wait(timeout=20), 0, w.stderr.read())
+        _wait_for(self.f("second"))
+
+    def test_child_of_a_held_launch_does_not_wait(self):
+        harness = self.bash('source "$GATE"; op_timing_gate parent || exit 9; touch "$D/held"; '
+                            'until [ -e "$D/child" ]; do sleep 0.05; done; '
+                            'python3 -c "import sys; sys.path.insert(0, \'%s\'); import timing_lock; '
+                            'print(timing_lock.gate(label=\'child\', timeout=2))" > "$D/child.out"; '
+                            'touch "$D/child.done"; until [ -e "$D/release" ]; do sleep 0.05; done'
+                            % BENCH)
+        _wait_for(self.f("held"))
+        self.writer("w")
+        end = time.monotonic() + 10
+        while not timing_lock.state()["wanted"] and time.monotonic() < end:
+            time.sleep(0.05)
+        open(self.f("child"), "w").close()
+        _wait_for(self.f("child.done"))
+        with open(self.f("child.out")) as fh:
+            self.assertEqual(fh.read().strip(), "True",
+                             "a child of a held launch waited on a timing job that waits on its parent")
+
+    def test_timing_job_under_its_own_launch_hold_refuses(self):
+        p = self.bash('source "$GATE"; op_timing_gate parent || exit 9; '
+                      'python3 "$TL" run --purpose nested -- true; echo rc=$?')
+        out, err = p.communicate(timeout=30)
+        self.assertIn("rc=69", out, err)
+        self.assertIn("ancestor", err)
+
+    def test_in_process_hold_upgrades_to_the_window(self):
+        self.assertTrue(timing_lock.gate(label="harness"))
+        self.assertIn(os.getpid(), timing_lock.flock_hold.lockers(timing_lock.lock_path(), "READ"))
+        probe = timing_lock.flock_hold.open_lock(timing_lock.lock_path())
+        self.assertFalse(timing_lock.flock_hold.try_lock(probe, timing_lock.flock_hold.EX),
+                         "a hold did not keep LOCK_EX out")
+        os.close(probe)
+        child = subprocess.run([sys.executable, TL, "run", "--purpose", "child", "--", "true"],
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(child.returncode, timing_lock.EXIT_NESTED, child.stderr)
+        h = timing_lock.try_acquire("this harness")
+        self.assertIsNotNone(h, "this process's own hold blocked its own timing job")
+        h.release()
+
+    def test_covered_container_does_not_wait(self):
+        self.writer("w")
+        _wait_for(self.f("w.got"))
+        os.environ[timing_lock.COVERED_ENV] = "1"
+        self.assertTrue(timing_lock.gate(label="in container", timeout=1))
+        os.environ.pop(timing_lock.COVERED_ENV)
+        self.assertFalse(timing_lock.gate(label="host launch", timeout=1))
 
 
 if __name__ == "__main__":

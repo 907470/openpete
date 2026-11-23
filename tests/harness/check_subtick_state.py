@@ -88,6 +88,10 @@ scratch_cards()
 EXE = Path(os.environ.get(
     "OPENPETE_BIN",
     ROOT / "build" / "linux-release" / "openpete"))
+# Hold the build directory against a build for the whole run (build_lock.py).
+import build_lock  # noqa: E402
+if not build_lock.read(str(EXE), "subtick-state"):
+    sys.exit(75)
 DISC = Path(os.environ.get(
     "OPENPETE_DISC",
     ROOT / "games" / "spyro-1" / "spyro-1" / "build" / "SCUS-94228.cue"))

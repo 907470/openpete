@@ -60,6 +60,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts" / "lib"))
 from hostenv import sandbox_run_root  # noqa: E402
+import build_lock  # noqa: E402
 
 ARR_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
@@ -363,6 +364,9 @@ def main():
         ap.error("--jobs must be at least 1")
 
     game = (args.game, *resolve_game(args.game))
+    # Hold the build directory against a build for the whole run (build_lock.py).
+    if not build_lock.read(game[1], "modtest"):
+        sys.exit(75)
 
     def run_buffered(mod_dir: Path):
         """Run one mod, returning its result, its buffered report lines and

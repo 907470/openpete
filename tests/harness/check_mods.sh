@@ -88,6 +88,10 @@ WORK="$(mktemp -d /tmp/openpete-modtest.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 
 BIN="$PG_BIN"
+# Hold the build directory against a build for the whole run (build_lock.sh).
+# shellcheck source=scripts/lib/build_lock.sh
+source scripts/lib/build_lock.sh
+op_build_read_lock "$BIN" check-mods || exit 75
 DISC="$PG_DISC"
 SMOKE_FRAMES="${OPENPETE_MODTEST_FRAMES:-8000}"
 

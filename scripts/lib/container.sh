@@ -37,7 +37,11 @@
 #                              a timing gate inside the container
 #                              (scripts/lib/timing_gate.sh) then probes the
 #                              host's flock on the same inode, and a launch
-#                              made inside the holder's own window passes
+#                              made inside the holder's own window passes;
+#                              OPENPETE_TIMING_COVERED=1: the launching
+#                              shell's gate holds the window shut while the
+#                              container runs (timing_gate.sh), and a gate
+#                              inside proceeds under that hold
 #   ctr_image_exists IMAGE
 #   ctr_build_image DOCKERFILE CONTEXT IMAGE [STAGE [BASE_STAGE=IMAGE...]]
 #                              build one stage; under podman with the vfs
@@ -153,9 +157,14 @@ ctr_timing_env() {
     ctr_mount "$d" "$d"
     CTR_ENV+=(-e "OPENPETE_BENCH_DIR=$d")
     local v
-    for v in OPENPETE_TIMING_TOKEN OPENPETE_TIMING_GATE_TIMEOUT; do
+    for v in OPENPETE_TIMING_TOKEN OPENPETE_TIMING_GATE_TIMEOUT OPENPETE_TIMING_COVERED; do
         [[ -n "${!v:-}" ]] && CTR_ENV+=(-e "$v=${!v}")
     done
+    # Every launch that mounts the bench directory follows op_timing_gate in
+    # the launching shell, which holds the window shut while the container
+    # runs. A gate inside cannot see that hold; waiting there for a timing
+    # job that waits on it would never end.
+    CTR_ENV+=(-e "OPENPETE_TIMING_COVERED=1")
     return 0
 }
 

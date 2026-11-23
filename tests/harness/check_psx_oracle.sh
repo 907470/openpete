@@ -276,6 +276,10 @@ if [[ ! -x "$BIN" ]]; then
     echo "[psx-oracle] binary missing: $BIN - run cmake --build --preset linux-release" >&2
     exit 64
 fi
+# Hold the build directory against a build for the whole run (build_lock.sh).
+# shellcheck source=scripts/lib/build_lock.sh
+source scripts/lib/build_lock.sh
+op_build_read_lock "$BIN" psx-oracle || exit 75
 if [[ ! -f "$DISC" ]]; then
     echo "[psx-oracle] disc not found: $DISC (override with OPENPETE_DISC=)" >&2
     exit 64

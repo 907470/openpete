@@ -2930,12 +2930,16 @@ class Coordinator:
         self.span.start_marker()
         try:
             if local_build:
-                # The build loads every local core: wait out a timing window.
+                # The build loads every local core: wait out a timing window
+                # and hold it shut until the build ends.
                 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                 "bench"))
                 import timing_lock
-                timing_lock.wait_free(label="golden-fleet local build")
-                self.local_build()
+                timing_lock.gate(label="golden-fleet local build")
+                try:
+                    self.local_build()
+                finally:
+                    timing_lock.release_shared()
             self.span.take_build_lock()
             segs = [("source", self.tree, source_set(self.tree, self.pb, self.run_games()))]
             if local_build:

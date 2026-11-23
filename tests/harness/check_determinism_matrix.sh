@@ -179,6 +179,10 @@ BIN="$PG_BIN"
 DISC="$PG_DISC"
 
 [[ -x "$BIN"  ]] || { echo "missing binary: $BIN (run cmake --build --preset linux-release)" >&2; exit 2; }
+# Hold the build directory against a build for the whole run (build_lock.sh).
+# shellcheck source=scripts/lib/build_lock.sh
+source scripts/lib/build_lock.sh
+op_build_read_lock "$BIN" determinism-matrix || exit 75
 [[ -f "$DISC" ]] || { echo "missing disc: $DISC" >&2; exit 2; }
 
 # The anti-piracy scan rows: stem -> "frames min_pass", in manifest order.

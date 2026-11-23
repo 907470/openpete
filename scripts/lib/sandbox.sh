@@ -51,11 +51,13 @@
 # Windows path). scripts/fences/sandbox_guard.py refuses a launcher that does
 # not source this file (directly or through a library that does).
 #
-# Timing window: sourcing this file and each op_sandbox_run_root call wait
-# while another job holds the timing window (scripts/lib/timing_gate.sh), so
-# a sandboxed launch never starts beside a timing leg; a harness that takes a
-# run root per launch is gated per launch, one that launches from the shared
-# root only when it starts.
+# Timing window: sourcing this file waits while another job holds the timing
+# window and then holds it shut until this shell exits
+# (scripts/lib/timing_gate.sh), so a sandboxed launch never starts beside a
+# timing leg. Each op_sandbox_run_root call is a yield point: while a timing
+# job waits for the window, it releases the hold, waits for the window to
+# close, and holds again; a harness that launches from the shared root
+# yields only at exit.
 
 # shellcheck source=scripts/lib/timing_gate.sh
 source "$(dirname "${BASH_SOURCE[0]}")/timing_gate.sh"

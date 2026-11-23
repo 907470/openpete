@@ -62,6 +62,7 @@ import sys as _sys
 from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parents[2] / "scripts" / "lib"))
 from hostenv import child_env, scratch_cards  # noqa: E402
+import build_lock  # noqa: E402
 import re
 import shlex
 import signal
@@ -429,6 +430,9 @@ def main():
     if not os.path.exists(exe):
         print("[bench] exe not found: %s" % exe, file=sys.stderr)
         return EXIT_SKIP
+    # Hold the build directory against a build for the whole run (build_lock.py).
+    if not build_lock.read(exe, "bench-corpus"):
+        return 75
     if not os.path.exists(game["disc"]):
         print("[bench] disc not found: %s" % game["disc"], file=sys.stderr)
         return EXIT_SKIP

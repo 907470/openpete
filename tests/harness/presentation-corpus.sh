@@ -125,6 +125,10 @@ for a in "$@"; do case "$a" in --build-dir=*) BUILD_DIR="${a#--build-dir=}";; es
 GAME="$(pg_parse_game "$@")" || exit 64
 PG_BUILD_DIR="$BUILD_DIR" pg_resolve "$GAME" || exit 64
 BIN="$PG_BIN"
+# Hold the build directory against a build for the whole run (build_lock.sh).
+# shellcheck source=scripts/lib/build_lock.sh
+source scripts/lib/build_lock.sh
+op_build_read_lock "$BIN" presentation-corpus || exit 75
 DISC="$PG_DISC"
 MANIFEST="$PG_CORPUS_MANIFEST"
 

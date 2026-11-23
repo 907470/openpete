@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fen
 import bench_guard
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 from hostenv import child_env, scratch_cards, xvfb_prefix  # noqa: E402
+import build_lock  # noqa: E402
 import game_conf  # noqa: E402
 
 # Unattended launcher: every run this script starts has controller vibration
@@ -181,6 +182,9 @@ def main():
     if not os.path.isfile(args.exe):
         print("SKIP: exe not found: %s" % args.exe)
         return EXIT_SKIP
+    # Hold the build directory against a build for the whole run (build_lock.py).
+    if not build_lock.read(args.exe, "bench-topdown"):
+        return 75
     if not os.path.isfile(game["disc"]):
         print("SKIP: disc not found: %s" % game["disc"])
         return EXIT_SKIP

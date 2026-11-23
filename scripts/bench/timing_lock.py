@@ -22,6 +22,22 @@ The holder exports OPENPETE_TIMING_TOKEN to its job; a process whose
 environment carries the current holder's token is inside the window and
 passes the gate.
 
+Launches hold the window shut. gate() (the library form; `gate --for-pid`
+for a shell; scripts/lib/timing_gate.sh) waits while the window is held or
+wanted and then takes LOCK_SH on the same file, held until the caller exits:
+a timing job's LOCK_EX cannot be granted between a launch's check and its
+start. A timing job first takes LOCK_EX on <bench>/timing.want (the want
+lock) and keeps it until it releases the window; while it is held, new
+launches wait, and a caller that already holds the window shut releases its
+hold at its next gate() and waits there. The want lock gives a waiting
+timing job precedence over new launches, and a long harness that gates each
+launch yields between launches. A process covered by a hold of its own
+process tree (its ancestors' direct holds or their holders) proceeds
+without waiting; a container launched under a hold receives
+OPENPETE_TIMING_COVERED=1 for the same purpose. A timing job that is itself
+under such a hold would wait on its own ancestor and refuses instead (exit
+69); its own in-process hold is dropped before it takes the window.
+
 Commands:
   run --purpose P [--host H] [--hold-display] [--timeout S] -- CMD...
         wait for the window, hold it while CMD runs, release; exit CMD's
@@ -35,11 +51,19 @@ Commands:
         stop the detached holder that owns token T.
   status [--host H]      print the window's state; exit 0 free, 1 held.
   wait [--host H] [--label L] [--timeout S]
-        block while another job holds the window (non-timing work calls this
-        before each launch); exit 0 when free, 75 at the timeout. Never
-        returns 0 while the window is held by someone else.
+        block while another job holds or wants the window; exit 0 when free,
+        75 at the timeout. Never returns 0 while the window is held by
+        someone else. It holds nothing: a launch after it can start beside
+        a timing job that took the window in between; launch through
+        `shared` or gate() instead.
+  shared [--host H] [--label L] [--timeout S] -- CMD...
+        gate(), then run CMD with the window held shut; exit CMD's status.
+  gate --for-pid P [--host H] [--label L] [--timeout S]
+        gate() on behalf of process P (a shell): a holder process keeps the
+        window shut until P exits; exit 0, or 75 at the timeout.
 
-Exit codes: 0 ok, 1 held (status), 64 usage, 75 timed out waiting.
+Exit codes: 0 ok, 1 held (status), 64 usage, 69 a timing job under a hold
+of its own process tree, 75 timed out waiting.
 """
 import argparse
 import datetime
@@ -53,12 +77,22 @@ import sys
 import threading
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+import flock_hold                                           # noqa: E402
+
 TOKEN_ENV = "OPENPETE_TIMING_TOKEN"
 INDICATOR = "TIMING-WINDOW"
 TAG = "lock-token="
 POLL_S = 2.0
 REPORT_EVERY_S = 60.0
 EXIT_TIMEOUT = 75
+EXIT_NESTED = 69
+COVERED_ENV = "OPENPETE_TIMING_COVERED"
+
+
+class TimingLockError(Exception):
+    """A timing job that cannot take the window: its own process tree holds
+    it shut."""
 
 
 def bench_dir():
@@ -73,6 +107,17 @@ def lock_path(host=None):
     """The lock file of `host` (None or "local": this machine and its
     Windows side, which share the CPU)."""
     name = "timing.lock" if host in (None, "", "local", "windows") else "timing-%s.lock" % host
+    return os.path.join(bench_dir(), name)
+
+
+def _local(host):
+    return host in (None, "", "local", "windows")
+
+
+def want_path(host=None):
+    """The want lock of `host`: LOCK_EX by a timing job from its first wait
+    until it releases the window."""
+    name = "timing.want" if _local(host) else "timing-%s.want" % host
     return os.path.join(bench_dir(), name)
 
 
@@ -135,8 +180,14 @@ def state(host=None):
                 legacy = line or "(empty marker)"
     mine = bool(held and info and info.get("token")
                 and os.environ.get(TOKEN_ENV) == info.get("token"))
-    return {"held": held or legacy is not None, "lock": info if held else None,
-            "legacy": legacy, "mine": mine}
+    wanted = None
+    if not held:
+        wheld, winfo = _probe(want_path(host))
+        if wheld and (winfo or {}).get("pid") != os.getpid():
+            wanted = winfo or {}
+    return {"held": held or legacy is not None or wanted is not None,
+            "lock": info if held else None, "legacy": legacy, "mine": mine,
+            "wanted": wanted}
 
 
 def describe(st):
@@ -149,7 +200,14 @@ def describe(st):
             i.get("purpose", "?"), i.get("pid", "?"), i.get("owner", "?"),
             i.get("host", "?"), i.get("start", "?"),
             ", this job" if st["mine"] else "")
-    return "held by a hand-written TIMING-WINDOW marker: %s" % st["legacy"]
+    if st["legacy"]:
+        return "held by a hand-written TIMING-WINDOW marker: %s" % st["legacy"]
+    if st.get("readers") is not None:
+        return "free of timing jobs, held shut by %d launch(es) (pids %s)" % (
+            len(st["readers"]), " ".join(map(str, st["readers"][:8])) or "?")
+    w = st["wanted"]
+    return "wanted by %s (pid %s, since %s), waiting for launches holding it shut" % (
+        w.get("purpose", "?"), w.get("pid", "?"), w.get("start", "?"))
 
 
 def _remove_indicator(token):
@@ -166,11 +224,13 @@ def _remove_indicator(token):
 class Holder:
     """A held window: the open locked descriptor and the token."""
 
-    def __init__(self, fd, token, host, path):
+    def __init__(self, fd, token, host, path, want_fd=None):
         self.fd, self.token, self.host, self.path = fd, token, host, path
+        self.want_fd = want_fd
 
     def release(self):
-        """Remove the indicator (local lock) and drop the lock."""
+        """Remove the indicator (local lock), drop the lock, then the want
+        lock."""
         if self.fd is None:
             return
         if self.host in (None, "", "local", "windows"):
@@ -178,11 +238,60 @@ class Holder:
         fcntl.flock(self.fd, fcntl.LOCK_UN)
         os.close(self.fd)
         self.fd = None
+        _close_want(self.want_fd)
+        self.want_fd = None
 
 
-def try_acquire(purpose, host=None, ttl_s=None, owner=None):
+def _close_want(fd):
+    if fd is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _take_want(purpose, host):
+    """LOCK_EX on the want lock without blocking, its record written; the
+    descriptor, or None when another timing job wants the window."""
+    fd = flock_hold.open_lock(want_path(host))
+    if not flock_hold.try_lock(fd, flock_hold.EX):
+        os.close(fd)
+        return None
+    os.ftruncate(fd, 0)
+    os.pwrite(fd, (json.dumps({"pid": os.getpid(), "purpose": purpose,
+                               "start": _now()}) + "\n").encode(), 0)
+    return fd
+
+
+def _upgrade(host):
+    """Before this process takes the window: drop its own in-process shared
+    hold, and refuse (TimingLockError) when an ancestor holds the window
+    shut, since LOCK_EX would wait on that ancestor forever."""
+    release_shared(host)
+    path = lock_path(host)
+    anc = flock_hold.covered(path, flock_hold.lineage()[1:], "READ")
+    if anc is not None:
+        raise TimingLockError(
+            "timing-lock: process %d, an ancestor of this timing job, holds the window "
+            "shut (a launch gate); run the timing job outside that launch" % anc)
+    if os.environ.get(COVERED_ENV):
+        raise TimingLockError(
+            "timing-lock: %s is set: this process runs in a container launched under "
+            "a hold that keeps the window shut; run the timing job outside it" % COVERED_ENV)
+
+
+def try_acquire(purpose, host=None, ttl_s=None, owner=None, _want_fd=None):
     """Take the window without blocking: a Holder, or None when another job
-    holds it (by lock or by a hand-written marker)."""
+    holds or wants it (by lock or by a hand-written marker) or a launch holds
+    it shut. Raises TimingLockError when this process's own ancestor holds it
+    shut. `_want_fd` is the want lock acquire() already holds."""
+    _upgrade(host)
+    want = _want_fd if _want_fd is not None else _take_want(purpose, host)
+    if want is None:
+        return None
+
+    def fail():
+        if _want_fd is None:
+            _close_want(want)
+        return None
     path = lock_path(host)
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
     try:
@@ -190,7 +299,7 @@ def try_acquire(purpose, host=None, ttl_s=None, owner=None):
     except OSError as e:
         os.close(fd)
         if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
-            return None
+            return fail()
         raise
     local = host in (None, "", "local", "windows")
     if local:
@@ -198,7 +307,7 @@ def try_acquire(purpose, host=None, ttl_s=None, owner=None):
         if line is not None and TAG not in line:
             fcntl.flock(fd, fcntl.LOCK_UN)       # a hand-written window is open
             os.close(fd)
-            return None
+            return fail()
     token = "%d.%d" % (os.getpid(), time.time_ns())
     info = {"token": token, "pid": os.getpid(), "purpose": purpose,
             "owner": owner or os.environ.get("OPENPETE_TIMING_OWNER") or
@@ -209,8 +318,8 @@ def try_acquire(purpose, host=None, ttl_s=None, owner=None):
     if local and not _publish_indicator(purpose, info["start"], token):
         fcntl.flock(fd, fcntl.LOCK_UN)           # a hand-written window opened
         os.close(fd)
-        return None
-    return Holder(fd, token, host, path)
+        return fail()
+    return Holder(fd, token, host, path, want)
 
 
 def _publish_indicator(purpose, start, token):
@@ -248,16 +357,34 @@ def _waiting(what, st, label, since, last):
 
 
 def acquire(purpose, host=None, timeout=None, ttl_s=None, owner=None):
-    """Block until the window is taken; a Holder, or None at the timeout."""
+    """Block until the window is taken; a Holder, or None at the timeout.
+    The want lock is taken first and held while waiting, so new launches
+    wait behind this job. Raises TimingLockError (see _upgrade)."""
     since, last = time.monotonic(), [0.0]
-    while True:
-        h = try_acquire(purpose, host, ttl_s, owner)
-        if h:
-            return h
-        if timeout is not None and time.monotonic() - since >= timeout:
-            return None
-        _waiting("acquire for " + purpose, state(host), None, since, last)
-        time.sleep(POLL_S)
+    _upgrade(host)
+    want = None
+    try:
+        while want is None:
+            want = _take_want(purpose, host)
+            if want is None:
+                if timeout is not None and time.monotonic() - since >= timeout:
+                    return None
+                _waiting("acquire for " + purpose, state(host), None, since, last)
+                time.sleep(POLL_S)
+        while True:
+            h = try_acquire(purpose, host, ttl_s, owner, _want_fd=want)
+            if h:
+                want = None                       # the Holder owns it now
+                return h
+            if timeout is not None and time.monotonic() - since >= timeout:
+                return None
+            st = state(host)
+            if not st["held"]:
+                st = dict(st, held=True, readers=flock_hold.lockers(lock_path(host), "READ"))
+            _waiting("acquire for " + purpose, st, None, since, last)
+            time.sleep(POLL_S)
+    finally:
+        _close_want(want)
 
 
 def wait_free(host=None, label=None, timeout=None):
@@ -274,6 +401,73 @@ def wait_free(host=None, label=None, timeout=None):
             return False
         _waiting("launch", st, label, since, last)
         time.sleep(POLL_S)
+
+
+_SHARED = {}            # host key -> this process's in-process flock_hold.Hold
+
+
+def _key(host):
+    return "local" if _local(host) else host
+
+
+def gate(host=None, label=None, timeout=None, for_pid=None):
+    """Wait out another job's window, then hold it shut: True, or False at
+    the timeout.
+
+    Returns at once when this process runs inside the window (its token is
+    the holder's) or is covered by a hold of its own process tree (or
+    OPENPETE_TIMING_COVERED is set). A caller that already holds it shut
+    keeps its hold unless a timing job wants the window: then it releases,
+    waits, and holds again. The hold is in-process (released at exit), or
+    with `for_pid` a holder process serving that pid (a shell)."""
+    path = lock_path(host)
+    since = time.monotonic()
+    me = for_pid or os.getpid()
+    while True:
+        st = state(host)
+        if st["mine"]:
+            return True
+        own_holders = flock_hold.holders_for(path, me) if for_pid else []
+        own = _SHARED.get(_key(host)) if not for_pid else None
+        holding = bool(own_holders) or own is not None
+        if holding and not st["held"]:
+            return True
+        if not holding:
+            if os.environ.get(COVERED_ENV):
+                return True
+            if flock_hold.covered(path, flock_hold.lineage(me)[1:], "READ") is not None:
+                return True
+        # Entry, or a yield to a timing job that wants the window.
+        for p in own_holders:
+            flock_hold.stop(p)
+        if own is not None:
+            own.release()
+            _SHARED.pop(_key(host), None)
+        left = None if timeout is None else max(0.0, timeout - (time.monotonic() - since))
+        if not wait_free(host, label, left):
+            return False
+        if for_pid:
+            got = flock_hold.spawn(path, flock_hold.SH, for_pid, label or "")
+        else:
+            got = flock_hold.hold(path, flock_hold.SH)
+            if got is not None:
+                _SHARED[_key(host)] = got
+        if got is not None and not state(host)["legacy"]:
+            return True
+        if got is not None and not for_pid:
+            _SHARED.pop(_key(host)).release()
+        elif got is not None:
+            flock_hold.stop(got)
+        if timeout is not None and time.monotonic() - since >= timeout:
+            return False
+        time.sleep(0.2)
+
+
+def release_shared(host=None):
+    """Release this process's in-process hold from gate(), if any."""
+    h = _SHARED.pop(_key(host), None)
+    if h is not None:
+        h.release()
 
 
 _PROCESS_HOLDER = None
@@ -570,6 +764,25 @@ def cmd_wait(a):
     return 0 if wait_free(a.host, a.label, a.timeout) else EXIT_TIMEOUT
 
 
+def cmd_gate(a):
+    return 0 if gate(a.host, a.label, a.timeout, for_pid=a.for_pid) else EXIT_TIMEOUT
+
+
+def cmd_shared(a):
+    if not a.cmd:
+        sys.stderr.write("timing-lock: shared needs -- CMD\n")
+        return 64
+    if not gate(a.host, a.label, a.timeout):
+        return EXIT_TIMEOUT
+    child = subprocess.Popen(a.cmd)
+
+    def forward(sig, _frame):
+        child.send_signal(sig)
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, forward)
+    return child.wait()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd_name", required=True)
@@ -610,10 +823,24 @@ def main(argv=None):
     common(p)
     p.add_argument("--label", default=None)
     p.set_defaults(fn=cmd_wait)
+    p = sub.add_parser("gate")
+    common(p)
+    p.add_argument("--label", default=None)
+    p.add_argument("--for-pid", type=int, required=True)
+    p.set_defaults(fn=cmd_gate)
+    p = sub.add_parser("shared")
+    common(p)
+    p.add_argument("--label", default=None)
+    p.add_argument("cmd", nargs=argparse.REMAINDER)
+    p.set_defaults(fn=cmd_shared)
     a = ap.parse_args(argv)
     if getattr(a, "cmd", None) and a.cmd[:1] == ["--"]:
         a.cmd = a.cmd[1:]
-    return a.fn(a)
+    try:
+        return a.fn(a)
+    except TimingLockError as e:
+        sys.stderr.write("%s\n" % e)
+        return EXIT_NESTED
 
 
 if __name__ == "__main__":

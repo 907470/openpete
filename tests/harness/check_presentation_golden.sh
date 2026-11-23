@@ -294,6 +294,10 @@ if ! pg_in_capture_image; then
   fi
   exit $rc
 fi
+# Hold the build directory against a build for the whole run (build_lock.sh).
+# shellcheck source=scripts/lib/build_lock.sh
+source scripts/lib/build_lock.sh
+op_build_read_lock "$PG_BIN" presentation-golden || exit 75
 GAME_ARG="--game=$GAME"
 TIER_LABEL="" TIER_ENV=""
 [[ "$PG_TIER" != "presentation" ]] && TIER_LABEL=" $PG_TIER" TIER_ENV="PRESENTATION_TIER=$PG_TIER "

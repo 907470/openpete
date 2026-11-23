@@ -87,6 +87,10 @@ done
 
 pg_resolve "$GAME"
 BIN="$PG_BIN"
+# Hold the build directory against a build for the whole run (build_lock.sh).
+# shellcheck source=scripts/lib/build_lock.sh
+source scripts/lib/build_lock.sh
+op_build_read_lock "$BIN" mod-imgui || exit 75
 DISC="$PG_DISC"
 FIXTURE="mods/imgui-panel"
 COMPOSITE_MOD="mods/crt-beans"

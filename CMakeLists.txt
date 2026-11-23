@@ -1079,6 +1079,13 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME bench_preflight_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/bench/tests/test_preflight.py)
     set_tests_properties(timing_lock_selftest bench_preflight_selftest PROPERTIES LABELS "fence")
+    # The build-directory lock: a gate waits for a running build, a build
+    # waits for a running gate (and runs beside it under the bypass), gates
+    # share, a build under its own gate refuses, and a gate the build runs
+    # proceeds. Scratch build directory and a stand-in driver; nothing builds.
+    add_test(NAME build_lock_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/tests/test_build_lock.py)
+    set_tests_properties(build_lock_selftest PROPERTIES LABELS "fence")
     # The sandbox fence's own tests: a launch without the sandbox library or
     # OPENPETE_SANDBOX refused in shell and Python, the providers, helpers and
     # markers passing, the provider closure, and the checkout clean.
@@ -3317,3 +3324,8 @@ function(openpete_add_warning_ratchet)
     endif()
 endfunction()
 openpete_add_warning_ratchet()
+
+# Every Ninja build holds its build directory against gates for its whole
+# run; deferred to the end of this file so every target exists.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/openpete_build_lock.cmake)
+cmake_language(DEFER CALL openpete_build_lock_all)

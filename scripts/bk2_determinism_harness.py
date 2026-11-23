@@ -37,6 +37,10 @@ import hostenv  # noqa: E402
 hostenv.sandbox()
 
 EXE  = ROOT / "build" / "linux-release" / "openpete"
+# Hold the build directory against a build for the whole run (build_lock.py).
+import build_lock  # noqa: E402
+if not build_lock.read(str(EXE), "bk2-determinism"):
+    sys.exit(75)
 DISC = ROOT / "games" / "spyro-1" / "spyro-1" / "build" / "SCUS-94228.cue"
 BK2  = ROOT / "games" / "spyro-1" / "bk2" / "frame-time-test.bk2"
 TOTAL_FRAMES = 3419  # baseline run-length; harness reseeds within this range

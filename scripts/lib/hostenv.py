@@ -89,12 +89,14 @@ def sandbox_xdg(root):
 
 
 def timing_gate(label=None):
-    """Block while another job holds the timing window (scripts/bench/timing_lock.py).
+    """Block while another job holds the timing window (scripts/bench/timing_lock.py), then hold it shut.
 
     Returns when the window is free or this process runs inside it (its
     OPENPETE_TIMING_TOKEN is the holder's). Never returns while another
     job's window is open: with OPENPETE_TIMING_GATE_TIMEOUT=<seconds> it
-    exits 75 at the limit.
+    exits 75 at the limit. Outside a window this process then holds it shut
+    (timing_lock.gate) until it exits, yielding at a later call while a
+    timing job waits for it.
     """
     import sys
     bench = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bench")
@@ -102,8 +104,8 @@ def timing_gate(label=None):
         sys.path.insert(0, bench)
     import timing_lock
     t = os.environ.get("OPENPETE_TIMING_GATE_TIMEOUT")
-    if not timing_lock.wait_free(label=label or os.path.basename(sys.argv[0]),
-                                 timeout=float(t) if t else None):
+    if not timing_lock.gate(label=label or os.path.basename(sys.argv[0]),
+                            timeout=float(t) if t else None):
         sys.exit(timing_lock.EXIT_TIMEOUT)
 
 

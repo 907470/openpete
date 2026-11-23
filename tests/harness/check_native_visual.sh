@@ -84,6 +84,10 @@ fi
 PG_BUILD_DIR="$BUILD_DIR"
 pg_resolve "$GAME"
 BIN="$PG_BIN"
+# Hold the build directory against a build for the whole run (build_lock.sh).
+# shellcheck source=scripts/lib/build_lock.sh
+source scripts/lib/build_lock.sh
+op_build_read_lock "$BIN" native-visual || exit 75
 DISC="$PG_DISC"
 
 # --- skip (64) when prerequisites are absent -------------------------------

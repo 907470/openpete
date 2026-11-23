@@ -71,6 +71,10 @@ source scripts/lib/game.sh
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME" || exit 64
 BIN="$PG_BIN"
+# Hold the build directory against a build for the whole run (build_lock.sh).
+# shellcheck source=scripts/lib/build_lock.sh
+source scripts/lib/build_lock.sh
+op_build_read_lock "$BIN" state-roundtrip || exit 75
 DISC="$PG_DISC"
 
 # Each game's legs beside its rows: the runahead and rewind-driver movie, the
