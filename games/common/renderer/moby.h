@@ -679,20 +679,24 @@ void moby_simple_world_bucket(moby_simple_emit* se, int w);
 
 /** @brief Offer the mobys the canonical cull rejected to moby_game.reveal_record, which appends records in the game's own encoding.
  *
- * Walks the moby array, skipping the sentinel, dead states and run-once
- * instances, and applies two clauses. The widened-view clause (animated models,
- * moby_game.cull_view_admits supplied, view widening above 1) offers a moby
- * the cull left undrawn that the cull's admission admits with the lateral
- * slope scaled to the view. The extended-LOD clause (--no-lod) offers a moby
- * outside the cull's distance box (moby_game.cull_box_threshold) that stands
- * in front of the camera plane. Both clauses skip a moby the occlusion test
- * culls. A moby the canonical box still admits is left to the cull, which
- * either queued it or rejected it for a reason the box does not express.
+ * Walks the moby array, skipping the sentinel, dead states, run-once
+ * instances and a moby whose key sector the --sector-visibility predicate
+ * rejects, and applies three clauses. The widened-view clause (animated
+ * models, moby_game.cull_view_admits supplied, view widening above 1) offers
+ * a moby the cull left undrawn that the cull's admission admits with the
+ * lateral slope scaled to the view. The extended-LOD clause (--no-lod)
+ * offers a moby outside the cull's distance box (moby_game.cull_box_threshold)
+ * that stands in front of the camera plane. The sector-byte clause (every
+ * --lod, moby_game.cull_view_admits supplied) offers a moby inside the box
+ * that the cull dropped on its sector byte alone. Every clause skips a moby
+ * the occlusion test culls. Any other moby the canonical box admits is left
+ * to the cull, which either queued it or rejected it for a reason the box
+ * does not express.
  *
  * Reads gamestate only. Call from inside the pass whose queue the game
  * appends to, once per model kind, after that pass has captured the cull's
  * own records and before it decodes them. Inert unless the game supplies
- * cull_box_threshold and reveal_record and one of the two clauses applies.
+ * cull_box_threshold and reveal_record and one of the clauses applies.
  * @param cpu The guest CPU state, read only.
  * @param kind The model kind whose queue the records join.
  * @return The number of records appended. */

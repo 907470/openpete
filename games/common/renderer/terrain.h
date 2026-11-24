@@ -382,7 +382,8 @@ void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim);
  *
  * Under --sector-visibility game or filled, a point inside one or more sector bounding spheres of the last
  * canonical walk is admitted when one of those sectors is drawn (the filled
- * set, or the game's verdict under game); a point inside none is admitted.
+ * set, or under game the current tick's verdict, terrain_sector_pvs_shown);
+ * a point inside none is admitted.
  * Under frustum, or where filled has no PVS: 1.
  * @param cpu The guest CPU state, read only.
  * @param x The point, world X.
@@ -391,14 +392,31 @@ void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim);
  * @return 1 to admit, 0 to reject. */
 int terrain_point_admitted(struct CPUState* cpu, int32_t x, int32_t y, int32_t z) OP_REQUIRES(sim);
 
+/** @brief The game's PVS verdict for sector `i` on the current tick.
+ *
+ * Reads the visibility capture the world draw of this tick took
+ * (on_visibility_terrain) before the draw's sector loop cleared the bytes, so
+ * a moby pass later in the same draw reads this tick's verdict; with no
+ * capture held, the copy the last canonical walk made. The verdict is the
+ * PVS alone: the table the moby cull tests (env_anim.live_table, D_8006B300
+ * on Spyro 2) is the world draw's tier bits, also 0 for a sector the 4:3
+ * sphere frustum or the tier ranges dropped. Sim thread.
+ * @param i The sector index.
+ * @return 1 shown, 0 hidden, -1 when no PVS byte names the sector (a game
+ *         without a position-keyed PVS, index 255 or above, or past the
+ *         table). */
+int terrain_sector_pvs_shown(uint32_t i) OP_REQUIRES(sim);
+
 /** @brief Whether sector `i` is admitted by the --sector-visibility mode for this tick.
  *
  * frustum admits every sector (the identity for non-terrain paths); filled
- * answers from the tick's drawn set U, admitting every sector at index 255
- * or above and every sector on a level without a PVS; game returns -1 and the
- * caller reads the game's own verdict. Sim thread.
+ * answers from the drawn set U held at the last canonical walk, game from
+ * the game's verdict V of the current tick (terrain_sector_pvs_shown); each
+ * admits every sector at index 255 or above and every sector on a game or
+ * level without a PVS.
+ * Sim thread.
  * @param i The sector index.
- * @return 1 admitted, 0 rejected, -1 under game. */
+ * @return 1 admitted, 0 rejected. */
 int terrain_sector_admitted(uint32_t i) OP_REQUIRES(sim);
 
 #endif /* OPENPETE_COMMON_RENDERER_TERRAIN_H */

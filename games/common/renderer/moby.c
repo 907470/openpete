@@ -4761,33 +4761,48 @@ typedef struct {
     long sector_seen, sector_occl;
     long cand;        /* mobys offered to the occlusion test */
     long sector_rej;  /* mobys --sector-visibility kept from the reveal clauses */
+    long sector_shown; /* sector-byte drops on a sector the PVS showed, left dropped */
     long confirmed;   /* provisional admissions their decode's bounds culled */
     int  added, wide_added, sector_added;
 } moby_reveal_census_t;
 
-/** @brief The extended-LOD clause for a moby inside the cull's distance box that the cull dropped on its sector byte alone.
+/** @brief The sector-byte clause for a moby inside the cull's distance box that the cull dropped on its sector byte alone because the PVS hid the sector.
  *
  * The game's cull drops a moby whose sector byte at Moby+0x52 names a sector
- * the precomputed visibility tree marked hidden for the camera's cell. Under
- * extended LOD the native occlusion test decides such a moby instead: it is
- * offered to the game's record builder when moby_game.cull_view_admits at 4:3
- * rejects it on the sector byte and, with that test skipped, passes every
- * later test of the cull (MOBY_WIDE_CANONICAL for an animated model; the
- * simple models' cull has no test after the sector byte, so OTHER_KIND), and
- * the occlusion cull does not reject it. A moby the cull drops on its box,
- * range, near, lateral, vertical or second-sphere test stays dropped. The
- * revealed record takes the walk's own occlusion test as a queued one does.
+ * whose byte in the world draw's tier table (env_anim.live_table) is 0. The
+ * world draw writes that byte 0 for a sector the PVS hid, a sector whose
+ * sphere fails its 4:3 frustum test, and a sector no tier range lists
+ * (environment.s 80023CB4, 80023E88, 800244F0 on Spyro 2). Only the PVS
+ * reason belongs to --sector-visibility: a moby whose sector this tick's PVS
+ * shows (terrain_sector_pvs_shown) stays dropped, so the frustum and tier
+ * drops remain the game's cull's and --lod's. Under every --lod the
+ * --sector-visibility predicate (moby_reveal_sector_rejected, asked before
+ * this clause, which under game rejects every PVS-hidden sector, so the
+ * clause reveals nothing there) and the native occlusion test decide a
+ * PVS-hidden moby instead: it is offered to the game's record builder when
+ * moby_game.cull_view_admits at 4:3 rejects it on the sector byte and, with
+ * that test skipped, passes every later test of the cull
+ * (MOBY_WIDE_CANONICAL for an animated model; the simple models' cull has
+ * no test after the sector byte, so OTHER_KIND), and the occlusion cull does
+ * not reject it. A moby the cull drops on its box, range, near, lateral,
+ * vertical or second-sphere test stays dropped. The revealed record takes
+ * the walk's own occlusion test as a queued one does.
  * @param cpu The guest CPU state, read only.
  * @param m The Moby address.
  * @param drawn The drawn-verdict byte the cull tested.
  * @param kind The model kind whose queue the record joins.
- * @param c Tallies the candidate, its occlusion verdict and the record.
+ * @param c Tallies the candidate, a PVS-shown sector's withheld moby, its
+ *          occlusion verdict and the record.
  * @return 1 when a record was appended, else 0. */
 static int moby_reveal_sector_only(CPUState* cpu, uint32_t m, unsigned drawn,
-                                   moby_reveal_kind_t kind, moby_reveal_census_t* c) {
+                                   moby_reveal_kind_t kind, moby_reveal_census_t* c) OP_REQUIRES(sim) {
     if (!moby_game.cull_view_admits) return 0;
     if (kind == MOBY_REVEAL_ANIMATED && moby_rec_holds_moby(cpu, m)) return 0;
     if (moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0, 0) != MOBY_WIDE_SECTOR) return 0;
+    if (terrain_sector_pvs_shown(cpu->read_byte(m + game_layout.moby.sector_off)) != 0) {
+        c->sector_shown++;   /* dropped by the 4:3 frustum or the tier ranges */
+        return 0;
+    }
     const moby_wide_verdict_t g = moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0, 1);
     if (g != (kind == MOBY_REVEAL_ANIMATED ? MOBY_WIDE_CANONICAL : MOBY_WIDE_OTHER_KIND)) return 0;
     c->sector_seen++;
@@ -4829,7 +4844,7 @@ static int moby_reveal_sector_only(CPUState* cpu, uint32_t m, unsigned drawn,
  * @param kind The model kind whose queue the record joins.
  * @param c Tallies the moby's verdict. */
 static void moby_reveal_extended(CPUState* cpu, uint32_t m, uint32_t head,
-                                 moby_reveal_kind_t kind, moby_reveal_census_t* c) {
+                                 moby_reveal_kind_t kind, moby_reveal_census_t* c) OP_REQUIRES(sim) {
     /* The cull's own threshold, read with the verdict byte the cull tested:
      * inside the box is the cull's territory, and a moby there that is not
      * in the queue was rejected for a reason the box does not express. */
@@ -4899,8 +4914,10 @@ static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_
  *
  * The line carries the VBL, the feed key, the kind, the mobys offered to the
  * occlusion test, those it culled, the records appended, the provisional
- * admissions a decode's bounds culled and the mobys --sector-visibility kept
- * from the reveal clauses. A sub-tick walk prints nothing.
+ * admissions a decode's bounds culled, the mobys --sector-visibility kept
+ * from the reveal clauses, the sector-byte clause's records and the
+ * sector-byte drops it left on a PVS-shown sector. A sub-tick walk prints
+ * nothing.
  * @param c The walk's tallies.
  * @param kind The model kind the walk covered. */
 static void reveal_census_print(const moby_reveal_census_t* c, moby_reveal_kind_t kind) {
@@ -4908,9 +4925,10 @@ static void reveal_census_print(const moby_reveal_census_t* c, moby_reveal_kind_
     if (on < 0) { const char* e = getenv("OPENPETE_REVEAL_CENSUS"); on = (e && *e && *e != '0'); }
     if (!on || s_in_reextract) return;
     fprintf(stderr, "[reveal-census vbl=%u key=%u kind=%s] cand=%ld occl=%ld added=%d confirmed=%ld "
-                    "sector_rejected=%ld\n",
+                    "sector_rejected=%ld sector_added=%d sector_shown=%ld\n",
             openpete_frame, openpete_feed_key_now(), kind == MOBY_REVEAL_ANIMATED ? "anim" : "simple",
-            c->cand, c->occl, c->added + c->wide_added + c->sector_added, c->confirmed, c->sector_rej);
+            c->cand, c->occl, c->added + c->wide_added + c->sector_added, c->confirmed, c->sector_rej,
+            c->sector_added, c->sector_shown);
 }
 
 /** @brief Whether --sector-visibility rejects a moby's key sector, which keeps the reveal clauses from drawing it.
@@ -4918,9 +4936,9 @@ static void reveal_census_print(const moby_reveal_census_t* c, moby_reveal_kind_
  * The key is the byte at game_layout.moby.sector_off (0xFE and 0xFF name no
  * sector; such a moby takes terrain_point_admitted's containment key at its
  * position). terrain_sector_admitted answers: under frustum every sector is
- * admitted, under game the clauses keep their own tests (a -1 answer), under
- * filled a sector outside the tick's drawn set is rejected, so a moby that
- * stands in geometry the terrain does not draw is not drawn in the sky.
+ * admitted, under game a sector outside the game's verdict is rejected, under
+ * filled a sector outside the tick's drawn set, so a moby that stands in
+ * geometry the terrain does not draw is not drawn in the sky.
  * @param cpu The guest CPU state, read only.
  * @param m The Moby address.
  * @return 1 when the moby's sector is rejected, else 0. */
@@ -4935,11 +4953,36 @@ static int moby_reveal_sector_rejected(CPUState* cpu, uint32_t m) OP_REQUIRES(si
     return terrain_sector_admitted(sec) == 0;
 }
 
+/** @brief Applies the reveal clauses to one live moby: the sector predicate, then the widened-view clause, then the extended-LOD or sector-byte clause.
+ *
+ * A moby whose key sector the --sector-visibility predicate rejects takes no
+ * clause. The widened-view clause runs when `widen` is above 1 for an
+ * animated model; a moby it does not admit takes the extended-LOD clause
+ * (moby_reveal_extended, which holds the sector-byte clause for a moby inside
+ * the cull's box) at extended LOD, else the sector-byte clause alone, so the
+ * sector-byte clause runs under every --lod.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @param head The moby array head, for the pre-cull drawn byte.
+ * @param kind The model kind whose queue the record joins.
+ * @param widen The view widening; at most 1.0 skips the widened-view clause.
+ * @param c Tallies the moby's verdict. */
+static void moby_reveal_one(CPUState* cpu, uint32_t m, uint32_t head, moby_reveal_kind_t kind,
+                            double widen, moby_reveal_census_t* c) OP_REQUIRES(sim) {
+    if (moby_reveal_sector_rejected(cpu, m)) { c->sector_rej++; return; }
+    if (widen > 1.0 && moby_reveal_widened(cpu, m, head, widen, c->wide_v, &c->occl, &c->requeued)) {
+        c->wide_added++;
+        return;
+    }
+    if (openpete_no_lod) moby_reveal_extended(cpu, m, head, kind, c);
+    else if (moby_game.cull_view_admits) moby_reveal_sector_only(cpu, m, moby_precull_drawn(cpu, m, head), kind, c);
+}
+
 int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) OP_REQUIRES(sim) {
     if (!moby_game.cull_box_threshold || !moby_game.reveal_record) return 0;
     const double widen = moby_native_view_widen();
     const int wide = kind == MOBY_REVEAL_ANIMATED && moby_game.cull_view_admits && widen > 1.0;
-    if (!openpete_no_lod && !wide) return 0; /* the widened-view and extended-LOD clauses only */
+    if (!openpete_no_lod && !wide && !moby_game.cull_view_admits) return 0;
     moby_reveal_census_t c;
     memset(&c, 0, sizeof c);
     const uint32_t stride = game_layout.moby.array_stride;
@@ -4952,11 +4995,7 @@ int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) OP_REQUIRES(s
         if (moby_run_once_hidden(cpu, m,
                 (unsigned)cpu->read_half(m + game_layout.moby.class_off))) continue;
         c.seen++;
-        if (moby_reveal_sector_rejected(cpu, m)) { c.sector_rej++; continue; }
-        if (wide && moby_reveal_widened(cpu, m, head, widen, c.wide_v, &c.occl, &c.requeued)) {
-            c.wide_added++; continue;
-        }
-        if (openpete_no_lod) moby_reveal_extended(cpu, m, head, kind, &c);
+        moby_reveal_one(cpu, m, head, kind, wide ? widen : 1.0, &c);
     }
     if (moby_verify_enabled()) moby_reveal_census_print(&c, kind, wide ? widen : 1.0);
     reveal_census_print(&c, kind);
@@ -14684,9 +14723,10 @@ static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     fade_snap_clear();                             /* refresh per-moby ZSF4 fade snapshot this canonical frame */
     moby_prop_scene_latch(cpu);
     s_pass_overlay = moby_overlay_pass_now(cpu);
-    /* Extended LOD: the cull's distance box is what keeps a distant animated
-     * moby out of its record list, so the records it rejected are appended to
-     * the host copy of that list here and walked with the queued ones. The
+    /* The records the cull rejected on its distance box (extended LOD) or on
+     * the sector byte alone (every --lod, under the --sector-visibility
+     * predicate) are appended to the host copy of its record list here and
+     * walked with the queued ones. The
      * view is built first because the appended record's rotation and centre
      * are view-space against the camera this pass projects through. */
     if (moby_game.reveal_record) {

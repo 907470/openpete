@@ -3090,9 +3090,9 @@ static int s23_simple_pass(CPUState* cpu) OP_REQUIRES(sim) {
     int revealed;
     { OP_PROF_ACCUM_SCOPE("msim.capture"); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_MOBY);
       s23_simple_capture(cpu);
-      /* Extended LOD: the cull's distance box is what keeps a distant moby out
-       * of the queue, so the records it rejected are rebuilt here and decoded
-       * with the rest. The queue this appends to is the host copy above; the
+      /* The records the cull rejected on its distance box (extended LOD) or on
+       * the sector byte alone (every --lod) are rebuilt here and decoded with
+       * the rest. The queue this appends to is the host copy above; the
        * game's own draw below still reads its own, unchanged. */
       revealed = moby_reveal_candidates(cpu, MOBY_REVEAL_SIMPLE);
       for (int i = 0; i < 4; i++)

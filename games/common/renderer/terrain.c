@@ -9584,6 +9584,12 @@ static int       s_sf_ready OP_GUARDED_BY(sim);       /* U is valid for this tic
 /* The last canonical walk's sector table and count: the spheres the
  * containment key (terrain_point_admitted) tests. */
 static uint32_t  s_sf_sector_ptr OP_GUARDED_BY(sim), s_sf_sector_n OP_GUARDED_BY(sim);
+/* The game's verdict V at the last canonical walk of a game whose verdict is
+ * a position-keyed PVS (0xFF visible): the filled step's V, and
+ * terrain_sector_pvs_shown's answer while no visibility capture is held;
+ * s_sf_v_n is the count copied, 0 on any other game. */
+static uint8_t   s_sf_v[256] OP_GUARDED_BY(sim);
+static uint32_t  s_sf_v_n OP_GUARDED_BY(sim);
 /* Engagement counters: run totals (OPENPETE_SECTOR_FILLED_CENSUS periodic
  * line, the sector-filled exit row) and one load window's share. */
 static unsigned long s_sf_ticks OP_GUARDED_BY(sim), s_sf_computes OP_GUARDED_BY(sim),
@@ -9704,9 +9710,7 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     const uint32_t xe = game_layout.cam.xform_end;
     const int32_t p[3] = { (int32_t)cpu->read_word(xe), (int32_t)cpu->read_word(xe + 4u),
                            (int32_t)cpu->read_word(xe + 8u) };
-    uint8_t v[256] = { 0 };
-    for (uint32_t i = 0; i < n; i++)
-        if (tvis_visible(cpu, i)) v[i] = 0xFF;
+    const uint8_t* v = s_sf_v;
     s_sf_ticks++;
     s_sf_win.ticks++;
     const int r = sector_pvs_filled_step(&s_sf, &s_sf_tree, p, n, v);
@@ -9734,6 +9738,12 @@ void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim) {
     s_sf_win.sky_added += (unsigned long)(added > 0 ? added : 0);
 }
 
+int terrain_sector_pvs_shown(uint32_t i) OP_REQUIRES(sim) {
+    if (!game_layout.env.vis_aspect_independent || i >= 255u) return -1;
+    if (s_vis_cap_n >= 0) return i < (uint32_t)s_vis_cap_n ? s_vis_cap[i] != 0 : -1;
+    return i < s_sf_v_n ? s_sf_v[i] != 0 : -1;
+}
+
 int terrain_point_admitted(struct CPUState* cpu, int32_t x, int32_t y, int32_t z) OP_REQUIRES(sim) {
     const int mode = openpete_native_sector_visibility_active();
     if (mode == OPENPETE_SECTOR_VIS_FRUSTUM || !s_sf_sector_ptr) return 1;
@@ -9748,7 +9758,7 @@ int terrain_point_admitted(struct CPUState* cpu, int32_t x, int32_t y, int32_t z
                      cz = 16.0 * thdr_s16(w1 >> 16) - z, r = 16.0 * thdr_radius(w1);
         if (cx * cx + cy * cy + cz * cz > r * r) continue;
         inside = 1;
-        const int drawn = mode == OPENPETE_SECTOR_VIS_FILLED ? s_sf.u[i] != 0 : tvis_visible(cpu, i) != 0;
+        const int drawn = mode == OPENPETE_SECTOR_VIS_FILLED ? s_sf.u[i] != 0 : terrain_sector_pvs_shown(i) != 0;
         if (drawn) { s_sf_win.contain++; return 1; }
     }
     s_sf_win.contain++;
@@ -9766,7 +9776,7 @@ int terrain_sector_admitted(uint32_t i) OP_REQUIRES(sim) {
         return s_sf.u[i] != 0;
     }
     if (mode == OPENPETE_SECTOR_VIS_FILLED) return 1;   /* no PVS: frustum behaviour */
-    return -1;   /* game: the caller reads the game's verdict */
+    return terrain_sector_pvs_shown(i) != 0;   /* game: the game's verdict; no PVS byte admits */
 }
 
 /* ---- the sector PVS census ---------------------------------------------------
@@ -10295,13 +10305,24 @@ static void secvis_census(CPUState* cpu, const tvis_sphere* S, uint32_t sectorCn
     else secvis_print(cpu, S, n, &R);
 }
 
-/** @brief Records a canonical walk's sector table and count for the containment key; a sub-tick walk leaves them.
+/** @brief Records a canonical walk's sector table and count for the containment key, and the game's verdict for the sector predicate; a sub-tick walk leaves them.
+ *
+ * The verdict (s_sf_v, at most 256 sectors: no PVS byte names a higher
+ * index) is copied on a game whose verdict is a position-keyed PVS
+ * (env.vis_aspect_independent), the bytes past the count zero; elsewhere
+ * s_sf_v_n is 0.
+ * @param cpu The guest CPU state, read only.
  * @param S The sphere-test inputs, or NULL.
  * @param sectorCnt The sector count. */
-static void sf_note_sectors(const tvis_sphere* S, uint32_t sectorCnt) OP_REQUIRES(sim) {
+static void sf_note_sectors(CPUState* cpu, const tvis_sphere* S, uint32_t sectorCnt) OP_REQUIRES(sim) {
     if (s_vanim_sub) return;
     s_sf_sector_ptr = S ? S->sectorPtr : 0u;
     s_sf_sector_n = sectorCnt;
+    s_sf_v_n = 0;
+    memset(s_sf_v, 0, sizeof s_sf_v);
+    if (!game_layout.env.vis_aspect_independent) return;
+    s_sf_v_n = sectorCnt < 256u ? sectorCnt : 256u;
+    for (uint32_t i = 0; i < s_sf_v_n; i++) s_sf_v[i] = tvis_visible(cpu, i) ? 0xFFu : 0u;
 }
 
 /** @brief The --sector-visibility filled candidate set: advances the tick's set and admits the frustum sectors it holds.
@@ -10367,7 +10388,7 @@ static int terrain_vislist_allvis(uint32_t sectorCnt, uint16_t* out) OP_REQUIRES
 static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int32_t group,
                            const tvis_sphere* S) OP_REQUIRES(sim) {
     if (sectorCnt > 1024) sectorCnt = 1024;
-    sf_note_sectors(S, sectorCnt);
+    sf_note_sectors(cpu, S, sectorCnt);
     secvis_census(cpu, S, sectorCnt);
     {
         const int k = terrain_vislist_filled(cpu, sectorCnt, out, S);
