@@ -11879,6 +11879,14 @@ static int shell_moby_ordinal(const scene_tri_t* scene, int scene_n, uint32_t mi
     return 0;
 }
 
+/** @brief Whether a scene face belongs to the shell batch: a blended face of a front-shell record.
+ * @param st Scene face.
+ * @return 1 when the face is packed by pack_moby_shell_batch, else 0. */
+static int shell_front_face(const scene_tri_t* st)
+{
+    return st->shell && st->blend != 0;
+}
+
 /** @brief Pack the shell batch: the blended faces of every front-shell record, in the scene draw's own vertex layout.
  *
  * Positions and depths are pack_scene_vert's under the given mapping, so the
@@ -11888,7 +11896,7 @@ static int shell_moby_ordinal(const scene_tri_t* scene, int scene_n, uint32_t mi
  * @param scene Scene triangles.
  * @param scene_n Triangle count.
  * @param full_extent Nonzero to map in the full-extent PSX space.
- * @param out Output vertices, room for every blended shell face.
+ * @param out Output vertices, room for 3 per shell_front_face face.
  * @return Vertices written. */
 static int pack_moby_shell_batch(const scene_tri_t* scene, int scene_n, int full_extent,
                                  rhi_vertex* out)
@@ -11899,7 +11907,7 @@ static int pack_moby_shell_batch(const scene_tri_t* scene, int scene_n, int full
     int last_ord = 0, n = 0;
     for (int t = 0; t < scene_n; t++) {
         const scene_tri_t* st = &scene[t];
-        if (!st->shell || st->blend == 0) continue;
+        if (!shell_front_face(st)) continue;
         if (st->mid != last_mid) {
             last_mid = st->mid;
             last_ord = shell_moby_ordinal(scene, scene_n, st->mid);
@@ -11943,7 +11951,7 @@ static int shell_intruder_face(const scene_tri_t* st)
  * @param scene Scene triangles.
  * @param scene_n Triangle count.
  * @param full_extent Nonzero to map in the full-extent PSX space.
- * @param out Output vertices, room for every candidate.
+ * @param out Output vertices, room for 3 per shell_intruder_face face.
  * @return Vertices written. */
 static int pack_moby_shell_intruders(const scene_tri_t* scene, int scene_n, int full_extent,
                                      rhi_vertex* out)
@@ -12268,7 +12276,7 @@ static void moby_shell_census(const scene_tri_t* scene, int scene_n, int full_ex
     shell_census_list_t L;
     const int nm = shell_census_records(scene, scene_n, snap, &L);
     for (int t = 0; t < scene_n; t++)
-        if (scene[t].shell && scene[t].blend) shell_census_tri(&C, &scene[t], SHELL_CEN_FRONT);
+        if (shell_front_face(&scene[t])) shell_census_tri(&C, &scene[t], SHELL_CEN_FRONT);
     shell_census_bounds(&C);
     for (int t = 0; t < scene_n && C.x1 >= 0; t++) {
         if (shell_intruder_face(&scene[t]))
@@ -12295,22 +12303,28 @@ static void moby_shell_census(const scene_tri_t* scene, int scene_n, int full_ex
 
 /** @brief Pack the front-shell and intruder batches and draw them into moby_shell_rt and moby_shell_intr_rt.
  *
- * The shell image clears to depth far and owner 0. Each call takes one generation
- * of moby_shell_vb, so several scene targets in one frame keep their own
+ * The two batches sit back to back in s_cz_shell, which is sized from their
+ * face counts: a blended face of a front-shell record is in both batches, so
+ * the run can need more than 3 vertices per scene face. The shell image
+ * clears to depth far and owner 0. Each call takes one generation of
+ * moby_shell_vb, so several scene targets in one frame keep their own
  * vertices.
  * @param scene Scene triangles.
  * @param scene_n Triangle count.
  * @param full_extent Nonzero for the full-extent mapping.
+ * @param fronts Faces of the shell batch (shell_front_face).
+ * @param intruders Faces of the intruder batch (shell_intruder_face).
  * @param vw Viewport width in the key images.
  * @param vh Viewport height in the key images.
  * @return 1 when the shell was drawn; 0 when the image, pipeline or buffer
  *         is missing or the buffer cannot grow. */
 static int moby_shell_draw(const scene_tri_t* scene, int scene_n, int full_extent,
-                           int vw, int vh)
+                           int fronts, int intruders, int vw, int vh)
 {
     if (!s_nr.moby_shell_rt || !s_nr.moby_shell_intr_rt || !s_nr.moby_shell_pipe ||
         !s_nr.moby_shell_intr_pipe || !s_nr.moby_shell_vb) return 0;
-    if (!vec_run_fit(&s_cz_shell, sizeof(rhi_vertex), SCENE_RUN_INIT, "compose.shell_vb", 0, scene_n * 3))
+    if (!vec_run_fit(&s_cz_shell, sizeof(rhi_vertex), SCENE_RUN_INIT, "compose.shell_vb", 0,
+                     (fronts + intruders) * 3))
         return 0;
     rhi_vertex* buf = (rhi_vertex*)s_cz_shell.data;
     const int m = pack_moby_shell_batch(scene, scene_n, full_extent, buf);
@@ -12343,9 +12357,13 @@ static int moby_shell_draw(const scene_tri_t* scene, int scene_n, int full_exten
 static void native_moby_shell_pass(const scene_tri_t* scene, int scene_n, int full_extent,
                                    int vw, int vh)
 {
-    int fronts = 0;
-    for (int t = 0; t < scene_n; t++) fronts += scene[t].shell && scene[t].blend != 0;
-    s_shell_live = fronts > 0 && moby_shell_draw(scene, scene_n, full_extent, vw, vh);
+    int fronts = 0, intruders = 0;
+    for (int t = 0; t < scene_n; t++) {
+        fronts += shell_front_face(&scene[t]);
+        intruders += shell_intruder_face(&scene[t]);
+    }
+    s_shell_live = fronts > 0 &&
+                   moby_shell_draw(scene, scene_n, full_extent, fronts, intruders, vw, vh);
     if (fronts > 0 && moby_shell_census_on())
         moby_shell_census(scene, scene_n, full_extent, vw, vh, fronts);
 }
