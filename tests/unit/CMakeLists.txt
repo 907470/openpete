@@ -387,6 +387,31 @@ if("spyro-2" IN_LIST OPENPETE_GAMES AND EXISTS ${_s2_generated})
     target_compile_definitions(s2_grid_relink_test_nomirror PRIVATE OPENPETE_PSX_RAM_MIRROR_END=0x00200000u)
 endif()
 
+# div_semantics_test_<game> - the first div and divu statement of each
+# game's generated PSX.EXE_full.c, copied verbatim, run on R3000 results:
+# x/0 and 0x80000000 / -1 never trap and leave the hardware's LO and HI.
+# A recompiler that emits a bare C division for the overflow pair ends the
+# test with SIGFPE.
+foreach(_game IN LISTS OPENPETE_GAMES)
+    set(_gen ${CMAKE_SOURCE_DIR}/games/${_game}/generated/PSX.EXE_full.c)
+    if(NOT EXISTS ${_gen})
+        continue()
+    endif()
+    set(_sites_c ${CMAKE_CURRENT_BINARY_DIR}/div_sites_${_game}.gen.c)
+    add_custom_command(
+        OUTPUT  ${_sites_c}
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/extract_div_sites.py ${_gen} ${_sites_c}
+        DEPENDS ${_gen} ${CMAKE_CURRENT_SOURCE_DIR}/extract_div_sites.py
+        COMMENT "Copying ${_game}'s first div and divu sites out of the generated C")
+    add_executable(div_semantics_test_${_game} div_semantics_test.c ${_sites_c})
+    target_include_directories(div_semantics_test_${_game} PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+    set_target_properties(div_semantics_test_${_game} PROPERTIES C_STANDARD 11)
+    add_test(NAME div_semantics_test_${_game} COMMAND div_semantics_test_${_game})
+    set_tests_properties(div_semantics_test_${_game} PROPERTIES LABELS "recomp" TIMEOUT 30)
+endforeach()
+
 # knob_registry_test - the M-overlay knob table: module-contributed rows
 # (openpete_knob_add) landing inside their section, capacity refusal, and
 # KNOB_ACTION button rows. Compiles knob_registry.c directly and stubs the

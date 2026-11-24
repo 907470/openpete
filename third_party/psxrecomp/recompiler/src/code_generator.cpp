@@ -798,18 +798,20 @@ std::string CodeGenerator::translate_div(uint32_t instr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
 
-    // MIPS division: quotient in LO, remainder in HI
-    // Handle division by zero (MIPS behavior: result is unpredictable but doesn't trap)
-    return fmt::format("if ({} != 0) {{ cpu->lo = (uint32_t)((int32_t){} / (int32_t){}); cpu->hi = (uint32_t)((int32_t){} % (int32_t){}); }} else {{ cpu->lo = ((int32_t){} >= 0) ? 0xFFFFFFFF : 1; cpu->hi = (uint32_t){}; }}",
-                      reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rs));
+    // MIPS division: quotient in LO, remainder in HI. The R3000 never traps:
+    // x/0 gives LO = (x >= 0) ? -1 : 1, HI = x; 0x80000000/-1 gives
+    // LO = 0x80000000, HI = 0. C's / and % on that pair overflow int32_t
+    // (SIGFPE on x86), so it is tested before the C division.
+    return fmt::format("if ({} == 0xFFFFFFFFu && {} == 0x80000000u) {{ cpu->lo = 0x80000000u; cpu->hi = 0; }} else if ({} != 0) {{ cpu->lo = (uint32_t)((int32_t){} / (int32_t){}); cpu->hi = (uint32_t)((int32_t){} % (int32_t){}); }} else {{ cpu->lo = ((int32_t){} >= 0) ? 0xFFFFFFFF : 1; cpu->hi = (uint32_t){}; }}",
+                      reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rs));
 }
 
 std::string CodeGenerator::translate_divu(uint32_t instr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
 
-    // MIPS division: quotient in LO, remainder in HI
-    // Handle division by zero (MIPS behavior: result is unpredictable but doesn't trap)
+    // MIPS division: quotient in LO, remainder in HI. Unsigned division
+    // cannot overflow; x/0 gives LO = 0xFFFFFFFF, HI = x on the R3000.
     return fmt::format("if ({} != 0) {{ cpu->lo = {} / {}; cpu->hi = {} % {}; }} else {{ cpu->lo = 0xFFFFFFFF; cpu->hi = {}; }}",
                       reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs));
 }
