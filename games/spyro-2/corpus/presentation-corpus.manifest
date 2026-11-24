@@ -375,3 +375,11 @@ dragon-shores-skip-entry|1773|2||1773|--skip-to-level dragon_shores
 # gulps-overlook-fight: the Gulp fight running with no input: Gulp in the
 # arena, the boss health bar at the bottom left.
 gulps-overlook-fight|2073|2||2073|--skip-to-level gulps_overlook
+
+# @tcforce: rows with no @tcforce twin in freecam-corpus.manifest, with the
+# retained terrain cache forced on (OPENPETE_TERRAIN_CACHE_FORCE=1; on the
+# software rasteriser terrain otherwise draws through the CPU walk) and the
+# first-touch bake budget off, as the @tcforce rows there. A row named after a
+# row above is that row's twin.
+robotica-farms-spark-wrap@tcforce|1959|2||1959|--skip-to-level robotica_farms OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+scorch-far-dune-admit@tcforce|2471|2||2473|--skip-to-level scorch --aspect 4:3 OPENPETE_FREECAM_POSE=96403,61401,11991,2746,159 OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off

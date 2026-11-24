@@ -281,3 +281,19 @@ metropolis@fillcull | pos=(47022, 108954, 39776) yaw=-211 pitch=81
 # the archway shows the background colour where the dome is. Pinned to 4:3: a
 # wider view draws every sky sector.
 autumn_plains@sky4x3 | pos=(99150, 161980, 32725) yaw=1546 pitch=160 | | --aspect 4:3
+
+# @tcforce: rows with the retained terrain cache forced on
+# (OPENPETE_TERRAIN_CACHE_FORCE=1; on the software rasteriser terrain otherwise
+# draws through the CPU walk) and the first-touch bake budget off (a wall-time
+# budget makes the walked set differ between runs), so the sectors in view draw
+# from the cache on every leg. Each row is the twin of the plain row at the
+# same pose: a change to the cache path moves the @tcforce tiles and not the
+# plain ones. With the @tcforce rows of presentation-corpus.manifest they cover,
+# per game, a hub or portal view, extended-LOD low-poly sectors, near-clipped
+# sectors, the largest retained sector counts, a flight or speedway level and a
+# moving camera.
+sunny_beach@tcforce | pos=(30097, 21908, 44979) yaw=523 pitch=226 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+canyon_speedway@tcforce | pos=(66451, 83321, 27812) yaw=1839 pitch=0 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+metropolis@tcforce | pos=(115904, 59478, 40916) yaw=1696 pitch=160 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+autumn_plains@tcforce | pos=(89729, 42806, 34729) yaw=1009 pitch=113 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+winter_tundra@tcforce | pos=(51217, 30497, 40037) yaw=752 pitch=160 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off

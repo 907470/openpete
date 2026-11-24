@@ -222,3 +222,14 @@ artisans-letterbox|1697|2||1699,1705|--skip-to-level artisans --player-pose pos=
 portal-cyclorama-cull@subtickdome        | 1640  | 100  |        | 1648,1660,1664 |
 # @handover: a 16:9 left-strip portal on the tick the game's portal leaf first takes it (feed key 1913): at alpha 1/16 the leaf replay's 4:3 game rect is empty and the portal draws nothing.
 portal-handover|1700|100||1913|--skip-to-level artisans --freecam-path ticks=120;88288,57471,8925,1818,22;88288,57471,8925,1218,22 OPENPETE_INTERMEDIATE_ALPHA=0.0625
+
+# @tcforce: rows with no @tcforce twin in freecam-corpus.manifest, with the
+# retained terrain cache forced on (OPENPETE_TERRAIN_CACHE_FORCE=1; on the
+# software rasteriser terrain otherwise draws through the CPU walk) and the
+# first-touch bake budget off, as the @tcforce rows there. A row named after a
+# row above is that row's twin. crystal-flight-skip-entry@tcforce has no plain
+# twin: it boots into the level with no input and samples the start view, since
+# the crystal_flight freecam rows look down from beyond the original-LOD draw
+# distance and draw no terrain on the original-LOD leg.
+gnasty_gnorc_attack@tcforce|1700|100||1796,1808|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+crystal-flight-skip-entry@tcforce|1700|2||1700|--skip-to-level crystal_flight OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off

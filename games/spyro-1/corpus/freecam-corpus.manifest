@@ -326,3 +326,19 @@ peace_keepers | pos=(63754, 160317, 53576) yaw=0 pitch=197
 # Coplanar terrain faces that z-fight under true depth (OPENPETE_TERRAIN_OT_BIAS=0);
 # the row holds the default render so a terrain-ordering change that drops OT shows it.
 gnasty_gnorc@coplanar | pos=(73659, 28663, 13704) yaw=6828 pitch=368
+
+# @tcforce: rows with the retained terrain cache forced on
+# (OPENPETE_TERRAIN_CACHE_FORCE=1; on the software rasteriser terrain otherwise
+# draws through the CPU walk) and the first-touch bake budget off (a wall-time
+# budget makes the walked set differ between runs), so the sectors in view draw
+# from the cache on every leg. Each row is the twin of the plain row at the
+# same pose: a change to the cache path moves the @tcforce tiles and not the
+# plain ones. With the @tcforce rows of presentation-corpus.manifest they cover,
+# per game, a hub or portal view, extended-LOD low-poly sectors, near-clipped
+# sectors, the largest retained sector counts, a flight or speedway level and a
+# moving camera.
+beast_makers@tcforce | pos=(148149, 179144, 19417) yaw=2326 pitch=105 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+cliff_town@tcforce | pos=(138997, 98065, 22037) yaw=1370 pitch=8 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+gnorc_gnexus@tcforce | pos=(77512, 70274, 9034) yaw=2354 pitch=205 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+misty_bog@tcforce | pos=(75971, 146432, 15000) yaw=3072 pitch=120 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+toasty@tcforce | pos=(92116, 101099, 17370) yaw=6207 pitch=111 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off

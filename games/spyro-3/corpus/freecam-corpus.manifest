@@ -222,3 +222,20 @@ spooky_swamp:2@partglow-06d-far | pos=(44996, 104419, 7358) yaw=512 pitch=53 | 3
 # An L-shaped stone slab authored under the ice (area 1 sector 54 face 0)
 # shows only through the terrain key contest's bias reach; true depth hides it.
 icy_peak:1@sunkslab | pos=(62948, 39502, 14647) yaw=-302 pitch=900
+
+# @tcforce: rows with the retained terrain cache forced on
+# (OPENPETE_TERRAIN_CACHE_FORCE=1; on the software rasteriser terrain otherwise
+# draws through the CPU walk) and the first-touch bake budget off (a wall-time
+# budget makes the walked set differ between runs), so the sectors in view draw
+# from the cache on every leg. Each row is the twin of the plain row at the
+# same pose: a change to the cache path moves the @tcforce tiles and not the
+# plain ones. With the @tcforce rows of presentation-corpus.manifest they cover,
+# per game, a hub or portal view, extended-LOD low-poly sectors, near-clipped
+# sectors, the largest retained sector counts, a flight or speedway level and a
+# moving camera.
+sunrise_spring@tcforce | pos=(26088, 46942, 20298) yaw=1150 pitch=-84 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+spooky_swamp@tcforce | pos=(35818, 17779, 16172) yaw=1021 pitch=297 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+super_bonus_round:1@tcforce | pos=(63716, 66117, 15554) yaw=507 pitch=155 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+fireworks_factory@tcforce | pos=(-18130, 83228, 13192) yaw=-78 pitch=119 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+lost_fleet:1@tcforce | pos=(21472, 54568, 36864) yaw=123 pitch=179 roll=-1 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+harbor_speedway@tcforce | pos=(55529, 136037, 11623) yaw=-753 pitch=-41 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
