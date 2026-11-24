@@ -363,3 +363,21 @@ note = "flame cross-section spine, 8-byte records of packed {X, Z, index, sine p
 name = "D_FLAME_CAP_COLOURS"
 addr = 0x80069C38
 note = "the first-cell cap colour sets, two runs of four words. The emitter reads the set at +0x00 unless G_LEVELID holds 0x1F, when it reads the set at +0x10 (asm/mobyfunc.s:331,334-341)"
+
+[[symbol]]
+name = "D_CHEAT_BIGHEAD"
+base = 0x8006FB90
+offset = 0x6
+note = "g_CheatFlags.bigHeadMode (include/cheat.h) - the big head cheat's flag byte (g_CheatCodes entry 4); non-zero makes the player draw scale the head record's matrix by D_CHEAT_SCALE when the head euler is non-zero, on the non-mirrored pass (spyrodraw.s:331-339, lb 0x6 at 0x8003D288)"
+
+[[symbol]]
+name = "D_CHEAT_FLAT"
+base = 0x8006FB90
+offset = 0x7
+note = "g_CheatFlags.flatMode (include/cheat.h) - the flat cheat's flag byte (g_CheatCodes entry 5); non-zero makes the player draw scale the body record's matrix by D_CHEAT_SCALE before the mirror negation (spyrodraw.s:273-281, lb 0x7 at 0x8003D1AC)"
+
+[[symbol]]
+name = "D_CHEAT_SCALE"
+base = 0x8006FB90
+offset = 0x8
+note = "g_CheatFlags.spyroWidth/Height/Length (include/cheat.h) - the cheat scale vector, three Q12 int32, the second argument of ScaleMatrix (func_8005F21C) at both player draw sites; column j of the matrix scales by word j"

@@ -1073,7 +1073,12 @@ typedef struct game_layout {
      * `colour_filter_off` is the state's tint word: bytes 0-2 a far colour,
      * byte 3 a weight; a non-zero weight makes the draw cue every entry of
      * the model colour block toward the far colour, which the walk computes
-     * itself from the word. `sxy_base`/`sxy_len` is where the draw leaves every projected vertex's
+     * itself from the word. `scale_body_flag` and `scale_head_flag` are flag
+     * bytes and `scale_vec` three Q12 int32: with a flag non-zero the draw
+     * scales column j of that part's composed matrix by word j of the vector
+     * (the body before the mirror negation, the head only where its own
+     * euler is composed); all three 0 on a game whose draw scales neither.
+     * `sxy_base`/`sxy_len` is where the draw leaves every projected vertex's
      * int16 screen position, which the walk reads as the game's own cull
      * verdict and the record store snapshots.
      *
@@ -1089,6 +1094,9 @@ typedef struct game_layout {
         uint32_t anim_off[4];
         uint32_t sort_depth_off;
         uint32_t colour_filter_off;
+        uint32_t scale_body_flag;
+        uint32_t scale_head_flag;
+        uint32_t scale_vec;
         uint32_t emit_mode_off;
         uint32_t hook_draw;
 

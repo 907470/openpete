@@ -33,12 +33,17 @@ extern "C" {
 #define PLAYER_PARTS_MAX 4
 
 /* One part's model->view transform: the 1.0 = 4096 rotation, the same
- * rotation at unit scale in float (the projection's), and the view-space
- * origin in full world units. `present` is 0 for a part the pose does not
- * carry, and the walk emits nothing for it. */
+ * rotation at unit scale in float with any per-column model scale the draw
+ * applies on top (the projection's), and the view-space origin in full world
+ * units. `Sf` is the matrix a child part's seam offset turns through, for a
+ * provider whose draw transforms that offset under a different matrix than
+ * the one it projects the part's vertices with; a provider that does not
+ * fill it leaves it zero and its seam joint reads Mf. `present` is 0 for a
+ * part the pose does not carry, and the walk emits nothing for it. */
 typedef struct player_xform {
     int    M[3][3];
     float  Mf[3][3];
+    float  Sf[3][3];
     double TR[3];
     int    present;
 } player_xform_t;

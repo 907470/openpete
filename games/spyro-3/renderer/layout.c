@@ -616,6 +616,11 @@ const game_layout_t spyro3_game_layout = {
         .sort_depth_off    = 0x1Eu,             /* spyrodraw.s:250 lb 0x1E: the ordering bias */
         .colour_filter_off = 0x20u,             /* the tint word: byte 3 non-zero cues the colour
                                                  * block toward bytes 0-2 (spyrodraw.s:740-743) */
+        .scale_body_flag   = D_CHEAT_FLAT,      /* the flat cheat: ScaleMatrix on the body
+                                                 * record (spyrodraw.s:273-281) */
+        .scale_head_flag   = D_CHEAT_BIGHEAD,   /* the big head cheat: ScaleMatrix on the
+                                                 * head record (spyrodraw.s:331-339) */
+        .scale_vec         = D_CHEAT_SCALE,
         .emit_mode_off     = 0u,                /* one emit path */
         .hook_draw = F_PLAYER_DRAW,
 

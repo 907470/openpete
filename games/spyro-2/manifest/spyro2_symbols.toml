@@ -357,3 +357,21 @@ name = "F_TRACER_MESH"
 addr = 0x8004BAA4
 kind = "function"
 note = "func_8004BAA4 (mobyfunc.s:3180-3402), the indexed tracer mesh: called up to eight times per tick by the draw driver func_800155A0 over the 0x14-byte descriptors at D_80069F30, skipping a descriptor whose first word is zero (draw/func_800155A0.s:37-49). Projects the descriptor's vertex list into the scratchpad at 0x1F800000 as {screen XY, MAC3 and outcode} pairs and appends one 13-word POLY_GT4 per index entry; it also stores the highest ordering-table bucket it touched, so its body must run exactly once. The other game's func_8002FEE0 over the same arithmetic under a different load-delay schedule"
+
+[[symbol]]
+name = "D_CHEAT_BIGHEAD"
+base = 0x800698B8
+offset = 0x6
+note = "D_800698BE - the big head cheat's flag byte (D_80064F14 entry 2); non-zero makes the player draw scale the head record's matrix by D_CHEAT_SCALE when the head euler is non-zero, on the non-mirrored pass (spyrodraw.s:333-341, lb 0x6 at 0x800422A4)"
+
+[[symbol]]
+name = "D_CHEAT_FLAT"
+base = 0x800698B8
+offset = 0x7
+note = "D_800698BF - the flat cheat's flag byte (D_80064F14 entry 3); non-zero makes the player draw scale the body record's matrix by D_CHEAT_SCALE before the mirror negation (spyrodraw.s:275-283, lb 0x7 at 0x800421C8)"
+
+[[symbol]]
+name = "D_CHEAT_SCALE"
+base = 0x800698B8
+offset = 0x8
+note = "D_800698C0 - the cheat scale vector, three Q12 int32 (x, y, z), the second argument of ScaleMatrix (func_80059E7C) at both player draw sites; column j of the matrix scales by word j"

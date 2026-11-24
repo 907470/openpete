@@ -234,15 +234,40 @@ static void s23_compose_euler(CPUState* cpu, const int start[3][3], const float 
     ngte_compose_euler_mf(cpu, startf, ang, out->Mf);
 }
 
+/** @brief Scales column j of a float matrix by word j of the cheat scale vector when the flag byte is set.
+ *
+ * The player draw's ScaleMatrix (func_80059E7C in the first game, func_8005F21C
+ * in the second) multiplies every element of column j of the record's packed
+ * matrix by Q12 word j of the vector at game_layout.player.scale_vec; the draw
+ * calls it when the flag byte it loads with lb is non-zero. The walk applies
+ * the same scale at full float precision, without the routine's 16-bit
+ * truncation of each product.
+ * @param cpu Reads the flag byte and the vector.
+ * @param flag The flag byte's address; 0 for a game with none.
+ * @param Mf The matrix, scaled in place.
+ * @return 1 when the matrix was scaled, else 0. */
+static int s23_cheat_scale(CPUState* cpu, uint32_t flag, float Mf[3][3]) {
+    if (!flag || !PL.scale_vec || cpu->read_byte(flag) == 0u) return 0;
+    for (int j = 0; j < 3; j++) {
+        const float k = (float)(int32_t)cpu->read_word(PL.scale_vec + (uint32_t)j * 4u) / 4096.0f;
+        for (int i = 0; i < 3; i++) Mf[i][j] *= k;
+    }
+    return 1;
+}
+
 /** @brief Derives a part's model-to-view matrix and translation from gamestate.
  *
  * The body's translation is the camera-relative position through the camera
  * matrix in full world units, taken from the interpolated position when
  * openpete_native_interp_pos answers; its matrix is the body euler composed
  * onto the camera matrix, with the second column negated on the mirrored pass
- * unless OPENPETE_PLAYER_VERIFY_NOMIRROR is set. Every other part takes the
- * body's matrix, composed with the head euler unless that word is 0 or the pass
- * is mirrored, and leaves its translation zero for the seam joint to fill.
+ * unless OPENPETE_PLAYER_VERIFY_NOMIRROR is set. Under the flat cheat the
+ * float body matrix is column-scaled before that negation; the head starts
+ * from the scaled matrix. Every other part takes the body's matrix, composed
+ * with the head euler unless that word is 0 or the pass is mirrored, and
+ * column-scaled under the big head cheat only when composed; it leaves its
+ * translation zero for the seam joint to fill. The Q12 matrix M stays the
+ * unscaled rotation.
  * @param cpu Reads g_Spyro.
  * @param v The view.
  * @param part 0 for the body, 1 for the head.
@@ -271,6 +296,14 @@ static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
         float PMf[3][3];
         ngte_mat_unit_f(PM, PMf);
         s23_compose_euler(cpu, PM, (const float (*)[3])PMf, cpu->read_word(PL.base + PL.rot_off[0]), out, 0);
+        /* Sf is the rotation the seam joint's RTPS runs under
+         * (spyrodraw.s:308-317): the GTE rotation registers as the draw leaves
+         * them. The compose loads the unscaled body matrix (func_8001B6C8's
+         * closing CTC2s) and ScaleMatrix writes only the record in RAM. */
+        memcpy(out->Sf, out->Mf, sizeof out->Sf);
+        /* The flat cheat (spyrodraw.s:275-283): ScaleMatrix on the body
+         * record, after the compose and before the mirror branch. */
+        s23_cheat_scale(cpu, PL.scale_body_flag, out->Mf);
         /* The mirrored copy (spyrodraw.s:283-302): with the gate set the draw
          * negates the composed matrix's second column in place - the high half
          * of the record word at +0x10, the low half of +0x18 and the high half
@@ -284,8 +317,15 @@ static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
         static int s_neg = -1;
         if (s_neg < 0) { const char* e = getenv("OPENPETE_PLAYER_VERIFY_NOMIRROR");
                          s_neg = !(e && *e && *e != '0'); }
-        if (player_mirror_pass() && s_neg)
+        if (player_mirror_pass() && s_neg) {
             for (int i = 0; i < 3; i++) { out->M[i][1] = -out->M[i][1]; out->Mf[i][1] = -out->Mf[i][1]; }
+            /* The branch reloads R11R12, R22R23 and R31R32 from the scaled
+             * record words it negates (spyrodraw.s:284-307); R13R21 and R33
+             * keep the unscaled values. */
+            static const int k_rl[6][2] = { {0,0}, {0,1}, {1,1}, {1,2}, {2,0}, {2,1} };
+            for (int k = 0; k < 6; k++)
+                out->Sf[k_rl[k][0]][k_rl[k][1]] = out->Mf[k_rl[k][0]][k_rl[k][1]];
+        }
         out->present = 1;
         return 1;
     }
@@ -294,8 +334,12 @@ static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
      * this is not the mirrored pass (spyrodraw.s:316-318,326-330). */
     uint32_t rot = player_mirror_pass()
                  ? 0u : cpu->read_word(PL.base + PL.rot_off[1]);
-    if (rot) s23_compose_euler(cpu, parent->M, parent->Mf, rot, out, part);
-    else   { memcpy(out->M, parent->M, sizeof out->M); memcpy(out->Mf, parent->Mf, sizeof out->Mf); }
+    if (rot) {
+        s23_compose_euler(cpu, parent->M, parent->Mf, rot, out, part);
+        /* The big head cheat (spyrodraw.s:333-341): ScaleMatrix on the head
+         * record, inside the branch that composes it. */
+        s23_cheat_scale(cpu, PL.scale_head_flag, out->Mf);
+    } else { memcpy(out->M, parent->M, sizeof out->M); memcpy(out->Mf, parent->Mf, sizeof out->Mf); }
     out->present = 1;   /* the origin comes from the seam joint */
     return 1;
 }
@@ -329,8 +373,10 @@ static int s23_seam_field(int32_t jw, int32_t jwB, int lsh, int ir0, int dual) {
  * The seam joint (spyrodraw.s:176-199,307-325): the body keyframe record's
  * word at +0x08 carries the head's offset with a vertex delta's field layout
  * (Z = >>21, X = <<11>>21, Y = <<22>>21), INTPL'd between the two keyframes by
- * the body record's own blend weight and then transformed through the body's
- * matrix and translation. The two words come from the part block the walk is
+ * the body record's own blend weight and then transformed through the
+ * rotation the GTE holds at that RTPS (the body's Sf: the unscaled body
+ * matrix, three registers of it reloaded from the scaled record on the
+ * mirrored pass) and the body's translation. The two words come from the part block the walk is
  * reading, where s23_part_record put them, never from the live animation word:
  * the shape lerp walks the previous tick's block and the current one in turn,
  * and each pass must hang the head off its own keyframe pair.
@@ -352,8 +398,8 @@ static void s23_seam_joint(CPUState* cpu, const player_xform_t* parent,
     int VY = -s23_seam_field(jA, jB, 22, ir0, dual);
     for (int i = 0; i < 3; i++)
         out[i] = parent->TR[i]
-               + ((double)parent->Mf[i][0]*VX + (double)parent->Mf[i][1]*VY
-                + (double)parent->Mf[i][2]*VZ);
+               + ((double)parent->Sf[i][0]*VX + (double)parent->Sf[i][1]*VY
+                + (double)parent->Sf[i][2]*VZ);
 }
 
 /** @brief The face stream, the model colour block and the tint word, shared by both parts.
