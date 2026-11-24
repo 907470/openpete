@@ -8,7 +8,7 @@
 # nothing about the cache and is VACUOUS, never PASS.
 #
 # Legs (--leg selects one; the default set is level-edges, squeeze-bk2,
-# consolidate, store, failed-edge, steady-pose, custom-level):
+# consolidate, store, failed-edge, steady-pose, custom-level, rewind-hold):
 #   level-edges   the attract demo (boot to title, --frame-limit
 #                 DEMO_LIMIT) at the content-estimate sizing: claims_sum=0,
 #                 failed_edges=0, and svc_fulfilled equal to the level
@@ -80,6 +80,20 @@
 #                 planned donor, hangs at load), at the freecam topdown pose.
 #                 The arenas are sized from the level's own sector
 #                 headers: claims_sum=0, window_bakes=0, exhaust_warnings=0.
+#   rewind-hold   Spyro 3 sunny-villa-level-entry with --rewind 30 and a
+#                 held rewind (--rewind-hold 2427:300). Each rewind step
+#                 replays its ticks from a keyframe; only the last replayed
+#                 tick's scene is presented. Over the hold (the [tcf] bake
+#                 lines from the first to the last `rewind: hold` line, one
+#                 step per line) a step bakes each sector at most once:
+#                 hold_repeats=0, the bakes past the step's distinct sectors
+#                 summed (hold_bakes and hold_distinct are reported, and
+#                 hold_bakes=0 is VACUOUS). The arenas and the position ring
+#                 stay at the stock run's sizing: afail_sum=0 (the last
+#                 [ter-gpu] afail column summed), ring_grow=0,
+#                 ring_depth_max<7. A binary that reports the rewind
+#                 summary's presented draws replayed unseen must report 0
+#                 (unseen_last).
 #
 # --exe PATH drives another binary with the same legs (a build without
 # growth reports claims>0 on the squeeze legs, which is the separation).
@@ -149,7 +163,7 @@ field() {  # tag name
 
 fail=0
 ran=0
-want() { [[ "$LEG" == "$1" || ( -z "$LEG" && " level-edges squeeze-bk2 consolidate store failed-edge steady-pose custom-level " == *" $1 "* ) ]]; }
+want() { [[ "$LEG" == "$1" || ( -z "$LEG" && " level-edges squeeze-bk2 consolidate store failed-edge steady-pose custom-level rewind-hold " == *" $1 "* ) ]]; }
 # check tag expr...: each expr is name<op>value over the row's fields.
 check() {
     local tag="$1"; shift
@@ -274,6 +288,43 @@ if want refuse-ring; then
             --freecam-pose "pos=(116034, 2704, 95746) yaw=1112 pitch=541" \
             --texture-mapping affine --lod extended
         check refuse-ring claims_sum=0 ring_writes=0 ring_fail\>0 ring_rebakes\>0
+    fi
+fi
+
+# The held-rewind row: bakes per rewind step against the step's distinct
+# sectors, and the arena and ring census at exit.
+if want rewind-hold; then
+    if [[ "$GAME" != spyro-3 ]]; then
+        echo "[tercache-growth] leg=rewind-hold SKIP (the bk2 is a Spyro 3 row)"
+    else
+        ran=1
+        RB=sunny-villa-level-entry
+        mapfile -t RB_ARGS < <(grep -v '^#' "games/$GAME/bk2/$RB.bk2.args" | tr ' ' '\n' | sed '/^$/d')
+        run_leg rewind-hold 20000 OPENPETE_TERRAIN_GPU_DBG=1 OPENPETE_TC_DBG=1 -- \
+            --bk2 "games/$GAME/bk2/$RB.bk2" --bk2-stop-on-end "${RB_ARGS[@]}" \
+            --rewind 30 --rewind-hold 2427:300
+        read -r hb hd hr hs < <(awk '
+            /rewind: hold [0-9]+\/[0-9]+ at/ {
+                if (on) { b += nb; d += nd; s++ }
+                on = 1; nb = 0; nd = 0; delete seen
+                split($0, a, "hold "); split(a[2], q, "/"); split(q[2], r, " ")
+                if (q[1] == r[1]) on = 0
+                next }
+            on && /^\[tcf\]/ {
+                nb++; m = $0; sub(/.* sec=/, "", m); sub(/ .*/, "", m)
+                if (!(m in seen)) { seen[m] = 1; nd++ } }
+            END { print b + 0, d + 0, b - d, s + 0 }' "$OUT/rewind-hold.log")
+        afail="$(grep -o 'afail=[0-9,]*' "$OUT/rewind-hold.log" | tail -1 | cut -d= -f2 |
+            tr ',' '\n' | awk '{ t += $1 } END { print t + 0 }')"
+        unseen_last="$(sed -n 's/.*presented draws replayed unseen: \([0-9]*\).*/\1/p' "$OUT/rewind-hold.log" | tail -1)"
+        echo "[tercache-growth] leg=rewind-hold steps=$hs hold_bakes=$hb hold_distinct=$hd hold_repeats=$hr afail_sum=$afail unseen_last=${unseen_last:-none}"
+        check rewind-hold ring_grow=0 ring_depth_max\<7
+        [[ "$hs" -gt 0 && "$hb" -gt 0 ]] ||
+            { echo "[tercache-growth] leg=rewind-hold VACUOUS (steps=$hs hold_bakes=$hb)"; fail=1; }
+        [[ "$hr" == 0 ]] || { echo "[tercache-growth] leg=rewind-hold FAIL (hold_repeats=0, read $hr)"; fail=1; }
+        [[ "$afail" == 0 ]] || { echo "[tercache-growth] leg=rewind-hold FAIL (afail_sum=0, read $afail)"; fail=1; }
+        [[ "${unseen_last:-0}" == 0 ]] ||
+            { echo "[tercache-growth] leg=rewind-hold FAIL (unseen_last=0, read $unseen_last)"; fail=1; }
     fi
 fi
 
