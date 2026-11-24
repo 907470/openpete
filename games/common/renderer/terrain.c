@@ -43,6 +43,7 @@
 // Gated by OPENPETE_TERRAIN_VERIFY (dump/A/B) or a native renderer mode (feed).
 
 #include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
+#include "openpete_rewind.h"  /* openpete_rewind_draw_unseen */
 #include "openpete_thread_roles.h"
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (read_word, gte_ctrl, ...) */
@@ -11147,6 +11148,9 @@ static void tgpu_free_slot(tgpu_slot_t* T) {
 }
 
 static int s_tgpu_tabwait;   /* colour-table rolls refused for want of a released entry (census) */
+static int s_tgpu_unseen OP_GUARDED_BY(sim);   /* this build's scene is not presented (openpete_rewind_draw_unseen) */
+static long s_tgpu_unseen_claims OP_GUARDED_BY(sim);   /* sectors claimed on unseen replayed ticks (census) */
+static long s_tgpu_replay_seen OP_GUARDED_BY(sim);     /* canonical builds of replayed ticks that are presented (census) */
 
 /** @brief Releases a slot's colour-table ring through the store's defer window.
  * @param T The slot. */
@@ -11637,7 +11641,7 @@ static int tgpu_migrate_due(const tgpu_slot_t* T, int dirty) OP_REQUIRES_SHARED(
  * source whenever they re-bake for any other reason.
  * @param tgpu_on Nonzero when this build feeds the cache. */
 static void tgpu_migrate_begin(int tgpu_on) OP_REQUIRES(sim) {
-    s_mig_canon = tgpu_on && !s_vanim_sub && openpete_tercache_migrating();
+    s_mig_canon = tgpu_on && !s_vanim_sub && !s_tgpu_unseen && openpete_tercache_migrating();
     if (!s_mig_canon || openpete_frame == s_mig_frame) return;
     s_mig_frame = openpete_frame;
     s_mig_units = 0;
@@ -11696,6 +11700,9 @@ static int tgpu_claim_retry(const tgpu_slot_t* T) {
 #define TGPU_BUDGET_US_DEFAULT 1000
 #define TGPU_BUDGET_AGE 8u
 #define TGPU_CLAIM_BUDGET 6
+/* A sector whose cached state is not current on an unseen replayed tick
+ * (tgpu_ensure_unseen): the CPU walk draws it, the slot is untouched. */
+#define TGPU_CLAIM_UNSEEN 7
 enum { TGPU_BUD_OFF, TGPU_BUD_INLINE, TGPU_BUD_COLLECT, TGPU_BUD_RESOLVE };
 static int s_bud_mode;                 /* this walk's budget mode (TGPU_BUD_*) */
 static uint32_t s_bud_units OP_GUARDED_BY(sim);   /* first-touch bake units spent in the tick */
@@ -15780,6 +15787,27 @@ static void tgpu_coltab_fill(const canim_t* CA, uint32_t* w, int ent) {
     }
 }
 
+/** @brief Returns the store units one colour-table entry of a colour slot takes: a header word and two words per LP and HP colour.
+ * @param CA The colour slot.
+ * @return The units. */
+static int tgpu_coltab_ent(const canim_t* CA) {
+    const uint32_t n = CA->nLp + CA->nHp;
+    return (int)((1u + 2u * n + OPTC_PREV_REC_WORDS - 1u) / OPTC_PREV_REC_WORDS);
+}
+
+/** @brief Tests whether a slot's colour table already names its sector's current colour roll, so tgpu_coltab_refresh would allocate and write nothing.
+ *
+ * A slot whose bake carries no colour table is current.
+ * @param T The slot.
+ * @param SC The decoded sector.
+ * @return 1 when current, else 0. */
+static int tgpu_coltab_current(const tgpu_slot_t* T, const tscache_t* SC) {
+    const canim_t* CA = T->bakeTab ? tsc_canim(SC) : NULL;
+    if (!CA) return 1;
+    return T->tabUnits > 0 && T->tabEnt == tgpu_coltab_ent(CA) && T->tabSec == SC->s &&
+           (T->tabUsed >> T->tabCur & 1u) && T->tabRoll == CA->rollPres;
+}
+
 /** @brief Writes a colour-table slot's colour slot's latest roll into the next entry of its ring.
  *
  * The entry (openpete_terrain_cache.h, colour tables) holds the colour
@@ -15802,8 +15830,7 @@ static int tgpu_coltab_refresh(tgpu_slot_t* T, const tscache_t* SC) OP_REQUIRES(
     static int wcap;
     const canim_t* CA = T->bakeTab ? tsc_canim(SC) : NULL;
     if (!CA) { tgpu_coltab_free(T); return 0; }
-    const uint32_t n = CA->nLp + CA->nHp;
-    const int ent = (int)((1u + 2u * n + OPTC_PREV_REC_WORDS - 1u) / OPTC_PREV_REC_WORDS);
+    const int ent = tgpu_coltab_ent(CA);
     if (tgpu_coltab_ring(T, SC->s, ent) != 0) return -1;
     if ((T->tabUsed >> T->tabCur & 1u) && T->tabRoll == CA->rollPres) return 0;
     const int nx = (T->tabCur + 1) % (int)OPTC_COLTAB_RING;
@@ -15898,6 +15925,24 @@ static int tgpu_ring_run(tgpu_slot_t* T, int depth) {
     return 0;
 }
 
+/** @brief Tests whether a slot's position ring is keyed to a sector: its address, entry size and decodeGen.
+ * @param T The slot.
+ * @param SC The decoded sector.
+ * @param ent The sector's entry units (tgpu_ring_ent).
+ * @return 1 when keyed, else 0. */
+static int tgpu_ring_keyed(const tgpu_slot_t* T, const tscache_t* SC, int ent) {
+    return T->ringSec == SC->s && T->ringEnt == ent && T->ringDecode == SC->decodeGen;
+}
+
+/** @brief Tests whether a slot's position ring already holds its sector's current roll, so tgpu_ring_refresh would write nothing.
+ * @param T The slot.
+ * @param SC The decoded sector.
+ * @return 1 when the ring is keyed to the sector and its current entry holds this roll, else 0. */
+static int tgpu_ring_holds_roll(const tgpu_slot_t* T, const tscache_t* SC) OP_REQUIRES_SHARED(sim) {
+    return T->ringDepth > 0 && tgpu_ring_keyed(T, SC, tgpu_ring_ent(SC)) &&
+           (T->ringUsed >> T->ringCur & 1u) && (T->ringRoll == SC->vrollPres || s_taud_skip_ring);
+}
+
 /** @brief Writes a ring sector's latest roll into the next entry of its slot's position ring, deepening the ring when that entry is still read.
  *
  * The ring is keyed by (sector address, entry size, decodeGen); a slot
@@ -15918,10 +15963,8 @@ static int tgpu_ring_refresh(tgpu_slot_t* T, const tscache_t* SC) OP_REQUIRES(si
     static uint32_t* w;
     static int wcap;
     const int ent = tgpu_ring_ent(SC);
-    if (T->ringDepth > 0 && (T->ringSec != SC->s || T->ringEnt != ent || T->ringDecode != SC->decodeGen))
-        tgpu_ring_free(T);
-    if (T->ringDepth > 0 && (T->ringUsed >> T->ringCur & 1u) &&
-        (T->ringRoll == SC->vrollPres || s_taud_skip_ring)) return 0;
+    if (T->ringDepth > 0 && !tgpu_ring_keyed(T, SC, ent)) tgpu_ring_free(T);
+    if (tgpu_ring_holds_roll(T, SC)) return 0;
     T->ringSec = SC->s; T->ringEnt = ent; T->ringDecode = SC->decodeGen;
     if (T->ringDepth == 0 && tgpu_ring_run(T, tgpu_ring_initial()) != 0) return -1;
     int nx = (T->ringCur + 1) % T->ringDepth;
@@ -16204,6 +16247,81 @@ static void tgpu_dbg_rebuild(const tgpu_slot_t* T, const tscache_t* SC, int slot
             T->lastColFrame == openpete_frame, T->first[0], T->count[0]);
 }
 
+/** @brief Tests whether a slot's bake is stale against its sector: any term tgpu_ensure re-bakes on.
+ *
+ * Reads the slot and the sector only. A slot baked with ring faces carries
+ * no roll or vertGen term, since its roll writes a ring entry.
+ * @param T The slot, not yet re-latched.
+ * @param SC The decoded sector.
+ * @param with_var Nonzero when the bake carries near-variant chunks.
+ * @param pinKey tgpu_pin_key() now.
+ * @param selEpoch The mod-material selector epoch now.
+ * @param ring Nonzero when the sector's position ring holds its roll.
+ * @return 1 when the slot re-bakes, else 0. */
+static int tgpu_slot_stale(const tgpu_slot_t* T, const tscache_t* SC, int with_var,
+                           uint32_t pinKey, unsigned selEpoch, int ring) OP_REQUIRES_SHARED(sim) {
+    const int ringBaked = ring && T->bakeRing;
+    return (with_var && !T->bakeVar)
+             || (T->bakePinKey != pinKey)
+             || (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
+             || (ring != (T->bakeRing != 0))
+             || taud_tex_moved(T, SC) || (!ringBaked && T->vertGen != SC->vertGen)
+             /* poly-anim: every canonical roll re-bakes (prev,cur) - the
+              * content hash alone would leave a paused anim's chunk lerping
+              * its last step forever - unless the chunks read the position
+              * ring, whose entry the roll wrote. Sub-tick builds don't roll,
+              * so this stays clean between ticks. */
+             || (!ringBaked && taud_anim_rolled(T, SC))
+             /* env-anim colour: joining or leaving the colour lists moves
+              * the sector between arena families, and each roll re-bakes
+              * its (prev, cur) colour pair for the same reason. */
+             || tgpu_canim_stale(T, SC)
+             /* HD fold: the pack registry moved since this bake (files
+              * uploaded/cleared) - re-intern the sector's entries; a
+              * fold-claimed sector retries when the fold state moved
+              * (a queue drain can unblock its overflow). */
+             || (openpete_native_hdfold_on() &&
+                 (T->bakeTpGen != T->tpGen ||
+                  (T->unbuildable == 5 &&
+                   T->bakeHdEpoch != openpete_native_hdfold_epoch())))
+             /* Material buckets are baked into the faces, so a selector set
+              * that moved leaves them naming the wrong pass. */
+             || (T->bakeSelEpoch != selEpoch)
+             /* The env-anim membership the buckets key on moved. */
+             || (T->bakeEnvmGen != s_envm_gen)
+             /* The marked-edge table was rebuilt: the faces' split marks moved. */
+             || (T->bakeTjGen != tj_gen())
+             /* The ride gate brought the LP coverage tags current. */
+             || (T->bakeTagGen != SC->tagGen)
+             || tgpu_claim_retry(T);
+}
+
+/** @brief Validates a sector on an unseen replayed tick without writing the cache: a slot whose bake, position ring and colour table are current is drawn from the GPU, any other sector claims.
+ *
+ * A claim leaves the slot untouched, so the next build that is not unseen
+ * finds the same stale terms and bakes the sector once.
+ * @param cpu The guest CPU state.
+ * @param T The sector's slot.
+ * @param SC The decoded sector.
+ * @param want_near 1 when this build needs the near-variant chunks.
+ * @return 0 when the GPU may draw the sector, the slot's own claim code, or TGPU_CLAIM_UNSEEN. */
+static int tgpu_ensure_unseen(CPUState* cpu, tgpu_slot_t* T, const tscache_t* SC,
+                              int want_near) OP_REQUIRES(sim) {
+    const int wantRing = tgpu_ring_sector(SC);
+    const int ring = wantRing && tgpu_ring_holds_roll(T, SC);
+    const int with_var = want_near || (T->bakeVar && T->s == SC->s);
+    if (wantRing != ring ||
+        tgpu_slot_stale(T, SC, with_var, tgpu_pin_key(), openpete_mods_material_terrain_epoch(), ring) ||
+        (!tgpu_roll_free(T) && tgpu_col_hash(cpu, SC) != T->colHash) ||
+        !tgpu_coltab_current(T, SC)) {
+        s_tgpu_unseen_claims++;
+        return TGPU_CLAIM_UNSEEN;
+    }
+    if (T->unbuildable != 0) return T->unbuildable;
+    T->ownFrame = openpete_frame;
+    return 0;
+}
+
 /** @brief Validates or rebuilds a sector's chunks and decides whether the GPU may draw it this present.
  *
  * A slot without near-variant chunks rebuilds to add them when want_near
@@ -16271,6 +16389,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
             if (T->tpClaim) return 5;
         }
     }
+    if (s_tgpu_unseen) return tgpu_ensure_unseen(cpu, T, SC, want_near);
     /* Mod materials no longer claim: a face carries its material's banked
      * bucket, and the retained draw issues a pass per bucket. The epoch is
      * still latched here because the BAKE depends on it - a selector set
@@ -16288,40 +16407,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     const int ringIdle = wantRing && !(T->bakeRing && T->s == SC->s) && openpete_tercache_bake_held();
     const int ring = wantRing && !ringIdle && tgpu_ring_refresh(T, SC) == 0;
     if (!wantRing) tgpu_ring_free(T);
-    const int ringBaked = ring && T->bakeRing;
-    int dirty = (with_var && !T->bakeVar)
-             || (T->bakePinKey != pinKey)
-             || (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
-             || (ring != (T->bakeRing != 0))
-             || taud_tex_moved(T, SC) || (!ringBaked && T->vertGen != SC->vertGen)
-             /* poly-anim: every canonical roll re-bakes (prev,cur) - the
-              * content hash alone would leave a paused anim's chunk lerping
-              * its last step forever - unless the chunks read the position
-              * ring, whose entry the roll wrote. Sub-tick builds don't roll,
-              * so this stays clean between ticks. */
-             || (!ringBaked && taud_anim_rolled(T, SC))
-             /* env-anim colour: joining or leaving the colour lists moves
-              * the sector between arena families, and each roll re-bakes
-              * its (prev, cur) colour pair for the same reason. */
-             || tgpu_canim_stale(T, SC)
-             /* HD fold: the pack registry moved since this bake (files
-              * uploaded/cleared) - re-intern the sector's entries; a
-              * fold-claimed sector retries when the fold state moved
-              * (a queue drain can unblock its overflow). */
-             || (openpete_native_hdfold_on() &&
-                 (T->bakeTpGen != T->tpGen ||
-                  (T->unbuildable == 5 &&
-                   T->bakeHdEpoch != openpete_native_hdfold_epoch())))
-             /* Material buckets are baked into the faces, so a selector set
-              * that moved leaves them naming the wrong pass. */
-             || (T->bakeSelEpoch != T->selEpoch)
-             /* The env-anim membership the buckets key on moved. */
-             || (T->bakeEnvmGen != s_envm_gen)
-             /* The marked-edge table was rebuilt: the faces' split marks moved. */
-             || (T->bakeTjGen != tj_gen())
-             /* The ride gate brought the LP coverage tags current. */
-             || (T->bakeTagGen != SC->tagGen)
-             || tgpu_claim_retry(T);
+    int dirty = tgpu_slot_stale(T, SC, with_var, pinKey, T->selEpoch, ring);
     /* Migration out of a consolidation source, within the tick's budget. */
     const int mig = tgpu_migrate_due(T, dirty);
     dirty |= mig;
@@ -16398,9 +16484,11 @@ static void tgpu_fmt_arenas(char* out, int cap, const uint32_t* num, const uint3
  * cell-record draws with the record instances they covered, the faces
  * baked to key per drain sub-cell (FF_KEYCELLS), the previous-tick store's
  * high-water mark, capacity, refused allocations and releases past its
- * deferred list, and the colour-table rolls refused for want of a released
- * ring entry. A `high` equal to its `cap` with no overflow behind it is a
- * clamp, not a demand figure. */
+ * deferred list, the colour-table rolls refused for want of a released
+ * ring entry, the sectors claimed on unseen replayed ticks, and the
+ * canonical builds of presented replayed ticks. A `high`
+ * equal to its `cap` with no overflow behind it is a clamp, not a demand
+ * figure. */
 static void tgpu_arena_census_line(void) {
     OP_ROLE_ASSERT(sim);
     openpete_tercache_stats_t st;
@@ -16411,12 +16499,13 @@ static void tgpu_arena_census_line(void) {
     tgpu_fmt_arenas(ovf, (int)sizeof ovf, st.overflow_adopted, NULL);
     fprintf(stderr, "[ter-gpu f=%u] hwm=%s afail=%s ovf=%s caps=%.1fMiB svc=%u/%u "
             "draws-retired=%u rebake=%ld cell-draws=%u/%llu keycell-faces=%ld "
-            "prev=%u/%u/%u/%u tabwait=%d\n",
+            "prev=%u/%u/%u/%u tabwait=%d unseen=%ld replay_seen=%ld\n",
             openpete_feed_key_now(), hwm, afail, ovf,
             (double)st.cap_bytes / (1024.0 * 1024.0),
             st.svc_calls, st.svc_fulfilled, st.draws_retired, s_tgpu_rebake,
             st.cell_draws, (unsigned long long)st.cell_instances, s_tgpu_keycell_faces,
-            st.prev_high, st.prev_cap, st.prev_fail, st.prev_defer_ovf, s_tgpu_tabwait);
+            st.prev_high, st.prev_cap, st.prev_fail, st.prev_defer_ovf, s_tgpu_tabwait,
+            s_tgpu_unseen_claims, s_tgpu_replay_seen);
 }
 
 /** @brief Registers the arena census line to print once more at process exit.
@@ -20337,7 +20426,7 @@ static int tgpu_take_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable
         else if (r == 3) s_tgcl_colour++;
         else if (r == 4) s_tgcl_slot++;
         else if (r == 5) s_tgcl_texpack++;
-        else s_tgcl_build++;
+        else if (r != TGPU_CLAIM_UNSEEN) s_tgcl_build++;
         return 1;
     }
     const tgpu_slot_t* T = &s_tgpu[(int)(SC - s_tsc)];
@@ -23442,11 +23531,15 @@ static void terrain_defer_census(void) {
 /** @brief The canonical native terrain build and scene feed of one world draw.
  *
  * Builds the native terrain for the draw's occlusion group, opens the native
- * scene for openpete_frame, and pushes the built triangles to it.
+ * scene for openpete_frame, and pushes the built triangles to it. A draw of
+ * a replayed tick whose scene is not presented (openpete_rewind_draw_unseen)
+ * writes nothing to the terrain cache (tgpu_ensure_unseen).
  * @param cpu      guest CPU state
  * @param occGroup the world draw's occlusion-group argument (a0), -1 = walk all */
 static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) OP_REQUIRES(sim) {
     OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_TERRAIN);
+    s_tgpu_unseen = openpete_rewind_draw_unseen();
+    s_tgpu_replay_seen += openpete_replaying && !s_tgpu_unseen;
     render_material_level_push(cpu);             /* the bake's level keys */
     { OP_PROF_ACCUM_SCOPE("terrain.build");
       terrain_build(cpu, occGroup); }            /* native walk + tris */

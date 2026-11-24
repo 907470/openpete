@@ -132,6 +132,17 @@ void openpete_rewind_drop_after(unsigned frame);
  * openpete_rewind_configure. */
 void openpete_rewind_clear(void);
 
+/** @brief Report whether the canonical world draw running now belongs to a replayed tick whose scene the host does not present.
+ *
+ * Called once per canonical world draw. While a rewind replays ticks
+ * toward its target frame, a draw is predicted to be the replay's last,
+ * whose scene the host presents, when the frame plus the interval between
+ * the two replayed draws before it (2 VBLs before there are two) reaches
+ * the target; every earlier draw is unseen. Outside a replay it returns 0.
+ * The rewind driver counts a replay whose last draw was predicted unseen.
+ * @return 1 for an unseen draw, else 0. */
+int openpete_rewind_draw_unseen(void) OP_REQUIRES(sim);
+
 #ifdef __cplusplus
 }
 #endif
