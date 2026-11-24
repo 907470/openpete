@@ -111,8 +111,7 @@ Spyro 3:
 
 - replacement music: the game has no track index
   ([Music](../../modding/music.md));
-- custom levels ([Custom levels](../../modding/levels.md));
-- mod materials, and mod text drawn on screen.
+- custom levels ([Custom levels](../../modding/levels.md)).
 
 The Modding section's
 [per-game support table](../../modding/code.md#per-game-support) lists
