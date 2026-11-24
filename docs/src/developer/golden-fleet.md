@@ -205,8 +205,8 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    `<fleet_root>/image.id` records it. No label is added, since a label
    changes the image's Id.
 3. Build once. The fastest host with `build = true` builds the engine
-   inside the image (`golden-capture-container.sh build`, into
-   `build/linux-release-container`): in the checkout when that is the local
+   inside the image (`golden-capture-container.sh build`, the CMake target
+   `openpete_games` into `build/linux-release-container`): in the checkout when that is the local
    host, else in its snapshot, seeded from its previous tree. The binaries'
    SHA-256 go to `binaries.sha256`; a remote build tree is relayed through
    the coordinator to the other hosts and checked against those hashes.

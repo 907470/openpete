@@ -441,7 +441,6 @@ LEG_TIMEOUT_S = 300           # the harness's default leg timeout
 CANARY_DEADLINE_S = 15 * 60
 BUILD_DEADLINE_S = 90 * 60
 BUILD_TREE = "build/linux-release-container"
-GAME_TARGETS = tuple(f"openpete-{g.replace('-', '')}" for g in GAMES)
 BUILD_TREE_BYTES = 1400 * 10**6
 # One bk2 and one freecam level per game, run with --filter/--freecam-filter.
 CANARY = {"spyro-1": ("alban-rescue", "gnastys_loot"),
@@ -1873,7 +1872,6 @@ mkdir -p "$UNIT_DIR/store"
 cd "$RUN_DIR/tree" || finish 1 no-tree
 case "$KIND" in
 build)
-    export OPENPETE_CAPTURE_TARGETS="$TARGETS"
     nice -n "$NICE" scripts/golden-capture-container.sh build >"$UNIT_DIR/build.log" 2>&1 \
         || finish 1 build-failed
     for b in $BINARIES; do [ -f "$b" ] && sha256sum "$b"; done >"$UNIT_DIR/binaries.sha256"
@@ -2910,8 +2908,8 @@ class Coordinator:
     def local_build(self):
         """Build the engine in the checkout through the wrapper, logged in the run directory."""
         log = os.path.join(self.local_run_dir, "build.log")
-        env = dict(os.environ, OPENPETE_CAPTURE_IMAGE=IMAGE_TAG,
-                   OPENPETE_CAPTURE_TARGETS=" ".join(GAME_TARGETS))
+        env = dict(os.environ, OPENPETE_CAPTURE_IMAGE=IMAGE_TAG)
+        env.pop("OPENPETE_CAPTURE_TARGETS", None)
         print(f"[fleet] {self.build_hs.name}: in-image build in {self.tree} (log {log})")
         t0 = time.monotonic()
         with open(log, "w") as f:
@@ -3118,7 +3116,6 @@ class Coordinator:
                "POKE": poke, "RESUME": int(self.resume),
                "STREAM": int(self.stream and job.kind == "unit"),
                "STREAM_POKE": self.poke_for(self.row_poke, job, hs), "BINARIES": " ".join(binary_rels()),
-               "TARGETS": " ".join(GAME_TARGETS),
                "PIN_LP_NUM_THREADS": lp_threads(hs.info, slots)}
         return [f"{k}={v}" for k, v in env.items()]
 

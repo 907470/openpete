@@ -69,6 +69,10 @@ add_custom_command(
     COMMAND ${Python3_EXECUTABLE} ${PT_DIR}/gen_vk_list.py ${CMAKE_NM} ${PT_GEN}/rhi_vulkan.sched.o ${PT_GEN}/vk_list.h
     DEPENDS ${PT_DIR}/gen_vk_list.py ${PT_GEN}/rhi_vulkan.sched.o
     VERBATIM)
+# The headers the harness's compile-database entries include, built with the
+# engine's generated headers so a scan of the database finds them.
+add_custom_target(present_sched_headers DEPENDS ${PT_GEN}/pt_state.h ${PT_GEN}/vk_list.h)
+add_dependencies(openpete_generated_headers present_sched_headers)
 set_source_files_properties(${PT_GEN}/present_thread.sched.o ${PT_GEN}/rhi_vulkan.sched.o
     PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 

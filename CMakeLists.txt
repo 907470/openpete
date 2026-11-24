@@ -278,6 +278,18 @@ foreach(game IN LISTS OPENPETE_GAMES)
 endforeach()
 openpete_link_games()
 
+# openpete_games: every configured game's target (executable, module, SDK,
+# assets) and nothing else ALL carries. A capture-image build
+# (scripts/golden-capture-container.sh) builds it in place of ALL: the image
+# holds the toolchain a capture needs, not the fences' (libclang bindings,
+# clang-tidy, an armed hook), and those run in the developer's linux-release
+# tree.
+add_custom_target(openpete_games)
+get_property(_openpete_linked_tags GLOBAL PROPERTY OPENPETE_LINKED_GAMES)
+foreach(_tag IN LISTS _openpete_linked_tags)
+    add_dependencies(openpete_games openpete-${_tag})
+endforeach()
+
 # The Modding reference pages (the docs target, games/spyro-1) decide which
 # games have a mod SDK from mod-sdk-test/sdk/games/<id>/, so every game's
 # staging runs first.
