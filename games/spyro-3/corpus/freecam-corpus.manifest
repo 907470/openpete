@@ -239,3 +239,24 @@ super_bonus_round:1@tcforce | pos=(63716, 66117, 15554) yaw=507 pitch=155 | | OP
 fireworks_factory@tcforce | pos=(-18130, 83228, 13192) yaw=-78 pitch=119 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
 lost_fleet:1@tcforce | pos=(21472, 54568, 36864) yaw=123 pitch=179 roll=-1 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
 harbor_speedway@tcforce | pos=(55529, 136037, 11623) yaw=-753 pitch=-41 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+# Sector visibility: each pair is one pose under game and filled at one
+# commit, the tiles the mode separates (see the Spyro 2 manifest for the leak
+# controls). A hole row's game tile shows a sector the game's PVS omits while
+# its neighbour cells list it; filled draws it. Poses are the camera at the
+# press tick of tester reports, read from the report's RAM. A build without the
+# filled mode runs a row's filled leg under game.
+# Hole: the sky patch beside the skatepark waterfall.
+enchanted_towers:1@sv-game | pos=(54780, 28083, 24568) yaw=946 pitch=205 | | --terrain-visibility game
+enchanted_towers:1@sv-filled | pos=(54780, 28083, 24568) yaw=946 pitch=205 | | --terrain-visibility game
+# Hole: the underwater minigame area.
+desert_ruins:2@sv-game | pos=(67701, 30080, 25197) yaw=1233 pitch=97 | | --terrain-visibility game
+desert_ruins:2@sv-filled | pos=(67701, 30080, 25197) yaw=1233 pitch=97 | | --terrain-visibility game
+# Hole: outside the temple from inside it.
+desert_ruins@sv-game | pos=(70670, 63927, 21692) yaw=-1668 pitch=95 | | --terrain-visibility game
+desert_ruins@sv-filled | pos=(70670, 63927, 21692) yaw=-1668 pitch=95 | | --terrain-visibility game
+# Hole: a sector at the tree's edge (filled admits it through an all-visible
+# neighbour).
+midnight_mountain@sv-game | pos=(106370, 88099, 18131) yaw=352 pitch=136 | | --terrain-visibility game
+midnight_mountain@sv-filled | pos=(106370, 88099, 18131) yaw=352 pitch=136 | | --terrain-visibility game
+fireworks_factory@sv-game | pos=(38872, 54530, 11703) yaw=82 pitch=96 | | --terrain-visibility game
+fireworks_factory@sv-filled | pos=(38872, 54530, 11703) yaw=82 pitch=96 | | --terrain-visibility game

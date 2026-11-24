@@ -297,3 +297,35 @@ canyon_speedway@tcforce | pos=(66451, 83321, 27812) yaw=1839 pitch=0 | | OPENPET
 metropolis@tcforce | pos=(115904, 59478, 40916) yaw=1696 pitch=160 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
 autumn_plains@tcforce | pos=(89729, 42806, 34729) yaw=1009 pitch=113 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
 winter_tundra@tcforce | pos=(51217, 30497, 40037) yaw=752 pitch=160 | | OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+# Sector visibility: each pair is one pose under two sector visibility modes at
+# one commit, the tiles the mode separates. A leak control pairs frustum with
+# filled: frustum draws geometry the level's PVS lists from no cell near the
+# camera (single-sided shells seen from behind), filled must not. A hole row
+# pairs game with filled: the game's PVS omits a sector its neighbour cells
+# list (sky through the floor or a wall), filled draws it. Poses are the camera
+# at the press tick of tester reports, read from the report's RAM. A build
+# without the filled mode runs a row's filled leg in the mode filled corrects:
+# frustum on a leak control, game on a hole row.
+# Leak control: the castle behind the ridge (frustum draws its far interior;
+# the original draws sky).
+summer_forest@sv-frustum | pos=(117227, 81537, 43219) yaw=1973 pitch=-9 | | --terrain-visibility frustum
+summer_forest@sv-filled | pos=(117227, 81537, 43219) yaw=1973 pitch=-9 | | --terrain-visibility frustum
+# Leak control: Zephyr from the bean area (the moby-in-sky report).
+zephyr@sv-frustum | pos=(150534, 57763, 12276) yaw=760 pitch=159 | | --terrain-visibility frustum
+zephyr@sv-filled | pos=(150534, 57763, 12276) yaw=760 pitch=159 | | --terrain-visibility frustum
+# Hole: the ground below the aqueduct bridge.
+autumn_plains@sv-game | pos=(73569, 68331, 31694) yaw=-357 pitch=160 | | --terrain-visibility game
+autumn_plains@sv-filled | pos=(73569, 68331, 31694) yaw=-357 pitch=160 | | --terrain-visibility game
+# Sky hole at 4:3: the game's sky PVS draws 3 of the 46 sky sectors here, so
+# the archway shows the background colour where the dome is; filled and
+# frustum draw the dome. Pinned to 4:3: a wider view draws every sky sector in
+# any mode.
+autumn_plains@sv-sky-game | pos=(99150, 161980, 32725) yaw=1546 pitch=160 | | --terrain-visibility game --aspect 4:3
+autumn_plains@sv-sky-filled | pos=(99150, 161980, 32725) yaw=1546 pitch=160 | | --terrain-visibility game --aspect 4:3
+autumn_plains@sv-sky-frustum | pos=(99150, 161980, 32725) yaw=1546 pitch=160 | | --terrain-visibility frustum --aspect 4:3
+# Hole: the tunnel to the Cloud Temples portal.
+winter_tundra@sv-game | pos=(84101, 63118, 37633) yaw=464 pitch=207 | | --terrain-visibility game
+winter_tundra@sv-filled | pos=(84101, 63118, 37633) yaw=464 pitch=207 | | --terrain-visibility game
+# Hole: the sky patch behind the wall.
+metropolis@sv-game | pos=(83022, 120517, 31700) yaw=-968 pitch=160 | | --terrain-visibility game
+metropolis@sv-filled | pos=(83022, 120517, 31700) yaw=-968 pitch=160 | | --terrain-visibility game
