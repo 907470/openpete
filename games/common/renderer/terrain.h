@@ -380,11 +380,10 @@ void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim);
 
 /** @brief The containment key for an element with no sector byte: whether a point lies in a drawn sector or in none.
  *
- * Under OPENPETE_SECTOR_VIS_CONTAIN=1 and --sector-visibility game or
- * filled, a point inside one or more sector bounding spheres of the last
+ * Under --sector-visibility game or filled, a point inside one or more sector bounding spheres of the last
  * canonical walk is admitted when one of those sectors is drawn (the filled
  * set, or the game's verdict under game); a point inside none is admitted.
- * Under frustum, with the switch off, or where filled has no PVS: 1.
+ * Under frustum, or where filled has no PVS: 1.
  * @param cpu The guest CPU state, read only.
  * @param x The point, world X.
  * @param y The point, world Y.

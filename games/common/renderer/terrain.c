@@ -9734,17 +9734,9 @@ void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim) {
     s_sf_win.sky_added += (unsigned long)(added > 0 ? added : 0);
 }
 
-/** @brief Whether OPENPETE_SECTOR_VIS_CONTAIN=1 turns on the containment key for elements with no sector byte, read once.
- * @return 1 when on, else 0. */
-static int sf_contain_on(void) OP_REQUIRES(sim) {
-    static int on OP_GUARDED_BY(sim) = -1;
-    if (on < 0) { const char* e = getenv("OPENPETE_SECTOR_VIS_CONTAIN"); on = e && *e == '1'; }
-    return on;
-}
-
 int terrain_point_admitted(struct CPUState* cpu, int32_t x, int32_t y, int32_t z) OP_REQUIRES(sim) {
     const int mode = openpete_native_sector_visibility_active();
-    if (mode == OPENPETE_SECTOR_VIS_FRUSTUM || !sf_contain_on() || !s_sf_sector_ptr) return 1;
+    if (mode == OPENPETE_SECTOR_VIS_FRUSTUM || !s_sf_sector_ptr) return 1;
     if (mode == OPENPETE_SECTOR_VIS_FILLED && !s_sf_ready) return 1;   /* no PVS: frustum */
     const uint32_t n = s_sf_sector_n < 255u ? s_sf_sector_n : 255u;
     int inside = 0;
