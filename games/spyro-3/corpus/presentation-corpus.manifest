@@ -338,6 +338,15 @@ sunrise_spring-load-exit|1569|4||1569,1571,1572|--skip-to-level sunrise_spring
 # the CreditsLetter records in states 1-3 into consecutive moby slots, so a
 # departing or reused record moves every later letter to another slot.
 credits-cheat|2013|200||2025,2256,2600,3690,3708,3720
+# big-head-cheat: the pause-menu big head cheat from Sunrise Spring (Up R1
+# x3, Circle x4; paused at VBL 1850, code entered 1900-1993, unpaused 2050)
+# sets g_CheatFlags+6; the player draw scales the head matrix by the vector
+# at g_CheatFlags+8 (0x2000 each, 2.0) (spyrodraw.s 0x8003D288).
+big-head-cheat|2200|100||2100,2200
+# flat-cheat: the pause-menu flat cheat from Sunrise Spring (Left Right Left
+# Right L1 R1 L1 R1 Square Circle) sets g_CheatFlags+7; the player draw scales
+# the body matrix's first column by 0x200 (spyrodraw.s 0x8003D1AC).
+flat-cheat|2200|100||2100,2200
 #
 # sunny-villa-level-entry: the level entry from Sunrise Spring into Sunny
 # Villa, ending on the loading screen's treasure tally (VBL ~4240-4720; the
