@@ -249,7 +249,17 @@ static void resolved_env_fields(void) {
           "notex %d wireframe %d terrain_cache %d disc_cache %d", o.notex, o.wireframe,
           o.terrain_cache, o.disc_cache);
     CHECK(o.load_delay == -1, "load_delay = %d, want -1 for run.c", o.load_delay);
-    CHECK(o.sector_visibility == OPENPETE_SECTOR_VIS_FRUSTUM, "sector_visibility %d",
+    CHECK(o.sector_visibility == OPENPETE_SECTOR_VIS_AUTO, "sector_visibility %d, want auto",
+          (int)o.sector_visibility);
+
+    g_case = "--sector-visibility auto and filled";
+    static const char* const sv_auto[] = { "--no-config", "--sector-visibility", "auto" };
+    CHECK(parse(&o, 3, sv_auto) == OPENPETE_EXIT_OK, "the auto parse failed");
+    CHECK(o.sector_visibility == OPENPETE_SECTOR_VIS_AUTO, "sector_visibility %d, want auto",
+          (int)o.sector_visibility);
+    static const char* const sv_filled[] = { "--no-config", "--sector-visibility", "filled" };
+    CHECK(parse(&o, 3, sv_filled) == OPENPETE_EXIT_OK, "the filled parse failed");
+    CHECK(o.sector_visibility == OPENPETE_SECTOR_VIS_FILLED, "sector_visibility %d, want filled",
           (int)o.sector_visibility);
 
     g_case = "[env] table";

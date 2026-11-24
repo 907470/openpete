@@ -120,10 +120,10 @@ typedef enum {
     OPENPETE_FOG_OFF,
 } openpete_fog_mode_t;
 
-/* Sector candidate-set policy (`--sector-visibility game|frustum|filled`). GAME is
+/* Sector candidate-set policy (`--sector-visibility auto|game|frustum|filled`). GAME is
  * the faithful path: the sector set the game's own visibility pass and
  * occlusion groups produce, which hides everything outside the room the camera
- * sits in and everything outside the 4:3 frame. FRUSTUM (default) admits every
+ * sits in and everything outside the 4:3 frame. FRUSTUM admits every
  * sector whose bounding sphere passes the frustum test at the displayed
  * half-widths, hidden or not, and lets the depth buffer decide what is seen: a
  * deliberate departure from the original presentation that fills the side
@@ -134,13 +134,16 @@ typedef enum {
  * written. FILLED admits, on a game whose verdict is a position-keyed PVS,
  * the game's verdict plus the sectors an opposite pair of neighbour cells
  * around the tick camera lists (an all-visible neighbour counting as
- * agreeing, never alone), within the frustum; elsewhere it is FRUSTUM.
- * Native renderer only. */
+ * agreeing, never alone), within the frustum; elsewhere it is FRUSTUM. AUTO
+ * (default) is the value saved for every game and runs FILLED on a game
+ * whose verdict is a position-keyed PVS (Spyro 2 and 3), FRUSTUM elsewhere
+ * (Spyro 1). Native renderer only. */
 typedef enum {
     OPENPETE_SECTOR_VIS_UNSET = -1, /* options only: not yet resolved */
     OPENPETE_SECTOR_VIS_GAME = 0,  /* the game's visibility verdict */
-    OPENPETE_SECTOR_VIS_FRUSTUM,   /* default: every sector inside the frustum */
+    OPENPETE_SECTOR_VIS_FRUSTUM,   /* every sector inside the frustum */
     OPENPETE_SECTOR_VIS_FILLED,    /* the game's verdict with its holes filled */
+    OPENPETE_SECTOR_VIS_AUTO,      /* default: FILLED or FRUSTUM by the game */
 } openpete_sector_visibility_t;
 
 /* --cadence: how the eager planner places the in-between scenes of a tick's
@@ -242,8 +245,8 @@ typedef struct openpete_options {
      * `--no-lod` is a deprecated alias for `--lod extended`. */
     openpete_lod_mode_t lod;
 
-    /* --sector-visibility game|frustum: the terrain candidate set (see
-     * openpete_sector_visibility_t above). Default FRUSTUM. Set from
+    /* --sector-visibility auto|game|frustum|filled: the sector candidate set
+     * (see openpete_sector_visibility_t above). Default AUTO. Set from
      * OPENPETE_SECTOR_VISIBILITY when no flag is given. */
     openpete_sector_visibility_t sector_visibility;
 

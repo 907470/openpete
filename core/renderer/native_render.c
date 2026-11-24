@@ -2110,7 +2110,7 @@ static int s_hide_cls_n;
 /* --sector-visibility: the terrain feeder's candidate-set policy
  * (openpete_sector_visibility_t), seeded at init and latched on the sim
  * thread from the setter's wanted value. */
-static int s_terrain_vis = OPENPETE_SECTOR_VIS_FRUSTUM;
+static int s_terrain_vis = OPENPETE_SECTOR_VIS_AUTO;
 /* --texture-mapping (0 = perspective, 1 = affine): the drawn mode plus the
  * queued one. The mode is a vertex spec constant baked into every scene
  * pipeline, so a change cannot apply mid-frame like the knobs above - the
@@ -2136,12 +2136,13 @@ static _Atomic(int) s_wireframe_want = 0;
  * value whichever thread ran the setter. */
 static _Atomic(int) s_vertex_snap_want = 0;
 static _Atomic(int) s_hide_player_want = 0;
-static _Atomic(int) s_terrain_vis_want = OPENPETE_SECTOR_VIS_FRUSTUM;
-/** @brief Maps a requested sector visibility mode to one the feeder runs: game and filled as given, anything else frustum.
+static _Atomic(int) s_terrain_vis_want = OPENPETE_SECTOR_VIS_AUTO;
+/** @brief Maps a requested sector visibility mode to a stored one: game, filled and auto as given, anything else frustum.
  * @param mode An openpete_sector_visibility_t value.
- * @return OPENPETE_SECTOR_VIS_GAME, _FILLED or _FRUSTUM. */
+ * @return OPENPETE_SECTOR_VIS_GAME, _FILLED, _AUTO or _FRUSTUM. */
 static int sector_vis_clamp(int mode) {
-    return (mode == OPENPETE_SECTOR_VIS_GAME || mode == OPENPETE_SECTOR_VIS_FILLED)
+    return (mode == OPENPETE_SECTOR_VIS_GAME || mode == OPENPETE_SECTOR_VIS_FILLED ||
+            mode == OPENPETE_SECTOR_VIS_AUTO)
            ? mode : OPENPETE_SECTOR_VIS_FRUSTUM;
 }
 /* The terrain walk's skipped-sub-cell packing: 1 keys a skipped sub-cell at
@@ -19669,6 +19670,7 @@ void openpete_native_set_sector_visibility(int mode) {
     OPL_INFO_F("native", "sector-visibility -> %s",
                v == OPENPETE_SECTOR_VIS_GAME ? "game (the game's visibility verdict)"
                : v == OPENPETE_SECTOR_VIS_FILLED ? "filled (the game's verdict, holes filled)"
+               : v == OPENPETE_SECTOR_VIS_AUTO ? "auto (filled on a game with a position-keyed PVS, else frustum)"
                : "frustum (every sector inside the displayed frame)");
 }
 
@@ -19691,7 +19693,10 @@ int openpete_native_terrain_drain_legacy(void) {
     return op_live_get(&s_drain_legacy_want);
 }
 
-int openpete_native_sector_visibility_active(void) { return s_terrain_vis; }
+int openpete_native_sector_visibility_active(void) {
+    if (s_terrain_vis != OPENPETE_SECTOR_VIS_AUTO) return s_terrain_vis;
+    return game_layout.env.vis_aspect_independent ? OPENPETE_SECTOR_VIS_FILLED : OPENPETE_SECTOR_VIS_FRUSTUM;
+}
 
 /* Counted by the terrain walk, read by the eager planner; both run on the sim thread. */
 static unsigned s_level_edges OP_GUARDED_BY(sim);

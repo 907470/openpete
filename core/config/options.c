@@ -1030,6 +1030,17 @@ static int cadence_parse(const char* v, openpete_cadence_t* out) {
     return -1;
 }
 
+/** @brief Parse a --sector-visibility value: game, frustum, filled or auto.
+ * @param v The value text.
+ * @param out Receives the mode; untouched on failure.
+ * @return 0 on success, -1 for any other text. */
+static int sector_vis_parse(const char *v, openpete_sector_visibility_t *out) {
+    static const char *const names[] = { "game", "frustum", "filled", "auto" };
+    for (int m = 0; m < 4; m++)
+        if (strcmp(v, names[m]) == 0) { *out = (openpete_sector_visibility_t)m; return 0; }
+    return -1;
+}
+
 /** @brief Parse a --fog value: original, per-pixel or off.
  * @param v The value text.
  * @param out Receives the mode; untouched on failure.
@@ -1401,14 +1412,8 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
         i++;
     } else if (strcmp(a, "--sector-visibility") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-        if (strcmp(v, "game") == 0) {
-            opts->sector_visibility = OPENPETE_SECTOR_VIS_GAME;
-        } else if (strcmp(v, "frustum") == 0) {
-            opts->sector_visibility = OPENPETE_SECTOR_VIS_FRUSTUM;
-        } else if (strcmp(v, "filled") == 0) {
-            opts->sector_visibility = OPENPETE_SECTOR_VIS_FILLED;
-        } else {
-            fprintf(stderr, "openpete: --sector-visibility expects game|frustum|filled, got: %s\n", v);
+        if (sector_vis_parse(v, &opts->sector_visibility) != 0) {
+            fprintf(stderr, "openpete: --sector-visibility expects auto|game|frustum|filled, got: %s\n", v);
             return OPENPETE_EXIT_SETUP_ERROR;
         }
         i++;
@@ -2351,13 +2356,9 @@ static void resolve_env_spellings(openpete_options_t* opts) {
         opts->hide_classes = strdup(e);   /* outlives a later setenv or [env] release */
     if (opts->load_delay < 0 && env_value("OPENPETE_LOAD_DELAY", &e))
         opts->load_delay = atoi(e);
-    if (opts->sector_visibility == OPENPETE_SECTOR_VIS_UNSET) {
-        opts->sector_visibility = OPENPETE_SECTOR_VIS_FRUSTUM;
-        if (env_value("OPENPETE_SECTOR_VISIBILITY", &e)) {
-            if (strcmp(e, "game") == 0) opts->sector_visibility = OPENPETE_SECTOR_VIS_GAME;
-            else if (strcmp(e, "filled") == 0) opts->sector_visibility = OPENPETE_SECTOR_VIS_FILLED;
-        }
-    }
+    if (opts->sector_visibility == OPENPETE_SECTOR_VIS_UNSET &&
+        !(env_value("OPENPETE_SECTOR_VISIBILITY", &e) && sector_vis_parse(e, &opts->sector_visibility) == 0))
+        opts->sector_visibility = OPENPETE_SECTOR_VIS_AUTO;
     if (opts->cadence == OPENPETE_CADENCE_UNSET &&
         !(env_value("OPENPETE_CADENCE", &e) && cadence_parse(e, &opts->cadence) == 0))
         opts->cadence = OPENPETE_CADENCE_EVEN;
@@ -2385,7 +2386,7 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->scan_guard < 0)            out->scan_guard = 1;
     if (out->mod_hot_reload < 0)        out->mod_hot_reload = 0;
     if (out->sector_visibility == OPENPETE_SECTOR_VIS_UNSET)
-        out->sector_visibility = OPENPETE_SECTOR_VIS_FRUSTUM;
+        out->sector_visibility = OPENPETE_SECTOR_VIS_AUTO;
     if (out->cadence == OPENPETE_CADENCE_UNSET) out->cadence = OPENPETE_CADENCE_EVEN;
 }
 

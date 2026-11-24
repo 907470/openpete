@@ -448,24 +448,21 @@ static int hide_hud_set(knob_desc_t *k, double v) {
 }
 
 static const char *const k_lod_names[] = { "original", "extended" };
-static const char *const k_tervis_names[] = { "game", "frustum", "filled" };
+static const char *const k_tervis_names[] = { "game", "frustum", "filled", "auto" };
 /** @brief The sector visibility mode as its k_tervis_names index (openpete_sector_visibility_t).
  * @param k The row.
- * @return 0 game, 1 frustum, 2 filled. */
+ * @return 0 game, 1 frustum, 2 filled, 3 auto. */
 static double tervis_get(const knob_desc_t *k) {
     (void)k;
     return (double)openpete_native_get_sector_visibility();
 }
-/** @brief Select the sector visibility mode by its k_tervis_names index.
+/** @brief Select the sector visibility mode by its k_tervis_names index, which is its openpete_sector_visibility_t value.
  * @param k The row.
- * @param v The index: 0 game, 1 frustum, 2 filled.
+ * @param v The index: 0 game, 1 frustum, 2 filled, 3 auto.
  * @return 0. */
 static int tervis_set(knob_desc_t *k, double v) {
     (void)k;
-    const int i = (int)v;
-    openpete_native_set_sector_visibility(i == 0 ? OPENPETE_SECTOR_VIS_GAME
-                                          : i == 2 ? OPENPETE_SECTOR_VIS_FILLED
-                                                   : OPENPETE_SECTOR_VIS_FRUSTUM);
+    openpete_native_set_sector_visibility((int)v);
     return 0;
 }
 /** @brief 1 when the terrain walk stores the sentinel for a skipped drain sub-cell, 0 when it keys and draws it. */
@@ -1341,7 +1338,9 @@ static const knob_desc_t g_builtin[] = {
 
     { "sector_visibility", "Sector visibility", "Display", "--sector-visibility",
       "OPENPETE_SECTOR_VISIBILITY",
-      "Which level sectors are candidates to draw. frustum (default) takes "
+      "Which level sectors are candidates to draw. auto (default) is filled "
+      "on Spyro 2 and 3 and frustum on Spyro 1, one setting for every game. "
+      "frustum takes "
       "every sector whose bounding sphere is inside the displayed frame, "
       "hidden or not, so the geometry the original hides - the world outside "
       "the room the camera sits in, the side wedges of a frame wider than "
@@ -1355,9 +1354,10 @@ static const knob_desc_t g_builtin[] = {
       "verdicts, the retained GPU cache and the occlusion pre-pass.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_tervis_names), 0, 0,
       tervis_get, tervis_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .def_str = "frustum",
+      .def_str = "auto",
       .help_arg = "MODE", .help_order = 250,
-      .help_text = "sector candidate set: {def} (default) = every sector whose\n"
+      .help_text = "sector candidate set: {def} (default) = filled on Spyro 2/3,\n"
+          "frustum on Spyro 1 | frustum = every sector whose\n"
           "bounding sphere is inside the displayed frame, hidden or not, so\n"
           "the geometry the original hides (inside-geometry views, the side\n"
           "wedges wider than 4:3) draws and the depth buffer decides what is\n"

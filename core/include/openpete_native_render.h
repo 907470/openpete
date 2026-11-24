@@ -888,7 +888,8 @@ int  openpete_native_get_wireframe(void);
  * OPENPETE_SECTOR_VIS_GAME admits the sectors the game marked visible;
  * OPENPETE_SECTOR_VIS_FILLED adds the sectors an opposite pair of neighbour
  * cells of the game's PVS lists (terrain.c, sector_filled_*), on a game
- * whose verdict is a position-keyed PVS; any other value selects
+ * whose verdict is a position-keyed PVS; OPENPETE_SECTOR_VIS_AUTO runs FILLED
+ * on such a game and FRUSTUM on any other; any other value selects
  * OPENPETE_SECTOR_VIS_FRUSTUM, which admits every sector whose bounding
  * sphere is inside the displayed frame and does not read the game's flags. Seeded from --sector-visibility at init; the
  * setter stores a wanted value from any thread, which the next
@@ -902,7 +903,10 @@ void openpete_native_set_sector_visibility(int mode);
 int  openpete_native_get_sector_visibility(void);
 /** @brief Return the terrain candidate-set mode the sector walks use, as latched on the sim thread.
  *
- * @return An openpete_sector_visibility_t value. */
+ * OPENPETE_SECTOR_VIS_AUTO is resolved for the running game: FILLED where
+ * game_layout.env.vis_aspect_independent (a position-keyed PVS), else
+ * FRUSTUM.
+ * @return OPENPETE_SECTOR_VIS_GAME, _FRUSTUM or _FILLED. */
 int  openpete_native_sector_visibility_active(void);
 /** @brief Set how the terrain walk packs a skipped drain sub-cell: 1 keys it at the face's least key and draws it, 0 stores the sentinel the key and colour passes discard.
  *

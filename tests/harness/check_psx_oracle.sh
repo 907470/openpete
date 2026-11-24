@@ -60,8 +60,8 @@
 # bakes > 0, else VACUOUS (exit 3): the forced leg never baked a sector into
 # the terrain cache (llvmpipe refuses the cache without FORCE, and
 # `--terrain-cache 0` turns it off). A forwarded `--sector-visibility filled`
-# on Spyro 2 or 3 owes a `sector-filled:` exit row with an engaged load
-# window, else VACUOUS (exit 3). The sub-tick re-extract and the live
+# or `auto` on Spyro 2 or 3 owes a `sector-filled:` exit row with an engaged
+# load window, else VACUOUS (exit 3). The sub-tick re-extract and the live
 # compose run only under a window: the windowed row covers them.
 # (Flags with values need the `--` separator so the value isn't mistaken
 #  for the trace path.)
@@ -923,8 +923,8 @@ if [[ "$NATIVE_OWED" == 1 && -n "${OPENPETE_TERRAIN_CACHE_FORCE:-}" &&
 fi
 
 # Filled sector visibility engagement: a run forwarding
-# `--sector-visibility filled` on a game with a position-keyed PVS (Spyro 2
-# and 3) must print the `sector-filled:` exit row with at least one engaged
+# `--sector-visibility filled`, or `auto` (filled there), on a game with a
+# position-keyed PVS (Spyro 2 and 3) must print the `sector-filled:` exit row with at least one engaged
 # load window (a walk that computed the filled set and drew a sector the
 # game's verdict hid), else VACUOUS (exit 3). The per-window rows
 # (`[sector-filled-window]`) are echoed. On Spyro 1 filled is the frustum
@@ -932,8 +932,8 @@ fi
 SV_FILLED=0
 for (( _i = 0; _i < ${#PASSTHRU[@]}; _i++ )); do
     case "${PASSTHRU[$_i]}" in
-        --sector-visibility)   SV_FILLED=$([[ "${PASSTHRU[$((_i + 1))]:-}" == filled ]] && echo 1 || echo 0) ;;
-        --sector-visibility=*) SV_FILLED=$([[ "${PASSTHRU[$_i]#--sector-visibility=}" == filled ]] && echo 1 || echo 0) ;;
+        --sector-visibility)   SV_FILLED=$([[ "${PASSTHRU[$((_i + 1))]:-}" =~ ^(filled|auto)$ ]] && echo 1 || echo 0) ;;
+        --sector-visibility=*) SV_FILLED=$([[ "${PASSTHRU[$_i]#--sector-visibility=}" =~ ^(filled|auto)$ ]] && echo 1 || echo 0) ;;
     esac
 done
 if [[ "$SV_FILLED" == 1 && "$GAME" != spyro-1 ]]; then
