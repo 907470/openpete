@@ -153,6 +153,14 @@ pause-unpause|2173|200||2189,2191,2192,2193,2195,2197,2199
 # from VBL 2328 on the tick writer stores 0xA0000090 at g_Spyro+0x20: the player
 # draw cues the model colour table toward far colour (0x90, 0, 0) at IR0 0xA00.
 colour-cheat-red|2400|100||2400,2401,2500,2600
+# big-head-cheat: the pause-menu big head cheat (Up x4, R1 x4, Circle) sets
+# D_800698BE; the player draw scales the head matrix by D_800698C0 (2.0)
+# (spyrodraw.s 0x800422A4), which the native player part transform omits.
+big-head-cheat|2400|100||2300,2400
+# flat-cheat: the pause-menu flat cheat (Left Right Left Right L2 R2 L2 R2
+# Square) sets D_800698BF; the player draw scales the body matrix's first
+# column by 0x200 (spyrodraw.s 0x800421C8), which the native path omits.
+flat-cheat|2400|100||2300,2400
 # credits-cheat: the pause-menu credits cheat from Summer Forest (Square,
 # Circle x3, then Left, Right x3) reaches the credits at VBL 2264. 3678 and
 # 4572 are sub-tick presents with credits letters flying in and departing:
