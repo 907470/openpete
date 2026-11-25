@@ -8,7 +8,8 @@
 # nothing about the cache and is VACUOUS, never PASS.
 #
 # Legs (--leg selects one; the default set is level-edges, squeeze-bk2,
-# consolidate, store, failed-edge, steady-pose, custom-level, rewind-hold):
+# consolidate, store, failed-edge, steady-pose, custom-level, rewind-hold,
+# runahead-bk2):
 #   level-edges   the attract demo (boot to title, --frame-limit
 #                 DEMO_LIMIT) at the content-estimate sizing: claims_sum=0,
 #                 failed_edges=0, and svc_fulfilled equal to the level
@@ -94,6 +95,21 @@
 #                 ring_depth_max<7. A binary that reports the rewind
 #                 summary's presented draws replayed unseen must report 0
 #                 (unseen_last).
+#   runahead-bk2  Spyro 1 dark-passage-level-transition under --runahead 2
+#                 with OPENPETE_RA_PREDICT_CHECK=1. A host iteration runs
+#                 the committed tick and a speculation, and only the
+#                 speculation head's scene is presented. Over the run (the
+#                 [tcf] bake lines between consecutive `[canonscene` lines,
+#                 one presented scene per interval) a presented scene bakes
+#                 each sector at most once: ra_repeats=0, the bakes past
+#                 each interval's distinct sectors summed (ra_bakes and
+#                 ra_scenes are reported; ra_scenes=0 or ra_bakes=0 is
+#                 VACUOUS). afail_sum=0, ring_depth_max<7, the
+#                 `[ra-predict]` row present with mismatch=0, and a binary
+#                 that reports the runahead summary's presented draws built
+#                 unseen must report 0 past those on a speculation that left
+#                 gameplay (ra_unseen_presented; ra_unseen_left, a draw the
+#                 departure made the last, is reported).
 #
 # --exe PATH drives another binary with the same legs (a build without
 # growth reports claims>0 on the squeeze legs, which is the separation).
@@ -163,7 +179,7 @@ field() {  # tag name
 
 fail=0
 ran=0
-want() { [[ "$LEG" == "$1" || ( -z "$LEG" && " level-edges squeeze-bk2 consolidate store failed-edge steady-pose custom-level rewind-hold " == *" $1 "* ) ]]; }
+want() { [[ "$LEG" == "$1" || ( -z "$LEG" && " level-edges squeeze-bk2 consolidate store failed-edge steady-pose custom-level rewind-hold runahead-bk2 " == *" $1 "* ) ]]; }
 # check tag expr...: each expr is name<op>value over the row's fields.
 check() {
     local tag="$1"; shift
@@ -325,6 +341,44 @@ if want rewind-hold; then
         [[ "$afail" == 0 ]] || { echo "[tercache-growth] leg=rewind-hold FAIL (afail_sum=0, read $afail)"; fail=1; }
         [[ "${unseen_last:-0}" == 0 ]] ||
             { echo "[tercache-growth] leg=rewind-hold FAIL (unseen_last=0, read $unseen_last)"; fail=1; }
+    fi
+fi
+
+# The runahead row: bakes per presented scene against the scene's distinct
+# sectors, the prediction check and the arena and ring census at exit.
+if want runahead-bk2; then
+    if [[ "$GAME" != spyro-1 ]]; then
+        echo "[tercache-growth] leg=runahead-bk2 SKIP (the bk2 is a Spyro 1 row)"
+    else
+        ran=1
+        mapfile -t RA_ARGS < <(grep -v '^#' "games/$GAME/bk2/$BK2.bk2.args" | tr ' ' '\n' | sed '/^$/d')
+        run_leg runahead-bk2 6000 OPENPETE_TERRAIN_GPU_DBG=1 OPENPETE_TC_DBG=1 \
+            OPENPETE_FREEZE_LEG_PROBE=1 OPENPETE_RA_PREDICT_CHECK=1 -- \
+            --bk2 "games/$GAME/bk2/$BK2.bk2" --bk2-stop-on-end "${RA_ARGS[@]}" --runahead 2
+        read -r rb rd rr rs < <(awk '
+            /^\[canonscene f=/ { b += nb; d += nd; s++; nb = 0; nd = 0; delete seen; next }
+            /^\[tcf\]/ {
+                nb++; m = $0; sub(/.* sec=/, "", m); sub(/ .*/, "", m)
+                if (!(m in seen)) { seen[m] = 1; nd++ } }
+            END { print b + 0, d + 0, b - d, s + 0 }' "$OUT/runahead-bk2.log")
+        afail="$(grep -o 'afail=[0-9,]*' "$OUT/runahead-bk2.log" | tail -1 | cut -d= -f2 |
+            tr ',' '\n' | awk '{ t += $1 } END { print t + 0 }')"
+        mism="$(sed -n 's/^\[ra-predict\] checked=[0-9]* mismatch=\([0-9]*\).*/\1/p' "$OUT/runahead-bk2.log" | tail -1)"
+        checked="$(sed -n 's/^\[ra-predict\] checked=\([0-9]*\).*/\1/p' "$OUT/runahead-bk2.log" | tail -1)"
+        unseen_pres="$(sed -n 's/.*presented draws built unseen: \([0-9]*\).*/\1/p' "$OUT/runahead-bk2.log" | tail -1)"
+        unseen_left="$(sed -n 's/.*presented draws built unseen: [0-9]* (\([0-9]*\) on a speculation that left.*/\1/p' "$OUT/runahead-bk2.log" | tail -1)"
+        [[ -n "$unseen_pres" ]] && unseen_pres=$((unseen_pres - ${unseen_left:-0}))
+        echo "[tercache-growth] leg=runahead-bk2 scenes=$rs ra_bakes=$rb ra_distinct=$rd ra_repeats=$rr afail_sum=$afail ra_predict_checked=${checked:-none} mismatch=${mism:-none} ra_unseen_presented=${unseen_pres:-none} ra_unseen_left=${unseen_left:-none}"
+        check runahead-bk2 ring_depth_max\<7
+        [[ "$rs" -gt 0 && "$rb" -gt 0 ]] ||
+            { echo "[tercache-growth] leg=runahead-bk2 VACUOUS (scenes=$rs ra_bakes=$rb)"; fail=1; }
+        [[ "${checked:-0}" -gt 0 ]] ||
+            { echo "[tercache-growth] leg=runahead-bk2 VACUOUS (ra-predict checked=${checked:-none})"; fail=1; }
+        [[ "$rr" == 0 ]] || { echo "[tercache-growth] leg=runahead-bk2 FAIL (ra_repeats=0, read $rr)"; fail=1; }
+        [[ "$afail" == 0 ]] || { echo "[tercache-growth] leg=runahead-bk2 FAIL (afail_sum=0, read $afail)"; fail=1; }
+        [[ "${mism:-x}" == 0 ]] || { echo "[tercache-growth] leg=runahead-bk2 FAIL (mismatch=0, read ${mism:-none})"; fail=1; }
+        [[ "${unseen_pres:-0}" == 0 ]] ||
+            { echo "[tercache-growth] leg=runahead-bk2 FAIL (ra_unseen_presented=0, read $unseen_pres)"; fail=1; }
     fi
 fi
 
