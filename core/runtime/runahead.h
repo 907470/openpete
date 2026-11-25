@@ -123,6 +123,9 @@ extern unsigned s_ra_pc_checked, s_ra_pc_mismatches, s_ra_pc_invalidated;
 extern unsigned long long s_ra_deferred[2];
 extern unsigned long long s_ra_adopted;
 extern unsigned long long s_ra_left[2];
+extern unsigned long long s_ra_unseen_presented OP_GUARDED_BY(sim);  /* presented draws predicted unseen */
+extern unsigned long long s_ra_unseen_left OP_GUARDED_BY(sim);       /* of those, on a speculation that left gameplay before its last tick */
+extern unsigned long long s_ra_seen_early OP_GUARDED_BY(sim);        /* draws predicted seen that a later draw of the same scene followed */
 
 /* What one tick's runahead lead did. */
 typedef enum {

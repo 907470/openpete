@@ -14,6 +14,7 @@
 #include "openpete_mods.h"
 #include "openpete_psx.h"
 #include "openpete_state.h"
+#include "openpete_rewind.h"
 #include "openpete_time.h"
 #include "game_extras.h"
 #include "../rhi/rhi_gpu_audit.h"
@@ -131,6 +132,9 @@ void ra_pc_record_led(void) {
 unsigned long long s_ra_deferred[2];
 unsigned long long s_ra_adopted = 0;  /* speculations adopted: no rollback at the snapshot's park site */
 unsigned long long s_ra_left[2];  /* speculations that left gameplay: [0] rolled back, [1] adopted */
+unsigned long long s_ra_unseen_presented OP_GUARDED_BY(sim) = 0;
+unsigned long long s_ra_seen_early OP_GUARDED_BY(sim) = 0;
+unsigned long long s_ra_unseen_left OP_GUARDED_BY(sim) = 0;
 
 /** @brief Count one runahead snapshot (kind 0) or rollback (kind 1) deferred to a final yield.
  * @param kind 0 for a snapshot, 1 for a rollback. */
@@ -199,6 +203,8 @@ static struct {
     uint16_t pbits;              /* P1 pad bits of the previous speculation */
     unsigned char pax[4];        /* P1 analog axes of the previous speculation */
     int have;                    /* pbits and pax hold a previous speculation's input */
+    int anchored;                /* the speculation counts loop-anchor ticks */
+    uint32_t t0;                 /* the loop-anchor count at the speculation's start */
 } s_ra;
 
 /* Documented at the declaration in run_internal.h. */
@@ -374,18 +380,43 @@ static void ra_input_edge_update(void)
     s_ra.have = 1;
 }
 
+/* The draws of the iteration in progress: the committed tick's and its
+ * speculation's, for openpete_draw_unseen. */
+static draw_run_t s_ra_run OP_GUARDED_BY(sim) = { 0u, DRAW_RUN_NONE, 2u, 0, 0, 0u };
+
+/** @brief Report whether a speculation may follow the committed tick: runahead is armed with its snapshot and gameplay is live.
+ * @return 1 when it may, else 0. */
+static int ra_live(void) OP_REQUIRES(sim)
+{
+    return s_ra.n > 0 && s_ra.snap && game_is_gameplay_live(&g_game.cpu);
+}
+
+/* Documented at the declaration in openpete_fiber.h. */
+int openpete_draw_unseen(void) OP_REQUIRES(sim)
+{
+    if (openpete_replaying) return openpete_rewind_draw_unseen();
+    if (!openpete_speculative) return draw_run_note(&s_ra_run, ra_live());
+    if (s_ra.anchored)
+        return draw_run_note(&s_ra_run,
+                             openpete_loop_anchor_ticks() - s_ra.t0 < (uint32_t)s_ra.n);
+    return draw_run_note(&s_ra_run, draw_run_frame_unseen(&s_ra_run, openpete_frame));
+}
+
 /** @brief Run the speculated VBLs: runahead_n game ticks counted by the loop anchor, or 2N yields without one.
  *
  * Ends at the next final yield once the tick count is reached (where the
  * rollback may load). The bound caps a speculation that never reaches one.
+ * The anchor count at the start and the last yield's frame are kept for
+ * openpete_draw_unseen.
  * @param left Set when the speculation left gameplay (a load, a cutscene). */
 static void ra_speculate_ticks(int* left)
 {
-    const uint32_t ra_t0 = openpete_loop_anchor_ticks();
-    const int ra_ticks = openpete_game_runtime()->loop_anchor_pc != 0u;
-    for (int v = 0; v < (ra_ticks ? 8 * s_ra.n + 16 : 2 * s_ra.n); v++) {
-        if (ra_ticks && v > 0 && openpete_yield_final &&
-            openpete_loop_anchor_ticks() - ra_t0 >= (uint32_t)s_ra.n)
+    s_ra.t0 = openpete_loop_anchor_ticks();
+    s_ra.anchored = openpete_game_runtime()->loop_anchor_pc != 0u;
+    draw_run_aim(&s_ra_run, openpete_frame + 2u * (unsigned)s_ra.n);
+    for (int v = 0; v < (s_ra.anchored ? 8 * s_ra.n + 16 : 2 * s_ra.n); v++) {
+        if (s_ra.anchored && v > 0 && openpete_yield_final &&
+            openpete_loop_anchor_ticks() - s_ra.t0 >= (uint32_t)s_ra.n)
             break;
         unsigned bf = openpete_frame;
         game_on_frame_pre(&g_game.cpu, openpete_frame);
@@ -485,8 +516,7 @@ static void ra_end_away(int left, int adopted) OP_REQUIRES(sim)
 runahead_lead_t runahead_lead(void) OP_REQUIRES(sim)
 {
     runahead_lead_t r = { RA_NONE, false };
-    int ra_want = (s_ra.n > 0 && s_ra.snap &&
-                   game_is_gameplay_live(&g_game.cpu));
+    const int ra_want = ra_live();
     int ra_left = 0;      /* the speculation left gameplay */
     int ra_adopted = 0;   /* the snapshot's park site did not recur: no rollback */
     bool ra_speculated = false;
@@ -507,6 +537,13 @@ runahead_lead_t runahead_lead(void) OP_REQUIRES(sim)
         host_trace_ra(HT_RA_SPECULATED);
     }
     ra_end_away(ra_left, ra_adopted);
+    /* The scene the present shows is complete unless a speculation is owed. */
+    if (!s_ra.owed && draw_run_close(&s_ra_run, &s_ra_unseen_presented, &s_ra_seen_early)) {
+        s_ra_unseen_left += (unsigned long long)(ra_left != 0);
+        OPL_DEBUG_F("runahead", "presented draw at f=%u was predicted unseen (speculated=%d "
+                    "left=%d adopted=%d anchor ticks=%u)", openpete_frame, ra_speculated, ra_left,
+                    ra_adopted, openpete_loop_anchor_ticks() - s_ra.t0);
+    }
     r.skip_capture = (ra_want && !ra_speculated && !ra_left) || ra_adopted;
     if (ra_speculated)
         r.outcome = ra_adopted ? RA_ADOPTED : ra_left ? RA_LEFT : RA_SPECULATED;

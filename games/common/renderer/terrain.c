@@ -43,7 +43,6 @@
 // Gated by OPENPETE_TERRAIN_VERIFY (dump/A/B) or a native renderer mode (feed).
 
 #include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
-#include "openpete_rewind.h"  /* openpete_rewind_draw_unseen */
 #include "openpete_thread_roles.h"
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (read_word, gte_ctrl, ...) */
@@ -11148,8 +11147,8 @@ static void tgpu_free_slot(tgpu_slot_t* T) {
 }
 
 static int s_tgpu_tabwait;   /* colour-table rolls refused for want of a released entry (census) */
-static int s_tgpu_unseen OP_GUARDED_BY(sim);   /* this build's scene is not presented (openpete_rewind_draw_unseen) */
-static long s_tgpu_unseen_claims OP_GUARDED_BY(sim);   /* sectors claimed on unseen replayed ticks (census) */
+static int s_tgpu_unseen OP_GUARDED_BY(sim);   /* this build's scene is not presented (openpete_draw_unseen); thread-roles: the canonical build sets and reads it on sim */
+static long s_tgpu_unseen_claims OP_GUARDED_BY(sim);   /* sectors claimed on unseen draws (census); thread-roles: counted by the canonical build on sim */
 static long s_tgpu_replay_seen OP_GUARDED_BY(sim);     /* canonical builds of replayed ticks that are presented (census) */
 
 /** @brief Releases a slot's colour-table ring through the store's defer window.
@@ -11700,7 +11699,7 @@ static int tgpu_claim_retry(const tgpu_slot_t* T) {
 #define TGPU_BUDGET_US_DEFAULT 1000
 #define TGPU_BUDGET_AGE 8u
 #define TGPU_CLAIM_BUDGET 6
-/* A sector whose cached state is not current on an unseen replayed tick
+/* A sector whose cached state is not current on an unseen draw
  * (tgpu_ensure_unseen): the CPU walk draws it, the slot is untouched. */
 #define TGPU_CLAIM_UNSEEN 7
 enum { TGPU_BUD_OFF, TGPU_BUD_INLINE, TGPU_BUD_COLLECT, TGPU_BUD_RESOLVE };
@@ -16296,7 +16295,7 @@ static int tgpu_slot_stale(const tgpu_slot_t* T, const tscache_t* SC, int with_v
              || tgpu_claim_retry(T);
 }
 
-/** @brief Validates a sector on an unseen replayed tick without writing the cache: a slot whose bake, position ring and colour table are current is drawn from the GPU, any other sector claims.
+/** @brief Validates a sector on an unseen draw without writing the cache: a slot whose bake, position ring and colour table are current is drawn from the GPU, any other sector claims.
  *
  * A claim leaves the slot untouched, so the next build that is not unseen
  * finds the same stale terms and bakes the sector once.
@@ -16485,7 +16484,7 @@ static void tgpu_fmt_arenas(char* out, int cap, const uint32_t* num, const uint3
  * baked to key per drain sub-cell (FF_KEYCELLS), the previous-tick store's
  * high-water mark, capacity, refused allocations and releases past its
  * deferred list, the colour-table rolls refused for want of a released
- * ring entry, the sectors claimed on unseen replayed ticks, and the
+ * ring entry, the sectors claimed on unseen draws, and the
  * canonical builds of presented replayed ticks. A `high`
  * equal to its `cap` with no overflow behind it is a clamp, not a demand
  * figure. */
@@ -23532,13 +23531,14 @@ static void terrain_defer_census(void) {
  *
  * Builds the native terrain for the draw's occlusion group, opens the native
  * scene for openpete_frame, and pushes the built triangles to it. A draw of
- * a replayed tick whose scene is not presented (openpete_rewind_draw_unseen)
- * writes nothing to the terrain cache (tgpu_ensure_unseen).
+ * a replayed or runahead tick whose scene is not presented
+ * (openpete_draw_unseen) writes nothing to the terrain cache
+ * (tgpu_ensure_unseen).
  * @param cpu      guest CPU state
  * @param occGroup the world draw's occlusion-group argument (a0), -1 = walk all */
 static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) OP_REQUIRES(sim) {
     OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_TERRAIN);
-    s_tgpu_unseen = openpete_rewind_draw_unseen();
+    s_tgpu_unseen = openpete_draw_unseen();
     s_tgpu_replay_seen += openpete_replaying && !s_tgpu_unseen;
     render_material_level_push(cpu);             /* the bake's level keys */
     { OP_PROF_ACCUM_SCOPE("terrain.build");

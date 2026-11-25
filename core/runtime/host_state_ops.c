@@ -427,25 +427,49 @@ static bool rewind_fault_short(unsigned long long step) {
     return s_at > 0 && step == (unsigned long long)s_at;
 }
 
-/* The replay in progress, for openpete_rewind_draw_unseen: its target, the
- * frames of its last two canonical world draws, the last draw's verdict, and
- * its draws predicted seen. */
-#define REWIND_NO_DRAW 0xFFFFFFFFu
-static struct {
-    unsigned target, draw_at, period;
-    int last_unseen;
-    unsigned seen;
-} s_replay OP_GUARDED_BY(sim) = { 0u, REWIND_NO_DRAW, 2u, 0, 0u };
+/* Documented at the declaration in host_state_ops.h. */
+void draw_run_aim(draw_run_t* r, unsigned target) {
+    r->target = target;
+    r->draw_at = DRAW_RUN_NONE;
+    r->period = 2u;
+}
+
+/* Documented at the declaration in host_state_ops.h. */
+int draw_run_frame_unseen(draw_run_t* r, unsigned frame) {
+    if (r->draw_at != DRAW_RUN_NONE && frame > r->draw_at) r->period = frame - r->draw_at;
+    r->draw_at = frame;
+    return frame + r->period < r->target;
+}
+
+/* Documented at the declaration in host_state_ops.h. */
+int draw_run_note(draw_run_t* r, int unseen) {
+    r->last_unseen = unseen;
+    r->drawn = 1;
+    r->seen += !unseen;
+    return unseen;
+}
+
+/* Documented at the declaration in host_state_ops.h. */
+int draw_run_close(draw_run_t* r, unsigned long long* unseen_last,
+                   unsigned long long* seen_early) {
+    const int miss = r->drawn && r->last_unseen;
+    if (r->drawn) {
+        *unseen_last += (unsigned long long)miss;
+        *seen_early += r->seen - (unsigned)!r->last_unseen;
+    }
+    r->last_unseen = 0;
+    r->drawn = 0;
+    r->seen = 0u;
+    return miss;
+}
+
+/* The replay in progress, for openpete_rewind_draw_unseen. */
+static draw_run_t s_replay OP_GUARDED_BY(sim) = { 0u, DRAW_RUN_NONE, 2u, 0, 0, 0u };   /* thread-roles: the rewind driver and its replayed draws run on sim */
 
 /* Documented at the declaration in openpete_rewind.h. */
 int openpete_rewind_draw_unseen(void) OP_REQUIRES(sim) {
     if (!openpete_replaying) return 0;
-    if (s_replay.draw_at != REWIND_NO_DRAW && openpete_frame > s_replay.draw_at)
-        s_replay.period = openpete_frame - s_replay.draw_at;
-    s_replay.draw_at = openpete_frame;
-    s_replay.last_unseen = openpete_frame + s_replay.period < s_replay.target;
-    s_replay.seen += !s_replay.last_unseen;
-    return s_replay.last_unseen;
+    return draw_run_note(&s_replay, draw_run_frame_unseen(&s_replay, openpete_frame));
 }
 
 /** @brief Replay logged ticks from a just-loaded keyframe until the frame reaches the target, then count the replay's mispredicted draws.
@@ -459,10 +483,7 @@ int openpete_rewind_draw_unseen(void) OP_REQUIRES(sim) {
  * @param fault_short End after the first replayed yield (harness fault). */
 static void rewind_replay_ticks(const openpete_rewind_kf_t* kf, unsigned target,
                                 bool fault_short) OP_REQUIRES(sim) {
-    s_replay.target = target;
-    s_replay.draw_at = REWIND_NO_DRAW;
-    s_replay.last_unseen = 0;
-    s_replay.seen = 0u;
+    draw_run_aim(&s_replay, target);
     openpete_replaying = 1;
     PsyX_SPUAL_Speculate(1, 0);
     while (openpete_frame < target) {
@@ -479,8 +500,7 @@ static void rewind_replay_ticks(const openpete_rewind_kf_t* kf, unsigned target,
     }
     openpete_replaying = 0;
     PsyX_SPUAL_Speculate(0, 0);
-    s_rewind_unseen_last += (unsigned long long)s_replay.last_unseen;
-    s_rewind_seen_early += s_replay.seen - (s_replay.seen > 0u && !s_replay.last_unseen);
+    (void)draw_run_close(&s_replay, &s_rewind_unseen_last, &s_rewind_seen_early);
 }
 
 /** @brief Step the timeline back one tick: quiet-load the covering keyframe, replay forward to the target with the logged inputs, truncate the future and the bug-report recorder's window past it.
@@ -649,6 +669,9 @@ void state_ops_report(void) OP_REQUIRES(sim) {
     OPL_INFO_F("rewind", "replays short of their target: %llu; input log offset moved: %llu; "
                "presented draws replayed unseen: %llu; seen draws a later draw followed: %llu",
                s_rewind_short, s_rewind_log_moved, s_rewind_unseen_last, s_rewind_seen_early);
+    OPL_INFO_F("runahead", "presented draws built unseen: %llu (%llu on a speculation that left "
+               "gameplay); seen draws a later draw followed: %llu",
+               s_ra_unseen_presented, s_ra_unseen_left, s_ra_seen_early);
     openpete_bugrec_report();
     OPL_INFO_F("savestate", "deferred at an emitted loop site: %llu request(s); first at loop header "
                "0x%08X, feed key %u", s_loop_deferred, s_loop_deferred_header, s_loop_deferred_key);

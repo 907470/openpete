@@ -251,6 +251,21 @@ extern int openpete_replaying;
  * read by the sub-tick feeders. Always 0 with runahead off. */
 extern int openpete_ra_input_edge;
 
+/** @brief Report whether the canonical world draw running now belongs to a tick whose scene the host does not present.
+ *
+ * Called once per canonical world draw. A rewind replay presents its last
+ * draw only (openpete_rewind_draw_unseen). Under runahead the host presents
+ * the speculation head's draw: a speculative draw is unseen while the
+ * speculation has run fewer than the armed depth's ticks by the loop-anchor
+ * count (without a loop anchor, while the frame plus the interval to the
+ * previous speculative draw falls short of the speculation's last yield),
+ * and a committed draw is unseen while runahead is armed and gameplay is
+ * live, the condition under which a speculation follows it. The runahead
+ * lead counts a presented draw that was predicted unseen; it still draws,
+ * through the walk.
+ * @return 1 for an unseen draw, else 0. */
+int openpete_draw_unseen(void) OP_REQUIRES(sim);
+
 /* Fast-boot gate. While set, psyq_VSync(0) bumps `openpete_vbl` without
  * yielding to the host fiber, so the game's Initialize() busy-waits run as
  * fast as the CPU allows (nothing is rendered during them anyway - the

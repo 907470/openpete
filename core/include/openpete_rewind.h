@@ -134,7 +134,8 @@ void openpete_rewind_clear(void);
 
 /** @brief Report whether the canonical world draw running now belongs to a replayed tick whose scene the host does not present.
  *
- * Called once per canonical world draw. While a rewind replays ticks
+ * Called once per canonical world draw, through openpete_draw_unseen
+ * (openpete_fiber.h). While a rewind replays ticks
  * toward its target frame, a draw is predicted to be the replay's last,
  * whose scene the host presents, when the frame plus the interval between
  * the two replayed draws before it (2 VBLs before there are two) reaches

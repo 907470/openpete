@@ -54,6 +54,45 @@ bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) O
  * @return true when the rewind driver moved the timeline (the iteration skips its forward tick). */
 bool state_ops_quiescent(const openpete_options_t* opts, bool paused, bool bk2_active) OP_REQUIRES(sim);
 
+/* A run of guest ticks the host executes in one iteration of which it
+ * presents only the scene of the last canonical world draw (a rewind
+ * replay, a runahead lead): each draw's unseen verdict and the counts its
+ * mispredictions feed. */
+#define DRAW_RUN_NONE 0xFFFFFFFFu
+typedef struct {
+    unsigned target;    /* the frame the run's yields end at */
+    unsigned draw_at;   /* the frame of the run's last draw, DRAW_RUN_NONE before one */
+    unsigned period;    /* VBLs between the run's last two draws, 2 before there are two */
+    int last_unseen;    /* the verdict of the last draw since the last close */
+    int drawn;          /* a draw was noted since the last close */
+    unsigned seen;      /* draws predicted seen since the last close */
+} draw_run_t;
+
+/** @brief Aim a draw run at the frame its yields end at and forget its draw frames.
+ * @param r The run.
+ * @param target The frame the run ends at. */
+void draw_run_aim(draw_run_t* r, unsigned target);
+
+/** @brief Predict from the frame alone whether the draw at @p frame is not the run's last: the frame plus the interval between the run's two previous draws (2 VBLs before there are two) falls short of the target.
+ * @param r The run; its draw frame and interval advance.
+ * @param frame The draw's frame.
+ * @return 1 when the draw is predicted unseen, else 0. */
+int draw_run_frame_unseen(draw_run_t* r, unsigned frame);
+
+/** @brief Record a draw's verdict in the run.
+ * @param r The run.
+ * @param unseen The draw's verdict.
+ * @return @p unseen. */
+int draw_run_note(draw_run_t* r, int unseen);
+
+/** @brief Close the run's presented scene: when a draw was noted, count a last draw predicted unseen and the draws predicted seen that a later draw followed, then clear the verdicts.
+ * @param r The run.
+ * @param unseen_last Incremented when the presented draw was predicted unseen.
+ * @param seen_early Increased by the draws predicted seen before the last.
+ * @return 1 when the presented draw was predicted unseen, else 0. */
+int draw_run_close(draw_run_t* r, unsigned long long* unseen_last,
+                    unsigned long long* seen_early);
+
 /** @brief Log the savestate census: requests deferred to a final yield, runahead deferrals and adoptions, park-site deferrals, the first emitted-loop-site deferral and the bug-report recorder's report. */
 void state_ops_report(void) OP_REQUIRES(sim);
 
