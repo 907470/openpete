@@ -9,7 +9,7 @@ is shared by the Spyro 2 and Spyro 3 ports.
 ## iOS port (experimental fork)
 
 > **Status: work in progress. Nothing here has been confirmed to build or run
-> on iOS yet.** This fork (`907470/openpete`, branch `ios-port`) is an attempt
+> on iOS yet.** This fork (`907470/openpete`, branches `ios-port` and `ios-port-oct`) is an attempt
 > to build OpenPete for iOS arm64 using GitHub Actions on hosted macOS
 > runners. It is not affiliated with the upstream project.
 
@@ -21,11 +21,18 @@ is shared by the Spyro 2 and Spyro 3 ports.
 - `.github/workflows/ios.yml`: a manually triggered workflow on `macos-15`
   that configures and builds the **engine libraries only** (`-DOPENPETE_GAMES=`)
   and uploads the logs.
-- `third_party/PsyCross` now points at the public
-  [OpenDriver2/PsyCross](https://github.com/OpenDriver2/PsyCross) instead of
-  `tyscorp/PsyCross`, which is not publicly readable, so CI cannot clone it.
-  Upstream may lack changes this project depends on, so expect build errors
-  until that is resolved.
+- `third_party/PsyCross` points at the `ios-port` branch of
+  [907470/psycross-archive](https://github.com/907470/psycross-archive)
+  (`5f33a9c`): the SDL3 PsyCross at `9b5e29c` plus three small iOS fixes
+  (clang narrowing, arm64 primitive-tag layout, Apple `LIBCD`). `tyscorp/PsyCross`
+  is not publicly readable, so CI cannot clone it, and the public
+  `OpenDriver2/PsyCross` needs SDL2. The archive's provenance is not verified.
+- **This branch (`ios-port-oct`) is based on OpenPete `ab0b4e7` (2026-10-03),**
+  the last commit that pinned PsyCross `9b5e29c`. Every PsyCross symbol used
+  at that commit exists in the archive. Newer OpenPete needs about 45 PsyCross
+  functions (the `PsyX_SPUFeed_*` audio system, CD hooks, `g_PsyX_Pad_StickMap`)
+  that are only in the private fork, so the `ios-port` branch (current
+  OpenPete) cannot build.
 
 ### Known blockers and planned work
 
