@@ -56,6 +56,9 @@ the scene from gameplay state.
   public PSYQ reimplementation now used as the submodule.
 - **[SDL](https://github.com/libsdl-org/SDL)**, which provides the iOS
   windowing and input layer.
+- **[OpenAL Soft](https://github.com/kcat/openal-soft)** (LGPL-2.0), fetched
+  and built from source for iOS because Apple's OpenAL.framework lacks the
+  extensions PsyCross uses.
 - **[MoltenVK](https://github.com/KhronosGroup/MoltenVK)** (planned) for
   Vulkan on Metal.
 - **[TheMobyCollective](https://github.com/TheMobyCollective)** Spyro
