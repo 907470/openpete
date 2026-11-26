@@ -20,11 +20,14 @@ the scene from gameplay state.
 - `.github/workflows/ios.yml`: a manually triggered workflow on `macos-15`
   that configures and builds the **engine libraries only** (`-DOPENPETE_GAMES=`)
   and uploads the logs.
-- `third_party/PsyCross` now points at the public
-  [OpenDriver2/PsyCross](https://github.com/OpenDriver2/PsyCross) instead of
-  `tyscorp/PsyCross`, which is not publicly readable, so CI cannot clone it.
-  Upstream may lack changes this project depends on, so expect build errors
-  until that is resolved.
+- `third_party/PsyCross` points at
+  [907470/psycross-archive](https://github.com/907470/psycross-archive)
+  (commit `9b5e29c`, 2026-09-20), a publicly readable copy of the SDL3
+  version of PsyCross, because `tyscorp/PsyCross` is not publicly readable and
+  CI cannot clone it. The public `OpenDriver2/PsyCross` was tried first and
+  fails: it requires SDL2, while this project builds SDL3. The archive
+  predates the commit upstream pins (`d19a0c9`), so expect mismatches until
+  that is resolved. Its provenance is not verified.
 
 ### Known blockers and planned work
 
