@@ -8,7 +8,7 @@ name: iOS build (experimental)
 on:
   workflow_dispatch:
   push:
-    branches: [ios-port]
+    branches: [ios-port, ios-port-oct]
 
 jobs:
   engine:
