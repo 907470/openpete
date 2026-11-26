@@ -45,12 +45,23 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-path
 
+      - name: Python for the build fences
+        run: |
+          # The fence scripts run plain `python3` and need tomllib (3.11+).
+          # Xcode's own python3 is 3.9, so put Homebrew's first on PATH and
+          # give the system one tomli as a fallback.
+          echo "$(brew --prefix python)/libexec/bin" >> "$GITHUB_PATH"
+          /usr/bin/python3 -m pip install --user --quiet tomli || true
+          "$(brew --prefix python)/libexec/bin/python3" --version
+          /usr/bin/python3 --version
+
       - name: Configure (iOS arm64, engine only)
         run: |
           cmake --preset ios-arm64 -DOPENPETE_GAMES= 2>&1 | tee configure.log
 
       - name: Build
         run: |
+          which python3; python3 --version
           cmake --build build/ios-arm64 --config Release -- \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee build.log
 
