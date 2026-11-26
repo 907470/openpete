@@ -141,6 +141,8 @@ bool load_domes(const char* game, GameDomes& out, bool read) {
     out.size = (long long)st.st_size;
 #if defined(_WIN32)
     out.mtime_ns = (long long)st.st_mtime * 1000000000LL;
+#elif defined(__APPLE__)
+    out.mtime_ns = (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
 #else
     out.mtime_ns = (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
 #endif
