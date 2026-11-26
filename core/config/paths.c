@@ -8,6 +8,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 #ifdef _WIN32
   #include <direct.h>
@@ -48,6 +51,11 @@ int openpete_exe_dir(char* out, size_t cap) {
     if (wn == 0 || wn >= sizeof wbuf / sizeof wbuf[0]) return -1;
     if (WideCharToMultiByte(CP_ACP, 0, wbuf, -1, buf, (int)sizeof buf, NULL, NULL) <= 0)
         return -1;
+#elif defined(__APPLE__)
+    /* No /proc on Apple platforms (iOS, macOS). May return a non-canonical
+     * path; callers only take its directory. */
+    uint32_t asz = (uint32_t)sizeof buf;
+    if (_NSGetExecutablePath(buf, &asz) != 0) return -1;
 #else
     ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
     if (n <= 0) return -1;
