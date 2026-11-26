@@ -429,7 +429,7 @@ static void sleep_until_posix(op_time_t deadline_ns) {
     struct timespec ts;
     ts.tv_sec  = (time_t)(deadline_ns / OP_NS_PER_SEC);
     ts.tv_nsec = (long)(deadline_ns % OP_NS_PER_SEC);
-#  if defined(CLOCK_MONOTONIC)
+#  if defined(CLOCK_MONOTONIC) && !defined(__APPLE__)  /* Apple libc has no clock_nanosleep */
     /* TIMER_ABSTIME: target an absolute deadline. Restart on EINTR. */
     int rc;
     do {
