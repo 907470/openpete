@@ -50,9 +50,12 @@ jobs:
           # The fence scripts run plain `python3` and need tomllib (3.11+).
           # Xcode's own python3 is 3.9, so put Homebrew's first on PATH and
           # give the system one tomli as a fallback.
-          echo "$(brew --prefix python)/libexec/bin" >> "$GITHUB_PATH"
+          PYBIN="$(brew --prefix python)/bin"
+          ls "$PYBIN" | head -20
+          echo "$PYBIN" >> "$GITHUB_PATH"
           /usr/bin/python3 -m pip install --user --quiet tomli || true
-          "$(brew --prefix python)/libexec/bin/python3" --version
+          "$PYBIN/python3" --version
+          "$PYBIN/python3" -c "import tomllib; print('tomllib ok')"
           /usr/bin/python3 --version
 
       - name: Configure (iOS arm64, engine only)
