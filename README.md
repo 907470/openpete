@@ -8,8 +8,11 @@ is shared by the Spyro 2 and Spyro 3 ports.
 
 ## iOS port (experimental fork)
 
-> **Status: work in progress. Nothing here has been confirmed to build or run
-> on iOS yet.** This fork (`907470/openpete`, branches `ios-port` and `ios-port-oct`) is an attempt
+> **Status: work in progress. On `ios-port-oct` the engine libraries
+> (`openpete_core`, `openpete_rhi`, `openpete_imgui`, plus PsyCross, SDL3,
+> glslang and OpenAL Soft) build for iOS arm64 in CI (Xcode 16.4, iPhoneOS
+> 18.5 SDK). Nothing has been linked into an app or run on a device, no game
+> code is included, and there is no Vulkan-on-Metal path yet.** This fork (`907470/openpete`, branches `ios-port` and `ios-port-oct`) is an attempt
 > to build OpenPete for iOS arm64 using GitHub Actions on hosted macOS
 > runners. It is not affiliated with the upstream project.
 
