@@ -38,6 +38,32 @@ if(EMSCRIPTEN)
         CACHE STRING "OpenAL link flag (Emscripten built-in)" FORCE)
 endif()
 
+# iOS: Apple's OpenAL.framework is a minimal OpenAL 1.1 under <OpenAL/al.h>
+# with none of the OpenAL Soft extensions PsyCross uses (loop points, the
+# loopback device and alcRenderSamplesSOFT, source resampler selection,
+# EFX). Build OpenAL Soft from source (CoreAudio backend, static) and seed
+# the cache vars FindOpenAL.cmake checks, as the MinGW and Emscripten
+# blocks above do. OPENAL_LIBRARY is the target name, so linking it also
+# builds it and pulls its framework dependencies. OpenAL Soft is LGPL-2.0.
+if(IOS)
+    include(FetchContent)
+    set(LIBTYPE STATIC CACHE STRING "" FORCE)
+    set(ALSOFT_UTILS OFF CACHE BOOL "" FORCE)
+    set(ALSOFT_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(ALSOFT_TESTS OFF CACHE BOOL "" FORCE)
+    set(ALSOFT_INSTALL OFF CACHE BOOL "" FORCE)
+    set(ALSOFT_NO_CONFIG_UTIL ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(openal_soft
+        GIT_REPOSITORY https://github.com/kcat/openal-soft.git
+        GIT_TAG 1.24.3
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(openal_soft)
+    set(OPENAL_INCLUDE_DIR "${openal_soft_SOURCE_DIR}/include"
+        CACHE PATH "OpenAL include dir (OpenAL Soft built for iOS)" FORCE)
+    set(OPENAL_LIBRARY OpenAL
+        CACHE STRING "OpenAL target (OpenAL Soft built for iOS)" FORCE)
+endif()
+
 # SDL3 is built from the third_party/SDL submodule, pinned to the
 # release-3.4.x branch (currently the release-3.4.16 tag) rather than to
 # main: the release branch carries the 2026 Steam Controller support the
