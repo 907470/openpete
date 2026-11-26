@@ -6,3 +6,12 @@ notes: single-file cooperative-fiber lib; vendored verbatim. amd64.c is the
        fiber.c is the Windows fallback used by the MinGW cross-build path.
        settings.h is the build-config sibling both arch sources need. No
        local patches.
+
+2026-11-26 additions for the iOS port (ios-port branch):
+  aarch64.c       - verbatim from higan-emu/libco (e18e09d, ISC), for non-Apple arm64.
+  aarch64_apple.c - ours, derived from aarch64.c. Same 25-instruction swap routine
+                    assembled into the text section instead of a data array +
+                    mprotect(PROT_EXEC), which iOS forbids without the JIT entitlement.
+                    Instruction words verified identical to aarch64.c's table.
+  libco.c         - dispatches __aarch64__ && __APPLE__ to aarch64_apple.c.
+  (libco.c also carries earlier local patches: Win32 fiber.c and Emscripten selection.)

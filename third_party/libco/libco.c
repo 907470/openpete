@@ -26,6 +26,9 @@
     #include "amd64.c"
   #elif defined(__arm__)
     #include "arm.c"
+  #elif defined(__aarch64__) && defined(__APPLE__)
+    /* iOS forbids mprotect(PROT_EXEC) on data: assembled swap routine. */
+    #include "aarch64_apple.c"
   #elif defined(__aarch64__)
     #include "aarch64.c"
   #elif defined(__powerpc64__) && defined(_CALL_ELF) && _CALL_ELF == 2
