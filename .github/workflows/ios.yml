@@ -14,6 +14,11 @@ jobs:
   engine:
     runs-on: macos-15
     timeout-minutes: 90
+    env:
+      # The project's fence scripts refuse a clone whose git hooks are not
+      # armed; this is the documented escape (docs/src/developer/building.md),
+      # which the project's own container builds also set.
+      OPENPETE_NO_COMMITS: "1"
     defaults:
       run:
         # pipefail: without it `cmake ... | tee log` reports tee's exit status
@@ -23,6 +28,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: false
+
+      - name: Arm the repo's git hooks (the fences check for this)
+        run: git config core.hooksPath githooks
 
       - name: Init only the submodules the configure reads
         run: |
