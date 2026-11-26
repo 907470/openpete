@@ -14,6 +14,11 @@ jobs:
   engine:
     runs-on: macos-15
     timeout-minutes: 90
+    defaults:
+      run:
+        # pipefail: without it `cmake ... | tee log` reports tee's exit status
+        # and a failed configure shows as a green step.
+        shell: bash -eo pipefail {0}
     steps:
       - uses: actions/checkout@v4
         with:
