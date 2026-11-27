@@ -13,8 +13,11 @@ is shared by the Spyro 2 and Spyro 3 ports.
 > glslang and OpenAL Soft) build for iOS arm64 in CI (Xcode 16.4, iPhoneOS
 > 18.5 SDK). The renderer now has a MoltenVK loader path (Vulkan on Metal,
 > with `VK_KHR_portability_subset` enabled) and CI fetches the MoltenVK v1.4.2
-> iOS framework. Nothing has been linked into an app or run on a device, and no
-> game code is included.** This fork (`907470/openpete`, branches `ios-port` and `ios-port-oct`) is an attempt
+> iOS framework. CI also packages the RHI smoke test as an unsigned `.ipa`
+> (MoltenVK embedded), and it has been run on a physical iPhone: the window,
+> MoltenVK, the Vulkan renderer, the shaders and the PSX texture decode (4, 8 and
+> 16 bpp) all render correctly. No game code is included and the game itself
+> has not been run.** This fork (`907470/openpete`, branches `ios-port` and `ios-port-oct`) is an attempt
 > to build OpenPete for iOS arm64 using GitHub Actions on hosted macOS
 > runners. It is not affiliated with the upstream project.
 
@@ -44,10 +47,10 @@ is shared by the Spyro 2 and Spyro 3 ports.
 - **No game builds in public CI.** The recompiled game C needs your own PSYQ
   SDK headers and disc dump. Neither may be committed to a public repository.
 - **Rendering.** The renderer loads Vulkan at runtime through volk. On iOS it
-  now loads `MoltenVK.framework` through SDL (`rhi_prepare_vulkan_library`) and
-  enables the portability subset. It compiles in CI but is untested: the app
-  target that embeds the framework does not exist yet, and shader/feature gaps
-  under Metal are unknown.
+  loads `MoltenVK.framework` through SDL (`rhi_prepare_vulkan_library`) and
+  enables the portability subset. The smoke test renders correctly on a device;
+  the full game renderer (more shaders, features and load) is still untested
+  under Metal.
 - **Static linkage only.** iOS cannot load unsigned code or compile on the
   device, so the first-boot module build and shared modules do not apply, and
   mods cannot be loaded as dynamic libraries.
