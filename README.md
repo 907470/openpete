@@ -11,8 +11,10 @@ is shared by the Spyro 2 and Spyro 3 ports.
 > **Status: work in progress. On `ios-port-oct` the engine libraries
 > (`openpete_core`, `openpete_rhi`, `openpete_imgui`, plus PsyCross, SDL3,
 > glslang and OpenAL Soft) build for iOS arm64 in CI (Xcode 16.4, iPhoneOS
-> 18.5 SDK). Nothing has been linked into an app or run on a device, no game
-> code is included, and there is no Vulkan-on-Metal path yet.** This fork (`907470/openpete`, branches `ios-port` and `ios-port-oct`) is an attempt
+> 18.5 SDK). The renderer now has a MoltenVK loader path (Vulkan on Metal,
+> with `VK_KHR_portability_subset` enabled) and CI fetches the MoltenVK v1.4.2
+> iOS framework. Nothing has been linked into an app or run on a device, and no
+> game code is included.** This fork (`907470/openpete`, branches `ios-port` and `ios-port-oct`) is an attempt
 > to build OpenPete for iOS arm64 using GitHub Actions on hosted macOS
 > runners. It is not affiliated with the upstream project.
 
@@ -41,8 +43,11 @@ is shared by the Spyro 2 and Spyro 3 ports.
 
 - **No game builds in public CI.** The recompiled game C needs your own PSYQ
   SDK headers and disc dump. Neither may be committed to a public repository.
-- **Rendering.** The renderer loads Vulkan at runtime through volk. iOS needs
-  MoltenVK (Vulkan to Metal) linked in and a Metal surface path.
+- **Rendering.** The renderer loads Vulkan at runtime through volk. On iOS it
+  now loads `MoltenVK.framework` through SDL (`rhi_prepare_vulkan_library`) and
+  enables the portability subset. It compiles in CI but is untested: the app
+  target that embeds the framework does not exist yet, and shader/feature gaps
+  under Metal are unknown.
 - **Static linkage only.** iOS cannot load unsigned code or compile on the
   device, so the first-boot module build and shared modules do not apply, and
   mods cannot be loaded as dynamic libraries.
@@ -67,7 +72,7 @@ is shared by the Spyro 2 and Spyro 3 ports.
 - **[OpenAL Soft](https://github.com/kcat/openal-soft)** (LGPL-2.0), fetched
   and built from source for iOS because Apple's OpenAL.framework lacks the
   extensions PsyCross uses.
-- **[MoltenVK](https://github.com/KhronosGroup/MoltenVK)** (planned) for
+- **[MoltenVK](https://github.com/KhronosGroup/MoltenVK)** (v1.4.2 iOS release) for
   Vulkan on Metal.
 - **[TheMobyCollective](https://github.com/TheMobyCollective)** Spyro
   decompilations, used as submodules by upstream.
