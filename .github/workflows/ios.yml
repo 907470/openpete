@@ -104,13 +104,18 @@ jobs:
           echo "app: $APP"
           ls -la "$APP" "$APP/Frameworks" || true
           plutil -p "$APP/Info.plist"
-          mkdir -p dist && ditto -c -k --keepParent "$APP" dist/OpenPeteRHI-unsigned.app.zip
+          # An .ipa is a zip with the .app under Payload/. Unsigned: SideStore
+          # or LiveContainer re-signs it on the device.
+          rm -rf ipa dist && mkdir -p ipa/Payload dist
+          cp -R "$APP" ipa/Payload/
+          (cd ipa && zip -qry ../dist/OpenPeteRHI-unsigned.ipa Payload)
+          unzip -l dist/OpenPeteRHI-unsigned.ipa | head -20
 
       - name: Upload the app
         uses: actions/upload-artifact@v4
         with:
           name: ios-rhi-app-unsigned
-          path: dist/OpenPeteRHI-unsigned.app.zip
+          path: dist/OpenPeteRHI-unsigned.ipa
 
       - name: Upload logs
         if: always()
