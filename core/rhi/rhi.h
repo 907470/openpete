@@ -32,6 +32,18 @@ struct SDL_Window;
 
 typedef struct rhi_device rhi_device;
 
+/** @brief Make the platform's Vulkan implementation loadable, before the Vulkan window exists.
+ *
+ * Call after SDL_Init(SDL_INIT_VIDEO) and before SDL_CreateWindow with
+ * SDL_WINDOW_VULKAN. On iOS there is no system Vulkan loader: the app embeds
+ * the MoltenVK framework, and this loads it through SDL_Vulkan_LoadLibrary
+ * (@rpath/MoltenVK.framework/MoltenVK, then the app's Frameworks directory),
+ * which is also where rhi_create takes vkGetInstanceProcAddr from. On every
+ * other platform SDL finds the loader itself and this does nothing.
+ * @return false only when the iOS MoltenVK framework could not be loaded (the
+ *         reason is logged to stderr); true otherwise. */
+bool rhi_prepare_vulkan_library(void);
+
 /** @brief Create a windowed device against an SDL window created with SDL_WINDOW_VULKAN.
  *
  * The calling thread claims the display (rhi_display_claim) and presents

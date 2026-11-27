@@ -58,6 +58,28 @@ jobs:
           "$PYBIN/python3" -c "import tomllib; print('tomllib ok')"
           /usr/bin/python3 --version
 
+      - name: Fetch MoltenVK (iOS) and inspect the release
+        # Informational for now: the engine loads MoltenVK at run time
+        # (dlopen through SDL), so nothing links against it yet. The app target
+        # will embed MoltenVK.framework from this release.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MOLTENVK_VERSION: v1.4.2
+        run: |
+          mkdir -p mvk && cd mvk
+          gh release view "$MOLTENVK_VERSION" --repo KhronosGroup/MoltenVK \
+            --json assets -q '.assets[] | "\(.name)  \(.size)"'
+          gh release download "$MOLTENVK_VERSION" --repo KhronosGroup/MoltenVK \
+            --pattern '*ios*'
+          ls -la
+          for t in *.tar; do tar xf "$t"; done
+          find . -maxdepth 6 -name '*.xcframework' -o -maxdepth 6 -name 'Info.plist' -path '*MoltenVK*' | head -20
+          find . -path '*dynamic*' -name MoltenVK -type f | head
+          for f in $(find . -path '*ios-arm64/*' -name MoltenVK -type f | head -3); do
+            echo "== $f"; lipo -info "$f" || true; file "$f" || true
+          done
+
       - name: Configure (iOS arm64, engine only)
         run: |
           cmake --preset ios-arm64 -DOPENPETE_GAMES= 2>&1 | tee configure.log

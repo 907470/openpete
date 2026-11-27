@@ -20,6 +20,10 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1167,11 +1171,14 @@ static bool pick_physical_and_device(rhi_device *dev)
     if (dev_avail)
         vkEnumerateDeviceExtensionProperties(dev->phys, NULL, &dev_ext_n, dev_avail);
     bool have_present_id = false, have_present_wait = false;
+    bool have_portability = false;
     for (uint32_t i = 0; i < dev_ext_n && dev_avail; i++) {
         if (strcmp(dev_avail[i].extensionName, "VK_KHR_present_id") == 0)
             have_present_id = true;
         else if (strcmp(dev_avail[i].extensionName, "VK_KHR_present_wait") == 0)
             have_present_wait = true;
+        else if (strcmp(dev_avail[i].extensionName, "VK_KHR_portability_subset") == 0)
+            have_portability = true;
     }
     free(dev_avail);
 
@@ -1205,8 +1212,21 @@ static bool pick_physical_and_device(rhi_device *dev)
                 ? "ENABLED (costs pacing; measurement runs only)" : "off");
     dev->has_present_timing = pt_want && !dev->headless &&
                               have_present_id && have_present_wait;
-    const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-                              "VK_KHR_present_id", "VK_KHR_present_wait" };
+    /* Swapchain (windowed), present id/wait (only when timing is on), then
+     * VK_KHR_portability_subset. A device that advertises the last one (every
+     * Metal-backed device, i.e. MoltenVK on iOS) is a non-conformant subset
+     * of Vulkan, and the spec requires the application to enable it
+     * (VUID-VkDeviceCreateInfo-pProperties-04451). */
+    const char *dev_ext[4];
+    uint32_t dev_ext_cnt = 0;
+    if (!dev->headless) {
+        dev_ext[dev_ext_cnt++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+        if (dev->has_present_timing) {
+            dev_ext[dev_ext_cnt++] = "VK_KHR_present_id";
+            dev_ext[dev_ext_cnt++] = "VK_KHR_present_wait";
+        }
+    }
+    if (have_portability) dev_ext[dev_ext_cnt++] = "VK_KHR_portability_subset";
     VkPhysicalDevicePresentWaitFeaturesKHR feat_wait = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
         .presentWait = VK_TRUE,
@@ -1222,9 +1242,8 @@ static bool pick_physical_and_device(rhi_device *dev)
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &qci,
         /* No swapchain extension when there's no surface to present to. */
-        .enabledExtensionCount = dev->headless ? 0u
-                                 : (dev->has_present_timing ? 3u : 1u),
-        .ppEnabledExtensionNames = dev->headless ? NULL : dev_ext,
+        .enabledExtensionCount = dev_ext_cnt,
+        .ppEnabledExtensionNames = dev_ext_cnt ? dev_ext : NULL,
         .pEnabledFeatures = &enable,
     };
     VkResult r = vkCreateDevice(dev->phys, &dci, NULL, &dev->device);
@@ -2785,6 +2804,25 @@ static void pipeline_cache_close(rhi_device *dev)
  * device and Mesa strings.
  * Returns NULL, with the device torn down, on any failure.
  */
+bool rhi_prepare_vulkan_library(void)
+{
+#if defined(__APPLE__) && TARGET_OS_IOS
+    /* App Store apps cannot rely on a system loader; MoltenVK ships as a
+     * dynamic framework inside the bundle. SDL refcounts the load, so the
+     * implicit load SDL_CreateWindow does for SDL_WINDOW_VULKAN reuses it. */
+    static const char *const paths[] = {
+        "@rpath/MoltenVK.framework/MoltenVK",
+        "@executable_path/Frameworks/MoltenVK.framework/MoltenVK",
+    };
+    for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++)
+        if (SDL_Vulkan_LoadLibrary(paths[i])) return true;
+    RHI_LOG("could not load the MoltenVK framework: %s\n", SDL_GetError());
+    return false;
+#else
+    return true;
+#endif
+}
+
 static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_name,
                                    bool headless, uint32_t hl_w, uint32_t hl_h,
                                    int vsync)
@@ -2797,6 +2835,16 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
 
     /* Dynamically load the Vulkan loader (libvulkan.so.1 / vulkan-1.dll);
      * no loader import library is linked on any platform. */
+#if defined(__APPLE__) && TARGET_OS_IOS
+    /* iOS: take vkGetInstanceProcAddr from the MoltenVK library SDL already
+     * loaded (rhi_prepare_vulkan_library). Linking MoltenVK statically would
+     * clash with the vkGetInstanceProcAddr variable volk itself defines. */
+    PFN_vkGetInstanceProcAddr sdl_gipa =
+        (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+    if (sdl_gipa) {
+        volkInitializeCustom(sdl_gipa);
+    } else
+#endif
     if (volkInitialize() != VK_SUCCESS) {
         RHI_LOG("volkInitialize failed - no Vulkan loader found\n");
         free(dev);

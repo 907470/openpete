@@ -3284,6 +3284,8 @@ static int s_background_requested;
 static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts)
 {
     SDL_WindowFlags f = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
+    /* iOS: SDL must have MoltenVK loaded before it creates a Vulkan window. */
+    rhi_prepare_vulkan_library();
     if (opts->background > 0) {
         SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
         SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "0");
