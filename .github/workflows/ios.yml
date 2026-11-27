@@ -82,7 +82,10 @@ jobs:
 
       - name: Configure (iOS arm64, engine only)
         run: |
-          cmake --preset ios-arm64 -DOPENPETE_GAMES= 2>&1 | tee configure.log
+          MVK="$(find "$PWD/mvk" -path '*dynamic*ios-arm64/MoltenVK.framework' -type d | head -1)"
+          echo "MoltenVK framework: $MVK"
+          cmake --preset ios-arm64 -DOPENPETE_GAMES= \
+            -DOPENPETE_MOLTENVK_FRAMEWORK="$MVK" 2>&1 | tee configure.log
 
       - name: Build
         run: |
@@ -92,8 +95,22 @@ jobs:
           # engine-only job does not have. psycross_static and SDL3 come in as
           # dependencies of openpete_core.
           cmake --build build/ios-arm64 --config Release \
-            --target openpete_core openpete_rhi openpete_imgui -- \
+            --target openpete_core openpete_rhi openpete_imgui rhi_smoketest -- \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee build.log
+
+      - name: Package the unsigned app
+        run: |
+          APP="$(find build/ios-arm64 -name 'rhi_smoketest.app' -type d | head -1)"
+          echo "app: $APP"
+          ls -la "$APP" "$APP/Frameworks" || true
+          plutil -p "$APP/Info.plist"
+          mkdir -p dist && ditto -c -k --keepParent "$APP" dist/OpenPeteRHI-unsigned.app.zip
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-rhi-app-unsigned
+          path: dist/OpenPeteRHI-unsigned.app.zip
 
       - name: Upload logs
         if: always()

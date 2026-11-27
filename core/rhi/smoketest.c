@@ -24,6 +24,14 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS
+/* iOS: SDL supplies the UIApplicationMain entry and calls main() from it. */
+#include <SDL3/SDL_main.h>
+#endif
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

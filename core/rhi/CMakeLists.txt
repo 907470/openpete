@@ -161,4 +161,32 @@ option(OPENPETE_BUILD_RHI_SMOKETEST "Build the RHI smoke test exe" ON)
 if(OPENPETE_BUILD_RHI_SMOKETEST)
     add_executable(rhi_smoketest smoketest.c)
     target_link_libraries(rhi_smoketest PRIVATE openpete_rhi SDL3::SDL3-static)
+
+    if(IOS)
+        # On iOS the smoke test is packaged as an app bundle: the first thing
+        # that can show whether MoltenVK + the RHI work on a device. The
+        # bundle embeds MoltenVK.framework, which rhi_prepare_vulkan_library()
+        # loads through SDL at run time. Point OPENPETE_MOLTENVK_FRAMEWORK at
+        # MoltenVK.xcframework/ios-arm64/MoltenVK.framework from the MoltenVK
+        # iOS release.
+        set(OPENPETE_MOLTENVK_FRAMEWORK "" CACHE PATH
+            "MoltenVK.framework (ios-arm64 slice) to embed in the iOS app")
+        set_target_properties(rhi_smoketest PROPERTIES
+            MACOSX_BUNDLE TRUE
+            MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/cmake/ios/Info.plist.in
+            MACOSX_BUNDLE_GUI_IDENTIFIER "com.example.openpete.rhismoketest"
+            MACOSX_BUNDLE_BUNDLE_NAME "OpenPete RHI"
+            MACOSX_BUNDLE_SHORT_VERSION_STRING "0.0.1"
+            MACOSX_BUNDLE_BUNDLE_VERSION "1"
+            XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/Frameworks"
+            XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2")
+        if(OPENPETE_MOLTENVK_FRAMEWORK)
+            set_target_properties(rhi_smoketest PROPERTIES
+                XCODE_EMBED_FRAMEWORKS "${OPENPETE_MOLTENVK_FRAMEWORK}"
+                XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY OFF)
+        else()
+            message(WARNING "OPENPETE_MOLTENVK_FRAMEWORK not set: the iOS app "
+                            "will build without MoltenVK and cannot start Vulkan")
+        endif()
+    endif()
 endif()
